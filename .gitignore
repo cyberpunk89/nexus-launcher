@@ -1,0 +1,14 @@
+# Never commit secrets or runtime data
+config.toml
+*.toml.bak*
+*.bak
+*.log
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+.idea/
+.vscode/

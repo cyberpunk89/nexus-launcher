@@ -1,0 +1,59 @@
+# Nexus configuration — copy to ~/.config/nexus/config.toml and edit.
+#   mkdir -p ~/.config/nexus && cp config.example.toml ~/.config/nexus/config.toml
+#   chmod 600 ~/.config/nexus/config.toml      # once it holds a key or token
+#
+# Everything is optional; Nexus works with no config file at all. The GUI's
+# Settings page edits these keys in place (keeping your comments).
+
+[steamgriddb]
+# api_key = ""            # free key from steamgriddb.com/profile/preferences/api — cover/hero/logo art
+
+[integrations]
+steam = true              # add installed repacks to Steam as non-Steam shortcuts
+desktop = true            # create app-menu (.desktop) entries
+heroic = true             # add installed repacks to Heroic as sideloaded apps
+# steam_account = ""      # pin which Steam account gets shortcuts (accountid, steamid64,
+                          # login or persona name). Omit to auto-detect: --list-steam-accounts
+# keep_awake = false      # don't block sleep/screen blanking while a repack plays or installs
+
+[install]
+# base = "~/Games/FitGirl"               # where games install (default ~/Games/FitGirl)
+# scan_dir = "~/Downloads"               # where --scan looks for repacks
+# scan_dirs = ["~/Games/Install"]        # more folders to look in (and watch)
+# unattended = false                     # show FitGirl's setup window instead of a silent install
+# trash_repack = true                    # move a repack to the Trash once it's installed
+
+[runner]
+# backend = "auto"        # umu | proton | wine | auto
+# proton = ""             # the Proton games are PLAYED with (launch.sh, Steam, Heroic);
+                          # omit for the newest installed. `nexus-cli --list-protons` shows names.
+
+[news]
+# enabled = true          # show the News page
+
+[gamedb]                  # optional private service (wishlist deals, releases, backlog)
+# enabled = false
+# url = "https://gamedb.crowsden.cc"
+# token = ""              # needs an account on that Game-db instance
+
+[discord]
+# client_id = ""          # an application you created at discord.com/developers;
+                          # repacks launched from Nexus then show "Playing <game>"
+
+[notify]                  # a push to your phone when a long install ends
+# ntfy = "https://ntfy.sh/<topic>"       # public topics are readable by anyone who knows them
+# ntfy_token = ""                        # for a protected topic / self-hosted server
+# kdeconnect = true                      # ping every reachable paired KDE Connect device
+# min_minutes = 3                        # shorter installs don't push (try: nexus-cli --notify-test)
+
+[session]                 # while a repack launched from Nexus plays; restored afterwards
+# scx = "lavd"            # sched_ext scheduler in gaming mode (needs scxctl / scx_loader)
+# lact_profile = "Gaming" # a LACT GPU profile
+
+[torrent]                 # hand magnet links to your torrent client (this machine only)
+# client = "transmission"                # or "qbittorrent"
+# url = "http://127.0.0.1:9091"          # qBittorrent: http://127.0.0.1:8080
+# username = ""
+# password = ""
+# download_dir = "/home/you/Games/Install"   # full path; default: the first [install] scan_dirs
+# seed_ratio = 1.0                       # stop seeding at this ratio

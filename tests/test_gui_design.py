@@ -1,0 +1,305 @@
+"""Design-system checks for the Nexus GUI (nexus/gui.py): radius tokens, rounded images,
+the segmented control. Offscreen, no network, no CLI."""
+
+import re
+import unittest
+
+try:
+    from test_gui_layout import nx
+except ImportError:             # run as tests.<module>
+    from tests.test_gui_layout import nx
+
+if nx is not None:
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QPixmap
+    from PyQt6.QtWidgets import QApplication
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Stylesheet(unittest.TestCase):
+    def _template(self):
+        src = (nx._REPO / 'nexus' / 'gui.py').read_text()
+        a = src.index('def build_stylesheet')
+        return src[a:src.index('return tpl.substitute', a)]
+
+    def test_no_literal_or_square_radii(self):
+        """Every radius comes from a token, and nothing is forced square."""
+        tpl = self._template()
+        self.assertEqual(re.findall(r'border-radius:\s*\d', tpl), [])
+        self.assertNotIn('border-radius: 0', nx.build_stylesheet())
+
+    def test_substitutes(self):
+        css = nx.build_stylesheet()
+        self.assertNotIn('$', css.replace('$$', ''))
+        self.assertIn('qlineargradient', css)
+
+    def test_pill(self):
+        self.assertEqual(nx.pill(28), 14)
+        self.assertIn(f"border-radius: {nx.pill(nx.PILL_H)}px", nx.pill_qss('#000', '#fff'))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class RoundedImages(unittest.TestCase):
+    def test_corners_transparent(self):
+        src = QPixmap(40, 60)
+        src.fill(QColor('#ff0000'))
+        out = nx.rounded_pixmap(src, 8).toImage()
+        self.assertEqual(out.pixelColor(0, 0).alpha(), 0)
+        self.assertEqual(out.pixelColor(39, 59).alpha(), 0)
+        self.assertEqual(out.pixelColor(20, 30).alpha(), 255)
+
+    def test_zero_radius_is_identity(self):
+        src = QPixmap(4, 4)
+        self.assertIs(nx.rounded_pixmap(src, 0), src)
+
+    def test_dominant_color(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'a.png')
+            pm = QPixmap(10, 10)
+            pm.fill(QColor('#2040c0'))
+            pm.save(path)
+            c = nx.dominant_color(path)
+            self.assertTrue(c.isValid())
+            self.assertGreater(c.blue(), c.red())
+            self.assertIsNone(nx.dominant_color(None))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Segmented(unittest.TestCase):
+    def setUp(self):
+        self.seg = nx.SegmentedControl('pill', 32)
+        for k in ('home', 'grid', 'list'):
+            self.seg.add(k, glyph='x', tip=k)
+        self.seg.show()
+        QApplication.processEvents()
+
+    def tearDown(self):
+        self.seg.deleteLater()
+
+    def test_first_is_current(self):
+        self.assertEqual(self.seg.current(), 'home')
+        self.assertTrue(self.seg.item('home').isChecked())
+
+    def test_click_emits_and_moves_thumb(self):
+        got = []
+        self.seg.changed.connect(got.append)
+        self.seg.item('list').click()
+        QApplication.processEvents()
+        self.assertEqual(got, ['list'])
+        self.assertEqual(self.seg.current(), 'list')
+        self.assertFalse(self.seg.item('home').isChecked())
+        self.seg._anim.stop()
+        self.seg._set_thumb(self.seg._target('list'))
+        self.assertAlmostEqual(self.seg._thumb.center().x(),
+                               self.seg.item('list').geometry().center().x(), delta=1)
+
+    def test_set_current_programmatic_does_not_emit(self):
+        got = []
+        self.seg.changed.connect(got.append)
+        self.seg.set_current('grid')
+        self.assertEqual(got, [])
+        self.assertEqual(self.seg.current(), 'grid')
+
+    def test_unknown_key_ignored(self):
+        self.seg.set_current('nope')
+        self.assertEqual(self.seg.current(), 'home')
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class DashboardModel(unittest.TestCase):
+    def items(self, *spec):
+        return [{'id': i, 'size': s, 'hidden': False} for i, s in spec]
+
+    def test_pack_flows_rows(self):
+        items = self.items(('jump', 'full'), ('activity', 'small'), ('storage', 'small'),
+                           ('health', 'small'), ('deals', 'wide'), ('proton', 'small'))
+        got = nx.dash_pack(items, 3)
+        self.assertEqual(got, [('jump', 0, 0, 3), ('activity', 1, 0, 1), ('storage', 1, 1, 1),
+                               ('health', 1, 2, 1), ('deals', 2, 0, 2), ('proton', 2, 2, 1)])
+
+    def test_pack_wraps_and_clamps(self):
+        items = self.items(('activity', 'small'), ('deals', 'wide'))
+        self.assertEqual(nx.dash_pack(items, 2), [('activity', 0, 0, 1), ('deals', 1, 0, 2)])
+        self.assertEqual(nx.dash_pack(items, 1), [('activity', 0, 0, 1), ('deals', 1, 0, 1)])
+
+    def test_pack_skips_hidden_and_empty(self):
+        items = self.items(('activity', 'small'), ('storage', 'small'))
+        items[0]['hidden'] = True
+        self.assertEqual([k for k, *_ in nx.dash_pack(items, 3)], ['storage'])
+        self.assertEqual(nx.dash_pack(items, 3, skip={'storage'}), [])
+
+    def test_move_left_right(self):
+        items = self.items(('activity', 'small'), ('storage', 'small'), ('health', 'small'))
+        out = nx.dash_move(items, 'storage', 'left', 3)
+        self.assertEqual([i['id'] for i in out], ['storage', 'activity', 'health'])
+        out = nx.dash_move(items, 'health', 'right', 3)          # already last: no-op
+        self.assertEqual([i['id'] for i in out], ['activity', 'storage', 'health'])
+
+    def test_move_up_down_by_column(self):
+        items = self.items(('activity', 'small'), ('storage', 'small'), ('health', 'small'),
+                           ('proton', 'small'), ('news', 'small'))
+        # 3 cols: row0 = activity storage health, row1 = proton news
+        out = nx.dash_move(items, 'news', 'up', 3)               # news under storage
+        self.assertEqual([i['id'] for i in out][:2], ['activity', 'news'])
+        out = nx.dash_move(items, 'activity', 'down', 3)
+        self.assertEqual([i['id'] for i in out].index('activity'),
+                         [i['id'] for i in out].index('proton') + 1)
+
+    def test_normalize(self):
+        saved = [{'id': 'news', 'size': 'huge'}, {'id': 'bogus'}, {'id': 'news'},
+                 {'id': 'jump', 'size': 'full', 'hidden': True}]
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[:2], ['news', 'jump'])
+        self.assertEqual(out[0]['size'], nx.DASH_DEFAULT_SIZE['news'])   # bad size -> default
+        self.assertTrue(out[1]['hidden'])
+        self.assertEqual(sorted(ids), sorted(k for k, *_ in nx.DASH_KINDS))
+        self.assertEqual(nx.dash_normalize(None), nx.dash_default())
+
+    def test_normalize_merges_into_system(self):
+        saved = self.items(('jump', 'full'), ('activity', 'small'), ('storage', 'wide'),
+                           ('health', 'small'), ('installed', 'full'), ('proton', 'small'),
+                           ('unplayed', 'full'))
+        saved[2]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[:4], ['jump', 'surprise', 'system', 'installed'])
+        # system is where activity was (surprise, added later, sits after jump)
+        for gone in ('activity', 'storage', 'health', 'proton', 'unplayed'):
+            self.assertNotIn(gone, ids)
+        self.assertEqual(out[2], {'id': 'system', 'size': 'wide', 'hidden': False})
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        all_hidden = [dict(i, hidden=True) for i in saved]
+        sysw = next(i for i in nx.dash_normalize(all_hidden) if i['id'] == 'system')
+        self.assertTrue(sysw['hidden'])
+
+    def test_normalize_places_new_widgets_by_anchor(self):
+        saved = self.items(('deals', 'wide'), ('jump', 'full'))
+        ids = [i['id'] for i in nx.dash_normalize(saved)]
+        self.assertEqual(ids[:3], ['deals', 'upcoming', 'jump'])
+
+    def test_system_badge(self):
+        self.assertEqual(nx.system_badge(2, 3, 1), ('2', 'accent'))   # jobs first
+        self.assertEqual(nx.system_badge(0, 3, 1), ('3', 'danger'))
+        self.assertEqual(nx.system_badge(0, 2, 0), ('2', 'warning'))
+        self.assertEqual(nx.system_badge(0, 0, 0), ('', 'accent'))
+
+    def test_system_status(self):
+        st = nx.system_status([], [], [], {})
+        self.assertEqual([t['key'] for t in st['tiles']],
+                         ['activity', 'storage', 'health', 'proton'])
+        self.assertEqual([t['value'] for t in st['tiles']],
+                         ['Idle', 'Measuring…', 'Checking…', 'Checking…'])
+        self.assertIsNone(st['attention'])
+        full = [{'path': '/mnt/games', 'used': 95, 'total': 100, 'free': 5}]
+        fail = [{'status': 'fail', 'title': 'Broken', 'fix': 'Fix it'},
+                {'status': 'ok', 'title': 'Fine'}]
+        ge = {'default': 'proton-x', 'families': {'ge': {'update': True, 'latest': 'GE-2'}}}
+        job = [{'title': 'Installing X', 'state': 'running', 'step': 'Copying',
+                'progress': 40, 'active': True}]
+        st = nx.system_status(job, full, fail, ge)
+        self.assertEqual(st['tiles'][1]['role'], 'danger')
+        self.assertEqual(st['tiles'][2]['value'], '1 issue')
+        self.assertEqual(st['tiles'][3]['value'], 'Update')
+        self.assertEqual((st['attention']['key'], st['attention']['sub']),
+                         ('activity', '40% · Copying'))
+        # Then: an almost-full disk, a failing check, a Proton update.
+        self.assertEqual(nx.system_status([], full, fail, ge)['attention']['key'], 'storage')
+        self.assertEqual(nx.system_status([], [], fail, ge)['attention']['key'], 'health')
+        att = nx.system_status([], [], [], ge)['attention']
+        self.assertEqual((att['key'], att['action']), ('proton', 'install-ge'))
+
+    def test_cols(self):
+        self.assertEqual([nx.dash_cols(w) for w in (500, 800, 1200, 2000)], [1, 2, 3, 3])
+
+    def test_prefs_round_trip_keeps_unknown_keys(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'favorites': ['a'], 'future_key': 1}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                pr = nx.LibraryPrefs()
+                pr.dashboard[0]['hidden'] = True
+                pr.save()
+                again = nx.LibraryPrefs()
+            data = json.loads(path.read_text())
+            self.assertEqual(data['future_key'], 1)
+            self.assertEqual(data['dashboard']['version'], 1)
+            self.assertTrue(again.dashboard[0]['hidden'])
+            self.assertEqual(again.favorites, {'a'})
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Appearance(unittest.TestCase):
+    def tearDown(self):
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+
+    def test_normalize_rejects_junk(self):
+        ap = nx.normalize_appearance({'theme': 'nope', 'accent': 'red', 'partner': '#12345g',
+                                      'glow': 'max', 'corners': 'round', 'art_tint': 'yes'})
+        self.assertEqual(ap['theme'], 'rose-pine')
+        self.assertEqual(ap['accent'], 'iris')
+        self.assertEqual(ap['partner'], 'love')
+        self.assertEqual(ap['glow'], 'subtle')
+        self.assertEqual(ap['corners'], 'round')
+        self.assertIs(ap['art_tint'], True)
+        self.assertEqual(nx.normalize_appearance(None), nx.APPEARANCE_DEFAULT)
+
+    def test_apply_rebuilds_palette(self):
+        nx.apply_appearance({'theme': 'midnight', 'accent': '#ff7a59', 'partner': 'none',
+                             'corners': 'sharp', 'glow': 'off'})
+        self.assertEqual(nx.P['bg'], nx.THEMES['midnight'][1]['base'])
+        self.assertEqual(nx.P['accent'], '#ff7a59')
+        self.assertEqual(nx.GRAD['dusk'], ('#ff7a59', '#ff7a59'))
+        self.assertLess(nx.R['card'], nx.R_BASE['card'])
+        self.assertEqual(nx.LOOK['glow'], 0.0)
+        self.assertIn('rgba(255,122,89,0.22)', nx.P['accent_22'])
+        css = nx.build_stylesheet()
+        self.assertIn('#ff7a59', css)
+
+    def test_dark_accent_gets_light_text(self):
+        nx.apply_appearance({'accent': 'pine'})
+        self.assertEqual(nx.P['on_accent'], '#ffffff')
+        nx.apply_appearance({'accent': 'gold'})
+        self.assertEqual(nx.P['on_accent'], nx.P['bg'])
+
+    def test_default_round_trip_matches_original(self):
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+        self.assertEqual(nx.P['bg'], '#191724')
+        self.assertEqual(nx.P['accent'], '#c4a7e7')
+        self.assertEqual(nx.R, {**nx.R_BASE})
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class AppIcon(unittest.TestCase):
+    def test_rendered_from_the_svg_with_round_corners(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from PyQt6.QtGui import QImage
+        with tempfile.TemporaryDirectory() as d:
+            png = Path(d) / 'nexus-icon.png'
+            with mock.patch.object(nx, 'ICON_PATH', png), \
+                    mock.patch.object(nx, 'DATA_DIR', Path(d)):
+                self.assertEqual(nx.ensure_icon(), str(png))
+                img = QImage(str(png))
+                self.assertEqual((img.width(), img.height()), (256, 256))
+                self.assertEqual(img.pixelColor(0, 0).alpha(), 0)          # rounded corner
+                self.assertEqual(img.pixelColor(128, 128).name(), '#56949f')
+                # A newer SVG is picked up; an up-to-date PNG is left alone.
+                os.utime(png, (1, 1))
+                nx.ensure_icon()
+                self.assertGreater(png.stat().st_mtime, 1)
+                before = png.stat().st_mtime_ns
+                nx.ensure_icon()
+                self.assertEqual(png.stat().st_mtime_ns, before)

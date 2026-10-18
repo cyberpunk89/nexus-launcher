@@ -1,0 +1,4 @@
+# Python 3.11+. Prefer your distro's packages (see README → Quick start);
+# use these with pip only where the distro has none (e.g. Steam Deck).
+PyQt6>=6.5          # the GUI (bin/nexus); the CLI needs nothing beyond the stdlib
+vdf>=3.4            # optional: Steam shortcuts, Steam library details

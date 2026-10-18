@@ -1,0 +1,284 @@
+# Bundled copy of protongen's recipe catalog (Proton-gui/src-tauri/recipes.toml).
+# Nexus prefers ~/.config/protongen/recipes.toml when it exists. Synced: 2026-09-30 from protongen 0.24.0.
+# protongen recipes — one-click option bundles.
+#
+#   kind = "profile"  → a curated starting point (shown under "Profiles")
+#   kind = "fix"      → a troubleshooter remedy (shown under "Troubleshooter")
+#
+# Applying a recipe MERGES onto the current selection (enables + sets the listed
+# keys; it does not disable anything you already turned on). `gpu` is an optional
+# relevance hint (nvidia|amd|intel|any). `needs` is an optional list of required
+# capabilities (wayland|kde|ntsync|hdr|fsr4|rdna3|rdna4) — a recipe whose needs
+# aren't met is hidden by default. The last four are opt-in capabilities set in
+# Settings: `hdr` from its toggle, and fsr4/rdna3/rdna4 derived from the AMD
+# generation selector (`fsr4` = either generation, rdna3/rdna4 exclusive). Tag a
+# recipe with the exclusive capability when it only applies to one generation —
+# `fsr4` alone would leave it visible on both. env/wrappers are [key, value]
+# pairs; wrapper value is "" for plain wrappers, args for gamescope.
+#
+# Presentation (all optional): `icon` (sparkle|lightning|rocket|monitor|gauge|
+# wrench|shield|film), `accent` (hex color for the card), `tags` (chips).
+
+# ============================= Profiles ==============================
+
+[[recipe]]
+name = "NVIDIA: DLSS + Reflex"
+kind = "profile"
+gpu = "nvidia"
+icon = "lightning"
+accent = "#76b900"
+tags = ["DLSS", "Reflex", "NVAPI"]
+description = "Expose NVAPI to DXVK, auto-upgrade DLSS, and enable Reflex low-latency in Vulkan/DXVK."
+env = [
+    ["DXVK_ENABLE_NVAPI", "1"],
+    ["PROTON_DLSS_UPGRADE", "1"],
+    ["DXVK_NVAPI_VKREFLEX", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "AMD: FSR 4 upgrade"
+kind = "profile"
+gpu = "amd"
+needs = ["rdna4"]
+icon = "rocket"
+accent = "#e0234e"
+tags = ["FSR 4", "RDNA4", "frame-gen"]
+description = "Auto-upgrade the game's FSR to FSR 4 with multi-frame generation (RDNA4)."
+env = [
+    ["PROTON_FSR4_UPGRADE", "1"],
+    ["PROTON_MLFG_UPGRADE", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "AMD: FSR 4 on RDNA3"
+kind = "profile"
+gpu = "amd"
+needs = ["rdna3"]
+icon = "rocket"
+accent = "#e0234e"
+tags = ["FSR 4", "RDNA3", "frame-gen"]
+description = "FSR 4 upscaling + multi-frame generation on RDNA3 (redstone frame-gen with the RDNA3 workaround)."
+env = [
+    ["PROTON_FSR4_UPGRADE", "1"],
+    ["PROTON_MLFG_UPGRADE", "1"],
+    ["DXIL_SPIRV_CONFIG", "wmma_rdna3_workaround"],
+]
+wrappers = []
+
+[[recipe]]
+name = "AMD: DLSS game → FSR 4 (OptiScaler)"
+kind = "profile"
+gpu = "amd"
+needs = ["fsr4"]
+icon = "sparkle"
+accent = "#e0234e"
+tags = ["OptiScaler", "FSR 4", "DLSS→FSR"]
+# Stays on `fsr4` rather than a generation tag: OptiScaler redirects DLSS on both
+# RDNA3 and RDNA4. It deliberately does *not* set DXIL_SPIRV_CONFIG — on RDNA3 the
+# rdna3-mlfg-workaround lint fires with a one-click fix, and hardcoding it here
+# would put a no-op env var on every RDNA4 command instead.
+description = "For games that only expose DLSS: inject OptiScaler to redirect it to FSR 4 + multi-frame generation. Single-player only — OptiScaler can trip kernel anti-cheat."
+env = [
+    ["PROTON_USE_OPTISCALER", "1"],
+    ["PROTON_FSR4_UPGRADE", "1"],
+    ["PROTON_MLFG_UPGRADE", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "My RDNA4 default"
+kind = "profile"
+gpu = "amd"
+needs = ["rdna4"]
+icon = "sparkle"
+accent = "#a6e3a1"
+tags = ["RDNA4", "GameMode", "MangoHud"]
+description = "Everyday starting point on RDNA4: GameMode + MangoHud overlay with the FSR 4 upgrade applied."
+env = [["PROTON_FSR4_UPGRADE", "1"]]
+wrappers = [["gamemoderun", ""], ["mangohud", ""]]
+
+[[recipe]]
+name = "HDR on Wayland"
+kind = "profile"
+needs = ["wayland", "hdr"]
+icon = "monitor"
+accent = "#f5bde6"
+tags = ["HDR", "Wayland"]
+description = "Native Wayland driver + DXVK HDR output (needs an HDR display)."
+env = [
+    ["PROTON_ENABLE_WAYLAND", "1"],
+    ["DXVK_HDR", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "Gamescope upscale (1440p)"
+kind = "profile"
+icon = "monitor"
+accent = "#89b4fa"
+tags = ["gamescope", "upscale", "fullscreen"]
+description = "Run inside gamescope at 2560×1440 fullscreen — great for FSR/integer scaling and frame caps."
+env = []
+wrappers = [["gamescope", "-W 2560 -H 1440 -f"]]
+
+[[recipe]]
+name = "Low-latency competitive"
+kind = "profile"
+needs = ["ntsync"]
+icon = "gauge"
+accent = "#7aa2f7"
+tags = ["low-latency", "GameMode", "NTSync"]
+description = "GameMode + the low-latency layer + DXVK low-latency fork, with a MangoHud FPS readout (NTSync is on by default)."
+env = [
+    ["LOW_LATENCY_LAYER", "1"],
+    ["PROTON_DXVK_LOWLATENCY", "1"],
+]
+wrappers = [["gamemoderun", ""], ["mangohud", ""]]
+
+[[recipe]]
+name = "Max compatibility + logging"
+kind = "profile"
+icon = "shield"
+accent = "#cba6f7"
+tags = ["crash-safe", "logging"]
+protondb_tiers = ["borked", "bronze"]
+description = "Crash-resilience knobs plus a Proton log for diagnosing a stubborn game."
+env = [
+    ["PROTON_FORCE_LARGE_ADDRESS_AWARE", "1"],
+    ["PROTON_HEAP_DELAY_FREE", "1"],
+    ["PROTON_LOG", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "Cap frame rate (60 FPS)"
+kind = "profile"
+icon = "gauge"
+accent = "#89b4fa"
+tags = ["FPS cap", "DXVK", "VKD3D"]
+description = "Limit the frame rate in the translation layer — DXVK for D3D9–11, vkd3d-proton for D3D12. No extra tools, works on any GPU. Edit both values for other caps."
+env = [["DXVK_CONFIG", "dxvk.maxFrameRate=60"], ["VKD3D_FRAME_RATE", "60"]]
+wrappers = []
+
+[[recipe]]
+name = "Borderless fullscreen (gamescope)"
+kind = "profile"
+icon = "monitor"
+accent = "#cba6f7"
+tags = ["gamescope", "borderless", "alt-tab"]
+description = "Run inside gamescope borderless at native resolution — smoother alt-tab and overlay handling."
+env = []
+wrappers = [["gamescope", "-b"]]
+
+[[recipe]]
+name = "GameMode performance"
+kind = "profile"
+icon = "rocket"
+accent = "#a6e3a1"
+tags = ["GameMode", "CPU governor"]
+description = "Apply Feral GameMode CPU governor + IO priority tuning while the game runs. Safe, universal one-click boost."
+env = []
+wrappers = [["gamemoderun", ""]]
+
+# =========================== Troubleshooter =========================
+
+[[recipe]]
+name = "RE Engine: ray tracing / DLSS won't show (experimental)"
+kind = "fix"
+symptom = "An RE Engine game (Resident Evil, Monster Hunter) hides its ray-tracing or DLSS options on a Radeon GPU."
+icon = "sparkle"
+accent = "#f5c2e7"
+tags = ["RE Engine", "ray tracing", "DLSS", "OptiScaler", "experimental"]
+description = "Forces NVAPI on and loads a native dxgi so the engine exposes RT/DLSS, which OptiScaler then maps to FSR. Also: enable OptiScaler with GPU spoofing on, and add the game argument /WineDetectionEnabled:False in Game arguments. Full path tracing currently needs an experimental OptiScaler build."
+env = [
+    ["WINEDLLOVERRIDES", "dxgi=n,b"],
+    ["PROTON_FORCE_NVAPI", "1"],
+    ["DXVK_ENABLE_NVAPI", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "Black or missing cutscenes / videos"
+kind = "fix"
+symptom = "Pre-rendered movies (intro/FMV) are black or absent."
+icon = "film"
+accent = "#f9e2af"
+tags = ["video", "GStreamer"]
+description = "Force GStreamer media playback, which fixes most missing-video cases."
+env = [["PROTON_MEDIA_FORCE_GST", "1"]]
+wrappers = []
+
+[[recipe]]
+name = "Stutter when new effects appear"
+kind = "fix"
+symptom = "Hitches the first time a shader/effect is used."
+icon = "gauge"
+accent = "#fab387"
+tags = ["shader cache"]
+description = "Compile shaders asynchronously with the gplasync DXVK fork and keep a per-game shader cache (NOT for anti-cheat games)."
+env = [["PROTON_LOCAL_SHADER_CACHE", "1"], ["PROTON_DXVK_GPLASYNC", "1"]]
+wrappers = []
+
+[[recipe]]
+name = "Anti-cheat game won't launch"
+kind = "fix"
+symptom = "EAC/BattlEye title closes immediately or errors."
+icon = "shield"
+accent = "#a6e3a1"
+tags = ["EAC", "BattlEye"]
+protondb_tiers = ["borked"]
+description = "Ensure Proton's bundled EAC and BattlEye runtimes are enabled."
+env = [["PROTON_EAC_RUNTIME", "1"], ["PROTON_BATTLEYE_RUNTIME", "1"]]
+wrappers = []
+
+[[recipe]]
+name = "Game crashes at launch"
+kind = "fix"
+symptom = "Crashes before/at the main menu."
+icon = "wrench"
+accent = "#f38ba8"
+tags = ["crash", "logging"]
+protondb_tiers = ["borked", "bronze"]
+description = "Common crash workarounds + a log to pinpoint the cause."
+env = [
+    ["PROTON_FORCE_LARGE_ADDRESS_AWARE", "1"],
+    ["PROTON_HEAP_DELAY_FREE", "1"],
+    ["PROTON_LOG", "1"],
+]
+wrappers = []
+
+[[recipe]]
+name = "Rendering glitches — fall back to WineD3D"
+kind = "fix"
+symptom = "DXVK shows artifacts, black textures or won't init."
+icon = "wrench"
+accent = "#fab387"
+tags = ["DXVK", "fallback"]
+protondb_tiers = ["borked", "bronze"]
+description = "Route Direct3D through OpenGL (WineD3D) instead of DXVK as a last resort."
+env = [["PROTON_USE_WINED3D", "1"]]
+wrappers = []
+
+[[recipe]]
+name = "Controller not detected"
+kind = "fix"
+symptom = "Gamepad isn't recognized or is mis-mapped."
+icon = "wrench"
+accent = "#89b4fa"
+tags = ["input", "SDL"]
+description = "Route input through SDL instead of HIDRAW/Steam Input."
+env = [["PROTON_USE_SDL", "1"]]
+wrappers = []
+
+[[recipe]]
+name = "Japanese / CJK text is broken"
+kind = "fix"
+symptom = "Missing glyphs, mojibake, or wrong date formats."
+icon = "wrench"
+accent = "#cba6f7"
+tags = ["locale", "i18n"]
+description = "Run the game under a Japanese locale (adjust value for other languages)."
+env = [["HOST_LC_ALL", "ja_JP.UTF-8"]]
+wrappers = []
