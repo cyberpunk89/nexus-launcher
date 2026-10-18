@@ -10,6 +10,9 @@ tuning, Game-db deals, Sunshine streaming, torrent hand-off).
 > downloads games by itself. Only install software you are legally allowed to use.
 > Provided as-is under the [MIT license](LICENSE).
 
+**Linux only.** Using Windows? See [docs/WINDOWS.md](docs/WINDOWS.md) for why, and what to use
+instead.
+
 ## Quick start
 
 Developed on Arch / CachyOS with niri; other distros and desktops should work (everything
@@ -73,7 +76,8 @@ in the app's Settings page.
 
 | | What | Needed for |
 |---|---|---|
-| **Required** | Python 3.11+ | everything |
+| **Required** | Linux (any distro; [not Windows](docs/WINDOWS.md)) | everything |
+| | Python 3.11+ | everything |
 | | PyQt6 | the app (`nexus`); `nexus-cli` is stdlib-only |
 | | a runner: `umu-run` + a Proton build (recommended), or Proton alone, or system `wine` | installing and playing repacks |
 | Optional | `vdf` (python-vdf) | Steam shortcuts, Steam library details |
