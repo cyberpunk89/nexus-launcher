@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import net, repackindex  # noqa: E402
 
 SITE = "https://fitgirl-repacks.site/"

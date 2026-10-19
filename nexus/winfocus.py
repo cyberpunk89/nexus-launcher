@@ -7,6 +7,7 @@ reports itself unavailable and the caller falls back to stepping aside
 (minimising). Read-only apart from the focus action itself.
 """
 
+import functools
 import json
 import os
 import re
@@ -20,8 +21,13 @@ IGNORE_APP_IDS = {'nexus', 'steam', 'steamwebhelper', 'heroic', 'electron',
                   'zenity', 'yad', 'kdialog'}
 
 
+@functools.cache
+def _has_niri() -> bool:
+    return shutil.which('niri') is not None      # a PATH walk: asked every hand-off tick
+
+
 def available() -> bool:
-    return bool(os.environ.get('NIRI_SOCKET')) and shutil.which('niri') is not None
+    return bool(os.environ.get('NIRI_SOCKET')) and _has_niri()
 
 
 def windows() -> list[dict]:

@@ -89,20 +89,98 @@ in the app's Settings page.
 | | Transmission or qBittorrent (remote access on) | torrent hand-off |
 | | niri, Sunshine, KDE Connect, protongen, scx / LACT, Game-db | the integrations described below |
 
-## Components
+## How it fits together
+
+Two programs, one codebase. **`bin/nexus`** is the window you use; **`bin/nexus-cli`** does
+the work. The app never blocks: every read is a background `nexus-cli … --json` query and
+every change is a queued job, so an install, a Proton download or a slow Steam scan never
+freezes the window. Both import the shared modules in `nexus/`.
+
+```mermaid
+flowchart TB
+  you(["You: mouse, keyboard,<br>controller or TV"])
+  subgraph app["bin/nexus · the app · nexus/gui"]
+    ui["Pages, game page,<br>Theatre mode"]
+    jobs["Job queue and<br>JSON queries"]
+  end
+  subgraph cli["bin/nexus-cli · the backend · nexus/cli"]
+    cmds["Commands<br>--library, --doctor, ..."]
+    inst["Install flow<br>verify, prefix, setup.exe, launch.sh"]
+  end
+  shared["Shared modules in nexus/<br>paths, net, steamlib, protons, gamedb, torrent, ..."]
+  runners["umu-run, Proton, Wine"]
+  launchers["Steam, Heroic,<br>app menu, Sunshine"]
+  data[("Your data<br>~/.config/nexus<br>~/.local/share/nexus<br>~/.cache/nexus")]
+  web["Online<br>SteamGridDB, ProtonDB, GE-Proton,<br>Game-db, FitGirl feed, news"]
+  torrent["Your torrent client<br>this machine only"]
+
+  you --> ui
+  ui --> jobs
+  jobs -->|runs nexus-cli, reads JSON| cmds
+  jobs -->|install jobs| inst
+  ui -.->|quick reads| shared
+  cmds --> shared
+  inst --> runners
+  inst --> launchers
+  cmds --> launchers
+  shared --> data
+  shared --> web
+  shared --> torrent
+```
+
+### Components
 
 - **`bin/nexus-cli`** — the backend. Installs a repack's `setup.exe` under **umu-run +
   Proton** into `~/Games/FitGirl/`, keeps the game registry, `launch.sh`, Steam shortcut,
   Heroic entry and desktop entry in sync, and serves every GUI view as JSON (`--library`,
   `--protons`, `--cleanup-scan`, `--doctor`, `--news`, `--gamedb`, …). Python 3.11+ stdlib
-  (`python-vdf` for the Steam bits).
-- **`bin/nexus`** — the PyQt6 app. Every read is a background CLI query and every change a
-  queued job, so the window never blocks.
-- **`nexus/`** — shared modules: `paths` (all locations + the one-time migration),
-  `steamlib` (installed Steam/Heroic games, read-only), `protons` (GE-Proton releases,
-  verified install), `cleanup` (candidate rules, Trash), `tips` (GPU detection, protongen
-  recipes, performance checks), `protondb`, `news`, `gamedb` (Game-db client + private
-  cache), `net` (the one HTTP client).
+  (`python-vdf` for the Steam bits). The code is the `nexus/cli/` package.
+- **`bin/nexus`** — the PyQt6 app, the `nexus/gui/` package.
+- **`nexus/`** — shared modules: `paths` (all locations + the one-time migration), `net`
+  (the one HTTP client, plus `write_atomic` / `save_json` / `cached_json`), `steamlib`
+  (installed Steam/Heroic games, read-only), `protons` (GE-Proton releases, verified
+  install), `cleanup` (candidate rules, Trash), `tips` (GPU detection, protongen recipes,
+  performance checks), `protondb`, `compat`, `storeinfo`, `hltb`, `news`, `gamedb` (Game-db
+  client + private cache), `torrent`, `repackfeed` / `repackindex` (the FitGirl feed and
+  site index), `achievements` / `emuach`, `history`, `session`, `presence`, `notify`,
+  `safety` and `inno` (the pre-install repack check), `winfocus`, `gamepad`, `icons`.
+
+### Code layout
+
+Both packages are split one module per area. A module imports the shared base layers at
+the top and its siblings at the bottom (every use is inside a function), so the parts can
+call each other without import cycles. `nexus.cli.<name>` and `nexus.gui.<name>` still
+reach every name: each package's `__init__` re-exports them.
+
+```mermaid
+flowchart TB
+  subgraph g["nexus/gui · the app"]
+    direction TB
+    g1["Base: common, theme, fmt"] --> g2["Building blocks: widgets, jobs, art, tiles, prefs, gameinfo, actions"]
+    g2 --> g3["Pages: library, dashboard, details, storage, protonpage, newspage, deals, downloads, artpicker, system, settings, install, theatre, input"]
+    g3 --> g4["window: MainWindow + mixins win_library, win_nav, win_controller, win_play, win_downloads, win_actions; topbar"]
+    g4 --> g5["app: icon, desktop entry, single instance, main()"]
+  end
+  subgraph c["nexus/cli · the backend"]
+    direction TB
+    c1["Base: common (paths, logger, atomic writes, run)"] --> c2["Core: repack, runner, config, registry, sgdb, launchprofile"]
+    c2 --> c3["Launchers: steam, heroic, desktop, sunshine"]
+    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install"]
+    c4 --> c5["entry: build_parser(), the COMMANDS table, main()"]
+  end
+```
+
+Where to look:
+
+| To… | Go to |
+|---|---|
+| add a CLI command | `nexus/cli/entry.py`: an option in `build_parser()`, a row in `COMMANDS` (the first flag given wins) |
+| change the install steps | `cmd_install` in `nexus/cli/install.py` |
+| save a file | `net.write_atomic` (or `net.save_json` for a cache): never a half-written file |
+| cache a web lookup | `net.cached_json` (per-game JSON) or `net.cached` (a URL); both remember failures |
+| ask the CLI from the app | `cli_json` / `in_thread` in `nexus/gui/jobs.py`: never on the GUI thread |
+| change what the window does | the `nexus/gui/win_*.py` mixin for that area |
+| log from the CLI | `log.print(...)`; swap the target with `use_logger()`, never rebind `log` |
 
 The look follows protongen's design system (Rosé Pine dark): token-driven colour/space/type,
 portrait tiles with a caption gradient and pill badges, one accent colour.
@@ -212,7 +290,9 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   are focusable: Enter/A opens the best deal, Menu/X lists every link (deal, GG.deals,
   Steam, Game-db, copy). The Deals tab's badge counts games on sale, and the details panel's
   Tuning card shows a Game-db line for any game it knows (wishlist price, or HLTB time and
-  how far through you are).
+  how far through you are). Up to 200 cards show at once; the line above them says how many
+  matched, and search or the filters reach the rest. A refresh that fails keeps what is on
+  screen and says why in the banner.
 - **Artwork** — *Change artwork…* (game menu, details panel) opens a page of SteamGridDB
   images for that game — cover, banner, hero, logo, icon — for **any** game, Steam and
   Heroic included. Pick one and it's used everywhere (and on a repack's Steam shortcut);
@@ -473,6 +553,11 @@ runtime bootstraps at play time too.
 
 ## Launcher integration (Steam / Heroic)
 
+Before Nexus rewrites a file another program owns (Steam's `shortcuts.vdf` and
+`config.vdf`, Heroic's sideload library and per-game config, Sunshine's `apps.json`) it
+keeps a copy beside it as `<name>.bak-<timestamp>`: one per operation, taken before its
+first write, the newest five kept.
+
 On install, the game is added to whatever launchers are enabled in `[integrations]`:
 
 - **Steam** — a non-Steam shortcut pointing straight at the game `.exe`, with a Proton
@@ -669,7 +754,8 @@ Precedence for the install base: `--install-dir` flag → `[install] base` → a
 scan_dir` → `~/Downloads`.
 
 Also in `~/.config/nexus/`: `library.json` (favourites, hidden games, view, tile size — GUI
-only), `news.toml` (feeds you added). `[news] enabled = false` in `config.toml` hides the
+only), `news.toml` (feeds you added; `disabled = ["gol", "boilingsteam"]` there hides a
+built-in feed, and stays put when you add or remove feeds). `[news] enabled = false` in `config.toml` hides the
 News page.
 
 `~/.cache/nexus/` — safe to delete: remote cover art, GitHub/news/ProtonDB responses,
@@ -692,3 +778,9 @@ pins the Game-db response shape and checks the token never leaks (redirects, err
 The `test_gui_*.py` files build the real windows offscreen (always `QT_QPA_PLATFORM=offscreen`,
 the CLI stubbed, prefs never written): layout limits, the design tokens, the dashboard
 layout model, navigation, Theatre mode. SteamGridDB tests mock the network.
+
+Every test file imports `tests/sandbox.py` first: it points `HOME` at a throwaway folder and
+clears the `XDG_*` overrides, so no test reads or writes your real Nexus data. To replace a
+CLI or GUI name in a test, use `tests/patching.py` (`patch_cli`, `patch_gui`, `set_gui`):
+the code is split across modules that each hold their own reference, so
+`mock.patch.object(nexus.cli, …)` alone would miss them.

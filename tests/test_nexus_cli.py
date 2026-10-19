@@ -25,10 +25,12 @@ CLI = REPO / 'bin' / 'nexus-cli'
 
 def load_cli():
     sys.path.insert(0, str(REPO))
+    import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
     return importlib.import_module('nexus.cli')
 
 
 fi = load_cli()
+from tests.patching import patch_cli  # noqa: E402
 
 try:
     import vdf
@@ -180,6 +182,78 @@ class FileSafety(unittest.TestCase):
             self.assertTrue((Path(d) / 'shortcuts.vdf.bak-user-copy').exists())
             self.assertEqual(sorted(os.listdir(d)).count('.shortcuts.vdf.tmp'), 0)
 
+    def test_backup_keeps_the_state_before_the_first_rewrite(self):
+        # One operation rewriting a file several times within a second used to
+        # overwrite the pristine backup with an intermediate state.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'config.vdf'
+            p.write_text('original')
+            for i in range(8):
+                fi.backup_file(p, keep=3)
+                fi.atomic_write(p, f'step {i}')
+            baks = list(Path(d).glob('config.vdf.bak-*'))
+            self.assertEqual([b.read_text() for b in baks], ['original'])
+            self.assertRegex(baks[0].name, fi._BACKUP_TS_RE)
+
+    def test_sgdb_refetch_replaces_old_art(self):
+        # A refetch that comes back as .png must not leave the old cover.jpg
+        # winning sorted(glob)[0], nor pick up a half-downloaded .part file.
+        with tempfile.TemporaryDirectory() as d, \
+                patch_cli('ARTWORK_DIR', Path(d)):
+            art = Path(d) / 'game'
+            art.mkdir()
+            (art / 'cover.jpg').write_text('old')
+            (art / 'hero.aaa.part').write_text('partial')
+
+            def sgdb(path, key):
+                return [{'id': 7}] if 'search' in path else [{'url': f'https://cdn/x{path[:3]}.png'}]
+
+            def download(url, dest):
+                dest.write_text('new')
+                return dest
+            with patch_cli('_sgdb_get', sgdb), \
+                    patch_cli('_download', download):
+                got = fi.fetch_artwork('Game', 'game', {'api_key': 'k'})
+            self.assertEqual(got['cover'], art / 'cover.png')
+            self.assertEqual(sorted(x.name for x in art.glob('cover.*')), ['cover.png'])
+            self.assertEqual(fi._cover_path(art), str(art / 'cover.png'))
+            (art / 'hero.png').unlink()
+            self.assertNotIn('hero', fi._local_artwork('game'))
+
+    def test_read_cache_follows_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'state.toml'
+            p.write_text('a = 1\n')
+            self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 1})
+            p.write_text('a = 22\n')                       # new size: re-read
+            self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 22})
+            os.utime(p, ns=(1, 1))                          # same size, new mtime
+            p.write_text('a = 33\n')
+            self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 33})
+
+    def test_proton_scan_is_cached_until_a_build_changes(self):
+        with tempfile.TemporaryDirectory() as d, \
+                patch_cli('PROTON_SEARCH_DIRS', [Path(d)]), \
+                patch_cli('_proton_wine_is_native', lambda p: True), \
+                patch_cli('_PROTON_SCAN', None):
+            def build(name):
+                (Path(d) / name).mkdir()
+                (Path(d) / name / 'proton').write_text('#!/bin/sh\n')
+            build('GE-Proton10-1')
+            calls = []
+            real_glob = Path.glob
+            with mock.patch.object(Path, 'glob',
+                                   lambda self, pat: calls.append(pat) or real_glob(self, pat)):
+                self.assertEqual(list(fi.list_protons()), ['GE-Proton10-1'])
+                fi.find_proton()
+                fi.damaged_protons()
+                self.assertEqual(calls.count('*/proton'), 1)       # scanned once
+                build('GE-Proton10-2')                              # the dir changed
+                self.assertEqual(sorted(fi.list_protons()), ['GE-Proton10-1', 'GE-Proton10-2'])
+                self.assertEqual(calls.count('*/proton'), 2)
+            fi.list_protons().clear()                               # callers get a copy
+            self.assertEqual(len(fi.list_protons()), 2)
+
     def test_split_wrappers(self):
         self.assertEqual(fi.split_wrappers(['gamescope', '-f', '--', 'mangohud', 'strangle', '60']),
                          [['gamescope', '-f', '--'], ['mangohud'], ['strangle', '60']])
@@ -189,7 +263,7 @@ class ProtonByName(unittest.TestCase):
     def test_whole_words_only(self):
         p = {'GE-Proton9-20': Path('/x/GE-Proton9-20'),
              'proton-cachyos-slr': Path('/y/proton-cachyos-slr')}
-        with mock.patch.object(fi, 'proton_tool_name', lambda p: p.name):
+        with patch_cli('proton_tool_name', lambda p: p.name):
             self.assertIsNone(fi.proton_by_name('GE-Proton9-2', p))      # not 9-20
             self.assertEqual(fi.proton_by_name('ge-proton9-20', p).name, 'GE-Proton9-20')
             self.assertEqual(fi.proton_by_name('proton-cachyos', p).name,
@@ -234,13 +308,43 @@ def fi_sandbox(test, fn, *a):
     from unittest import mock
     steam = test.steam
     data = test.home / '.local/share/nexus'
-    with mock.patch.object(fi, 'STEAM_ROOT', steam), \
-            mock.patch.object(fi, 'REGISTRY_PATH', data / 'games.json'), \
-            mock.patch.object(fi, 'find_steam_userdata', lambda *a, **k: test.cfg.parent), \
-            mock.patch.object(fi, 'steam_accounts',
+    with patch_cli('STEAM_ROOT', steam), \
+            patch_cli('REGISTRY_PATH', data / 'games.json'), \
+            patch_cli('find_steam_userdata', lambda *a, **k: test.cfg.parent), \
+            patch_cli('steam_accounts',
                               lambda: [{'config_dir': test.cfg, 'accountid': 111}]), \
-            mock.patch.object(fi, '_steam_libraries', lambda: [steam]):
+            patch_cli('_steam_libraries', lambda: [steam]):
         return fn(*a)
+
+
+class CommandTable(unittest.TestCase):
+    def test_every_command_flag_exists_and_none_fires_by_default(self):
+        parser = fi.build_parser()
+        defaults = parser.parse_args(['/some/repack'])
+        for when, handler in fi.COMMANDS:
+            if not callable(when):
+                self.assertTrue(hasattr(defaults, when), when)
+            self.assertTrue(callable(handler), when)
+            fired = when(defaults) if callable(when) else getattr(defaults, when)
+            self.assertFalse(fired, when)             # a bare repack dir means install
+        dests = {w for w, _h in fi.COMMANDS if not callable(w)}
+        self.assertEqual(len(dests), len([w for w, _h in fi.COMMANDS if not callable(w)]))
+
+    def test_first_flag_wins_and_status_passes_through(self):
+        import signal
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
+        calls = []
+        with patch_cli('cmd_doctor', lambda base, as_json: calls.append('doctor')), \
+                patch_cli('cmd_prune', lambda yes, as_json: 3), \
+                mock.patch('sys.argv', ['nexus-cli', '--doctor', '--prune']):
+            with self.assertRaises(SystemExit) as cm:
+                fi._main()
+        self.assertEqual((calls, cm.exception.code), (['doctor'], 0))
+        with patch_cli('cmd_prune', lambda yes, as_json: 3), \
+                mock.patch('sys.argv', ['nexus-cli', '--prune']):
+            with self.assertRaises(SystemExit) as cm:
+                fi._main()
+        self.assertEqual(cm.exception.code, 3)
 
 
 class Slugs(unittest.TestCase):
@@ -329,7 +433,7 @@ class SaveData(unittest.TestCase):
 
     def test_backups_dont_merge_and_restore_reports_failures(self):
         self.put('Documents/My Games/Game/slot1.sav', b'one')
-        with mock.patch.object(fi, 'SAVES_DIR', self.root / 'saves'):
+        with patch_cli('SAVES_DIR', self.root / 'saves'):
             a = fi.backup_prefix_saves('game', self.root / 'game')
             b = fi.backup_prefix_saves('game', self.root / 'game')
             self.assertEqual((a[1], a[2]), (1, []))
@@ -447,12 +551,29 @@ class Sandbox(unittest.TestCase):
         # An exception anywhere ends in one JSON error object, not a traceback.
         env = {**os.environ, 'HOME': str(self.home)}
         code = ("import sys; sys.argv=['nexus-cli','--list','--json'];"
-                "import nexus.cli as c; c._main=lambda: 1/0; c.main()")
+                "import nexus.cli.entry as c; c._main=lambda: 1/0; c.main()")
         r = subprocess.run([sys.executable, '-c', code], env=env, text=True,
                            capture_output=True, cwd=str(REPO), timeout=60)
         self.assertEqual(r.returncode, 1)
         self.assertEqual(json.loads(r.stdout)['error']['kind'], 'internal')
         self.assertIn("ZeroDivisionError", r.stderr.splitlines()[-1])
+
+    def test_malformed_heroic_entries_are_skipped_not_fatal(self):
+        # Valid JSON with nulls where Heroic usually has objects must not crash
+        # --heroic / --remove-heroic, and the odd entries are left as they were.
+        lib = self.heroic / 'sideload_apps' / 'library.json'
+        lib.write_text(json.dumps({'games': [None, 'junk', {'app_name': 'x', 'install': None},
+                                             {'app_name': 'otherapp',
+                                              'install': {'executable': '/opt/other.exe'}}]}))
+        self.cli('--heroic', 'test-game')
+        games = json.loads(lib.read_text())['games']
+        self.assertEqual(games[:3], [None, 'junk', {'app_name': 'x', 'install': None}])
+        self.assertEqual(len(games), 5)
+        app = self.registry()['heroic_app_name']
+        (self.heroic / 'GamesConfig' / f'{app}.json').write_text('[]')
+        self.cli('--heroic', 'test-game')               # a non-object GamesConfig too
+        self.cli('--remove-heroic', 'test-game')
+        self.assertEqual(len(json.loads(lib.read_text())['games']), 4)
 
     def test_launch_profile_everywhere_and_preserved_fields(self):
         if steam_running():
@@ -788,9 +909,9 @@ class SteamGridDB(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.patches = [
-            mock.patch.object(fi, 'ARTWORK_DIR', root / 'art'),
-            mock.patch.object(fi, 'SGDB_CACHE', root / 'cache'),
-            mock.patch.object(fi, 'load_config', lambda: {'api_key': 'k'}),
+            patch_cli('ARTWORK_DIR', root / 'art'),
+            patch_cli('SGDB_CACHE', root / 'cache'),
+            patch_cli('load_config', lambda: {'api_key': 'k'}),
         ]
         for p in self.patches:
             p.start()
@@ -808,13 +929,13 @@ class SteamGridDB(unittest.TestCase):
                          'width': 1920, 'height': 620, 'style': 'alternate'},
                         {'id': 2, 'url': 'https://evil.example/x.png'}], None
             return [], None
-        self.patches.append(mock.patch.object(fi, '_sgdb_json', fake_json))
+        self.patches.append(patch_cli('_sgdb_json', fake_json))
 
         def fake_download(url, dest):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b'img')
             return dest
-        self.patches.append(mock.patch.object(fi, '_download', fake_download))
+        self.patches.append(patch_cli('_download', fake_download))
         for p in self.patches[3:]:
             p.start()
         self.steam = {'slug': 'steam-10', 'source': 'steam', 'appid': 10,
@@ -838,7 +959,7 @@ class SteamGridDB(unittest.TestCase):
         self.assertEqual(self.calls, [])
         (d / 'hero.png').write_bytes(b'x')
         (d / 'picks.json').write_text('{"hero": {"url": "u"}}')
-        with mock.patch.object(fi, '_game_by_id', lambda i: self.steam):
+        with patch_cli('_game_by_id', lambda i: self.steam):
             fi.cmd_set_sgdb('steam-10', None, None, True)
         self.assertFalse((d / 'sgdb.json').exists())
         self.assertFalse((d / 'hero.png').exists())
@@ -846,13 +967,13 @@ class SteamGridDB(unittest.TestCase):
         self.assertEqual(fi.sgdb_game_id(self.steam, 'k'), (42, None))
 
     def test_set_sgdb_pins_id(self):
-        with mock.patch.object(fi, '_game_by_id', lambda i: self.steam):
+        with patch_cli('_game_by_id', lambda i: self.steam):
             fi.cmd_set_sgdb('steam-10', 5, 'Five', False)
         self.assertEqual(fi.read_sgdb_match(fi.art_dir_for(self.steam)),
                          {'id': 5, 'name': 'Five'})
 
     def test_search_shapes_results(self):
-        with mock.patch.object(fi, '_sgdb_json', lambda p, k: (
+        with patch_cli('_sgdb_json', lambda p, k: (
                 [{'id': 3, 'name': 'A', 'release_date': 1500000000, 'verified': True},
                  {'name': 'no id'}], None)):
             res = fi.sgdb_search('a b', 'k')
@@ -873,7 +994,7 @@ class SteamGridDB(unittest.TestCase):
 
     def test_pick_overrides_source_art_and_reset_restores(self):
         from unittest import mock
-        with mock.patch.object(fi, '_game_by_id', lambda ident: dict(self.steam)):
+        with patch_cli('_game_by_id', lambda ident: dict(self.steam)):
             fi.cmd_set_art('steam-10', 'hero', 'https://cdn2.steamgriddb.com/hero/a.png', False)
             d = fi.ARTWORK_DIR / 'steam-10'
             self.assertEqual(json.loads((d / 'picks.json').read_text())['hero']['url'],
@@ -889,17 +1010,17 @@ class SteamGridDB(unittest.TestCase):
 
     def test_set_art_refuses_other_hosts(self):
         from unittest import mock
-        with mock.patch.object(fi, '_game_by_id', lambda ident: dict(self.steam)), \
+        with patch_cli('_game_by_id', lambda ident: dict(self.steam)), \
                 self.assertRaises(SystemExit):
             fi.cmd_set_art('steam-10', 'hero', 'https://evil.example/x.png', False)
 
     def test_miss_is_remembered(self):
         from unittest import mock
-        with mock.patch.object(fi, '_sgdb_json', lambda p, k: (None, 'none')):
+        with patch_cli('_sgdb_json', lambda p, k: (None, 'none')):
             self.assertEqual(fi.sgdb_game_id({'slug': 'x', 'display_name': 'Nope'}, 'k'),
                              (None, 'none'))
         # A second lookup doesn't hit the network for a week.
-        with mock.patch.object(fi, '_sgdb_json', side_effect=AssertionError):
+        with patch_cli('_sgdb_json', side_effect=AssertionError):
             self.assertEqual(fi.sgdb_game_id({'slug': 'x', 'display_name': 'Nope'}, 'k'),
                              (None, 'none'))
 
@@ -909,10 +1030,10 @@ class SteamGridDB(unittest.TestCase):
         bare = {'slug': 'steam-10', 'source': 'steam', 'appid': 10, 'display_name': 'Ten'}
         full = {'slug': 'steam-11', 'source': 'steam', 'appid': 11, 'display_name': 'Eleven',
                 'hero_url': 'https://cdn/x', 'logo_url': 'https://cdn/y', 'wide_url': 'https://z'}
-        with mock.patch.object(fi, 'managed_entries', lambda *a, **k: []), \
+        with patch_cli('managed_entries', lambda *a, **k: []), \
                 mock.patch.object(steamlib, 'scan', lambda *a, **k: [dict(bare), dict(full)]), \
                 mock.patch.object(steamlib, 'heroic_store_games', lambda *a, **k: []), \
-                mock.patch.object(fi, 'find_heroic_config', lambda: None), \
+                patch_cli('find_heroic_config', lambda: None), \
                 mock.patch('sys.stdout', new_callable=io.StringIO) as out:
             fi.cmd_fill_art(Path(self.tmp.name), True, True)
             first = json.loads(out.getvalue().splitlines()[-1])

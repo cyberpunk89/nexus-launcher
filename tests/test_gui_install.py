@@ -13,9 +13,10 @@ try:
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx
     from tests.test_gui_window import fake_games
+from tests.patching import set_gui  # noqa: E402
 
 if nx is not None:
-    from PyQt6.QtWidgets import QApplication, QPushButton
+    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
 
 def feed(job, *lines):
@@ -145,13 +146,13 @@ class AchievementsUI(unittest.TestCase):
     def setUp(self):
         self._cli = nx.cli_json
         self.asked = []
-        nx.cli_json = lambda args, cb, *a, **k: (self.asked.append(args), cb(self.LIST, ''))
+        set_gui('cli_json', lambda args, cb, *a, **k: (self.asked.append(args), cb(self.LIST, '')))
 
     def tearDown(self):
-        nx.cli_json = self._cli
+        set_gui('cli_json', self._cli)
 
     def texts(self, w):
-        return [lab.text() for lab in w.findChildren(nx.QLabel)]
+        return [lab.text() for lab in w.findChildren(QLabel)]
 
     def test_details_panel(self):
         panel = nx.DetailsPanel()
@@ -172,7 +173,7 @@ class AchievementsUI(unittest.TestCase):
 
     def test_dashboard_widget(self):
         recent = {'recent': [{'appid': 7, 'title': 'First', 'time': 1700000000}]}
-        nx.cli_json = lambda args, cb, *a, **k: cb(recent, '')
+        set_gui('cli_json', lambda args, cb, *a, **k: cb(recent, ''))
 
         class Hub:
             _games = [dict(self.GAME), {'slug': 'steam-8', 'display_name': 'Eight',
@@ -213,7 +214,7 @@ class Watcher(unittest.TestCase):
         w.ready.connect(ready.append)
         w.handle([self.cand('old')])                      # first run: just records
         self.assertEqual(ready, [])
-        self.assertEqual(prefs.seen_repacks, {'old|fold'})
+        self.assertEqual(prefs.seen_repacks, ['old|fold'])
         w.handle([self.cand('old'), self.cand('new', complete=False)])
         self.assertTrue(w.poll.isActive())                # still downloading
         w.handle([self.cand('old'), self.cand('new', size=20)])
@@ -241,12 +242,12 @@ class Watcher(unittest.TestCase):
 class InstallCommand(unittest.TestCase):
     def setUp(self):
         self._cli = nx.cli_json
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         self.page = nx.InstallPage()
         self.page.open({'steam': True, 'heroic': False, 'desktop': True, 'unattended': True})
 
     def tearDown(self):
-        nx.cli_json = self._cli
+        set_gui('cli_json', self._cli)
         self.page.deleteLater()
 
     def test_silent_and_steam_never_waits(self):
@@ -290,9 +291,9 @@ class Followups(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._saved = (nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery)
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         nx.LibraryPrefs.save = lambda self: None
-        nx.CliQuery = lambda *a, **k: None
+        set_gui('CliQuery', lambda *a, **k: None)
         cls.win = nx.MainWindow()
         cls.win.resize(1300, 850)
         cls.win.show()
@@ -305,7 +306,9 @@ class Followups(unittest.TestCase):
         cls.win.deleteLater()
         QApplication.processEvents()
         del cls.win
-        nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery = cls._saved
+        set_gui('cli_json', cls._saved[0])
+        nx.LibraryPrefs.save = cls._saved[1]
+        set_gui('CliQuery', cls._saved[2])
 
     def setUp(self):
         self.win._repack_updates = {}

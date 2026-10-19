@@ -108,10 +108,7 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
-    STORE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = net._tmp_name(STORE)
-    tmp.write_text(json.dumps(data, separators=(',', ':')))
-    tmp.replace(STORE)
+    net.write_atomic(STORE, json.dumps(data, separators=(',', ':')))
 
 
 def _now() -> str:

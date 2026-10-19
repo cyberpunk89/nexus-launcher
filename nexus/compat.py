@@ -12,7 +12,6 @@ fails soft: offline, the last good answer is served, else nothing."""
 
 import json
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, unquote
 
@@ -49,29 +48,6 @@ def store_appid(game: dict) -> int | None:
     return None
 
 
-def _cached_json(path, max_age: float, fetch, refresh: bool = False):
-    """fetch() through a JSON file cache. A failed fetch serves the last
-    good copy; None from fetch() is a real "nothing here" and is cached."""
-    try:
-        if not refresh and time.time() - path.stat().st_mtime < max_age:
-            return json.loads(path.read_text())
-    except (OSError, ValueError):
-        pass
-    try:
-        value = fetch()
-    except (net.NetError, ValueError, KeyError, TypeError):
-        try:
-            return json.loads(path.read_text())
-        except (OSError, ValueError):
-            return None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = net._tmp_name(path)
-        tmp.write_text(json.dumps(value))
-        tmp.replace(path)
-    except OSError:
-        pass
-    return value
 
 
 # -- Are We Anti-Cheat Yet --------------------------------------------------
@@ -116,7 +92,7 @@ def _deck_one(appid: int, refresh: bool) -> dict | None:
             return None
         return {'deck': deck,
                 'steamos': {1: 'Unsupported', 2: 'Compatible'}.get(steamos)}
-    return _cached_json(CACHE_DIR / 'deck' / f"{appid}.json", 7 * DAY, fetch, refresh)
+    return net.cached_json(CACHE_DIR / 'deck' / f"{appid}.json", 7 * DAY, fetch, refresh)
 
 
 def deck(appids, refresh: bool = False) -> dict[int, dict]:
@@ -171,7 +147,7 @@ def _pcgw_one(appid: int, refresh: bool) -> dict | None:
         info['page'] = page.replace('_', ' ')
         info['url'] = PCGW_PAGE.format(page=quote(page.replace(' ', '_'), safe=":'()"))
         return info
-    return _cached_json(CACHE_DIR / 'pcgw' / f"{appid}.json", 7 * DAY, fetch, refresh)
+    return net.cached_json(CACHE_DIR / 'pcgw' / f"{appid}.json", 7 * DAY, fetch, refresh)
 
 
 def pcgw(appids, refresh: bool = False) -> dict[int, dict]:

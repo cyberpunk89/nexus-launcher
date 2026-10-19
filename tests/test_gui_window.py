@@ -10,9 +10,13 @@ try:
     from test_gui_layout import nx
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx
+from tests.patching import patch_gui, set_gui  # noqa: E402
 
 if nx is not None:
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import Qt, QPoint
+    from PyQt6.QtGui import QFont, QFontMetrics
+    from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
+    from nexus import winfocus
 
 
 def fake_games():
@@ -182,13 +186,15 @@ class Window(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._saved = (nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery)
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         nx.LibraryPrefs.save = lambda self: None
-        nx.CliQuery = lambda *a, **k: None
+        set_gui('CliQuery', lambda *a, **k: None)
 
     @classmethod
     def tearDownClass(cls):
-        nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery = cls._saved
+        set_gui('cli_json', cls._saved[0])
+        nx.LibraryPrefs.save = cls._saved[1]
+        set_gui('CliQuery', cls._saved[2])
 
     def setUp(self):
         self.win = nx.MainWindow()
@@ -296,7 +302,7 @@ class Window(unittest.TestCase):
         self.win.input.set('pad')
         card._menu(card.mapToGlobal(card.rect().center()))
         self.assertTrue(self.win.sheet.isVisible())
-        rows = [b.text() for b in self.win.sheet.findChildren(nx.QPushButton)]
+        rows = [b.text() for b in self.win.sheet.findChildren(QPushButton)]
         self.assertEqual(rows, ["Open in Steam", "Open on Game-db", "Copy link"])
         self.win.sheet.close_sheet()
 
@@ -325,6 +331,70 @@ class Window(unittest.TestCase):
         d._render()
         return d
 
+    def test_failed_deals_refresh_keeps_what_is_shown(self):
+        d = self._deals()
+        d._busy = False
+        with patch_gui('cli_json', lambda args, cb, *a, **k: cb(None, 'timed out')):
+            d.refresh(force=True)
+        self.assertEqual(len(d._cards), 3)
+        self.assertTrue(d.banner.isVisibleTo(d))
+        self.assertIn('timed out', d.banner.text())
+        self.assertEqual(d.error, '')                     # there is something to show
+
+    def test_deals_search_reuses_cards(self):
+        d = self._deals()
+        before = {c.item['appid']: c for c in d._cards}
+        for c in before.values():
+            c._marker = True
+        d._query = 'elden'
+        d._fill()
+        self.assertEqual([c.item['appid'] for c in d._cards], [11])
+        self.assertIs(d._cards[0], before[11])
+        d._query = ''
+        d._fill()
+        self.assertEqual(sorted(c.item['appid'] for c in d._cards), [10, 11, 12])
+        self.assertTrue(all(getattr(c, '_marker', False) for c in d._cards))
+        self.assertTrue(all(c.isVisibleTo(d) for c in d._cards))   # pooled ones re-shown
+        d.res = json.loads(json.dumps(self.WISH))                  # new data: new cards
+        d._render()
+        self.assertFalse(any(getattr(c, '_marker', False) for c in d._cards))
+
+    def test_deal_art_waits_for_the_resize_to_settle(self):
+        from PyQt6.QtGui import QPixmap
+        art = nx.DealArt(100, 50, 4)
+        self.addCleanup(art.deleteLater)
+        art._path, art._pm = '/x.png', QPixmap(100, 50)
+        asked = []
+        with mock.patch.object(nx.ART, 'peek', lambda *a: None), \
+                mock.patch.object(nx.ART, 'request', lambda p, w, h, cb: asked.append((w, h))):
+            for w in range(102, 140, 2):
+                art.resize_to(w, 50)
+            self.assertEqual(asked, [])                 # old pixmap, drawn scaled
+            self.assertIsNotNone(art._pm)
+            art.refresh_size()
+            self.assertEqual(asked, [(138, 50)])
+
+    def test_deals_card_cap_says_so(self):
+        with mock.patch.object(nx.DealsPage, 'MAX_CARDS', 2):
+            d = self._deals()
+            self.assertEqual(len(d._cards), 2)
+            notes = [lb.text() for lb in d.findChildren(QLabel) if not lb.isHidden()]
+            self.assertTrue(any('first 2 of 3' in t for t in notes), notes)
+
+    def test_spotlight_redecodes_after_a_resize_mid_decode(self):
+        from PyQt6.QtGui import QPixmap
+        sp = self.win.dealspage.spot
+        asked = []
+        with mock.patch.object(nx.ART, 'peek', lambda *a: None), \
+                mock.patch.object(nx.ART, 'request', lambda p, w, h, cb: asked.append((w, h))):
+            sp._path = '/art/x.jpg'
+            want = sp._size()
+            sp._decoded(('/art/x.jpg', want[0] + 128, want[1]), QPixmap(4, 4))   # old width
+            self.assertEqual(asked, [want])
+            asked.clear()
+            sp._decoded(('/art/x.jpg', *want), QPixmap(4, 4))                    # right one
+            self.assertEqual(asked, [])
+
     def test_deals_show_fitgirl_matches_and_filter(self):
         d = self._deals()
         cards = {c.item['appid']: c for c in d._cards}
@@ -335,7 +405,7 @@ class Window(unittest.TestCase):
         self.assertIsNotNone(cards[10].grab)
         d._pick('_filter', 'fitgirl')
         self.assertEqual(sorted(c.item['appid'] for c in d._cards), [10, 11])
-        chips = [b.text() for b in d.sub_host.findChildren(nx.QPushButton)]
+        chips = [b.text() for b in d.sub_host.findChildren(QPushButton)]
         self.assertIn("On FitGirl  2", chips)
         self.assertIn("2 games", d.summary.text())
         # A download for the game shows on its card and disables Grab.
@@ -387,14 +457,14 @@ class Window(unittest.TestCase):
         page = {'title': 'Hollow Knight: Silksong – v1.0', 'repack_size': 'from 5 GB',
                 'original_size': '8 GB', 'size_bytes': 5 << 30, 'magnets': 1,
                 'client': 'transmission', 'dest': '/dl', 'free_bytes': 1 << 30}
-        with mock.patch.object(nx, 'cli_json', lambda a, cb, *_x: (calls.append(a), cb(
+        with patch_gui('cli_json', lambda a, cb, *_x: (calls.append(a), cb(
                 page if a[0] == '--repack-page' else {'hash': 'b' * 40}, None))):
             card = next(c for c in d._cards if c.item['appid'] == 10)
             card.grab.click()
             self.assertEqual(calls[0][:2], ['--repack-page', 'hollow-knight-silksong'])
             self.assertTrue(self.win.sheet.isVisible())
             self.assertIn("not enough space", self.win.sheet.sub.text())
-            rows = [b for b in self.win.sheet.findChildren(nx.QPushButton)
+            rows = [b for b in self.win.sheet.findChildren(QPushButton)
                     if b.objectName() == 'SheetRow']
             self.assertEqual(rows[0].text(), "Download — install when it's done")
             rows[0].click()
@@ -450,7 +520,7 @@ class Window(unittest.TestCase):
                    'tracked': True, 'auto_install': True, 'installed': False, 'state': 'seeding'}
             started = []
             data = {'torrents': [row], 'client': {}}
-            with mock.patch.object(nx, 'cli_json', lambda a, cb, *_x: cb(data, None)), \
+            with patch_gui('cli_json', lambda a, cb, *_x: cb(data, None)), \
                     mock.patch.object(w, '_start_install', lambda cmd, *a: started.append(cmd)):
                 w._torrent_polling = False
                 w._poll_torrents()
@@ -470,10 +540,10 @@ class Window(unittest.TestCase):
 
     def test_remove_with_files_asks_first(self):
         w = self.win
-        with mock.patch.object(nx, 'cli_json', lambda *a, **k: None):
+        with patch_gui('cli_json', lambda *a, **k: None):
             w._torrent_control('remove', ['a' * 40], True)
         self.assertTrue(w.sheet.isVisible())
-        rows = [b.text() for b in w.sheet.findChildren(nx.QPushButton)
+        rows = [b.text() for b in w.sheet.findChildren(QPushButton)
                 if b.objectName() == 'SheetRow']
         self.assertEqual(rows, ["Remove and delete files", "Cancel"])
         w.sheet.close_sheet()
@@ -634,8 +704,8 @@ class Window(unittest.TestCase):
         w = self.win
         g = w._games[1]
         runs = []
-        with mock.patch.object(nx.winfocus, 'available', lambda: False), \
-                mock.patch.object(nx.winfocus, 'windows', lambda: []), \
+        with mock.patch.object(winfocus, 'available', lambda: False), \
+                mock.patch.object(winfocus, 'windows', lambda: []), \
                 mock.patch.object(w, 'run', lambda *a, **k: runs.append(a)):
             w.on_game_action('launch', g)
             self.assertEqual(len(runs), 1)
@@ -660,21 +730,34 @@ class Window(unittest.TestCase):
         before = [{'id': 1, 'app_id': 'nexus'}]
         after = before + [{'id': 9, 'app_id': f"steam_app_{g['appid']}"}]
         wins = [before]
-        with mock.patch.object(nx.winfocus, 'available', lambda: True), \
-                mock.patch.object(nx.winfocus, 'windows', lambda: wins[0]), \
-                mock.patch.object(nx.winfocus, 'focus', lambda i: focused.append(i) or True), \
-                mock.patch.object(w, 'run', lambda *a, **k: None):
-            w.on_game_action('launch', g)
-            wins[0] = after
-            w._handoff_tick()
-            from PyQt6.QtCore import QThreadPool
+        import threading
+        from PyQt6.QtCore import QThreadPool
+        gui_thread = []
+
+        def windows():
+            gui_thread.append(threading.current_thread() is threading.main_thread())
+            return wins[0]
+
+        def settle():
             for _ in range(2):                                # niri is asked off-thread
                 QThreadPool.globalInstance().waitForDone(2000)
                 QApplication.processEvents()
+        with mock.patch.object(winfocus, 'available', lambda: True), \
+                mock.patch.object(winfocus, 'windows', windows), \
+                mock.patch.object(winfocus, 'focus', lambda i: focused.append(i) or True), \
+                mock.patch.object(w, 'run', lambda *a, **k: None):
+            w.on_game_action('launch', g)
+            settle()                                          # the "before" snapshot
+            wins[0] = after
+            w._handoff_tick()
+            settle()
             self.assertEqual(focused, [9])                    # the game's window
             w._apply_running({g['slug']})
             w._apply_running(set())
+            settle()
             self.assertEqual(focused, [9, 1])                 # and back to Nexus
+        self.assertTrue(gui_thread)
+        self.assertNotIn(True, gui_thread)                    # never on the GUI thread
 
     def test_tile_focus_shows_no_overlay_buttons(self):
         t = next(iter(self.win.homeview.tiles.values()))[0]
@@ -759,11 +842,11 @@ class Window(unittest.TestCase):
 
         def strays():
             return [(type(x).__name__, x.objectName(), [c.text() for c in
-                                                       x.findChildren(nx.QLabel)][:3])
+                                                       x.findChildren(QLabel)][:3])
                     for x in QApplication.topLevelWidgets()
                     if x.isVisible() and x is not w and not any(x is b for b in before)
-                    and not isinstance(x, (nx.QMenu,)) and x.windowType() not in (
-                        nx.Qt.WindowType.ToolTip, nx.Qt.WindowType.Popup)]
+                    and not isinstance(x, (QMenu,)) and x.windowType() not in (
+                        Qt.WindowType.ToolTip, Qt.WindowType.Popup)]
         for g in w._games:
             g['proton'] = 'proton-test'          # the orphan label only showed with one
             g['launch_options'] = 'X=1 %command%'
@@ -800,10 +883,10 @@ class Window(unittest.TestCase):
                 self.seen, self.main = [], None
 
             def eventFilter(self, obj, ev):
-                if ev.type() == QEvent.Type.Show and isinstance(obj, nx.QWidget) \
+                if ev.type() == QEvent.Type.Show and isinstance(obj, QWidget) \
                         and obj.isWindow() and obj is not self.main \
-                        and not isinstance(obj, nx.QMenu) and obj.windowType() not in (
-                            nx.Qt.WindowType.ToolTip, nx.Qt.WindowType.Popup):
+                        and not isinstance(obj, QMenu) and obj.windowType() not in (
+                            Qt.WindowType.ToolTip, Qt.WindowType.Popup):
                     self.seen.append(f"{type(obj).__name__}:{obj.objectName()}:"
                                      f"{getattr(obj, 'text', lambda: '')()!s:.30}")
                 return False
@@ -837,7 +920,7 @@ class Window(unittest.TestCase):
         from PyQt6.QtCore import QEvent
         from PyQt6.QtGui import QKeyEvent
         QApplication.sendEvent(w, QKeyEvent(QEvent.Type.KeyPress, key,
-                                            nx.Qt.KeyboardModifier.NoModifier))
+                                            Qt.KeyboardModifier.NoModifier))
         QApplication.processEvents()
 
     def test_theatre_never_opens_a_desktop_menu(self):
@@ -849,15 +932,15 @@ class Window(unittest.TestCase):
         w.set_theatre(True)
         QApplication.processEvents()
         self.assertTrue(w.theatre.hero.btn_more.isHidden())
-        self.assertEqual(w.theatre.hero.btn_more.focusPolicy(), nx.Qt.FocusPolicy.NoFocus)
+        self.assertEqual(w.theatre.hero.btn_more.focusPolicy(), Qt.FocusPolicy.NoFocus)
         tile = next(t for t in w.theatre.findChildren(nx.GameTile) if not t.isHidden())
         tile.setFocus()
-        self._key(tile, nx.Qt.Key.Key_Menu)                    # X
+        self._key(tile, Qt.Key.Key_Menu)                    # X
         self.assertTrue(w.theatre_sheet.isVisible())
         self.assertIsNone(QApplication.activePopupWidget())
         self.assertIs(w.nav_scope(), w.theatre_sheet)
         self.assertTrue(w.theatre_sheet.isAncestorOf(QApplication.focusWidget()))
-        keys = [b.text() for b in w.theatre_sheet.findChildren(nx.QPushButton)]
+        keys = [b.text() for b in w.theatre_sheet.findChildren(QPushButton)]
         self.assertFalse(any('folder' in k or 'winecfg' in k for k in keys), keys)
         w._escape()                                            # B closes just the sheet
         self.assertFalse(w.theatre_sheet.isVisible())
@@ -894,7 +977,7 @@ class Window(unittest.TestCase):
         self.assertFalse(d.cards['news'].isHidden())
         self.assertNotIn('Other game', d.cards['news'].more)
         d.cards['news'].setFocus()
-        self._key(d.cards['news'], nx.Qt.Key.Key_Return)     # A opens the card
+        self._key(d.cards['news'], Qt.Key.Key_Return)     # A opens the card
         self.assertEqual(d.lower.currentWidget(), d.reader)
         self.assertIn('Fixes', d.reader.toPlainText())
         w._escape()                                           # B: close the card…
@@ -936,7 +1019,7 @@ class Window(unittest.TestCase):
             self.assertFalse(w.hints.isVisible())
             w.input.set('pad')
             self.assertTrue(w.hints.isVisible())
-            w._show_menu(w._games[0], nx.QPoint())
+            w._show_menu(w._games[0], QPoint())
             self.assertTrue(w.sheet.isVisible())
             self.assertIsNone(QApplication.activePopupWidget())
             w._escape()
@@ -952,15 +1035,15 @@ class Window(unittest.TestCase):
         from PyQt6.QtGui import QMouseEvent
         w = self.win
         w.input.set('pad')
-        self._key(w.search, nx.Qt.Key.Key_Down)          # posted-style (not spontaneous)
+        self._key(w.search, Qt.Key.Key_Down)          # posted-style (not spontaneous)
         self.assertEqual(w.input.mode, 'pad')              # …keys we send keep 'pad'
         w.input.set('mouse')
-        self._key(w.search, nx.Qt.Key.Key_Tab)
+        self._key(w.search, Qt.Key.Key_Tab)
         self.assertEqual(w.input.mode, 'keyboard')
         QApplication.sendEvent(w, QMouseEvent(
             QEvent.Type.MouseButtonPress, QPointF(3, 3), QPointF(3, 3),
-            nx.Qt.MouseButton.LeftButton, nx.Qt.MouseButton.LeftButton,
-            nx.Qt.KeyboardModifier.NoModifier))
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
         self.assertEqual(w.input.mode, 'mouse')
 
     def test_owned_games_install_through_the_store(self):
@@ -986,7 +1069,7 @@ class Window(unittest.TestCase):
         self.assertNotIn('steam-verify', keys)
         runs = []
         with mock.patch.object(w, 'run', lambda *a, **k: runs.append(a[0])), \
-                mock.patch.object(nx, 'cli_json', lambda *a, **k: None):
+                patch_gui('cli_json', lambda *a, **k: None):
             w.on_game_action('launch', g)
         self.assertEqual(runs, [['--open-url', 'steam://install/30']])
         self.assertEqual(nx.play_label(g), "Waiting for Steam")
@@ -1007,8 +1090,8 @@ class Window(unittest.TestCase):
         reloads = []
         for poll, games in zip(polls, libraries):
             data = {'games': games, 'disks': []}
-            with mock.patch.object(nx, 'in_thread', lambda fn, cb, d=poll: cb(d, None)), \
-                    mock.patch.object(nx, 'cli_json', lambda a, cb, *_x, d=data:
+            with patch_gui('in_thread', lambda fn, cb, d=poll: cb(d, None)), \
+                    patch_gui('cli_json', lambda a, cb, *_x, d=data:
                                       (reloads.append(a), cb(d, ''))), \
                     mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a[0])):
                 w._install_tick()
@@ -1030,7 +1113,7 @@ class Window(unittest.TestCase):
         w._on_library({'games': fake_games() + [owned], 'disks': []}, '')
         w.set_theatre(True)
         QApplication.processEvents()
-        titles = [r.findChild(nx.QLabel).text() for r in w.theatre.findChildren(nx.ShelfRow)]
+        titles = [r.findChild(QLabel).text() for r in w.theatre.findChildren(nx.ShelfRow)]
         self.assertTrue(any('Ready to install' in t for t in titles), titles)
         self.assertNotIn(owned['slug'], [g['slug'] for g in w.theatre.hero.games])
         w.set_theatre(False)
@@ -1050,7 +1133,7 @@ class Window(unittest.TestCase):
         found = [srch.flow.itemAt(i).widget().game['slug'] for i in range(srch.flow.count())]
         self.assertEqual(found, ['gamma', 'steam-30'])         # installed first, owned too
         srch.keys['q'].setFocus()
-        self._key(srch.keys['q'], nx.Qt.Key.Key_Menu)          # X: delete
+        self._key(srch.keys['q'], Qt.Key.Key_Menu)          # X: delete
         self.assertEqual(srch.query, 'ga')
         w._pad_action('search')                                 # Y: a space
         self.assertEqual(srch.query, 'ga ')
@@ -1130,7 +1213,7 @@ class Window(unittest.TestCase):
         self.assertTrue(up.isVisibleTo(w.dashboard))
         rows = [r for r in up.findChildren(nx.ClickRow)]
         self.assertEqual(len(rows), 2)
-        texts = [l.text() for l in up.findChildren(nx.QLabel)]
+        texts = [l.text() for l in up.findChildren(QLabel)]
         self.assertIn("€40 · keyshop", texts)
         self.assertIn("No price yet", texts)
         opened = []
@@ -1226,7 +1309,7 @@ class News(unittest.TestCase):
         self.assertEqual(p._reading, 10)
 
     def test_elide_lines(self):
-        fm = nx.QFontMetrics(nx.QFont())
+        fm = QFontMetrics(QFont())
         out = nx.elide_lines("word " * 200, fm, 120, 3)
         self.assertEqual(len(out.split('\n')), 3)
         self.assertTrue(out.endswith('…'))

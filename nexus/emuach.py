@@ -13,6 +13,7 @@ unlock, so the launch tracker can show a notification."""
 import configparser
 import html
 import json
+import os
 import re
 import threading
 import time
@@ -23,6 +24,7 @@ from .paths import CACHE_DIR
 
 COMMUNITY = "https://steamcommunity.com/stats/{appid}/achievements/?l=english"
 SCHEMA_AGE = 30 * 86400
+EMPTY_SCHEMA_AGE = 6 * 3600      # an empty one may be an age gate or an error page
 
 # (emulator, glob under drive_c, file kind). <id> is the appid directory.
 LOCATIONS = (
@@ -172,8 +174,12 @@ def schema(appid: int, steam_root: Path | None = None, cache_only: bool = False)
                      if a['icon_gray'] else None} for a in local]
     path = CACHE_DIR / 'achschema' / f"{appid}.json"
     try:
-        if cache_only or time.time() - path.stat().st_mtime < SCHEMA_AGE:
-            return json.loads(path.read_text())
+        cached = json.loads(path.read_text())
+        # An empty schema is as likely an age gate or a changed page as a game
+        # with no achievements, so it's only trusted for a few hours.
+        if cache_only or time.time() - path.stat().st_mtime < (SCHEMA_AGE if cached
+                                                               else EMPTY_SCHEMA_AGE):
+            return cached
     except (OSError, ValueError):
         if cache_only:
             return []
@@ -185,13 +191,15 @@ def schema(appid: int, steam_root: Path | None = None, cache_only: bool = False)
             return json.loads(path.read_text())
         except (OSError, ValueError):
             return []
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = net._tmp_name(path)
-        tmp.write_text(json.dumps(items))
-        tmp.replace(path)
-    except OSError:
-        pass
+    if not items:
+        try:                                    # never replace a good schema with nothing
+            old = json.loads(path.read_text())
+            if old:
+                os.utime(path)                  # and don't re-ask on every call
+                return old
+        except (OSError, ValueError):
+            pass
+    net.save_json(path, items)
     return items
 
 

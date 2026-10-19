@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nexus-cli — the Nexus backend. The code lives in nexus/cli.py; this stub imports it so
+"""nexus-cli — the Nexus backend. The code lives in the nexus/cli/ package; this stub imports it so
 Python caches its bytecode instead of recompiling it on every run."""
 import sys
 from pathlib import Path

@@ -12,6 +12,7 @@ try:
     from test_gui_layout import nx, REPO
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx, REPO
+from tests.patching import set_gui  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtWidgets import QApplication
@@ -22,7 +23,7 @@ class SingleInstance(unittest.TestCase):
     def setUp(self):
         self.name = f"nexus-test-{os.getpid()}-{time.monotonic_ns()}"
         self._saved = nx.INSTANCE
-        nx.INSTANCE = self.name
+        set_gui('INSTANCE', self.name)
         self.got = []
         self.server = nx.InstanceServer()
         self.server.request.connect(self.got.append)
@@ -31,7 +32,7 @@ class SingleInstance(unittest.TestCase):
     def tearDown(self):
         self.server.server.close()
         self.server.deleteLater()
-        nx.INSTANCE = self._saved
+        set_gui('INSTANCE', self._saved)
 
     def _wait(self, n=1):
         end = time.monotonic() + 3

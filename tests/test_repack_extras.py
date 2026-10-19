@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -15,6 +16,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.patching import patch_cli, patch_gui  # noqa: E402
 from nexus import cli, emuach, safety, torrent  # noqa: E402
 
 
@@ -28,18 +31,18 @@ class LaunchViaSteam(unittest.TestCase):
     def test_launch_goes_through_steam_without_a_tracker(self):
         entry = {'slug': 'g', 'steam_appid': 2399106986, 'launch_via': 'steam'}
         from nexus import steamlib
-        with mock.patch.object(cli, 'registry_get', return_value=entry), \
+        with patch_cli('registry_get', return_value=entry), \
                 mock.patch.object(steamlib, 'running', return_value={'slugs': set()}), \
-                mock.patch.object(cli, 'prefix_processes', return_value=[]), \
-                mock.patch.object(cli, 'touch_last_played'), \
+                patch_cli('prefix_processes', return_value=[]), \
+                patch_cli('touch_last_played'), \
                 mock.patch.object(steamlib, 'open_url', return_value=True) as op, \
-                mock.patch.object(cli.subprocess, 'Popen') as popen:
+                mock.patch('subprocess.Popen') as popen:
             cli.cmd_launch(Path('/nowhere'), 'g')
         op.assert_called_once_with(cli.steam_shortcut_url(entry))
         popen.assert_not_called()
 
     def test_needs_a_shortcut(self):
-        with mock.patch.object(cli, '_require_entry', return_value={'slug': 'g'}), \
+        with patch_cli('_require_entry', return_value={'slug': 'g'}), \
                 self.assertRaises(SystemExit):
             cli.cmd_launch_via('g', 'steam')
 
@@ -131,6 +134,23 @@ class Achievements(unittest.TestCase):
         self.assertEqual([a['name'] for a in items], ['ACH_A', 'ACH_B'])
         self.assertEqual(items[0]['title'], 'First & Last')
         self.assertIsNone(items[1]['icon_url'])
+
+    def test_empty_community_schema_is_not_trusted_for_a_month(self):
+        page = {'body': SSR}
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(emuach, 'CACHE_DIR', Path(d)), \
+                mock.patch.object(emuach.net, 'get', lambda *a, **k: page['body'].encode()):
+            self.assertEqual(len(emuach.schema(7)), 2)
+            cache = Path(d, 'achschema', '7.json')
+            os.utime(cache, (1, 1))                        # stale: refetch
+            page['body'] = '<html>age check</html>'
+            self.assertEqual(len(emuach.schema(7)), 2)     # the good copy survives
+            self.assertGreater(cache.stat().st_mtime, 1)   # ...and isn't re-asked every call
+            cache.write_text('[]')                         # a cached empty schema
+            old = time.time() - emuach.EMPTY_SCHEMA_AGE - 60
+            os.utime(cache, (old, old))
+            page['body'] = SSR
+            self.assertEqual(len(emuach.schema(7)), 2)     # retried after hours, not a month
 
     def test_status_and_watcher(self):
         with tempfile.TemporaryDirectory() as d:
@@ -258,6 +278,60 @@ class Torrents(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertNotIn('NoDefaultCurrentDirectoryInExePath', probe.read_text())
 
+    QB = {'client': 'qbittorrent', 'url': 'http://127.0.0.1:1', 'username': '',
+          'password': '', 'download_dir': None, 'seed_ratio': None}
+
+    def test_qbittorrent_torrent_file_is_tracked(self):
+        # qBittorrent's upload API doesn't name the torrent it added; the hash
+        # comes from the file itself (SHA-1 of the bencoded info dict).
+        import hashlib
+        info = (b'd6:lengthi5e4:name4:Game12:piece lengthi16384e6:pieces20:'
+                + b'\x01' * 20 + b'e')
+        data = b'd8:announce9:udp://x/a13:creation datei1e4:info' + info + b'e'
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'TRACKED', Path(d, 't.json')), \
+                mock.patch.object(torrent.QBittorrent, '_req',
+                                  lambda *a, **k: (200, {}, b'Ok.')):
+            f = Path(d, 'game.torrent')
+            f.write_bytes(data)
+            got = torrent.add(str(f), auto_install=True, s=self.QB)
+            self.assertEqual(got['hash'], hashlib.sha1(info).hexdigest())
+            self.assertTrue(torrent.load_tracked()[got['hash']]['auto_install'])
+            f.write_bytes(b'd8:announce3:urle')
+            with self.assertRaises(torrent.TorrentError):
+                torrent.add(str(f), s=self.QB)
+            f.write_bytes(b'd4:infod4:name')                      # truncated
+            with self.assertRaises(torrent.TorrentError):
+                torrent.add(str(f), s=self.QB)
+
+    def test_bad_client_replies_are_torrent_errors(self):
+        import http.client
+        with mock.patch.object(torrent.QBittorrent, '_req',
+                               lambda *a, **k: (200, {}, b'<html>login</html>')):
+            with self.assertRaises(torrent.TorrentError):
+                torrent.client(self.QB).list_all()
+
+        def drop(*a, **k):
+            raise http.client.IncompleteRead(b"ab")      # not an OSError
+        with mock.patch('urllib.request.OpenerDirector.open', drop):
+            with self.assertRaises(torrent.TorrentError):
+                torrent.client(self.QB).list_all()
+
+    def test_tracked_edits_dont_lose_updates(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'TRACKED', Path(d, 't.json')):
+            def worker(n):
+                for i in range(25):
+                    with torrent.edit_tracked() as t:
+                        t[f'{n}-{i}'] = {}
+            threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(len(torrent.load_tracked()), 100)
+            self.assertEqual([p.name for p in Path(d).glob('*.part')], [])
+
     def test_install_marks_its_download(self):
         from nexus import cli
         h = 'd' * 40
@@ -326,7 +400,7 @@ class Attract(unittest.TestCase):
         a = nx.AttractOverlay(host)
         opened = []
         a.open_game.connect(opened.append)
-        with mock.patch.object(nx, 'cli_json'):
+        with patch_gui('cli_json'):
             a.start([{'slug': 'g', 'display_name': 'G', 'source': 'nexus'},
                      {'slug': 'h', 'display_name': 'H', 'hidden': True}])
             self.assertTrue(a.running)

@@ -19,6 +19,9 @@ Downloads page also shows and controls everything else in the client
 (all_status / control): pause, resume, remove."""
 
 import base64
+import contextlib
+import fcntl
+import hashlib
 import json
 import re
 import time
@@ -26,6 +29,7 @@ import tomllib
 import urllib.parse
 from pathlib import Path
 
+from . import net
 from .paths import CONFIG_PATH, DATA_DIR
 
 TRACKED = DATA_DIR / 'torrents.json'
@@ -72,6 +76,52 @@ def infohash(magnet: str) -> str | None:
     return h.lower()
 
 
+def _bencode_end(b: bytes, i: int) -> int:
+    """Index just past the bencoded value starting at b[i]."""
+    c = b[i:i + 1]
+    if c == b'i':
+        return b.index(b'e', i) + 1
+    if c in (b'l', b'd'):
+        i += 1
+        while b[i:i + 1] != b'e':
+            if not b[i:i + 1]:
+                raise ValueError("truncated")
+            i = _bencode_end(b, i)
+        return i + 1
+    if c.isdigit():
+        colon = b.index(b':', i)
+        return colon + 1 + int(b[i:colon])
+    raise ValueError(f"bad bencode at {i}")
+
+
+def file_infohash(path: str) -> str:
+    """The v1 info-hash of a .torrent file: the SHA-1 of its bencoded `info`
+    dict, exactly as the client computes it (qBittorrent's add API doesn't
+    say which torrent a file upload became)."""
+    try:
+        b = Path(path).read_bytes()
+        if b[:1] != b'd':
+            raise ValueError("not a dictionary")
+        i = 1
+        while b[i:i + 1] != b'e':
+            k_end = _bencode_end(b, i)
+            v_end = _bencode_end(b, k_end)
+            if b[i:k_end].endswith(b':info'):
+                return hashlib.sha1(b[k_end:v_end]).hexdigest()
+            i = v_end
+    except (OSError, ValueError, IndexError) as e:
+        raise TorrentError(f"can't read that .torrent file ({e})") from None
+    raise TorrentError("that .torrent file has no info section")
+
+
+def _json(raw: bytes, who: str):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise TorrentError(f"{who} sent back something that isn't JSON — is that "
+                           f"URL really its API?") from None
+
+
 def _http(url: str, data: bytes | None = None, headers: dict | None = None,
           timeout: float = 10):
     """A request to the local client only: http(s) on a loopback host."""
@@ -93,7 +143,7 @@ def _http(url: str, data: bytes | None = None, headers: dict | None = None,
     except urllib.error.HTTPError as e:
         with e:
             return e.code, dict(e.headers or {}), e.read(1 << 16) if e.fp else b''
-    except (urllib.error.URLError, OSError) as e:
+    except net.errors() as e:
         raise TorrentError(f"can't reach the torrent client at {url} "
                            f"({getattr(e, 'reason', e)}) — is it running with remote "
                            f"access on?") from None
@@ -121,9 +171,9 @@ class Transmission:
                                    "([torrent] username / password)")
             if status != 200:
                 raise TorrentError(f"Transmission answered HTTP {status}")
-            data = json.loads(raw)
-            if data.get('result') != 'success':
-                raise TorrentError(f"Transmission: {data.get('result')}")
+            data = _json(raw, "Transmission")
+            if not isinstance(data, dict) or data.get('result') != 'success':
+                raise TorrentError(f"Transmission: {data.get('result') if isinstance(data, dict) else data}")
             return data.get('arguments') or {}
         raise TorrentError("Transmission kept refusing the session id")
 
@@ -226,6 +276,7 @@ class QBittorrent:
             status, _h, raw = self._req('/torrents/add', {**form, 'urls': source})
             h = infohash(source) or ''
         else:
+            h = file_infohash(source)
             boundary = '----nexus' + str(int(time.time() * 1000))
             parts = []
             for k, v in form.items():
@@ -237,7 +288,6 @@ class QBittorrent:
             parts.append(f'--{boundary}--\r\n'.encode())
             status, _h, raw = self._req('/torrents/add', files=b''.join(parts),
                                         ctype=f'multipart/form-data; boundary={boundary}')
-            h = ''
         if status != 200 or raw.strip().lower().startswith(b'fails'):
             raise TorrentError(f"qBittorrent didn't take it (HTTP {status})")
         return {'hash': h, 'name': ''}
@@ -267,7 +317,8 @@ class QBittorrent:
         status, _h, raw = self._req('/torrents/info' + query)
         if status != 200:
             raise TorrentError(f"qBittorrent answered HTTP {status}")
-        return [self._row(t) for t in json.loads(raw)]
+        rows = _json(raw, "qBittorrent")
+        return [self._row(t) for t in rows if isinstance(t, dict)] if isinstance(rows, list) else []
 
     def list(self, hashes: list[str]) -> list[dict]:
         return self._info('?hashes=' + '|'.join(hashes)) if hashes else []
@@ -301,7 +352,8 @@ class QBittorrent:
         if status != 200:
             raise TorrentError(f"qBittorrent answered HTTP {status}")
         st, _h, tr = self._req('/transfer/info')
-        t = json.loads(tr) if st == 200 else {}
+        t = _json(tr, "qBittorrent") if st == 200 else {}
+        t = t if isinstance(t, dict) else {}
         return {'client': 'qBittorrent', 'version': raw.decode(errors='replace').strip(),
                 'download_dir': None, 'down': t.get('dl_info_speed') or 0,
                 'up': t.get('up_info_speed') or 0}
@@ -326,10 +378,23 @@ def load_tracked() -> dict:
 
 
 def save_tracked(data: dict) -> None:
+    net.write_atomic(TRACKED, json.dumps(data, indent=1))
+
+
+@contextlib.contextmanager
+def edit_tracked():
+    """Load torrents.json, let the caller change it, and save it — under an
+    exclusive lock, so the GUI adding a torrent and an install marking its own
+    can't undo each other. Saved only if something changed; an exception in
+    the block saves nothing."""
     TRACKED.parent.mkdir(parents=True, exist_ok=True)
-    tmp = TRACKED.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data, indent=1))
-    tmp.replace(TRACKED)
+    with open(TRACKED.with_name(TRACKED.name + '.lock'), 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load_tracked()
+        before = json.dumps(data, sort_keys=True)
+        yield data
+        if json.dumps(data, sort_keys=True) != before:
+            save_tracked(data)
 
 
 def check_hash(h: str) -> str:
@@ -351,12 +416,11 @@ def add(source: str, auto_install: bool = False, s: dict | None = None,
     h = got['hash'] or (infohash(source) if source.startswith('magnet:') else '')
     if not h:
         raise TorrentError("the client didn't say which torrent it added")
-    tracked = load_tracked()
     name = got['name'] or urllib.parse.parse_qs(source.partition('?')[2]).get('dn', [''])[0]
-    tracked[h] = {**(meta or {}), 'name': name,
-                  'added_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
-                  'auto_install': bool(auto_install), 'installed': False}
-    save_tracked(tracked)
+    with edit_tracked() as tracked:
+        tracked[h] = {**(meta or {}), 'name': name,
+                      'added_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                      'auto_install': bool(auto_install), 'installed': False}
     return {'hash': h, 'name': name}
 
 
@@ -418,9 +482,9 @@ def control(action: str, hashes: list[str], delete_data: bool = False,
         c.start(hashes)
     elif action == 'remove':
         c.remove(hashes, delete_data)
-        tracked = load_tracked()
-        if any(tracked.pop(h, None) is not None for h in hashes):
-            save_tracked(tracked)
+        with edit_tracked() as tracked:
+            for h in hashes:
+                tracked.pop(h, None)
     else:
         raise TorrentError(f"unknown action {action!r}")
 

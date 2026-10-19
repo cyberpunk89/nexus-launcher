@@ -1,6 +1,7 @@
 """nexus.net's disk cache: fresh copies, stale fallbacks, and failures that
 are remembered for a while so offline use doesn't wait out every timeout."""
 
+import os
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import net  # noqa: E402
 
 
@@ -117,21 +119,82 @@ class Download(unittest.TestCase):
             return False
 
     def test_short_body_is_an_error(self):
+        # Patch net's own opener (it never calls urllib.request.urlopen): the
+        # old patch missed it, so these were DNS lookups for host "x".
         import http.client
         with tempfile.TemporaryDirectory() as d:
             dest = Path(d) / 'f.bin'
-            with mock.patch('urllib.request.urlopen',
-                            lambda *a, **k: self.Resp(b'abc', 10)):
-                with self.assertRaises(net.NetError):
+            with mock.patch.object(net, '_open', lambda *a, **k: self.Resp(b'abc', 10)):
+                with self.assertRaises(net.NetError) as cm:
                     net.download('https://x/f', dest)
-            self.assertFalse(dest.exists())
-            self.assertFalse((Path(d) / 'f.bin.part').exists())
+            self.assertIn('3', str(cm.exception))              # the short count, not DNS
+            self.assertEqual(os.listdir(d), [])                # no file, no leftover .part
 
             def boom(*a, **k):
                 raise http.client.IncompleteRead(b'ab')
-            with mock.patch('urllib.request.urlopen', boom):
+            with mock.patch.object(net, '_open', boom):
                 with self.assertRaises(net.NetError):        # not IncompleteRead
                     net.download('https://x/f', dest)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_download_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / 'f.bin'
+            with mock.patch.object(net, '_open', lambda *a, **k: self.Resp(b'abcdefghij', 10)):
+                net.download('https://x/f', dest)
+            self.assertEqual(dest.read_bytes(), b'abcdefghij')
+            self.assertEqual(os.listdir(d), ['f.bin'])
+
+
+class Helpers(unittest.TestCase):
+    def test_write_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'sub' / 'f.json'
+            net.write_atomic(p, '{"a": 1}')
+            self.assertEqual(p.read_text(), '{"a": 1}')
+            net.write_atomic(p, b'xyz', mode=0o600)
+            self.assertEqual((p.read_bytes(), p.stat().st_mode & 0o777), (b'xyz', 0o600))
+            os.chmod(p, 0o640)
+            net.write_atomic(p, 'k', keep_mode=True, fsync=True)
+            self.assertEqual(p.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(sorted(os.listdir(p.parent)), ['f.json'])     # no temp left
+            with mock.patch('os.replace', side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    net.write_atomic(p, 'lost')
+            self.assertEqual((p.read_text(), sorted(os.listdir(p.parent))), ('k', ['f.json']))
+            self.assertFalse(net.save_json(Path(d) / 'x.json', {1, 2}))  # not JSON: False
+
+    def test_cached_json(self):
+        calls = []
+
+        def fetch_ok():
+            calls.append('ok')
+            return {'v': len(calls)}
+
+        def fetch_none():
+            calls.append('none')
+            return None
+
+        def fetch_fail():
+            calls.append('fail')
+            raise net.NetError("offline")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'c' / '1.json'
+            self.assertEqual(net.cached_json(p, 60, fetch_ok), {'v': 1})
+            self.assertEqual(net.cached_json(p, 60, fetch_fail), {'v': 1})   # fresh: no fetch
+            self.assertEqual(calls, ['ok'])
+            os.utime(p, (1, 1))                                              # stale
+            self.assertEqual(net.cached_json(p, 60, fetch_fail), {'v': 1})   # last good copy
+            self.assertEqual(net.cached_json(p, 60, fetch_fail), {'v': 1})
+            self.assertEqual(calls, ['ok', 'fail'])          # the failure is remembered
+            self.assertEqual(net.cached_json(p, 60, fetch_ok, refresh=True), {'v': 3})
+            self.assertFalse(p.with_name('1.json.failed').exists())
+            q = Path(d) / 'c' / '2.json'
+            self.assertIsNone(net.cached_json(q, 60, fetch_none))
+            self.assertIsNone(net.cached_json(q, 60, fetch_ok))           # "nothing" is cached
+            self.assertEqual(calls[-1], 'none')
+            q.write_text('{corrupt')
+            self.assertEqual(net.cached_json(q, 60, fetch_ok), {'v': 5})   # corrupt: refetched
 
 
 if __name__ == '__main__':

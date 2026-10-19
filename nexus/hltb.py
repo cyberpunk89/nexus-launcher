@@ -108,11 +108,5 @@ def lookup(name: str, year: int | None = None, refresh: bool = False) -> dict | 
         if cached and cached.get('hit'):
             return cached['hit']                    # keep serving the old answer
         hit, record = None, {'failed': str(e)[:200]}
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = net._tmp_name(path)
-        tmp.write_text(json.dumps(record))
-        tmp.replace(path)
-    except OSError:
-        pass
+    net.save_json(path, record)
     return hit

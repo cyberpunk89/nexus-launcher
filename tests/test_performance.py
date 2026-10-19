@@ -14,6 +14,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.patching import patch_cli  # noqa: E402
 from nexus import cli, session  # noqa: E402
 
 PG_PROFILE = {'proton': 'proton-cachyos-slr',
@@ -92,10 +94,10 @@ class Lsfg(unittest.TestCase):
         self.conf = self.tmp / 'conf.toml'
         self.conf.write_text(LSFG)
         for name, val in (('LSFG_CONF', self.conf), ('lsfg_installed', lambda: True)):
-            p = mock.patch.object(cli, name, val)
+            p = patch_cli(name, val)
             p.start()
             self.addCleanup(p.stop)
-        p = mock.patch.object(cli.shutil, 'which', return_value=None)   # no lsfg-vk-cli
+        p = mock.patch('shutil.which', return_value=None)   # no lsfg-vk-cli
         p.start()
         self.addCleanup(p.stop)
         self.entry = {'slug': 'hades', 'display_name': 'Hades',
@@ -162,7 +164,7 @@ class Pause(unittest.TestCase):
             procs = [subprocess.Popen(['sleep', '30'], env=env) for _ in range(2)]
             self.addCleanup(lambda: [(p.kill(), p.wait()) for p in procs])
             reg = {'games': {'g': {'slug': 'g', 'wine_prefix': d}}}
-            with mock.patch.object(cli, 'load_registry', return_value=reg):
+            with patch_cli('load_registry', return_value=reg):
                 cli.cmd_pause(None, 'toggle')
                 time.sleep(0.2)
                 self.assertTrue(all(cli._proc_state(p.pid) == 'T' for p in procs))
@@ -171,7 +173,7 @@ class Pause(unittest.TestCase):
                 self.assertFalse(any(cli._proc_state(p.pid) == 'T' for p in procs))
 
     def test_nothing_running(self):
-        with mock.patch.object(cli, 'load_registry', return_value={'games': {}}), \
+        with patch_cli('load_registry', return_value={'games': {}}), \
                 self.assertRaises(SystemExit):
             cli.cmd_pause(None, 'toggle')
 
@@ -197,7 +199,7 @@ class Benchmark(unittest.TestCase):
                                          Path(d, 'G.exe'), 'g', None, runner='wine')
             self.assertIn(cli.BENCH_HOOK, sh.read_text())
             sh.write_text('#!/bin/bash\nexec wine G.exe\n')
-            with mock.patch.object(cli, '_require_entry',
+            with patch_cli('_require_entry',
                                    return_value={'slug': 'g', 'launcher': str(sh)}), \
                     self.assertRaises(SystemExit):
                 cli.cmd_benchmark(Path(d), 'g', 60, 30)

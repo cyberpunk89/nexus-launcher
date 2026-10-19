@@ -90,7 +90,7 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
     setup = repack_dir / 'setup.exe'
     if setup.is_file():
         if header_reader is None:
-            from nexus.cli import inno_header as header_reader
+            from nexus.inno import inno_header as header_reader
         header = header_reader(setup)
         if header is None:
             add('warn', setup, "not a readable Inno Setup installer (FitGirl's always is)")

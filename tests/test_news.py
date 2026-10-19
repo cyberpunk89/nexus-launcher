@@ -1,11 +1,14 @@
 """Tests for nexus/news.py feed parsing and sanitising."""
 
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import news  # noqa: E402
 
 RSS = """<?xml version="1.0"?><rss version="2.0"><channel><title>X</title>
@@ -78,3 +81,34 @@ class Images(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UserFeeds(unittest.TestCase):
+    def test_editing_feeds_keeps_disabled_ones(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            cfg = Path(home, '.config/nexus/news.toml')
+            cfg.parent.mkdir(parents=True)
+            cfg.write_text('disabled = ["gol", "user:https://b.example/feed"]\n'
+                           '[[feed]]\nname = "A"\nurl = "https://a.example/feed"\n'
+                           '[[feed]]\nname = "B"\nurl = "https://b.example/feed"\n')
+            env = {**os.environ, 'HOME': home}
+            cli = Path(__file__).resolve().parent.parent / 'bin' / 'nexus-cli'
+            subprocess.run([sys.executable, str(cli), '--news-add-feed', 'https://c.example/rss'],
+                           env=env, check=True, capture_output=True, timeout=60)
+            with mock.patch.object(news, 'NEWS_CONFIG', cfg):
+                self.assertEqual([f['url'] for f in news.user_feeds()],
+                                 ['https://a.example/feed', 'https://b.example/feed',
+                                  'https://c.example/rss'])
+                self.assertNotIn('gol', [f['id'] for f in news.feeds()])
+                self.assertNotIn('https://b.example/feed', [f['url'] for f in news.feeds()])
+
+    def test_cache_names_differ_for_long_urls_on_one_site(self):
+        seen = []
+        with mock.patch.object(news.net, 'cached',
+                               lambda url, name, *a, **k: seen.append(name) or (RSS, 0, False)):
+            base = 'https://example.com/' + 'a' * 80
+            for u in (base + '/one', base + '/two'):
+                news._fetch_feed({'id': f'user:{u}', 'url': u, 'name': 'x'}, False)
+        self.assertEqual(len(set(seen)), 2)

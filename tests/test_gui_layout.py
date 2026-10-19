@@ -1,4 +1,4 @@
-"""Offscreen layout checks for the Nexus GUI (nexus/gui.py).
+"""Offscreen layout checks for the Nexus GUI (the nexus/gui package).
 
 A wrapped QLabel is never narrower than its longest unbreakable token, so one
 long launch-options string or path used to make the details panel's page
@@ -27,10 +27,13 @@ try:
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
 
+sys.path.insert(0, str(REPO))
+from tests.patching import patch_gui, set_gui  # noqa: E402,F401  (the GUI tests import them from here too)
+
 nx = None
 if QApplication is not None:
     _app = QApplication.instance() or QApplication([])
-    sys.path.insert(0, str(REPO))
+    import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
     nx = importlib.import_module('nexus.gui')
     _app.setStyleSheet(nx.build_stylesheet())
     # Window tests must never read or rewrite the real Steam to-do list.
@@ -67,13 +70,13 @@ class DetailsPanelWidth(unittest.TestCase):
     def setUp(self):
         # No CLI subprocesses from a unit test.
         self._cli_json = nx.cli_json
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         self.panel = nx.DetailsPanel()
         self.panel.resize(380, 900)
         self.panel.show()
 
     def tearDown(self):
-        nx.cli_json = self._cli_json
+        set_gui('cli_json', self._cli_json)
         self.panel.deleteLater()
 
     def _page_min_width(self):
@@ -230,7 +233,7 @@ class Caching(unittest.TestCase):
         from unittest import mock
         from PyQt6.QtGui import QImage, QColor
         with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(nx, 'THUMB_MIN_BYTES', 1):
+                patch_gui('THUMB_MIN_BYTES', 1):
             src = f"{d}/big.png"
             img = QImage(300, 450, QImage.Format.Format_RGB32)
             img.fill(QColor(10, 200, 30))
@@ -240,7 +243,7 @@ class Caching(unittest.TestCase):
             first = nx.thumb_image(src, mtime, 60, 90, thumbs=thumbs)
             self.assertEqual((first.width(), first.height()), (60, 90))
             self.assertEqual(len(list(thumbs.glob('*.png'))), 1)
-            with mock.patch.object(nx, 'cover_image', side_effect=AssertionError("decoded")):
+            with patch_gui('cover_image', side_effect=AssertionError("decoded")):
                 again = nx.thumb_image(src, mtime, 60, 90, thumbs=thumbs)
             self.assertEqual(again.pixelColor(30, 45), first.pixelColor(30, 45))
             self.assertIsNone(nx.thumb_image(f"{d}/missing.png", 0, 60, 90, thumbs=thumbs))
@@ -250,13 +253,13 @@ class Caching(unittest.TestCase):
 class ProtongenDefault(unittest.TestCase):
     def setUp(self):
         self._cli_json = nx.cli_json
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         self.panel = nx.DetailsPanel()
         self.panel.show_games([{'slug': 'x', 'display_name': 'X', 'source': 'nexus',
                                 'launcher': '/x'}])
 
     def tearDown(self):
-        nx.cli_json = self._cli_json
+        set_gui('cli_json', self._cli_json)
         self.panel.deleteLater()
 
     def test_button_follows_the_default_profile(self):

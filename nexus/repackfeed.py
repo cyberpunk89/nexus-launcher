@@ -94,10 +94,7 @@ def load() -> dict:
 
 
 def _save(data: dict) -> None:
-    STORE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = net._tmp_name(STORE)
-    tmp.write_text(json.dumps(data, indent=1))
-    tmp.replace(STORE)
+    net.write_atomic(STORE, json.dumps(data, indent=1))
 
 
 def refresh(force: bool = False) -> dict:

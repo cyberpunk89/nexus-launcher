@@ -1,0 +1,624 @@
+"""The main window: construction, the top bar's pages and tabs, appearance,
+settings and quitting. Everything else it does lives in its mixins
+(win_library, win_nav, win_controller, win_play, win_downloads, win_actions)."""
+
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+
+from PyQt6.QtCore import QProcess, Qt, QTimer
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
+    QVBoxLayout, QWidget)
+
+from .common import alive, COLLECTION_NAMES, HOME
+from .fmt import fmt_size
+from .theme import apply_appearance, build_stylesheet, G, SP
+from .topbar import _TabHandle, TopBar
+from .win_library import LibraryMixin
+from .win_nav import NavigationMixin
+from .win_controller import ControllerMixin
+from .win_play import PlayMixin
+from .win_downloads import DownloadsMixin
+from .win_actions import ActionsMixin
+
+
+class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, DownloadsMixin,
+                 ActionsMixin, QMainWindow):
+    """The one window. Its parts live in mixins, one module each: win_library,
+    win_nav, win_controller, win_play, win_downloads and win_actions; what
+    stays here is construction, the top bar, appearance, settings and
+    quitting."""
+    (HOME, LIBRARY, SYSTEM, SETTINGS, INSTALL, PROTON, NEWS, DEALS, ARTWORK) = (
+        'home', 'library', 'system', 'settings', 'install', 'proton', 'news', 'deals',
+        'artwork')
+
+    DOWNLOADS = 'downloads'
+
+    TABS = (HOME, LIBRARY, DEALS, NEWS)          # content tabs; the rest are icons
+
+    # Sections reached by their old page keys: go(ACTIVITY) opens System on
+    # Activity, go(UPCOMING) opens Deals on Upcoming.
+    ACTIVITY, STORAGE, HEALTH, UPCOMING = 'activity', 'storage', 'health', 'upcoming'
+
+    PAGE_ALIASES = {ACTIVITY: (SYSTEM, 'activity'), STORAGE: (SYSTEM, 'storage'),
+                    HEALTH: (SYSTEM, 'health'), UPCOMING: (DEALS, 'upcoming')}
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Nexus")
+        self.setMinimumSize(720, 480)
+        self.resize(1180, 760)
+        self.config = load_config()
+        self.prefs = LibraryPrefs()
+        self._disks = []
+        self._loaded = False
+        self._playing: set[str] = set()
+        self._launching: dict[str, float] = {}       # slug -> monotonic start
+        self._busy: frozenset[str] = frozenset()     # slugs a job is changing
+        self._lib_inflight = self._lib_again = self._steam_resumed = False
+        self._handoff_query = self._filter_dirty = False
+        self._page_focus = QTimer(self)
+        self._page_focus.setSingleShot(True)
+        self._page_focus.setInterval(0)
+        self._page_focus.timeout.connect(self._focus_new_page)
+        self._back: list[str] = []                   # page history (go_back / go_forward)
+        self._forward: list[str] = []
+        self._lib_retry = QTimer(self)               # the queued follow-up scan
+        self._lib_retry.setSingleShot(True)
+        self._lib_retry.setInterval(0)
+        self._lib_retry.timeout.connect(self.reload_library)
+        self._handoff: dict | None = None            # the launch whose window we focus
+        self._return_to: dict[str, int] = {}         # slug -> Nexus window to come back to
+        self._view = 'home'
+        self.jobs = JobManager()
+        self.jobs.finished.connect(self._job_done)
+        self.jobs.changed.connect(self._jobs_changed)
+        self._quitting = False
+        self._shown_games: list = []
+        self._surprise_recent: list[str] = []
+        COLLECTION_NAMES[:] = list(self.prefs.collections)
+        self._quit_deadline = 0.0
+        self._quit_timer = QTimer(self)
+        self._quit_timer.setInterval(100)
+        self._quit_timer.timeout.connect(self._quit_poll)
+        self._games: list = []
+        self._disk = None
+        self._load_error = ''
+        self._pending_ids: tuple = ()
+        self._health_stale = True
+        self._health_problems = (0, 0)
+        self.input = install_input_mode(self)
+        self.input.changed.connect(lambda _m: self._sync_hints())
+        self.input.activity.connect(self._on_activity)
+        self._steam_seen = (0.0, False)
+        self._install_req: dict[str, float] = {}     # slug -> when Install was pressed
+        self._install_query = False
+        self._running_query = False
+        self._watch_finish: set[str] = set()
+        self._protondb: dict[str, str] = {}             # asked once per session
+        self._install_timer = QTimer(self)
+        self._install_timer.setInterval(5000)
+        self._install_timer.timeout.connect(self._install_tick)
+
+        self._build_shell()
+        self._wire_details()
+        self._build_pages()
+        self._wire_input()
+        self._start()
+
+    def _build_shell(self):
+        """The window's frame: the two shells (desk and Theatre) over one
+        background, the top bar, Steam banner, page stack with the docked
+        details panel, the activity strip, overlays and the hint bar."""
+        central = GradientBackground()
+        self.background = central
+        outer_root = QVBoxLayout(central)
+        outer_root.setContentsMargins(0, 0, 0, 0)
+        outer_root.setSpacing(0)
+        # Two shells over one background: the desktop app, and Theatre mode.
+        self.shell = QStackedWidget()
+        outer_root.addWidget(self.shell, 1)
+        self.desk = QWidget()
+        self.shell.addWidget(self.desk)
+        root = QVBoxLayout(self.desk)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_topbar())
+        self.gate = SteamGate()
+        gate_wrap = QWidget()
+        gw = QVBoxLayout(gate_wrap)
+        gw.setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
+        gw.addWidget(self.gate)
+        root.addWidget(gate_wrap)
+        # Pages on the left, the game's details docked on the right — shared
+        # by Home and Library, hidden on the other pages.
+        self.split = QSplitter(Qt.Orientation.Horizontal)
+        self.stack = QStackedWidget()
+        self.pages: dict[str, QWidget] = {}
+        self.split.addWidget(self.stack)
+        self.details = DetailsPanel()
+        self.split.addWidget(self.details)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        self.split.setCollapsible(0, False)
+        self.details.setVisible(False)
+        root.addWidget(self.split, 1)
+        # The details panel's width, as last dragged (saved once it settles).
+        self._split_timer = QTimer(self)
+        self._split_timer.setSingleShot(True)
+        self._split_timer.setInterval(600)
+        self._split_timer.timeout.connect(self._save_details_width)
+        self.split.splitterMoved.connect(self._split_moved)
+        self.strip = ActivityStrip(self.jobs)
+        root.addWidget(self.strip)
+        self.theatre = TheatreView()
+        self.attract = AttractOverlay(self.theatre)
+        self.attract.open_game.connect(self.theatre.open_game)
+        self._idle_timer = QTimer(self)                 # Theatre's screensaver
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.timeout.connect(self._maybe_attract)
+        self._apply_controls()
+        self.setAcceptDrops(True)
+        self.theatre.play.connect(lambda g: self.on_game_action('launch', g))
+        self.theatre.surprise.connect(self.surprise)
+        self.theatre.action.connect(self._theatre_action)
+        self.theatre.menu.connect(self._show_menu)
+        self.theatre.hero.tint.connect(self.background.set_tint)
+        self.shell.addWidget(self.theatre)
+        # The controller's game menu, one per shell (Theatre's is TV-sized).
+        self.trailer_view = TrailerOverlay(self.desk)
+        self.sheet = ActionSheet(self.desk)
+        self.sheet.chosen.connect(self.on_game_action)
+        self.theatre_sheet = ActionSheet(self.theatre, THEATRE_SCALE)
+        self.theatre_sheet.chosen.connect(self._theatre_action)
+        for sh in (self.sheet, self.theatre_sheet):
+            sh.closed.connect(self._update_hints)
+        # Y on the desktop without Steam's on-screen keyboard: Theatre's
+        # D-pad keyboard, over the desk.
+        self.desk_search = TheatreSearch(self.desk)
+        self.desk_search.picked.connect(self._desk_search_picked)
+        self.desk_search.closed.connect(self._desk_search_closed)
+        self._theatre = False
+        self._was_state = Qt.WindowState.WindowNoState
+        self.cursor_hider = CursorHider(self)
+        self.hints = HintBar()
+        outer_root.addWidget(self.hints)
+        self._battery_timer = QTimer(self)          # first read soon, then every minute
+        self._battery_timer.timeout.connect(self._poll_battery)
+        self._battery_timer.start(0)
+
+    def _wire_details(self):
+        """The game page's requests, plus the activity strip's."""
+        self.selected: list[str] = []
+        self.details.request.connect(self._on_request)
+        self.details.play.connect(lambda g: self.on_game_action('launch', g))
+        self.details.menu.connect(self._show_menu)
+        self.details.closed.connect(self.clear_selection)
+        self.details.toast.connect(self.toast)
+        self.details.reveal.connect(self._reveal_game)
+        self.details.notes_changed.connect(self._notes_changed)
+        self.details.trailer.connect(lambda t: self.trailer_view.play(t, t.get('game', '')))
+        self.strip.open_activity.connect(self._open_job)
+
+    def _build_pages(self):
+        """Every page, wired to the window, in the order they're added."""
+        self.homeview = HomeView('home')
+        self._wire_view(self.homeview)
+        self.homeview.see_all.connect(self._see_all)
+        self.homeview.tint.connect(self.background.set_tint)
+        self.dashboard = Dashboard(self)
+        self.homeview.extra.addWidget(self.dashboard)
+        self._dash_pending: set[str] = set()
+        self._dash_timer = QTimer(self)
+        self._dash_timer.setSingleShot(True)
+        self._dash_timer.setInterval(250)
+        self._dash_timer.timeout.connect(self._flush_dashboard)
+        self._home_sig = None
+        self._add_page(self.HOME, self.homeview)
+        self._add_page(self.LIBRARY, self._build_library())
+        self.activity = ActivityPage(self.jobs)
+        self.activity.exe_chosen.connect(lambda slug, path: self.run(
+            ['--set-exe', slug, path], f"Starting {Path(path).name} from now on", slug))
+        self.storage = StoragePage()
+        self.storage.request.connect(self._on_request)
+        self.storage.select_game.connect(self._reveal_game)
+        self.health = HealthPage()
+        self.health.request.connect(self._on_request)
+        self.health.counts.connect(self._health_counts)
+        self.health.toast.connect(self.toast)
+        self.playhistory = PlayHistoryPage()
+        self.playhistory.reveal.connect(self._reveal_game)
+        self.system = SystemPage({'activity': self.activity, 'play': self.playhistory,
+                                  'storage': self.storage, 'health': self.health})
+        self.system.section_changed.connect(self._on_system_section)
+        self._add_page(self.SYSTEM, self.system)
+        self.settings = SettingsPage()
+        self.settings.saved.connect(self._settings_saved)
+        self.settings.show_owned.setChecked(self.prefs.show_owned)
+        self.settings.show_owned.toggled.connect(self._set_show_owned)
+        self.settings.set_controls(self.prefs.controls)
+        self.settings.controls_changed.connect(self._apply_controls)
+        self.settings.request.connect(self._on_request)
+        self.settings.appearance.load(self.prefs.appearance)
+        # Re-styling ~2000 widgets takes about a second: coalesce quick clicks
+        # through the swatches into one apply.
+        self._ap_pending = None
+        self._ap_timer = QTimer(self)
+        self._ap_timer.setSingleShot(True)
+        self._ap_timer.setInterval(160)
+        self._ap_timer.timeout.connect(self._flush_appearance)
+        self.settings.appearance.changed.connect(self._queue_appearance)
+        self._add_page(self.SETTINGS, self.settings)
+        self.install = InstallPage()
+        self.install.submit.connect(self._start_install)
+        self.install.torrent.connect(self._add_torrent)
+        self._torrents_started: set[str] = set()
+        self._torrent_polling = self._torrent_detecting = False
+        self._torrent_timer = QTimer(self)               # the torrent client
+        self._torrent_timer.timeout.connect(self._poll_torrents)
+        self._torrent_timer.start(5000)                  # a first look soon after start
+        self.install.back.connect(lambda: self.go_back() or self.go(self.HOME))
+        self.install.reindex.connect(lambda: self.run(['--reindex'],
+                                                      "Looking for installed games"))
+        self._add_page(self.INSTALL, self.install)
+        self.protonpage = ProtonPage()
+        self.protonpage.request.connect(self._on_request)
+        self.protonpage.toast.connect(self.toast)
+        self.protonpage.update_available.connect(
+            lambda on: (self.nav[self.PROTON].set_badge('1' if on else '', 'accent'),
+                        self.dash_update('system'), self._proton_update_toast(on)))
+        self._add_page(self.PROTON, self.protonpage)
+        self.newspage = NewsPage()
+        self.newspage.toast.connect(self.toast)
+        self.newspage.show_game.connect(self._reveal_game)
+        self.newspage.loaded.connect(lambda: self.dash_update('news'))
+        self.theatre.news_items = lambda: (getattr(self.newspage, 'data', None) or {}).get(
+            'items', [])
+        self.newspage.loaded.connect(self.theatre.news_changed)
+        self._add_page(self.NEWS, self.newspage)
+        self.dealspage = DealsPage(self.prefs)
+        self.dealspage.toast.connect(self.toast)
+        self.dealspage.counts.connect(self._deals_count)
+        self.dealspage.loaded.connect(lambda: self.dash_update('deals', 'upcoming'))
+        self.dealspage.open_settings.connect(self._open_settings)
+        self.dealspage.repack.connect(self._deal_repack)
+        self._add_page(self.DEALS, self.dealspage)
+        self.downloads = DownloadsPage()
+        self.downloads.toast.connect(self.toast)
+        self.downloads.control.connect(self._torrent_control)
+        self.downloads.add.connect(self._add_torrent)
+        self.downloads.row_action.connect(self._download_action)
+        self.downloads.open_settings.connect(self._open_settings)
+        self.downloads.use_client.connect(self._use_torrent_client)
+        self._add_page(self.DOWNLOADS, self.downloads)
+        self.artpage = ArtPickerPage()
+        self.artpage.request.connect(self._on_request)
+        self.artpage.back.connect(self._art_back)
+        self.artpage.open_settings.connect(self._open_settings)
+        self._add_page(self.ARTWORK, self.artpage)
+        self._art_from = self.HOME
+        self._deals_warmed = False
+
+    def _wire_input(self):
+        """Which tabs show, toasts, shortcuts, and keyboard/controller input."""
+        self.nav[self.NEWS].setVisible(self.config.get('news', True))
+        self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
+        self.setCentralWidget(self.background)
+        self.toasts = ToastHost(self.background)
+        self._shortcuts()
+        # Arrow keys (and the controller) move focus spatially everywhere.
+        self.spatial = SpatialNav(self)
+        QApplication.instance().installEventFilter(self.spatial)
+        self.ctrl = ControllerInput(self)
+        self.ctrl.connected.connect(self._pad_connected)
+        self.ctrl.disconnected.connect(self._pad_disconnected)
+        self.ctrl.action.connect(self._pad_action)
+        self.ctrl.used.connect(lambda: self.input.set('pad'))
+        self.ctrl.used.connect(self._pad_used)
+        self.focus_ring = FocusRing(self)
+        self.ctrl.used.connect(self.focus_ring.nudge)
+        # A bound method, not a lambda: the app outlives this window, and PyQt
+        # only drops a dead receiver's connection for bound methods.
+        QApplication.instance().focusChanged.connect(self._focus_moved)
+
+    def _start(self):
+        """First page, first library load, and the background timers. Runs last:
+        everything the library handler touches exists by now."""
+        self.go(self.HOME)
+        self.reload_library()
+        QTimer.singleShot(0, lambda: alive(self) and (t := self.default_focus()) and t.setFocus())
+        QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
+        # Repack downloads: "ready to install" toasts and repack updates.
+        self._repack_updates: dict[str, str] = {}          # slug -> new repack folder
+        self._session_start: dict[str, datetime] = {}      # Steam/Heroic play sessions
+        self._feed_timer = QTimer(self)                     # FitGirl feed: newer repacks
+        self._feed_timer.timeout.connect(self._check_repack_feed)
+        self.repacks = RepackWatcher(self.prefs, self)
+        self.repacks.ready.connect(self._repack_ready)
+        self.repacks.scanned.connect(self._repack_scanned)
+        self.repacks.start()
+        QTimer.singleShot(4000, self.protonpage.refresh)  # GE update badge (6 h cache)
+        # "Playing now": a cheap /proc scan, only while the window is visible.
+        self._run_timer = QTimer(self)
+        self._run_timer.setInterval(15000)
+        self._run_timer.timeout.connect(self._poll_running)
+        self._run_timer.start()
+        QTimer.singleShot(800, self._poll_running)
+        # While a game is starting: poll every 2 s until it's running, and
+        # watch for its window to hand focus over.
+        self._fast_timer = QTimer(self)
+        self._fast_timer.setInterval(2000)
+        self._fast_timer.timeout.connect(self._poll_running)
+        self._handoff_timer = QTimer(self)
+        self._handoff_timer.setInterval(800)
+        self._handoff_timer.timeout.connect(self._handoff_tick)
+        self._paint_cached_library()
+
+    # ---- layout ----
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # niri and friends often give the window half a screen: fold the tab
+        # labels to icons so search and the content keep their room.
+        compact = self.width() < 1000
+        if compact != getattr(self, '_compact', None):
+            self._compact = compact
+            self.topbar.set_compact(compact)
+
+    def _add_page(self, key, widget):
+        self.pages[key] = widget
+        self.stack.addWidget(widget)
+
+    def current(self) -> str | None:
+        w = self.stack.currentWidget()
+        return next((k for k, v in self.pages.items() if v is w), None)
+
+    def _build_topbar(self):
+        bar = TopBar()
+        self.topbar = bar
+        self.tabs = bar.tabs
+        self.nav = {}
+        for page, glyph, text in ((self.HOME, G['home'], "Home"),
+                                  (self.LIBRARY, G['library'], "Library"),
+                                  (self.DEALS, G['deals'], "Deals"),
+                                  (self.NEWS, G['news'], "News")):
+            self.tabs.add(page, text, glyph)
+            self.nav[page] = _TabHandle(self.tabs, page)
+        self.tabs.changed.connect(self.go)
+        self.icons = {}
+        for page, glyph, tip in ((self.DOWNLOADS, G['download'], "Downloads"),
+                                 (self.SYSTEM, G['system'], "System (Ctrl+5)"),
+                                 (self.PROTON, G['proton'], "Proton"),
+                                 (self.SETTINGS, G['settings'], "Settings (Ctrl+,)")):
+            b = bar.add_icon(glyph, tip)
+            b.clicked.connect(lambda _=False, p=page: self.go(p))
+            self.icons[page] = b
+            self.nav[page] = b
+        bar.install.clicked.connect(self.open_install)
+        self.btn_install = bar.install
+        self.search = bar.search
+        # Debounced: rebuilding the grid per keystroke is wasted work. Typing
+        # anywhere searches the Library.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(140)
+        self._search_timer.timeout.connect(self.apply_filter)
+        self.search.textChanged.connect(self._search_typed)
+        return bar
+
+    def _proton_update_toast(self, on: bool):
+        """Once per new GE-Proton release: a toast that installs it in one
+        click (the Proton page keeps its banner either way)."""
+        ge = (self.protonpage.info or {}).get('families', {}).get('ge', {})
+        tag = ge.get('latest')
+        if not on or not tag or tag == getattr(self, '_proton_toasted', None) \
+                or tag in (self.protonpage.info or {}).get('protongen_dismissed', []):
+            return
+        self._proton_toasted = tag
+        self.toast(f"{tag} is out.", 'info', [
+            ("Install", lambda: self.run(['--proton-install', tag], f"Installing {tag}", None,
+                                         'install-proton')),
+            ("Details", lambda: self.go(self.PROTON))], 12000)
+
+    def _on_activity(self):
+        if getattr(self, '_theatre', False) and self.prefs.controls['attract']:
+            self._idle_timer.start(self.prefs.controls['attract'] * 60_000)
+
+    def _steam_up(self) -> bool:
+        """steam_running(), remembered for a few seconds (hints ask often)."""
+        t, up = self._steam_seen
+        if time.monotonic() - t > 10:
+            up = steam_running()
+            self._steam_seen = (time.monotonic(), up)
+        return up
+
+    def _load_protondb(self):
+        """ProtonDB tiers for Steam games (cached a day by the CLI), painted on
+        tiles when they arrive — never blocks the library."""
+        known = self._protondb               # appid -> tier ('' = ProtonDB has none)
+        for g in self._games:
+            if known.get(str(g.get('appid'))):
+                g['protondb'] = known[str(g.get('appid'))]
+        ids = [str(g['appid']) for g in self._games if g.get('source') == 'steam'
+               and is_installed(g) and str(g['appid']) not in known]
+        if not ids:
+            return
+
+        def done(data, _err):
+            if data is None:
+                return
+            for i in ids:
+                known[i] = (data.get(i) or {}).get('tier') or ''
+            for g in self._games:
+                if known.get(str(g.get('appid'))):
+                    g['protondb'] = known[str(g.get('appid'))]
+            try:
+                view = self._shown_view()
+                for tiles in view.tiles.values() if hasattr(view, 'tiles') else ():
+                    for t in tiles:
+                        t.update()
+            except RuntimeError:
+                pass
+        cli_json(['--protondb', *ids, '--json'], done, 60000)
+
+    def _sync_system(self):
+        """The System icon: a ring for how full the install disk is, one
+        badge (running jobs, else health problems), section badges, and a
+        tooltip that sums it up. Also refreshes the Home System widget."""
+        d, icon = self._disk, self.icons[self.SYSTEM]
+        n = len(self.jobs.active())
+        problems, fails = self._health_problems
+        parts = []
+        if n:
+            parts.append(f"{n} running")
+        if not d or not d.get('total'):
+            icon.usage = None
+        else:
+            icon.usage = d['used'] / d['total']
+            parts.append(f"{fmt_size(d['free'])} free of {fmt_size(d['total'])} on {d['path']}")
+        if problems:
+            parts.append(f"{problems} health issue{'s' if problems != 1 else ''}")
+        icon.setToolTip("System (Ctrl+5)" + (" — " + " · ".join(parts) if parts else ""))
+        icon.set_badge(*system_badge(n, problems, fails))
+        self.system.set_badge('activity', str(n) if n else '', 'accent')
+        self.system.set_badge('health', str(problems) if problems else '',
+                              'danger' if fails else 'warning')
+        icon.update()
+        self.dash_update('system')
+
+    def _queue_appearance(self, ap: dict):
+        self._ap_pending = ap
+        self._ap_timer.start()
+
+    def _flush_appearance(self):
+        ap, self._ap_pending = self._ap_pending, None
+        if ap is not None:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self.set_appearance(ap)
+            finally:
+                QApplication.restoreOverrideCursor()
+
+    def set_appearance(self, ap: dict):
+        """Apply a new appearance live: palette, stylesheet, icons, painted
+        widgets, then rebuild the game views so inline-styled bits follow."""
+        self.prefs.appearance = apply_appearance(ap)
+        self.prefs.save()
+        app = QApplication.instance()
+        app.setStyleSheet(build_stylesheet())
+        self.theatre.setStyleSheet(build_stylesheet(THEATRE_SCALE))
+        if self._theatre:
+            self.hints.setStyleSheet(build_stylesheet(THEATRE_SCALE))
+        refresh_icons()
+        for hero in (self.homeview.hero, self.theatre.hero):
+            hero._frames.clear()
+            if hero.games:
+                hero._show(animate=False)
+        self.background.set_tint(None)
+        self._home_sig = None
+        self.apply_filter()
+        self.dashboard.refresh()
+        if self.selected:
+            self._sync_selection()
+        for w in app.allWidgets():
+            w.update()
+
+    def _health_counts(self, problems, fails):
+        self._health_problems = (problems, fails)
+        self._sync_system()
+
+    def _deals_count(self, n):
+        self.nav[self.DEALS].set_badge(n or '', 'accent')
+        self.dash_update('deals', 'upcoming')
+
+    def _open_settings(self):
+        self.go(self.SETTINGS)
+
+    def _settings_saved(self, proton_changed):
+        self.config = load_config()
+        self.nav[self.NEWS].setVisible(self.config.get('news', True))
+        self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
+        if getattr(self.settings, 'gamedb_changed', False) or not self.config.get(
+                'gamedb_enabled'):
+            self.dealspage.res, self.dealspage._loaded = {}, False
+            self.nav[self.DEALS].set_badge('', 'accent')
+            if self.config.get('gamedb_enabled'):
+                self.dealspage.refresh()
+        self.dash_update('news', 'deals', 'upcoming')
+        self._poll_torrents()                  # the torrent client may have changed
+        self.toast("Settings saved.", 'success', None, 3000)
+        if proton_changed and self._games:
+            self.toast("Point every game at the new Proton now?", 'info',
+                       ("Apply to all", lambda: self.run(
+                           ['--apply-launch', 'all'], "Re-applying settings to every game",
+                           steam=True)), 15000)
+
+    # ---- closing ----
+    QUIT_GRACE_MS = 6000          # cancelled jobs get this long to stop before SIGKILL
+
+    def closeEvent(self, ev):
+        active = self.jobs.active()
+        waiting = [p[0] for p in self.gate.pending]
+        if self._quitting or (not active and not waiting):
+            ev.accept()
+            return
+        ev.ignore()
+        parts = []
+        if active:
+            parts.append(f"{len(active)} job(s) are still running ({active[0].title}). "
+                         f"Quitting stops them.")
+        if waiting:
+            parts.append(f"Waiting for Steam to close: {', '.join(waiting)}. New games are "
+                         f"added to Steam next time Nexus starts; anything else is dropped.")
+        self.raise_()
+        self.activateWindow()
+        self.confirm("Still working", "\n\n".join(parts), "Quit anyway",
+                     self.quit_after_jobs)
+
+    def quit_after_jobs(self):
+        """Cancel every job, then close once they've all stopped (or after
+        QUIT_GRACE_MS, killing what's left). Closing straight away killed
+        setup.exe/wine mid-write: the SIGTERM → SIGKILL grace never ran."""
+        self._quitting = True
+        for j in self.jobs.active():
+            j.cancel()
+        if self.jobs.active():
+            self.toast("Stopping running jobs…", 'info', None, self.QUIT_GRACE_MS)
+        self._quit_deadline = time.monotonic() + self.QUIT_GRACE_MS / 1000
+        self._quit_timer.start()
+
+    def _quit_poll(self):
+        left = self.jobs.active()
+        if left and time.monotonic() < self._quit_deadline:
+            return
+        self._quit_timer.stop()
+        for j in left:
+            if j.proc is not None and j.proc.state() != QProcess.ProcessState.NotRunning:
+                j.proc.kill()
+                j.proc.waitForFinished(1000)
+        self.close()
+
+
+# Siblings, imported last: they import this module too, and every use
+# below is inside a function, so the cycle resolves at call time.
+from .actions import ActionSheet, TrailerOverlay  # noqa: E402
+from .activity import ActivityPage, ActivityStrip  # noqa: E402
+from .artpicker import ArtPickerPage  # noqa: E402
+from .config import load_config, steam_running  # noqa: E402
+from .dashboard import Dashboard, system_badge  # noqa: E402
+from .deals import DealsPage  # noqa: E402
+from .details import DetailsPanel  # noqa: E402
+from .downloads import DownloadsPage  # noqa: E402
+from .gameinfo import is_installed  # noqa: E402
+from .input import (ControllerInput, FocusRing, HintBar, install_input_mode, SpatialNav)  # noqa: E402
+from .install import InstallPage, RepackWatcher  # noqa: E402
+from .jobs import cli_json, JobManager  # noqa: E402
+from .library import HomeView  # noqa: E402
+from .newspage import NewsPage  # noqa: E402
+from .prefs import LibraryPrefs  # noqa: E402
+from .protonpage import ProtonPage  # noqa: E402
+from .settings import SettingsPage  # noqa: E402
+from .storage import StoragePage  # noqa: E402
+from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
+from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402
+from .widgets import GradientBackground, refresh_icons, SteamGate, ToastHost  # noqa: E402

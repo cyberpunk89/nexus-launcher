@@ -121,6 +121,7 @@ def counts(steam_root: Path, account_id: int | str, appids,
     mtimes, so a library load only parses games whose stats changed."""
     import json
     import os
+    from . import net
     cached: dict = {}
     if cache_file:
         try:
@@ -152,13 +153,7 @@ def counts(steam_root: Path, account_id: int | str, appids,
         if val:
             out[appid] = val
     if cache_file and (changed or len(fresh) != len(cached)):
-        try:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache_file.with_suffix(f'.{os.getpid()}.tmp')
-            tmp.write_text(json.dumps(fresh))
-            os.replace(tmp, cache_file)
-        except OSError:
-            pass
+        net.save_json(cache_file, fresh)
     return out
 
 

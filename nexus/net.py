@@ -3,6 +3,7 @@ timeouts, a small JSON/text disk cache, and streamed downloads."""
 
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -29,15 +30,50 @@ def errors() -> tuple:
     return (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException)
 
 
-def __getattr__(name):                     # net.NET_ERRORS, without importing urllib early
-    if name == 'NET_ERRORS':
-        return errors()
-    raise AttributeError(name)
-
-
 def _tmp_name(path: Path) -> Path:
     """A temp file next to `path` no other process or thread shares."""
     return path.with_name(f".{path.name}.{os.getpid()}-{threading.get_ident()}.part")
+
+
+def write_atomic(path: Path, data: str | bytes, *, fsync: bool = False,
+                 keep_mode: bool = False, mode: int | None = None) -> None:
+    """Replace `path` with `data` all at once: a temp file of its own (pid +
+    thread, so concurrent writers never share one), then os.replace — a
+    reader or a crash never sees half a file. `fsync` for files whose loss
+    hurts (Steam's and Heroic's libraries); `keep_mode` keeps the old file's
+    permissions; `mode` (e.g. 0o600 for a file holding a token) applies from
+    the first byte. Raises OSError, leaving no temp file behind."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_name(path)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     0o666 if mode is None else mode)
+        if mode is not None:
+            os.fchmod(fd, mode)                # umask can't widen or narrow it
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data.encode('utf-8') if isinstance(data, str) else data)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        if keep_mode and path.exists():
+            try:
+                shutil.copymode(path, tmp)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def save_json(path: Path, obj, **dumps) -> bool:
+    """Best-effort JSON cache write (write_atomic): False if it couldn't be
+    written — a cache that can't be saved is never a reason to fail."""
+    try:
+        write_atomic(path, json.dumps(obj, **dumps))
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _host(url: str) -> str:
@@ -130,6 +166,51 @@ def final_url(url: str, timeout: float = 20) -> str:
 FAIL_TTL = 600            # seconds a failed fetch is remembered
 
 
+def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
+                errors_: tuple = (NetError, ValueError, KeyError, TypeError)):
+    """fetch() through a JSON file cache at `path` (for per-game lookups:
+    ProtonDB, PCGamingWiki, Steam store pages...). Fresh for `max_age`
+    seconds. A failed fetch serves the last good copy (or None) and is
+    remembered for FAIL_TTL, so offline the next lookups don't each wait out
+    a timeout. None from fetch() is a real "nothing here" and is cached."""
+    path = Path(path)
+    _corrupt = object()
+
+    def read():                         # the cached value, or _corrupt (missing/unreadable)
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return _corrupt
+
+    def last():
+        v = read()
+        return None if v is _corrupt else v
+    try:
+        if not refresh and time.time() - path.stat().st_mtime < max_age:
+            hit = read()
+            if hit is not _corrupt:
+                return hit
+    except OSError:
+        pass
+    failed = path.with_name(path.name + '.failed')
+    try:
+        if not refresh and time.time() - failed.stat().st_mtime < FAIL_TTL:
+            return last()
+    except OSError:
+        pass
+    try:
+        value = fetch()
+    except errors_ as e:
+        try:
+            write_atomic(failed, str(e)[:200])
+        except OSError:
+            pass
+        return last()
+    if save_json(path, value):
+        failed.unlink(missing_ok=True)
+    return value
+
+
 def cached(url: str, name: str, max_age: float, refresh: bool = False,
            as_json: bool = True, timeout: float = 20):
     """Fetch through a disk cache under ~/.cache/nexus/http. Returns
@@ -173,18 +254,14 @@ def cached(url: str, name: str, max_age: float, refresh: bool = False,
         data = json.loads(raw) if as_json else raw.decode('utf-8', 'replace')
     except (NetError, ValueError) as e:
         try:
-            failed.parent.mkdir(parents=True, exist_ok=True)
-            failed.write_text(str(e)[:200])
+            write_atomic(failed, str(e)[:200])
         except OSError:
             pass
         return stale(str(e))
     # Two processes can fetch the same feed at once: each writes its own
     # temp file, and a cache that can't be written is no reason to fail.
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _tmp_name(path)
-        tmp.write_bytes(raw)
-        os.replace(tmp, path)
+        write_atomic(path, raw)
         failed.unlink(missing_ok=True)
     except OSError:
         pass

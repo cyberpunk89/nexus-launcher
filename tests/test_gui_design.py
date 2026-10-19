@@ -1,4 +1,4 @@
-"""Design-system checks for the Nexus GUI (nexus/gui.py): radius tokens, rounded images,
+"""Design-system checks for the Nexus GUI (the nexus/gui package): radius tokens, rounded images,
 the segmented control. Offscreen, no network, no CLI."""
 
 import re
@@ -8,6 +8,7 @@ try:
     from test_gui_layout import nx
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx
+from tests.patching import patch_gui  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtCore import Qt
@@ -18,7 +19,7 @@ if nx is not None:
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Stylesheet(unittest.TestCase):
     def _template(self):
-        src = (nx._REPO / 'nexus' / 'gui.py').read_text()
+        src = '\n'.join(p.read_text() for p in sorted((nx._REPO / 'nexus' / 'gui').glob('*.py')))
         a = src.index('def build_stylesheet')
         return src[a:src.index('return tpl.substitute', a)]
 
@@ -289,8 +290,8 @@ class AppIcon(unittest.TestCase):
         from PyQt6.QtGui import QImage
         with tempfile.TemporaryDirectory() as d:
             png = Path(d) / 'nexus-icon.png'
-            with mock.patch.object(nx, 'ICON_PATH', png), \
-                    mock.patch.object(nx, 'DATA_DIR', Path(d)):
+            with patch_gui('ICON_PATH', png), \
+                    patch_gui('DATA_DIR', Path(d)):
                 self.assertEqual(nx.ensure_icon(), str(png))
                 img = QImage(str(png))
                 self.assertEqual((img.width(), img.height()), (256, 256))

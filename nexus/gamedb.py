@@ -168,11 +168,7 @@ def _state_path():
 def _write_private(path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    tmp = net._tmp_name(path)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
+    net.write_atomic(path, json.dumps(obj), mode=0o600)
 
 
 def _read_json(path):

@@ -18,6 +18,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.patching import patch_cli  # noqa: E402
 from nexus import compat, gamepad, net, notify, presence, repackfeed  # noqa: E402
 from nexus import cli  # noqa: E402
 
@@ -226,13 +228,12 @@ class Sunshine(unittest.TestCase):
         self.addCleanup(lambda: __import__('shutil').rmtree(self.tmp, ignore_errors=True))
         self.apps = self.tmp / 'apps.json'
         self.apps.write_text(json.dumps({'env': {}, 'apps': [{'name': 'Desktop'}]}))
-        for target, value in ((cli, 'SUNSHINE_APPS'), (cli, 'SUNSHINE_ART')):
-            p = mock.patch.object(target, value, self.apps if value == 'SUNSHINE_APPS'
-                                  else self.tmp / 'art')
+        for value in ('SUNSHINE_APPS', 'SUNSHINE_ART'):
+            p = patch_cli(value, self.apps if value == 'SUNSHINE_APPS' else self.tmp / 'art')
             p.start()
             self.addCleanup(p.stop)
         self.game = {'slug': 'hades', 'display_name': 'Hades', 'source': 'nexus'}
-        p = mock.patch.object(cli, '_game_by_id', return_value=self.game)
+        p = patch_cli('_game_by_id', return_value=self.game)
         p.start()
         self.addCleanup(p.stop)
 

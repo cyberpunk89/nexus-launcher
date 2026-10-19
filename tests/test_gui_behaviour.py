@@ -11,11 +11,12 @@ try:
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx
     from tests.test_gui_window import fake_games
+from tests.patching import patch_gui, set_gui  # noqa: E402
 
 if nx is not None:
-    from PyQt6.QtCore import QPoint, QPointF, Qt
+    from PyQt6.QtCore import Qt, QPoint, QPointF
     from PyQt6.QtGui import QWheelEvent
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -72,7 +73,7 @@ class Widgets(unittest.TestCase):
         t.deleteLater()
 
     def test_error_toasts_stay(self):
-        host_parent = nx.QWidget()
+        host_parent = QWidget()
         host = nx.ToastHost(host_parent)
         host.show_toast("boom", 'error')
         t = host.lay.itemAt(0).widget()
@@ -81,13 +82,167 @@ class Widgets(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Regressions(unittest.TestCase):
+    def test_list_view_keeps_every_selected_row(self):
+        lv = nx.ListView()
+        self.addCleanup(lv.deleteLater)
+        lv.set_games(fake_games())
+        lv.mark_selected({'alpha', 'gamma'})
+        rows = {i.row() for i in lv.selectedIndexes()}
+        got = {lv.item(r, 1).data(Qt.ItemDataRole.UserRole) for r in rows}
+        self.assertEqual(got, {'alpha', 'gamma'})
+
+    def test_hero_download_for_a_game_left_behind_is_dropped(self):
+        import tempfile
+        from pathlib import Path
+        from PyQt6.QtGui import QImage
+        pending = {}
+        hb = nx.HeroBanner()
+        self.addCleanup(hb.deleteLater)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(nx.ART, 'fetch', lambda url, cb: pending.__setitem__(url, cb)):
+            img = Path(d, 'a.png')
+            im = QImage(8, 8, QImage.Format.Format_RGB32)
+            im.fill(0xff0000)
+            im.save(str(img))
+            hb.set_game({'slug': 'a', 'hero_url': 'https://x/a.png'})
+            hb.set_game({'slug': 'b', 'hero_url': 'https://x/b.png'})
+            pending['https://x/a.png'](str(img))           # A's art lands late
+            self.assertIsNone(hb._pm)
+            pending['https://x/b.png'](str(img))
+            self.assertIsNotNone(hb._pm)
+
+    def test_big_hero_art_decodes_off_the_gui_thread(self):
+        import tempfile
+        from pathlib import Path
+        from PyQt6.QtCore import QThreadPool
+        from PyQt6.QtGui import QImage
+        hb = nx.HeroBanner()
+        self.addCleanup(hb.deleteLater)
+        hb.resize(600, 176)
+        logos = []
+        hb.logo_changed.connect(logos.append)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(nx.HeroBanner, 'SYNC_BYTES', 0), \
+                mock.patch.object(nx.HeroBanner, '_RECENT', {}):
+            def game(slug, w, rgb):
+                art = Path(d, slug)
+                art.mkdir()
+                im = QImage(w, w // 3, QImage.Format.Format_RGB32)
+                im.fill(rgb)
+                im.save(str(art / 'hero.png'))
+                QImage(300, 100, QImage.Format.Format_ARGB32).save(str(art / 'logo.png'))
+                return {'slug': slug, 'artwork_dir': str(art)}
+            a, b = game('a', 3000, 0xff0000), game('b', 2400, 0x0000ff)
+            colour = lambda: hb._pm.toImage().pixel(5, 5) & 0xffffff
+            hb.set_game(a)
+            self.assertIsNone(hb._pm)                      # not decoded on this thread
+            self.assertTrue(hb.has_logo())                 # ...but the name stays hidden
+            hb.set_game(b)                                 # moved on before A finished
+            QThreadPool.globalInstance().waitForDone()
+            QApplication.processEvents()
+            self.assertEqual(hb._pm.width(), nx.HeroBanner.DECODE_W)   # at banner size
+            self.assertEqual(colour(), 0x0000ff)           # B's, not A's late one
+            self.assertLessEqual(hb._logo.height(), 176)
+            self.assertEqual(logos[-1], True)
+            decodes = []
+            real = nx.fit_image
+            with patch_gui('fit_image',
+                                   lambda *a, **k: decodes.append(a) or real(*a, **k)):
+                hb.set_game(b)                             # same files: nothing to do
+                hb.set_game(a)                             # A's late decode was kept
+                QThreadPool.globalInstance().waitForDone()
+                QApplication.processEvents()
+                self.assertEqual(colour(), 0xff0000)
+                hb.set_game(b)
+                self.assertEqual(colour(), 0x0000ff)
+            self.assertEqual(decodes, [])
+
+    def test_tiles_follow_jobs_without_busy_work(self):
+        lv = nx.LibraryView()
+        self.addCleanup(lv.deleteLater)
+        lv.resize(900, 600)
+        lv.show()
+        lv.set_games(fake_games())
+        QApplication.processEvents()                           # tiles show on the next pass
+        jm = nx.JobManager()
+        job = nx.Job(['x'], 'Installing Alpha', 'alpha', 'install')
+        tool = nx.Job(['y'], 'Tool', 'gamma', 'tool')
+        job.state = tool.state = 'running'
+        jm.jobs += [job, tool]
+        self.assertEqual(jm.tile_jobs(), {'alpha': job})       # tools get no ring
+        self.assertEqual(jm.busy_slugs(), {'alpha'})
+        lv.set_jobs(jm)
+        tile = lv.tiles['alpha'][0]
+        self.assertIs(tile.job, job)
+        self.assertTrue(tile._spinner.isActive())              # no percentage yet
+        with mock.patch.object(tile, 'update') as upd:
+            job.detail = 'another output line'
+            lv.set_jobs(jm)
+            upd.assert_not_called()                            # nothing it shows changed
+            job.progress = (5, 10)
+            lv.set_jobs(jm)
+            upd.assert_called()
+        self.assertFalse(tile._spinner.isActive())             # a percentage: no spin
+        job.progress = None
+        lv.set_jobs(jm)
+        lv.hide()
+        self.assertFalse(tile._spinner.isActive())             # off screen: no spin
+        lv.show()
+        self.assertTrue(tile._spinner.isActive())
+
+    def test_elapsed_timers_tick_while_output_streams(self):
+        import time
+        jm = nx.JobManager()
+        job = nx.Job(['x'], 'X')
+        job.state = 'running'
+        jm.active = lambda: [job]
+        page, strip = nx.ActivityPage(jm), nx.ActivityStrip(jm)
+        self.addCleanup(page.deleteLater)
+        self.addCleanup(strip.deleteLater)
+        jm.changed.emit()
+        time.sleep(0.3)
+        jm.changed.emit()                                  # output keeps arriving
+        for t in (page.timer, strip.timer):
+            self.assertTrue(t.isActive())
+            self.assertLess(t.remainingTime(), 900)        # not restarted from 1000
+
+    def test_achievements_error_clears_on_an_empty_success(self):
+        w = nx.AchievementsWidget()
+        self.addCleanup(w.deleteLater)
+        hub = mock.Mock(_games=[{'slug': 's', 'source': 'steam', 'appid': 1,
+                                 'achievements': (1, 2)}])
+        with patch_gui('cli_json', lambda *a, **k: None):
+            w._arrived(hub, None, 'offline')
+            def shown():                                   # clear() hides, then deletes later
+                return [c.text() for c in w.findChildren(QLabel) if not c.isHidden()]
+            self.assertTrue(any('unavailable' in t for t in shown()))
+            w._arrived(hub, {'recent': []})
+            self.assertFalse(any('unavailable' in t for t in shown()))
+
+    def test_seen_repacks_trim_drops_the_oldest(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(nx.LibraryPrefs, 'PATH', Path(d, 'prefs.json')):
+            prefs = nx.LibraryPrefs()
+            prefs.seen_repacks = [f'z{i:03}|f' for i in range(300)] + ['a-newest|f']
+            prefs.save()
+            saved = json.loads(Path(d, 'prefs.json').read_text())['seen_repacks']
+            self.assertIn('a-newest|f', saved)
+            self.assertNotIn('z000|f', saved)
+            self.assertEqual(nx.LibraryPrefs().seen_repacks[-1], 'a-newest|f')
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class Behaviour(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._saved = (nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery)
-        nx.cli_json = lambda *a, **k: None
+        set_gui('cli_json', lambda *a, **k: None)
         nx.LibraryPrefs.save = lambda self: None
-        nx.CliQuery = lambda *a, **k: None
+        set_gui('CliQuery', lambda *a, **k: None)
         cls.win = nx.MainWindow()
         cls.win.resize(1300, 850)
         cls.win.show()
@@ -99,7 +254,9 @@ class Behaviour(unittest.TestCase):
         cls.win.deleteLater()
         QApplication.processEvents()
         del cls.win
-        nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery = cls._saved
+        set_gui('cli_json', cls._saved[0])
+        nx.LibraryPrefs.save = cls._saved[1]
+        set_gui('CliQuery', cls._saved[2])
 
     def setUp(self):
         self.win._lib_inflight = self.win._lib_again = False
@@ -131,7 +288,7 @@ class Behaviour(unittest.TestCase):
         def fake(args, cb, *a, **k):
             if args[0] == '--library':
                 calls.append(cb)
-        with mock.patch.object(nx, 'cli_json', fake):
+        with patch_gui('cli_json', fake):
             self.win.reload_library()
             self.win.reload_library()
             self.win.reload_library()
@@ -164,10 +321,10 @@ class Behaviour(unittest.TestCase):
             self.assertEqual(ran, [])
             sheet = self.win.sheet
             self.assertTrue(sheet.isVisible())
-            yes = next(b for b in sheet.findChildren(nx.QPushButton)
+            yes = next(b for b in sheet.findChildren(QPushButton)
                        if b.text() == "Restore saves")
             self.assertTrue(any(b.text() == "Cancel"
-                                for b in sheet.findChildren(nx.QPushButton)))
+                                for b in sheet.findChildren(QPushButton)))
             yes.click()
         self.assertFalse(self.win.sheet.isVisible())
         self.assertEqual(ran[0][0], ['--restore-saves', 'alpha'])
@@ -265,7 +422,7 @@ class Behaviour(unittest.TestCase):
             card.btn_cancel.click()
             self.assertEqual(cancelled, [])
             self.assertTrue(self.win.sheet.isVisible())
-            next(b for b in self.win.sheet.findChildren(nx.QPushButton)
+            next(b for b in self.win.sheet.findChildren(QPushButton)
                  if b.text() == "Stop install").click()
         self.assertEqual(cancelled, [1])
         card.deleteLater()

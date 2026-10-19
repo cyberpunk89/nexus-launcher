@@ -7,6 +7,7 @@ media:thumbnail, or the first <img> — which the GUI fetches lazily); nothing
 else from the article is rendered. Feeds are cached for an hour; nothing is
 fetched until the News page asks."""
 
+import hashlib
 import html
 import json
 import re
@@ -135,35 +136,52 @@ def parse_feed(xml_text: str, source: str) -> list[dict]:
     return [i for i in items if i['title']]
 
 
-def feeds() -> list[dict]:
-    """Default feeds plus the user's own from ~/.config/nexus/news.toml."""
-    out = list(DEFAULT_FEEDS)
+def _news_config() -> dict:
     try:
         data = tomllib.loads(NEWS_CONFIG.read_text())
     except (OSError, ValueError):
-        data = {}
-    disabled = set(data.get('disabled', []))
-    for f in data.get('feed', []):
-        if _link(f.get('url')):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _disabled(data: dict) -> list[str]:
+    d = data.get('disabled', [])
+    return [str(x) for x in d] if isinstance(d, list) else []
+
+
+def user_feeds() -> list[dict]:
+    """The user's own feeds from ~/.config/nexus/news.toml, disabled or not."""
+    out = []
+    for f in _news_config().get('feed', []):
+        if isinstance(f, dict) and _link(f.get('url')):
             out.append({'id': f"user:{f['url']}", 'name': f.get('name') or f['url'],
                         'url': f['url'], 'user': True})
-    return [f for f in out if f['id'] not in disabled]
+    return out
+
+
+def feeds() -> list[dict]:
+    """Default feeds plus the user's own, minus any listed in `disabled`."""
+    disabled = set(_disabled(_news_config()))
+    return [f for f in DEFAULT_FEEDS + user_feeds() if f['id'] not in disabled]
 
 
 def save_user_feeds(user_feeds: list[dict]) -> None:
+    """Rewrite the [[feed]] list, keeping the hand-edited `disabled` list."""
     def q(s):
         return json.dumps(str(s), ensure_ascii=False)
     lines = ["# Nexus news feeds (RSS or Atom). Managed from the News page.", ""]
+    disabled = _disabled(_news_config())
+    if disabled:
+        lines += [f"disabled = [{', '.join(q(d) for d in disabled)}]", ""]
     for f in user_feeds:
         lines += ["[[feed]]", f"name = {q(f['name'])}", f"url = {q(f['url'])}", ""]
-    NEWS_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    tmp = net._tmp_name(NEWS_CONFIG)
-    tmp.write_text("\n".join(lines))
-    tmp.replace(NEWS_CONFIG)
+    net.write_atomic(NEWS_CONFIG, "\n".join(lines))
 
 
 def _fetch_feed(f: dict, refresh: bool):
-    name = 'news-' + re.sub(r'[^a-z0-9]+', '-', f['id'].lower())[:60] + '.xml'
+    # Readable prefix, plus a hash so two long URLs from one site can't share a file.
+    name = ('news-' + re.sub(r'[^a-z0-9]+', '-', f['id'].lower())[:40] + '-'
+            + hashlib.sha1(f['url'].encode()).hexdigest()[:10] + '.xml')
     text, _at, stale = net.cached(f['url'], name, MAX_AGE, refresh, as_json=False)
     return parse_feed(text, f['name']), stale
 

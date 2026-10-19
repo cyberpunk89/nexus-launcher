@@ -11,6 +11,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from . import net
+
 # Steam "apps" that are runtimes/tools, not games.
 TOOL_APPIDS = {228980, 1070560, 1391110, 1628350, 4183110, 1493710, 2180100,
                961940, 1113280, 1245040, 1420170, 1580130, 1826330, 2230260,
@@ -105,13 +107,7 @@ def play_stats(steam_root: Path, cache_file: Path | None = None) -> dict[int, di
             pass
     out = _parse_play_stats(files)
     if key is not None:
-        try:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache_file.with_name(f'.{cache_file.name}.{os.getpid()}.tmp')
-            tmp.write_text(json.dumps({'key': key, 'stats': out}))
-            os.replace(tmp, cache_file)
-        except OSError:
-            pass
+        net.save_json(cache_file, {'key': key, 'stats': out})
     return out
 
 

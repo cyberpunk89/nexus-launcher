@@ -10,7 +10,6 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from . import net
-from .compat import _cached_json
 from .paths import CACHE_DIR
 
 DETAILS = "https://store.steampowered.com/api/appdetails?appids={appid}&l=english&cc=us"
@@ -64,7 +63,7 @@ def details(appid: int, refresh: bool = False) -> dict | None:
                             if (u := _https_steam(s.get('path_full')))],
             'url': STORE_PAGE.format(appid=appid),
         }
-    return _cached_json(CACHE_DIR / 'store' / f"{appid}.json", 7 * DAY, fetch, refresh)
+    return net.cached_json(CACHE_DIR / 'store' / f"{appid}.json", 7 * DAY, fetch, refresh)
 
 
 def reviews(appid: int, refresh: bool = False) -> dict | None:
@@ -77,7 +76,7 @@ def reviews(appid: int, refresh: bool = False) -> dict | None:
                 'positive': q.get('total_positive'), 'total': q.get('total_reviews'),
                 'percent': round(100 * q['total_positive'] / q['total_reviews'])
                 if q.get('total_positive') is not None else None}
-    return _cached_json(CACHE_DIR / 'reviews' / f"{appid}.json", 3 * DAY, fetch, refresh)
+    return net.cached_json(CACHE_DIR / 'reviews' / f"{appid}.json", 3 * DAY, fetch, refresh)
 
 
 _SIMILAR = re.compile(r'class="similar_grid_capsule"[^>]*?data-ds-appid="(\d+)"[^>]*?'
@@ -100,7 +99,7 @@ def morelike(appid: int, refresh: bool = False) -> list[dict]:
     def fetch():
         page = net.get(MORELIKE.format(appid=appid), timeout=20, limit=4 << 20)
         return parse_morelike(page.decode('utf-8', 'replace'), appid)[:12]
-    return _cached_json(CACHE_DIR / 'morelike' / f"{appid}.json", 14 * DAY, fetch,
+    return net.cached_json(CACHE_DIR / 'morelike' / f"{appid}.json", 14 * DAY, fetch,
                         refresh) or []
 
 
