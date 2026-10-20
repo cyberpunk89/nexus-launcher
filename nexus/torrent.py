@@ -397,6 +397,18 @@ def edit_tracked():
             save_tracked(data)
 
 
+def claim_install(h: str) -> bool:
+    """Record that a finished download's install is starting — True only for
+    the first caller. The GUI and the background agent both follow the
+    client; this is how just one of them installs it."""
+    with edit_tracked() as tracked:
+        meta = tracked.get(h)
+        if not isinstance(meta, dict) or meta.get('installed') or meta.get('install_started'):
+            return False
+        meta['install_started'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+        return True
+
+
 def check_hash(h: str) -> str:
     h = (h or '').strip().lower()
     if not HASH_RE.match(h):

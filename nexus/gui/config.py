@@ -69,12 +69,21 @@ def load_config() -> dict:
         cfg['torrent_seed_ratio'] = float(tr['seed_ratio']) if 'seed_ratio' in tr else None
     except (TypeError, ValueError):
         cfg['torrent_seed_ratio'] = None
+    al = data.get('alerts', {}) if isinstance(data.get('alerts'), dict) else {}
+    for k in ('atl', 'fitgirl', 'repack_updates', 'proton'):
+        cfg[f'alerts_{k}'] = al.get(k, True) is not False
+    try:
+        cfg['alerts_sale_min_cut'] = max(0, min(100, int(al.get('sale_min_cut', 0))))
+    except (TypeError, ValueError):
+        cfg['alerts_sale_min_cut'] = 0
     return cfg
 
 
 def _toml_literal(v) -> str:
     if isinstance(v, bool):
         return 'true' if v else 'false'
+    if isinstance(v, int):
+        return str(v)
     if isinstance(v, (list, tuple)):
         return '[' + ', '.join(json.dumps(str(x), ensure_ascii=False) for x in v) + ']'
     return json.dumps(str(v), ensure_ascii=False)   # a valid TOML basic string

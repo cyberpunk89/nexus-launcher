@@ -448,6 +448,23 @@ def doctor_checks(install_base: Path) -> list[dict]:
         f"{hp.parent.name if hp else 'none'} ({src})")
     pg = protongen_bin()
     add(I, 'ok' if pg else 'info', 'protongen', pg or 'not installed (optional)')
+    ag = agent_status()
+    fix_agent = [{'label': 'Restart it', 'args': ['--agent-enable'], 'steam': False}]
+    if not ag['installed']:
+        add(I, 'info', 'Background agent',
+            'off (optional) — downloads and alerts only while the window is open',
+            'Settings → Background')
+    elif not ag['current']:
+        add(I, 'warn', 'Background agent',
+            "its service points at another copy of Nexus", 'Set it up again from here',
+            fix_agent)
+    elif ag['enabled'] and not ag['running']:
+        add(I, 'warn', 'Background agent', 'on, but not running',
+            'See journalctl --user -u nexus-agent', fix_agent)
+    else:
+        add(I, 'ok' if ag['running'] else 'info', 'Background agent',
+            f"running (last checked {(ag['updated_at'] or '?')[11:16]})" if ag['running']
+            else 'installed but switched off')
     try:
         gamedb_doctor(add, I)
     except Exception:
@@ -652,6 +669,7 @@ def cmd_doctor(install_base: Path, as_json: bool = False) -> None:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .agent import agent_status  # noqa: E402
 from .config import load_config, resolve_scan_dirs  # noqa: E402
 from .desktop import _desktop_path  # noqa: E402
 from .gamecmds import scan_repacks  # noqa: E402

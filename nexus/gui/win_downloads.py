@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
-from nexus import net, paths as NX, steamlib
+from nexus import instance, net, paths as NX, steamlib, torrent
 
 from .common import alive, CLI_BIN, DATA_DIR
 from .fmt import fmt_bytes
@@ -43,6 +43,8 @@ class DownloadsMixin:
             30000)
         if not self.isActiveWindow():
             notify_desktop(f"{name} is ready to install", "Open Nexus to install it.")
+        if self.tray is not None and not self.isVisible():
+            self.tray.add_ready(c)
 
     def _add_torrent(self, src: str, auto: bool):
         def done(data, err):
@@ -88,10 +90,12 @@ class DownloadsMixin:
             for r in mine:
                 # Once: the install marks the download installed only when it
                 # succeeds, and a failed one is retried by hand (Install it now).
+                # claim_install: the background agent may be about to start it.
                 if r.get('done') and r.get('auto_install') and not r.get('installed') \
                         and not r.get('install_started') \
                         and r['hash'] not in self._torrents_started \
-                        and r.get('path') and Path(r['path']).is_dir():
+                        and r.get('path') and Path(r['path']).is_dir() \
+                        and torrent.claim_install(r['hash']):
                     self._install_download(r)
             active = self.downloads.active_count()
             self.icons[self.DOWNLOADS].set_badge(active or None)
@@ -112,6 +116,30 @@ class DownloadsMixin:
         self.repacks.mark_seen(r['path'])
         self._start_install(self._default_install_cmd(r['path']) + ['--from-torrent', r['hash']],
                             r.get('title') or r.get('name') or Path(r['path']).name, '')
+
+    def _agent_message(self, argv: list[str]):
+        """From the background agent (nexus/cli/agent.py), which watches the
+        same folders and client while the window may be closed: a finished
+        download to offer, or a download it claimed for installing — run here
+        so it shows as this window's job. Checked, since any local program
+        of this user can write to the socket."""
+        if len(argv) == 2 and argv[0] == '--agent-ready':
+            try:
+                c = json.loads(argv[1])
+            except ValueError:
+                return
+            if isinstance(c, dict) and isinstance(c.get('path'), str) \
+                    and Path(c['path']).is_dir() and isinstance(c.get('name'), str):
+                self._repack_ready(c)
+        elif len(argv) == 3 and argv[0] == '--agent-install':
+            path, h = argv[1], argv[2]
+            meta = torrent.load_tracked().get(h)
+            if not isinstance(meta, dict) or not meta.get('install_started') \
+                    or meta.get('installed') or not Path(path).is_dir() \
+                    or h in self._torrents_started:
+                return
+            self._install_download({'hash': h, 'path': path,
+                                    'title': meta.get('title'), 'name': meta.get('name')})
 
     def _torrent_detected(self, data, _err):
         self._torrent_detecting = False
@@ -233,6 +261,8 @@ class DownloadsMixin:
         self._feed_timer.start(6 * 3600 * 1000)
         if self.config.get('gamedb_enabled'):
             self._sync_repack_index()
+        if not instance.agent_running():          # else the agent checks, more often
+            cli_json(['--check-alerts', '--json'], self._alerts_checked, 120000)
         if not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
             return
 
@@ -250,6 +280,19 @@ class DownloadsMixin:
                                + (f" and {len(fresh) - 2} more" if len(fresh) > 2 else '')
                                + ".", 'info', None, 8000)
         cli_json(['--repack-feed', '--json'], done, 120000)
+
+    def _alerts_checked(self, data, _err):
+        """What --check-alerts just pushed to the phone (once each): deals get
+        a toast too; repack updates and GE-Proton have their own already."""
+        if not data or not alive(self):
+            return
+        deals = [a for a in data.get('alerts') or () if a.get('kind') in ('atl', 'sale')]
+        if not deals:
+            return
+        text = (deals[0]['text'] + "." if len(deals) == 1 else
+                f"{len(deals)} wishlist games just hit a low or a sale: "
+                + ", ".join(a['title'] for a in deals[:3]) + ("…" if len(deals) > 3 else "."))
+        self.toast(text, 'info', [("Deals", lambda: self.go(self.DEALS))], 10000)
 
     def _sync_repack_index(self):
         """FitGirl's catalogue against the wishlist (the CLI syncs at most

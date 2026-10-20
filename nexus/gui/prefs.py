@@ -60,6 +60,8 @@ class LibraryPrefs:
             'dedupe': ctl.get('dedupe') is not False,
             # Theatre's screensaver after this many idle minutes (0 = never).
             'attract': ctl.get('attract') if ctl.get('attract') in ATTRACT_MINUTES else 5,
+            # Closing the window hides it to the tray (Settings → Background).
+            'close_to_tray': ctl.get('close_to_tray') is True,
         }
         # Your notes on a game (the details panel's Notes section).
         notes = self._data.get('notes')

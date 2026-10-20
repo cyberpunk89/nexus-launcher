@@ -40,6 +40,7 @@ class ControllerMixin:
         else:
             self._on_activity()
         self.theatre.double_plays = self.prefs.controls['double_click'] == 'play'
+        self.sync_tray()
         if hasattr(self, 'hints'):
             self._update_hints()
 
@@ -145,7 +146,11 @@ class ControllerMixin:
         self.set_theatre(not self._theatre)
 
     def handle_remote(self, argv: list):
-        """Another `nexus` launch handed us its arguments (see InstanceServer)."""
+        """Another `nexus` launch handed us its arguments (see InstanceServer),
+        or the background agent something it found (no raising the window)."""
+        if argv[:1] in (['--agent-ready'], ['--agent-install']):
+            self._agent_message(argv)
+            return
         if '--leave-theatre' in argv:
             self.set_theatre(False)
             return

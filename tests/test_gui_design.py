@@ -273,6 +273,26 @@ class Appearance(unittest.TestCase):
         nx.apply_appearance({'accent': 'gold'})
         self.assertEqual(nx.P['on_accent'], nx.P['bg'])
 
+    def test_wordmark_is_the_svg_lettering_in_the_accent(self):
+        w = nx.Wordmark()
+        self.assertIsNotNone(w._svg)                    # assets/wordmark.svg, not text
+        self.assertGreater(w.width(), 3 * w.height())   # the lettering's 59:12 shape
+
+        def inked():
+            pm = QPixmap(w.size())
+            pm.fill(Qt.GlobalColor.transparent)
+            w.render(pm)
+            img = pm.toImage()
+            return [img.pixelColor(x, y) for x in range(img.width())
+                    for y in range(img.height()) if img.pixelColor(x, y).alpha() == 255]
+        nx.apply_appearance({'accent': '#ff7a59', 'partner': 'none'})
+        px = inked()
+        self.assertTrue(px)
+        self.assertTrue(all(c.name() == '#ff7a59' for c in px))
+        nx.apply_appearance({'accent': '#9ccfd8', 'partner': 'none'})
+        self.assertTrue(all(c.name() == '#9ccfd8' for c in inked()))   # repainted, not cached
+        self.assertIsNone(nx.Wordmark("Other")._svg)    # other text keeps the font
+
     def test_default_round_trip_matches_original(self):
         nx.apply_appearance(nx.APPEARANCE_DEFAULT)
         self.assertEqual(nx.P['bg'], '#191724')

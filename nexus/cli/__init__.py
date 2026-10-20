@@ -104,11 +104,11 @@ from .apply import (
 from .protoncmds import (
     _heroic_proton_bins, _pacman_version, _valve_protons, cmd_list_protons,
     cmd_proton_install, cmd_proton_migrate, cmd_proton_releases, cmd_proton_remove,
-    cmd_protondb, cmd_protons, install_hint, proton_usage)  # noqa: F401
+    cmd_protondb, cmd_protons, ge_is_newer, ge_update, install_hint, proton_usage)  # noqa: F401
 from .downloads import (
     _cached_wishlist, _owned_store_ids, _size_bytes, _torrent_dest, _torrent_mark,
     cmd_check_repack, cmd_repack_feed, cmd_repack_grab, cmd_repack_index, cmd_repack_page,
-    cmd_repack_reject, cmd_torrent)  # noqa: F401
+    cmd_repack_reject, cmd_torrent, send_alerts)  # noqa: F401
 from .info import (
     _ago, _llm_config, cmd_apply_recipe, cmd_explain_log, cmd_game_tips, cmd_gamedb,
     cmd_history, cmd_news, cmd_news_feed, cmd_store_info, compat_lines, CONFIG_SECRETS,
@@ -131,3 +131,7 @@ from .entry import (
     _SLUG_OPTS, _SLUG_OPTS_ALL, build_parser, COMMANDS, main)  # noqa: F401
 from .install import (
     _best_effort, cmd_install)  # noqa: F401
+from .agent import (
+    _take_lock, Agent, AGENT_LOCK, AGENT_STATE, agent_status, cmd_agent,
+    cmd_agent_enable, cmd_agent_status, cmd_check_alerts, install_cmd, playing, UNIT_DIR,
+    UNIT_NAME, unit_text)  # noqa: F401

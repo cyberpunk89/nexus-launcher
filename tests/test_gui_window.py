@@ -520,6 +520,12 @@ class Window(unittest.TestCase):
                    'tracked': True, 'auto_install': True, 'installed': False, 'state': 'seeding'}
             started = []
             data = {'torrents': [row], 'client': {}}
+            from nexus import torrent
+            torrent.save_tracked({'c' * 40: {'name': folder.name, 'auto_install': True,
+                                             'installed': False},
+                                  'd' * 40: {'name': 'Other', 'auto_install': True,
+                                             'installed': False}})
+            self.addCleanup(torrent.TRACKED.unlink, missing_ok=True)
             with patch_gui('cli_json', lambda a, cb, *_x: cb(data, None)), \
                     mock.patch.object(w, '_start_install', lambda cmd, *a: started.append(cmd)):
                 w._torrent_polling = False
@@ -527,6 +533,14 @@ class Window(unittest.TestCase):
                 w._torrent_polling = False
                 w._poll_torrents()                                   # not twice
                 self.assertEqual(len(started), 1)
+                self.assertTrue(torrent.load_tracked()['c' * 40].get('install_started'))
+                # The background agent claimed this one first: the window leaves it.
+                self.assertTrue(torrent.claim_install('d' * 40))
+                data['torrents'] = [dict(row, hash='d' * 40), row]
+                w._torrent_polling = False
+                w._poll_torrents()
+                self.assertEqual(len(started), 1)
+                data['torrents'] = [row]
                 self.assertEqual(started[0][-2:], ['--from-torrent', 'c' * 40])
                 self.assertNotIn('--torrent-done', sum(started, []))
                 # One that already started (and failed) waits for "Install it now".
@@ -537,6 +551,101 @@ class Window(unittest.TestCase):
                 self.assertEqual(len(started), 1)
                 w._download_action('install', row)
                 self.assertEqual(len(started), 2)
+
+    def test_background_agent_messages_are_checked(self):
+        import tempfile
+        from pathlib import Path
+        from nexus import torrent
+        w = self.win
+        shown, started = [], []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(w, '_repack_ready', shown.append), \
+                mock.patch.object(w, '_start_install', lambda cmd, *a: started.append(cmd)), \
+                mock.patch.object(w, 'bring_to_front') as front:
+            w.handle_remote(['--agent-ready', json.dumps({'path': d, 'name': 'G'})])
+            w.handle_remote(['--agent-ready', 'not json'])
+            w.handle_remote(['--agent-ready', json.dumps({'path': d + '/nope', 'name': 'G'})])
+            self.assertEqual([c['name'] for c in shown], ['G'])
+            torrent.save_tracked({'e' * 40: {'name': 'G', 'installed': False}})
+            self.addCleanup(torrent.TRACKED.unlink, missing_ok=True)
+            w.handle_remote(['--agent-install', d, 'e' * 40])       # the agent never claimed it
+            self.assertEqual(started, [])
+            self.assertTrue(torrent.claim_install('e' * 40))
+            w.handle_remote(['--agent-install', d, 'e' * 40])
+            w.handle_remote(['--agent-install', d, 'e' * 40])       # once
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0][-2:], ['--from-torrent', 'e' * 40])
+            front.assert_not_called()                               # never steals focus
+
+    def test_alerts_section_saves_to_config(self):
+        st = self.win.settings
+        saved = []
+        with patch_gui('save_config', saved.append), \
+                patch_gui('load_config', return_value={'alerts_atl': True, 'alerts_fitgirl': True,
+                                                       'alerts_repack_updates': True,
+                                                       'alerts_proton': True,
+                                                       'alerts_sale_min_cut': 30}):
+            st.load()
+            self.assertEqual(st.al_sale.currentData(), 30)          # a hand-set value is kept
+            st.al_proton.setChecked(False)
+            st.al_sale.setCurrentIndex(st.al_sale.findData(50))
+            st._save()
+        self.assertEqual({k: v for k, v in saved[0].items() if k[0] == 'alerts'},
+                         {('alerts', 'proton'): False, ('alerts', 'sale_min_cut'): 50})
+
+    def test_agent_switch_asks_before_turning_on(self):
+        st = self.win.settings
+        calls = []
+        with patch_gui('cli_json', lambda args, cb, *_a: calls.append(args)):
+            st.set_agent_status({'enabled': False, 'systemd': True})
+            st.agent.setChecked(True)
+            self.assertEqual(calls, [])                              # a question first
+            self.assertFalse(st.agent.isChecked())
+            self.assertTrue(self.win.sheet.isVisible())
+            yes = next(b for b in self.win.sheet.findChildren(QPushButton)
+                       if b.text() == "Turn it on")
+            yes.click()
+            self.assertEqual(calls, [['--agent-enable', '--json']])
+            st.set_agent_status({'enabled': True, 'systemd': True, 'running': True})
+            st.agent.setChecked(False)
+            self.assertEqual(calls[-1], ['--agent-disable', '--json'])
+
+    def test_close_goes_to_the_tray_when_asked(self):
+        w = self.win
+        with patch_gui('tray_available', lambda: True), \
+                patch_gui('notify_desktop', lambda *a: None):
+            w._apply_controls({'close_to_tray': True})
+            self.assertIsNotNone(w.tray)
+            w.close()
+            self.assertFalse(w.isVisible())                 # hidden, still running
+            self.assertFalse(w._quitting)
+            w.tray._fill()
+            texts = [a.text() for a in w.tray.menu.actions() if a.text()]
+            self.assertEqual(texts[0], "Show Nexus")
+            self.assertIn("Alpha", texts)                    # recently played, installed
+            self.assertEqual(texts[-1], "Quit Nexus")
+            w.tray.add_ready({'path': '/r/G', 'name': 'G'})
+            w.tray._fill()
+            self.assertIn("Install G", [a.text() for a in w.tray.menu.actions()])
+            w.show_from_tray()
+            self.assertTrue(w.isVisible())
+            w._apply_controls({'close_to_tray': False})
+            self.assertIsNone(w.tray)
+        self.assertEqual(nx.recent_games([
+            {'slug': 'a', 'last_played': '2026-01-01', 'launcher': '/a', 'source': 'nexus'},
+            {'slug': 'b', 'last_played': '2026-02-01', 'launcher': '/b', 'source': 'nexus'},
+            {'slug': 'c', 'source': 'nexus', 'launcher': '/c'}]), [
+            {'slug': 'b', 'last_played': '2026-02-01', 'launcher': '/b', 'source': 'nexus'},
+            {'slug': 'a', 'last_played': '2026-01-01', 'launcher': '/a', 'source': 'nexus'}])
+
+    def test_quit_from_the_tray_really_quits(self):
+        w = self.win
+        with patch_gui('tray_available', lambda: True):
+            w._apply_controls({'close_to_tray': True})
+            w.quit_from_tray()
+            self.assertFalse(w.isVisible())
+            self.assertFalse(w._tray_quit)
+            w._apply_controls({'close_to_tray': False})
 
     def test_remove_with_files_asks_first(self):
         w = self.win

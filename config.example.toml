@@ -46,6 +46,13 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # kdeconnect = true                      # ping every reachable paired KDE Connect device
 # min_minutes = 3                        # shorter installs don't push (try: nexus-cli --notify-test)
 
+[alerts]                  # pushed to [notify] once each (and on the desktop when no window is open)
+# atl = true                             # a wishlist game at its all-time low (on sale)
+# sale_min_cut = 0                       # also any wishlist sale of at least this % (0 = off)
+# fitgirl = true                         # a wishlist game appears on FitGirl
+# repack_updates = true                  # FitGirl posts an update of a game you installed
+# proton = true                          # a new GE-Proton release (try: nexus-cli --check-alerts --dry-run)
+
 [session]                 # while a repack launched from Nexus plays; restored afterwards
 # scx = "lavd"            # sched_ext scheduler in gaming mode (needs scxctl / scx_loader)
 # lact_profile = "Gaming" # a LACT GPU profile

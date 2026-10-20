@@ -397,6 +397,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Merge one of protongen's recipes into a game's launch options")
     g5.add_argument('--explain-log', metavar='SLUG', dest='explain_log',
                     help="Explain a game's latest log with protongen's local AI (if enabled)")
+    g8 = parser.add_argument_group('background agent')
+    g8.add_argument('--agent', action='store_true',
+                    help="Run in the background: watch downloads and the torrent client, "
+                         "keep the FitGirl feed fresh, send alerts (the systemd service "
+                         "runs this)")
+    g8.add_argument('--agent-enable', action='store_true', dest='agent_enable',
+                    help='Install and start the background agent as a systemd user service')
+    g8.add_argument('--agent-disable', action='store_true', dest='agent_disable',
+                    help='Stop the background agent and turn the service off')
+    g8.add_argument('--agent-status', action='store_true', dest='agent_status',
+                    help="Whether the background agent is installed and running")
+    g8.add_argument('--check-alerts', action='store_true', dest='check_alerts',
+                    help="Check wishlist lows/sales, repack updates and GE-Proton now and "
+                         "push what's new (config [alerts]); --dry-run lists without sending")
+    g8.add_argument('--dry-run', action='store_true', dest='dry_run', help=argparse.SUPPRESS)
     g6 = parser.add_argument_group('news (experimental)')
     g6.add_argument('--news', action='store_true',
                     help='Gaming news: Linux gaming feeds, Proton releases, Steam news for '
@@ -590,6 +605,11 @@ COMMANDS = (
     ('history', lambda a, base: cmd_history(a.json)),
     ('store_info', lambda a, base: cmd_store_info(a.store_info, a.json, a.refresh)),
     ('notify_test', _cmd_notify_test),
+    ('agent', lambda a, base: sys.exit(cmd_agent(base))),
+    ('agent_enable', lambda a, base: sys.exit(cmd_agent_enable(True, a.json))),
+    ('agent_disable', lambda a, base: sys.exit(cmd_agent_enable(False, a.json))),
+    ('agent_status', lambda a, base: cmd_agent_status(a.json)),
+    ('check_alerts', lambda a, base: cmd_check_alerts(a.json, a.dry_run)),
     ('apply_recipe', lambda a, base: cmd_apply_recipe(*a.apply_recipe, load_config())),
     ('explain_log', lambda a, base: cmd_explain_log(a.explain_log)),
     ('protons', lambda a, base: cmd_protons(load_config(), a.json, a.refresh)),
@@ -654,6 +674,8 @@ def _main() -> None:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .agent import (cmd_agent, cmd_agent_enable, cmd_agent_status,
+    cmd_check_alerts)  # noqa: E402
 from .apply import (cmd_apply, cmd_from_protongen, cmd_perf, cmd_protongen_default,
     cmd_set_launch, cmd_set_proton, cmd_show_launch)  # noqa: E402
 from .config import load_config, resolve_install_base, resolve_scan_dirs  # noqa: E402

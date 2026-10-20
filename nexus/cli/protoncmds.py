@@ -112,6 +112,28 @@ def _pacman_version(pkg: str) -> str | None:
     return r.stdout.split()[1] if r.returncode == 0 and len(r.stdout.split()) > 1 else None
 
 
+def ge_is_newer(latest_ge: str | None, installed: list[str]) -> bool:
+    """Whether GE-Proton's latest release is newer than every GE build in
+    `installed` (names), or none is installed."""
+    from nexus import protons as PR
+    have = [n for n in installed if PR.family_of(n) == 'ge']
+    newest = max(have, key=PR.version_key, default=None)
+    return bool(latest_ge and (not newest or
+                               PR.version_key(latest_ge) > PR.version_key(newest)[:2]))
+
+
+def ge_update() -> tuple[str | None, bool]:
+    """(latest GE-Proton tag, whether it's newer than what's installed),
+    from the 6-hour release cache. (None, False) offline."""
+    from nexus import protons as PR, net
+    try:
+        rel = PR.releases('ge', False)
+    except net.NetError:
+        return None, False
+    latest = rel['releases'][0]['tag'] if rel['releases'] else None
+    return latest, ge_is_newer(latest, list(list_protons()))
+
+
 def cmd_protons(config: dict, as_json: bool, refresh: bool = False) -> None:
     """Installed builds (with who uses them) plus upstream release status."""
     from nexus import protons as PR, net
@@ -136,11 +158,8 @@ def cmd_protons(config: dict, as_json: bool, refresh: bool = False) -> None:
                              'fetched_at': rel['fetched_at'], 'error': None}
         except net.NetError as e:
             families[fam] = {'latest': None, 'error': str(e)}
-    ge_have = [r['name'] for r in rows if r['family'] == 'ge']
-    newest_ge = max(ge_have, key=PR.version_key, default=None)
-    latest_ge = families['ge'].get('latest')
-    families['ge']['update'] = bool(latest_ge and (
-        not newest_ge or PR.version_key(latest_ge) > PR.version_key(newest_ge)[:2]))
+    families['ge']['update'] = ge_is_newer(families['ge'].get('latest'),
+                                           [r['name'] for r in rows])
     families['cachyos']['installed'] = _pacman_version('proton-cachyos-slr') \
         or _pacman_version('proton-cachyos')
     try:

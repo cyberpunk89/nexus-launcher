@@ -12,6 +12,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from nexus import paths as NX
+from nexus.instance import INSTANCE, INSTANCE_MAX
 
 from .common import (_REPO, APPLICATIONS_DIR, DATA_DIR, DESKTOP_PATH, ICON_PATH,
     LEGACY_DESKTOP, LOGO_SVG)
@@ -75,16 +76,10 @@ def manager_exec() -> str:
 # One Nexus per user. A second launch (nirinit restoring the session, Sunshine
 # starting Theatre, a double click on the icon) hands its arguments to the
 # running window and exits instead of opening another one.
-# In the user's private runtime dir. No socket options on purpose: with them Qt
+# The socket path is INSTANCE (nexus/instance.py: the background agent
+# forwards to it without Qt). No socket options on purpose: with them Qt
 # builds the socket elsewhere and renames it over ours, so a second listen()
 # would silently steal the name instead of failing.
-# Without a runtime dir, a 0700 folder of our own, never a name in shared /tmp
-# another user could take first.
-INSTANCE = os.environ.get("NEXUS_INSTANCE") or (
-    os.path.join(os.environ['XDG_RUNTIME_DIR'], 'nexus.sock')
-    if os.path.isdir(os.environ.get('XDG_RUNTIME_DIR') or '')
-    else str(NX.CACHE_DIR / 'run' / 'nexus.sock'))
-INSTANCE_MAX = 64 << 10           # bytes one forwarded launch may send
 
 
 def forward_to_running(argv: list[str]) -> bool:
@@ -251,7 +246,8 @@ def main():
     win = MainWindow()
     install_excepthook(win)
     win.setWindowIcon(QIcon(icon))
-    win.show()
+    if "--hidden" not in argv or win.tray is None:    # --hidden: start in the tray
+        win.show()
     QTimer.singleShot(0, win.ctrl.open)       # controllers once the window is up
     if instance is not None:
         instance.request.connect(win.handle_remote)

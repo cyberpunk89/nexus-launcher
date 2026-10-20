@@ -36,10 +36,10 @@ def _cached_wishlist() -> list | None:
     return ((res or {}).get('data') or {}).get('wishlist') or []
 
 
-def cmd_repack_index(refresh: bool, as_json: bool) -> None:
+def cmd_repack_index(refresh: bool, as_json: bool, desktop: bool = False) -> None:
     """Sync FitGirl's catalogue, then say which wishlist games have a
-    repack — pushing the new ones to the phone (config [notify])."""
-    from nexus import net, notify, repackindex as RI
+    repack — pushing the new ones to the phone (nexus/alerts.py)."""
+    from nexus import alerts as A, net, repackindex as RI
 
     def progress(page, pages):
         print(f"[{page}/{pages or '?'}] Reading FitGirl's catalogue", flush=True)
@@ -56,17 +56,7 @@ def cmd_repack_index(refresh: bool, as_json: bool) -> None:
     titles = {str(g.get('appid')): g.get('title') for g in wishlist or []}
     news = [{'appid': a, 'title': titles.get(a), **matches[a]} for a in fresh]
     if news and not error:
-        s = notify.settings()
-        if notify.configured(s):
-            if first:
-                title = f"{len(news)} wishlist games are on FitGirl"
-                body = ", ".join(n['title'] or '' for n in news[:6]) + ("…" if len(news) > 6 else "")
-            else:
-                title = ("On FitGirl: " + (news[0]['title'] or news[0]['slug'])
-                         if len(news) == 1 else f"{len(news)} wishlist games are on FitGirl")
-                body = ", ".join(n['title'] or '' for n in news[:6])
-            for err in notify.push(title, body, True, s):
-                print(f"  [!] push notification: {err}", file=sys.stderr)
+        send_alerts(A.fresh('fitgirl', A.fitgirl_alerts(news), prime=False), desktop)
     if as_json:
         print(json.dumps({'count': len(data['posts']), 'synced_at': data.get('synced_at'),
                           'built_at': data.get('built_at'), 'error': error,
@@ -272,6 +262,12 @@ def cmd_torrent(args) -> None:
         state = ("gone from the client" if r.get('gone') else "installed" if r.get('installed')
                  else "done" if r.get('done') else f"{r['percent']:.0f}%")
         print(f"  {r['name'] or r['hash']}: {state}")
+
+
+def send_alerts(new: list[dict], desktop: bool = False) -> None:
+    from nexus import alerts
+    for err in alerts.deliver(new, desktop=desktop):
+        print(f"  [!] alert: {err}", file=sys.stderr)
 
 
 def cmd_check_repack(path: str, as_json: bool, clamav: bool) -> None:

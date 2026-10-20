@@ -158,14 +158,14 @@ flowchart TB
     direction TB
     g1["Base: common, theme, fmt"] --> g2["Building blocks: widgets, jobs, art, tiles, prefs, gameinfo, actions"]
     g2 --> g3["Pages: library, dashboard, details, storage, protonpage, newspage, deals, downloads, artpicker, system, settings, install, theatre, input"]
-    g3 --> g4["window: MainWindow + mixins win_library, win_nav, win_controller, win_play, win_downloads, win_actions; topbar"]
+    g3 --> g4["window: MainWindow + mixins win_library, win_nav, win_controller, win_play, win_downloads, win_actions; topbar, tray"]
     g4 --> g5["app: icon, desktop entry, single instance, main()"]
   end
   subgraph c["nexus/cli · the backend"]
     direction TB
     c1["Base: common (paths, logger, atomic writes, run)"] --> c2["Core: repack, runner, config, registry, sgdb, launchprofile"]
     c2 --> c3["Launchers: steam, heroic, desktop, sunshine"]
-    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install"]
+    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install, agent"]
     c4 --> c5["entry: build_parser(), the COMMANDS table, main()"]
   end
 ```
@@ -181,6 +181,8 @@ Where to look:
 | ask the CLI from the app | `cli_json` / `in_thread` in `nexus/gui/jobs.py`: never on the GUI thread |
 | change what the window does | the `nexus/gui/win_*.py` mixin for that area |
 | log from the CLI | `log.print(...)`; swap the target with `use_logger()`, never rebind `log` |
+| do something while no window is open | a `task_*` method of `Agent` in `nexus/cli/agent.py`; hand results to a window with `nexus.instance.forward` |
+| alert once | `nexus/alerts.py`: an item with a stable `key`, then `fresh()` and `deliver()` |
 
 The look follows protongen's design system (Rosé Pine dark): token-driven colour/space/type,
 portrait tiles with a caption gradient and pill badges, one accent colour.
@@ -737,6 +739,31 @@ low-latency DXVK build), so the old winetricks pass cost minutes per install and
 case, pinned DLL overrides that stopped Proton managing it. Use `--deps vcrun2019,<verb>` for
 the rare game that needs one. `--doctor` flags any prefix still carrying a winetricks DXVK.
 
+## Working in the background
+
+Nexus normally watches your downloads only while its window is open. Two options in
+**Settings → Background** let it keep going:
+
+- **The background agent** (`nexus-cli --agent`, installed as the systemd user service
+  `nexus-agent` once you say yes). It installs a finished torrent that asked for it, says when
+  a repack in your folders is ready, keeps the FitGirl feed and catalogue fresh, fills missing
+  artwork once a day (not while you're playing) and sends alerts. With a Nexus window open it
+  hands what it finds to the window instead (a toast, an install job in Activity); without one it
+  uses desktop notifications and installs by itself. The window and the agent decide through the
+  same locked files, so nothing is announced or installed twice.
+  `nexus-cli --agent-enable` / `--agent-disable` / `--agent-status`;
+  logs in `journalctl --user -u nexus-agent`. Health shows whether it's running.
+- **The tray** (needs a tray host — on niri, e.g. waybar's `tray` module). Closing the window
+  hides it to the tray; the tray menu has *Continue playing*, downloads, finished repacks to
+  install and **Quit Nexus**. `nexus --hidden` starts straight in the tray.
+
+**Alerts** (Settings → Alerts, config `[alerts]`) each come once: a wishlist game at its
+all-time low (on sale — a low at full price isn't news), any sale above a cut you choose (off by
+default), a wishlist game appearing on FitGirl, a FitGirl update of a game you installed, a new
+GE-Proton. They go to the phone targets in `[notify]` (ntfy / KDE Connect) and, with no window
+open, to the desktop. The first check only records what's already true, so switching alerts on
+doesn't send forty old lows. `nexus-cli --check-alerts [--dry-run]` checks now.
+
 ## Config & data
 
 `~/.config/nexus/config.toml` — optional. Start from
@@ -764,7 +791,9 @@ the Game-db summary (`gamedb/`, 0600), Proton downloads in progress.
 `~/.local/share/nexus/` — runtime data: `games.json` registry (a damaged one is
 set aside as `games.json.corrupt-<time>`; `--reindex` rebuilds it), `artwork/`, `logs/`
 (install logs + `<slug>-last-launch.log`), `saves/`, `integrity/`, `repack-feed.json`
-(FitGirl posts seen by `--repack-feed`), `sunshine/` (PNG covers for Sunshine entries).
+(FitGirl posts seen by `--repack-feed`), `sunshine/` (PNG covers for Sunshine entries),
+`watch-state.json` (finished downloads already announced), `alerts.json` (alerts already
+sent), `agent-state.json` (what the background agent last did).
 
 ## Tests
 

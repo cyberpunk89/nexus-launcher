@@ -75,6 +75,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.jobs.finished.connect(self._job_done)
         self.jobs.changed.connect(self._jobs_changed)
         self._quitting = False
+        self.tray = None                             # Settings → Background (tray.py)
+        self._tray_quit = False
+        self._tray_told = False
         self._shown_games: list = []
         self._surprise_recent: list[str] = []
         COLLECTION_NAMES[:] = list(self.prefs.collections)
@@ -240,6 +243,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.settings.set_controls(self.prefs.controls)
         self.settings.controls_changed.connect(self._apply_controls)
         self.settings.request.connect(self._on_request)
+        self.settings.background_changed.connect(self._background_changed)
         self.settings.appearance.load(self.prefs.appearance)
         # Re-styling ~2000 widgets takes about a second: coalesce quick clicks
         # through the swatches into one apply.
@@ -553,10 +557,51 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                            ['--apply-launch', 'all'], "Re-applying settings to every game",
                            steam=True)), 15000)
 
+    def _background_changed(self, what: str, on: bool):
+        """Settings → Background. The agent is a systemd user service: ask
+        before installing one, then let the CLI switch it."""
+        if what != 'agent':
+            return
+        st = self.settings
+
+        def switch():
+            def done(data, err):
+                if not alive(self):
+                    return
+                data = data or {}
+                st.set_agent_status(data)
+                errs = data.get('errors') or ([err] if err and not data else [])
+                if errs:
+                    self.toast(f"Couldn't switch the background agent — {errs[0]}", 'error',
+                               None, 0)
+                else:
+                    self.toast("Nexus keeps working in the background now." if on else
+                               "The background agent is off.", 'success', None, 5000)
+            cli_json(['--agent-enable' if on else '--agent-disable', '--json'], done, 60000)
+        if not on:
+            switch()
+            return
+        self.confirm("Keep Nexus working in the background?",
+                     "Adds a systemd user service (nexus-agent) that starts with your "
+                     "session. It installs finished torrents, says when a repack is ready "
+                     "and sends your alerts while this window is closed. Turn it off here "
+                     "any time.", "Turn it on", switch, danger=False)
+        # Until it's confirmed and done, the checkbox shows what's true.
+        st.set_agent_status(st._agent_state or {})
+
     # ---- closing ----
     QUIT_GRACE_MS = 6000          # cancelled jobs get this long to stop before SIGKILL
 
     def closeEvent(self, ev):
+        if self.tray is not None and not self._quitting and not self._tray_quit:
+            ev.ignore()                     # to the tray: the watchers keep going
+            self.hide()
+            if not self._tray_told:
+                self._tray_told = True
+                notify_desktop("Nexus is still running",
+                               "It's in the tray. Quit it from the tray menu.")
+            return
+        self._tray_quit = False
         active = self.jobs.active()
         waiting = [p[0] for p in self.gate.pending]
         if self._quitting or (not active and not waiting):
@@ -574,6 +619,30 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.activateWindow()
         self.confirm("Still working", "\n\n".join(parts), "Quit anyway",
                      self.quit_after_jobs)
+
+    def show_from_tray(self, page: str | None = None):
+        self.show()
+        self.bring_to_front()
+        if page:
+            self.go(page)
+
+    def quit_from_tray(self):
+        """Quit for real; with jobs running, the window comes back to ask."""
+        self._tray_quit = True
+        if self.jobs.active() or self.gate.pending:
+            self.show_from_tray()
+        self.close()
+
+    def sync_tray(self):
+        """Create or remove the tray icon to match Settings → Background."""
+        want = self.prefs.controls.get('close_to_tray') and tray_available()
+        if want and self.tray is None:
+            self.tray = Tray(self)
+        elif not want and self.tray is not None:
+            self.tray.close()
+            self.tray = None
+            if not self.isVisible():
+                self.show_from_tray()
 
     def quit_after_jobs(self):
         """Cancel every job, then close once they've all stopped (or after
@@ -613,6 +682,7 @@ from .gameinfo import is_installed  # noqa: E402
 from .input import (ControllerInput, FocusRing, HintBar, install_input_mode, SpatialNav)  # noqa: E402
 from .install import InstallPage, RepackWatcher  # noqa: E402
 from .jobs import cli_json, JobManager  # noqa: E402
+from .tray import Tray, tray_available  # noqa: E402
 from .library import HomeView  # noqa: E402
 from .newspage import NewsPage  # noqa: E402
 from .prefs import LibraryPrefs  # noqa: E402
@@ -621,4 +691,5 @@ from .settings import SettingsPage  # noqa: E402
 from .storage import StoragePage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
 from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402
-from .widgets import GradientBackground, refresh_icons, SteamGate, ToastHost  # noqa: E402
+from .widgets import (GradientBackground, notify_desktop, refresh_icons, SteamGate,
+    ToastHost)  # noqa: E402

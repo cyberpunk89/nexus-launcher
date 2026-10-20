@@ -2,36 +2,92 @@
 collection chips under the library toolbar."""
 
 from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt
-from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter,
-    QPainterPath, QPen)
+from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient,
+    QPainter, QPainterPath, QPen)
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QToolButton, QWidget
 
+from .common import WORDMARK_SVG
 from .theme import FONTS, FS, G, GRAD, P, pill, SP
 
 
 class Wordmark(QWidget):
-    """"Nexus" in the dusk gradient."""
+    """"Nexus" in the dusk gradient (the accent and its partner colour, so it
+    follows Settings → Appearance): the lettering from assets/wordmark.svg,
+    used as a mask. `px` is the height of the old text wordmark it replaces;
+    without QtSvg (or the file) it falls back to the text in the UI font."""
+
+    LETTER_H = 0.72                 # the lettering's height, as a share of px
 
     def __init__(self, text="Nexus", px=20):
         super().__init__()
         self.text = text
         self.font_ = QFont(FONTS.ui, -1, QFont.Weight.Bold)
         self.font_.setPixelSize(px)
-        fm = QFontMetrics(self.font_)
-        self.setFixedSize(fm.horizontalAdvance(text) + 4, fm.height() + 4)
+        self._svg = _wordmark_renderer() if text == "Nexus" else None
+        self._mask: QImage | None = None
+        if self._svg is not None:
+            vb = self._svg.viewBoxF()
+            h = round(px * self.LETTER_H)
+            w = round(h * vb.width() / (vb.height() or 1))
+            self.setFixedSize(w + 4, px + 4)
+            self.setToolTip("Nexus")
+        else:
+            fm = QFontMetrics(self.font_)
+            self.setFixedSize(fm.horizontalAdvance(text) + 4, fm.height() + 4)
+
+    def _letters(self) -> QImage:
+        """The lettering as an alpha mask, drawn once for this size."""
+        if self._mask is None or self._mask.size() != self.size():
+            img = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(Qt.GlobalColor.transparent)
+            pt = QPainter(img)
+            pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+            vb = self._svg.viewBoxF()
+            w = self.width() - 4.0
+            h = w * vb.height() / (vb.width() or 1)
+            self._svg.render(pt, QRectF(2.0, (self.height() - h) / 2, w, h))
+            pt.end()
+            self._mask = img
+        return self._mask
 
     def paintEvent(self, ev):
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        path = QPainterPath()
-        fm = QFontMetrics(self.font_)
-        path.addText(QPointF(2.0, float(fm.ascent() + 2)), self.font_, self.text)
         g = QLinearGradient(0.0, 0.0, float(self.width()), 0.0)
         a, b = (QColor(c) for c in GRAD['dusk'])
         g.setColorAt(0.0, a)
         g.setColorAt(1.0, b)
-        pt.fillPath(path, QBrush(g))
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._svg is not None:
+            img = QImage(self._letters())
+            ip = QPainter(img)
+            ip.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            ip.fillRect(img.rect(), QBrush(g))
+            ip.end()
+            pt.drawImage(0, 0, img)
+        else:
+            path = QPainterPath()
+            fm = QFontMetrics(self.font_)
+            path.addText(QPointF(2.0, float(fm.ascent() + 2)), self.font_, self.text)
+            pt.fillPath(path, QBrush(g))
         pt.end()
+
+
+_WORDMARK = []
+
+
+def _wordmark_renderer():
+    """The wordmark SVG, loaded once; None without QtSvg or the file."""
+    if not _WORDMARK:
+        r = None
+        try:
+            from PyQt6.QtSvg import QSvgRenderer
+            if WORDMARK_SVG.exists():
+                r = QSvgRenderer(str(WORDMARK_SVG))
+                r = r if r.isValid() else None
+        except ImportError:
+            pass
+        _WORDMARK.append(r)
+    return _WORDMARK[0]
 
 
 class TopIcon(QToolButton):

@@ -223,6 +223,7 @@ class SettingsPage(QWidget):
     request = pyqtSignal(list, str, bool, str)
     saved = pyqtSignal(bool)            # proton_changed
     controls_changed = pyqtSignal(dict)  # a library preference, applied at once
+    background_changed = pyqtSignal(str, bool)   # ('agent' | 'tray', on)
 
     def __init__(self):
         super().__init__()
@@ -391,6 +392,46 @@ class SettingsPage(QWidget):
             "On this machine only. In Transmission turn on Edit → Preferences → Remote → "
             "Allow remote access; in qBittorrent, Tools → Options → Web UI.", "Muted",
             wrap=True))
+        # Alerts (config.toml [alerts]): pushed to the phone ([notify]) and,
+        # with no window open, shown on the desktop by the background agent.
+        aform = self._section(outer, "Alerts")
+        self.al_atl = QCheckBox("A wishlist game hits its all-time low")
+        self.al_fitgirl = QCheckBox("A wishlist game appears on FitGirl")
+        self.al_updates = QCheckBox("FitGirl posts an update of a game you installed")
+        self.al_proton = QCheckBox("A new GE-Proton is out")
+        for c in (self.al_atl, self.al_fitgirl, self.al_updates, self.al_proton):
+            self._add(aform, "", c)
+        self.al_sale = NoWheelCombo()
+        for text, cut in (("Off", 0), ("25% off or more", 25), ("50% off or more", 50),
+                          ("75% off or more", 75)):
+            self.al_sale.addItem(text, cut)
+        self._add(aform, "Any wishlist sale", self.al_sale)
+        arow = QHBoxLayout()
+        test = QPushButton("Send a test")
+        test.setToolTip("Pushes a test message to the phone targets in config.toml [notify]")
+        test.clicked.connect(lambda: self.request.emit(
+            ['--notify-test'], "Sending a test notification", False, 'task'))
+        arow.addWidget(test)
+        arow.addWidget(label("Each alert comes once. Phone pushes go to the ntfy topic or "
+                             "KDE Connect devices in config.toml [notify].", "Muted",
+                             wrap=True), 1)
+        self._add(aform, "", arow)
+        # Background: the agent (a systemd user service) and the tray. Applied
+        # at once, like the library preferences above — not with Save.
+        bform = self._section(outer, "Background")
+        self.agent = QCheckBox("Keep watching downloads and sending alerts while Nexus is closed")
+        self.agent.setToolTip("Runs `nexus-cli --agent` as a systemd user service: finished "
+                              "torrents install, ready repacks and alerts are announced, the "
+                              "FitGirl feed stays fresh")
+        self.agent.toggled.connect(self._agent_toggled)
+        self._add(bform, "", self.agent)
+        self.agent_note = label("", "Muted", wrap=True)
+        self._add(bform, "", self.agent_note)
+        self.tray = QCheckBox("Keep Nexus in the tray when its window is closed")
+        self.tray.toggled.connect(lambda on: self.controls_changed.emit({'close_to_tray': on}))
+        self._add(bform, "", self.tray)
+        self.tray_note = label("", "Muted", wrap=True)
+        self._add(bform, "", self.tray_note)
         row = QHBoxLayout()
         self.dirty_note = label("Unsaved changes", "Muted")
         self.dirty_note.setVisible(False)
@@ -422,15 +463,60 @@ class SettingsPage(QWidget):
                   self.tor_dir, self.tor_ratio):
             e.textChanged.connect(self._mark_dirty)
         for c in (self.steam, self.desktop, self.heroic, self.news, self.unattended,
-                  self.trash_repack, self.gdb_enabled):
+                  self.trash_repack, self.gdb_enabled, self.al_atl, self.al_fitgirl,
+                  self.al_updates, self.al_proton):
             c.toggled.connect(self._mark_dirty)
-        for cb in (self.runner, self.proton, self.tor_client):
+        for cb in (self.runner, self.proton, self.tor_client, self.al_sale):
             cb.activated.connect(self._mark_dirty)
+        self._agent_state = None
+
+    def _agent_toggled(self, on: bool):
+        if self._agent_state is not None and on != self._agent_state.get('enabled'):
+            self.background_changed.emit('agent', on)
+
+    def refresh_agent(self):
+        """Ask the CLI how the background agent is doing."""
+        def done(data, _err):
+            try:
+                self.set_agent_status(data or {})
+            except RuntimeError:
+                pass
+        cli_json(['--agent-status', '--json'], done, 30000)
+
+    def set_agent_status(self, s: dict):
+        self._agent_state = s
+        self.agent.blockSignals(True)
+        self.agent.setChecked(bool(s.get('enabled')))
+        self.agent.blockSignals(False)
+        self.agent.setEnabled(s.get('systemd', True) is not False)
+        if s.get('systemd') is False:
+            note = "Needs systemd (systemctl --user), which this system doesn't have."
+        elif s.get('running'):
+            when = (s.get('updated_at') or '')[11:16]
+            note = "Running" + (f" — last checked at {when}." if when else ".")
+            if s.get('installing'):
+                note += " Installing: " + ", ".join(s['installing']) + "."
+        elif s.get('enabled'):
+            note = "On, but not running right now — it starts again within a minute."
+        else:
+            note = ("Off: downloads are watched and alerts sent only while this window is "
+                    "open.")
+        self.agent_note.setText(note)
 
     def set_controls(self, controls: dict):
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
                          (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract')):
             box.setCurrentIndex(max(0, box.findData(controls.get(key))))
+        has_tray = tray_available()
+        self.tray.blockSignals(True)
+        self.tray.setChecked(bool(controls.get('close_to_tray')) and has_tray)
+        self.tray.blockSignals(False)
+        self.tray.setEnabled(has_tray)
+        self.tray_note.setText(
+            "The tray menu has your recent games, downloads and Quit. To start in the tray, "
+            "run nexus --hidden." if has_tray else
+            "No system tray here — on niri, a bar with a tray (waybar's \"tray\" module) "
+            "provides one.")
 
     def _mark_dirty(self, *_):
         if not self._loading and not self.dirty:
@@ -541,6 +627,14 @@ class SettingsPage(QWidget):
         r = c.get('torrent_seed_ratio')
         self.tor_ratio.setText("" if r is None else f"{r:g}")
         self.tor_result.setText("")
+        for box, k in ((self.al_atl, 'atl'), (self.al_fitgirl, 'fitgirl'),
+                       (self.al_updates, 'repack_updates'), (self.al_proton, 'proton')):
+            box.setChecked(c.get(f'alerts_{k}', True))
+        cut = c.get('alerts_sale_min_cut', 0)
+        if self.al_sale.findData(cut) < 0:               # a value set in config.toml by hand
+            self.al_sale.addItem(f"{cut}% off or more", cut)
+        self.al_sale.setCurrentIndex(max(0, self.al_sale.findData(cut)))
+        self.refresh_agent()
         self._proton_current = c.get('proton') or c.get('heroic_proton')
         self.proton.clear()
         self.proton.addItem("Newest installed", None)
@@ -629,6 +723,10 @@ class SettingsPage(QWidget):
         put('install', 'trash_repack', self.trash_repack.isChecked(),
             c.get('trash_repack', False))
         put('runner', 'backend', self.runner.currentData(), c.get('runner') or 'auto')
+        for box, k in ((self.al_atl, 'atl'), (self.al_fitgirl, 'fitgirl'),
+                       (self.al_updates, 'repack_updates'), (self.al_proton, 'proton')):
+            put('alerts', k, box.isChecked(), c.get(f'alerts_{k}', True))
+        put('alerts', 'sale_min_cut', self.al_sale.currentData(), c.get('alerts_sale_min_cut', 0))
         proton = self.proton.currentData()
         changed = proton != self._proton_current
         if changed:
@@ -652,4 +750,5 @@ class SettingsPage(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .config import ConfigError, load_config, save_config  # noqa: E402
 from .jobs import cli_json  # noqa: E402
+from .tray import tray_available  # noqa: E402
 from .widgets import (clear_layout, label, NoWheelCombo, SegmentedControl, set_glyph_icon)  # noqa: E402

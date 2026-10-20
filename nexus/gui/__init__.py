@@ -114,6 +114,7 @@ from .win_controller import ControllerMixin  # noqa: F401
 from .win_play import PlayMixin  # noqa: F401
 from .win_downloads import DownloadsMixin  # noqa: F401
 from .win_actions import ActionsMixin  # noqa: F401
+from .tray import recent_games, Tray, tray_available  # noqa: F401
 from .window import MainWindow  # noqa: F401
 from .app import (
     ensure_icon, forward_to_running, install_desktop_entry, install_excepthook, INSTANCE,

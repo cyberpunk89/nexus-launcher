@@ -26,6 +26,7 @@ CONFIG_PATH = NX.CONFIG_PATH
 APPLICATIONS_DIR = NX.APPLICATIONS_DIR
 ICON_PATH = DATA_DIR / 'nexus-icon.png'
 LOGO_SVG = _REPO / 'assets' / 'nexus.svg'           # the app logo; ICON_PATH is rendered from it
+WORDMARK_SVG = _REPO / 'assets' / 'wordmark.svg'    # "Nexus" lettering, painted in the accent
 DESKTOP_PATH = APPLICATIONS_DIR / f'{NX.APP_ID}.desktop'
 LEGACY_DESKTOP = APPLICATIONS_DIR / 'fitgirl-manager.desktop'
 INSTALL_BASE_DEFAULT = str((HOME / 'Games' / 'FitGirl'))  # autodetected; config [install] base overrides

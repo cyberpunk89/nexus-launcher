@@ -202,6 +202,12 @@ class _Prefs:
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Watcher(unittest.TestCase):
+    def setUp(self):
+        from nexus import watch
+        self.watch = watch
+        watch.STATE.unlink(missing_ok=True)
+        self.addCleanup(watch.STATE.unlink, missing_ok=True)
+
     def cand(self, path, size=10, **kw):
         return {'path': path, 'name': path, 'slug': path, 'size_bytes': size,
                 'fingerprint': 'f' + path, 'complete': True, 'installed': False,
@@ -214,7 +220,7 @@ class Watcher(unittest.TestCase):
         w.ready.connect(ready.append)
         w.handle([self.cand('old')])                      # first run: just records
         self.assertEqual(ready, [])
-        self.assertEqual(prefs.seen_repacks, ['old|fold'])
+        self.assertEqual(self.watch.load_seen(), ['old|fold'])
         w.handle([self.cand('old'), self.cand('new', complete=False)])
         self.assertTrue(w.poll.isActive())                # still downloading
         w.handle([self.cand('old'), self.cand('new', size=20)])
@@ -224,6 +230,22 @@ class Watcher(unittest.TestCase):
         self.assertFalse(w.poll.isActive())
         w.handle([self.cand('old'), self.cand('new', size=20)])
         self.assertEqual(len(ready), 1)                   # never twice
+        again = nx.RepackWatcher(_Prefs())                # nor by the agent, or a new window
+        again.ready.connect(ready.append)
+        again.handle([self.cand('new', size=20)])
+        again.handle([self.cand('new', size=20)])
+        self.assertEqual(len(ready), 1)
+
+    def test_old_prefs_list_is_carried_over(self):
+        prefs = _Prefs()
+        prefs.seen_repacks = ['old|fold']
+        w = nx.RepackWatcher(prefs)
+        ready = []
+        w.ready.connect(ready.append)
+        w.handle([self.cand('old')])
+        w.handle([self.cand('old')])
+        self.assertEqual(ready, [])                       # not first run, already seen
+        self.assertEqual(self.watch.load_seen(), ['old|fold'])
 
     def test_installed_only_when_it_is_an_update(self):
         prefs = _Prefs()

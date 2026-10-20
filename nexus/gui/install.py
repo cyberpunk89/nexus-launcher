@@ -7,7 +7,7 @@ from PyQt6.QtCore import pyqtSignal, QFileSystemWatcher, QObject, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import paths as NX
+from nexus import paths as NX, watch
 
 from .common import CLI_BIN, HOME
 from .fmt import fmt_bytes, fmt_size
@@ -28,7 +28,8 @@ class RepackWatcher(QObject):
     """Notices repack downloads in the scan folders. A QFileSystemWatcher
     catches new folders; while one is still downloading a slow poll follows
     it. A folder is announced (`ready`) once it's complete and its size held
-    still between two scans, and only once (LibraryPrefs.seen_repacks).
+    still between two scans, and only once (nexus/watch.py, shared with
+    the background agent).
     Every scan's candidates also go out as `scanned` (update detection)."""
     ready = pyqtSignal(dict)
     scanned = pyqtSignal(list)
@@ -50,6 +51,7 @@ class RepackWatcher(QObject):
         self._skip: set[str] = set()                  # folders Nexus installs itself
         self._sizes: dict[str, int] = {}
         self._busy = False
+        watch.migrate(prefs.seen_repacks)             # once: it used to live in library.json
 
     def start(self, delay_ms: int = 8000):
         """First scan a little after startup (a child timer: it dies with us)."""
@@ -89,29 +91,13 @@ class RepackWatcher(QObject):
         self._skip.add(str(Path(path)))
 
     def handle(self, cands: list[dict]):
-        first = self.prefs.seen_repacks is None
-        seen = {} if first else dict.fromkeys(self.prefs.seen_repacks)   # ordered set
-        waiting = False
-        for c in cands:
-            key = f"{c['path']}|{c.get('fingerprint') or ''}"
-            if key in seen:
-                continue
-            if str(Path(c['path'])) in self._skip:
-                seen[key] = None
-                continue
-            if first or (c.get('installed') and not c.get('update_for')):
-                seen[key] = None                      # there already / nothing to offer
-                continue
-            size, prev = c.get('size_bytes'), self._sizes.get(c['path'])
-            self._sizes[c['path']] = size
-            if not c.get('complete', True) or prev != size:
-                waiting = True                     # still arriving: look again soon
-                continue
-            seen[key] = None
+        # Under watch.py's lock: the background agent scans the same folders,
+        # and whichever of us sees a finished download first announces it.
+        with watch.edit_seen() as box:
+            ready, box['seen'], waiting = watch.triage(cands, box['seen'], self._sizes,
+                                                       self._skip)
+        for c in ready:
             self.ready.emit(c)
-        if list(seen) != list(self.prefs.seen_repacks or ()):
-            self.prefs.seen_repacks = list(seen)
-            self.prefs.save()
         if waiting and not self.poll.isActive():
             self.poll.start()
         elif not waiting:
