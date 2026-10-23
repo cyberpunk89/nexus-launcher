@@ -49,8 +49,9 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # token = ""              # a desktop app token from that server's /account page
 
 [updates]
-# github_token = ""       # read access to the private nexus-launcher repo: Nexus then checks once
-                          # a day for a newer release and shows a notice with a link. Unset = no check.
+# check = true            # once a day, ask GitHub whether a newer Nexus release is out and
+                          # show a notice with a link (nothing is downloaded); false = never ask
+# github_token = ""       # optional: sent with that request (only raises GitHub's rate limit)
 
 [discord]
 # client_id = ""          # an application you created at discord.com/developers;

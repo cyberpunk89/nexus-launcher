@@ -37,12 +37,18 @@ class Updates(unittest.TestCase):
         self.assertEqual(updates.parse('nightly'), ())
         self.assertGreater(updates.parse('0.10.0'), updates.parse('0.9.9'))
 
-    def test_no_token_no_request(self):
+    def test_no_token_asks_anonymously(self):
+        """The repo is public: no token needed, and none is sent."""
+        with mock.patch.object(net, 'get', return_value=RELEASE) as get:
+            self.assertEqual(updates.available('0.3.0')['version'], '9.1.0')
+        self.assertEqual(get.call_args.kwargs['headers'], {})
+
+    def test_turned_off_no_request(self):
         with mock.patch.object(net, 'get') as get:
-            self.assertIsNone(updates.available('0.3.0'))
-            self.conf.write_text('[updates]\ngithub_token = "  "\n')
+            self.conf.write_text('[updates]\ncheck = false\ngithub_token = "ghp_secret"\n')
             self.assertIsNone(updates.available('0.3.0'))
         get.assert_not_called()
+        self.assertFalse(updates.CACHE.exists())
 
     def test_newer_release_found_with_token_sent(self):
         self.token()

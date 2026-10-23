@@ -1,12 +1,13 @@
-"""Is a newer Nexus release out? The release repo is private, so this only
-asks — and only ever sends a request — when a GitHub token is configured:
+"""Is a newer Nexus release out? One anonymous request a day to GitHub's API
+for the public nexus-launcher repo's latest release:
 
     [updates]
-    github_token = "ghp_..."    # read access to the nexus-launcher repo
+    check = false               # never ask (default: true)
+    github_token = "ghp_..."    # optional: sent if set (higher rate limit)
 
 The answer is cached for a day (net.cached_json), so the window start-up
 check is one request a day at most. Nothing is downloaded: the notice links
-to the release page and friends install the new build themselves."""
+to the release page and people install the new build themselves."""
 
 import json
 import tomllib
@@ -20,13 +21,23 @@ CACHE = CACHE_DIR / 'update-check.json'
 MAX_AGE = 24 * 3600
 
 
-def token() -> str:
-    """[updates] github_token from config.toml ('' = unset)."""
+def _settings() -> dict:
+    """The [updates] table of config.toml ({} when missing or unreadable)."""
     try:
         data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig')).get('updates') or {}
     except (OSError, ValueError):
-        return ''
-    t = data.get('github_token') if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def enabled() -> bool:
+    """[updates] check: on unless set to false."""
+    return _settings().get('check', True) is not False
+
+
+def token() -> str:
+    """[updates] github_token from config.toml ('' = unset)."""
+    t = _settings().get('github_token')
     return t.strip() if isinstance(t, str) else ''
 
 
@@ -42,16 +53,17 @@ def parse(version: str) -> tuple[int, ...]:
 
 def _latest(tok: str) -> dict:
     """The latest release as {'tag', 'url'} (the token is never cached)."""
-    data = json.loads(net.get(API, timeout=10, headers={'Authorization': f'Bearer {tok}'}))
+    headers = {'Authorization': f'Bearer {tok}'} if tok else {}
+    data = json.loads(net.get(API, timeout=10, headers=headers))
     return {'tag': str(data['tag_name']), 'url': str(data['html_url'])}
 
 
 def available(current: str = __version__) -> dict | None:
-    """{'version', 'url'} when a newer release exists, else None. No token:
-    None, with no request."""
-    tok = token()
-    if not tok:
+    """{'version', 'url'} when a newer release exists, else None. With
+    [updates] check = false: None, with no request."""
+    if not enabled():
         return None
+    tok = token()
     rel = net.cached_json(CACHE, MAX_AGE, lambda: _latest(tok))
     if not isinstance(rel, dict):
         return None

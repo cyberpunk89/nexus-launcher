@@ -368,7 +368,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.repacks.scanned.connect(self._repack_scanned)
         self.repacks.start()
         QTimer.singleShot(4000, self.protonpage.refresh)  # GE update badge (6 h cache)
-        QTimer.singleShot(6000, self._check_update)        # new Nexus release (daily, token only)
+        QTimer.singleShot(6000, self._check_update)        # new Nexus release (daily, [updates] check)
         # "Playing now": a cheap /proc scan, only while the window is visible.
         self._run_timer = QTimer(self)
         self._run_timer.setInterval(15000)

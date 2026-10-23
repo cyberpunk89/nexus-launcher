@@ -1,11 +1,11 @@
 # Nexus on Windows
 
 Nexus has a Windows edition, called **nexus-launcher** for now (the name may change). Games
-on Windows already run natively, so it installs repacks with their own `setup.exe`, adds them
-to your library and keeps them tidy. It doesn't use Proton or Wine.
+on Windows already run natively, so it runs a game's own `setup.exe`, adds the game to your
+library and keeps it tidy. It doesn't use Proton or Wine.
 
-> Nexus is an unofficial hobby project, not affiliated with FitGirl, Valve, Epic or any
-> store. Only install software you are legally allowed to use.
+> Nexus is an unofficial hobby project, not affiliated with Valve, Epic or any store. It
+> never downloads games by itself. Only install software you are allowed to use.
 
 > **Draft.** No Windows release has been published yet; details may change once the
 > first one is tested.
@@ -26,6 +26,10 @@ Download from the release page (Windows 10 or 11, 64-bit). Pick one:
 Either way, Nexus keeps its settings under `%APPDATA%\nexus-launcher` and its data and cache
 under `%LOCALAPPDATA%\nexus-launcher`. That holds for the portable zip too, so the zip and
 an installed copy share the same settings and library.
+
+Once a day Nexus asks GitHub whether a newer release is out and, if so, shows a notice with
+a link to it. Nothing is downloaded. To turn that off, put `check = false` under `[updates]`
+in `%APPDATA%\nexus-launcher\config.toml`.
 
 Uninstalling (Settings → Apps) asks whether to delete that data too. The answer defaults to
 **No**, so a reinstall picks up where you left off. Installed games are never touched.
@@ -63,11 +67,11 @@ If it finds none, the wizard says so; you can set one up later in **Settings →
 client**. Transmission only writes its settings file when it quits, so restart it after
 changing them.
 
-## Antivirus and FitGirl repacks
+## Antivirus
 
-Windows Defender (and other antivirus) often flags repack files, such as `unarc.dll`,
-`ISDone.dll` or a game's modified DLLs, as threats. These are usually false alarms, but
-whether to trust a download is **your call**. The FitGirl FAQ explains why it happens.
+Windows Defender (and other antivirus) sometimes flags files inside game installers, such
+as the unpacking helpers `unarc.dll` and `ISDone.dll` or a game's modified DLLs, as
+threats. Many of these are false alarms, but whether to trust a download is **your call**.
 
 What Nexus does:
 
@@ -81,8 +85,8 @@ it or exclude your games folder there, then install again. If you'd rather not, 
 
 ## The admin prompt
 
-FitGirl's `setup.exe` asks for administrator rights, so Windows shows a UAC prompt each time
-Nexus starts an install. Nexus itself doesn't run as administrator. If you click **No**, the
+Most game installers (`setup.exe`) ask for administrator rights, so Windows shows a UAC
+prompt each time Nexus starts an install. Nexus itself doesn't run as administrator. If you click **No**, the
 install is cancelled and the empty folder is cleaned up.
 
 ## Which stores are read
