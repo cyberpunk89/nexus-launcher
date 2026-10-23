@@ -6,6 +6,8 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QMenu, QPlainTextEdit,
     QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
+from nexus.features import has
+
 from .fmt import fmt_bytes
 from .theme import FS, G, P, SP
 
@@ -76,6 +78,8 @@ class ProtonPage(QWidget):
         lay.addStretch()
 
     def refresh(self, force=False):
+        if not has('proton'):            # Windows: no Proton page, nothing to read
+            return
         self.btn_check.setEnabled(False)
         args = ['--protons', '--json'] + (['--refresh'] if force else [])
 

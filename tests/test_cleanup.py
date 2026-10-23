@@ -11,7 +11,8 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import cleanup as C  # noqa: E402
+from tests.oskind import linux_only, windows_only  # noqa: E402
+from nexus import cleanup as C, platform  # noqa: E402
 
 
 class Rules(unittest.TestCase):
@@ -67,19 +68,34 @@ class Rules(unittest.TestCase):
         got = C.stale_data({'kept'}, self.d / 'art', self.d / 'integ')
         self.assertEqual(len(got), 2)
 
+    @linux_only
     def test_manual_trash_writes_trashinfo(self):
+        from nexus.platform import linux
         victim = self.d / 'victim dir'
         victim.mkdir()
         (victim / 'f').write_text('data')
-        with mock.patch.object(C, 'TRASH', self.d / 'Trash'), \
-                mock.patch.object(C.shutil, 'which', return_value=None):
+        with mock.patch.object(linux, 'TRASH', self.d / 'Trash'), \
+                mock.patch.object(linux.shutil, 'which', return_value=None):
             C.trash(victim)
+            self.assertEqual(C.trash_size(), 4)
         self.assertFalse(victim.exists())
         self.assertTrue((self.d / 'Trash' / 'files' / 'victim dir' / 'f').exists())
         info = (self.d / 'Trash' / 'info' / 'victim dir.trashinfo').read_text()
         self.assertIn('Path=', info)
         self.assertIn('victim%20dir', info)
         self.assertIn('DeletionDate=', info)
+
+    @windows_only
+    def test_recycle_bin(self):
+        victim = self.d / 'victim dir'
+        victim.mkdir()
+        (victim / 'f').write_text('data')
+        before = platform.trash_size()
+        C.trash(victim)
+        self.assertFalse(victim.exists())
+        self.assertGreaterEqual(platform.trash_size(), before)
+        with self.assertRaises(OSError):
+            C.trash(self.d / 'not there')
 
 
 if __name__ == '__main__':

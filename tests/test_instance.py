@@ -43,8 +43,15 @@ class SingleInstance(unittest.TestCase):
     def _run(self, *args):
         env = dict(os.environ, NEXUS_INSTANCE=self.name, QT_QPA_PLATFORM='offscreen',
                    NEXUS_NO_GAMEPAD='1')
-        return subprocess.run([sys.executable, str(REPO / 'bin' / 'nexus'), *args], env=env,
-                              capture_output=True, text=True, timeout=20)
+        # Keep serving while it runs: on Windows its write waits for our read.
+        p = subprocess.Popen([sys.executable, str(REPO / 'bin' / 'nexus'), *args], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        end = time.monotonic() + 20
+        while p.poll() is None and time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        out, err = p.communicate(timeout=5)
+        return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
     def test_second_launch_forwards_and_exits(self):
         r = self._run('--theatre')

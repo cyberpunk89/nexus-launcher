@@ -9,8 +9,15 @@ from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
 from PyQt6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
     QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from ..features import has
 from .fmt import fmt_bytes, fmt_hours, fmt_relative, fmt_size
 from .theme import P, PAL, pill, R, SP
+
+
+# Cleanup categories that need a Linux-only feature (features.has).
+CATEGORY_NEEDS = {'orphan-prefix': 'compatdata', 'shadercache': 'compatdata',
+                  'mesa-cache': 'proton', 'unused-proton': 'proton',
+                  'game-snapshot': 'btrfs'}
 
 
 # Segment colours for the per-game storage bar (Rosé Pine accents, then tints).
@@ -300,7 +307,9 @@ class StoragePage(QWidget):
         clear_layout(self.clean_rows)
         self.checks = {}
         self.forever_bar.setVisible(False)
-        self.cands = data.get('candidates', [])
+        self.cands = [c for c in data.get('candidates', [])
+                      if c['category'] not in CATEGORY_NEEDS
+                      or has(CATEGORY_NEEDS[c['category']])]
         cats = data.get('categories', {})
         if not data:
             self.clean_rows.addWidget(label(f"Couldn't scan: {err}", "Muted", wrap=True))

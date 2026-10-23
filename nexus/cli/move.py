@@ -10,11 +10,12 @@ import errno
 import json
 import os
 import shutil
-import subprocess
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+from nexus import platform
 
 from .common import emit_event, log, Logger, use_logger
 
@@ -37,19 +38,23 @@ def file_map(root: Path) -> dict[str, int]:
 
 
 def rebase(entry: dict, old: Path, new: Path) -> dict:
-    """The registry fields that pointed into `old`, pointed into `new`."""
+    """The registry fields that pointed into `old`, pointed into `new`
+    (Windows paths compare without case, either slash)."""
     out = {}
-    o = str(old).rstrip('/')
-    for k in ('compatdata', 'wine_prefix', 'launcher', 'exe'):
+    o = os.path.normcase(str(old)).rstrip('/\\')
+    for k in ('compatdata', 'wine_prefix', 'launcher', 'exe', 'install_dir', 'uninstaller'):
         v = entry.get(k)
-        if isinstance(v, str) and (v == o or v.startswith(o + '/')):
+        if not isinstance(v, str):
+            continue
+        n = os.path.normcase(v)
+        if n == o or n.startswith(o + '/') or n.startswith(o + '\\'):
             out[k] = str(new) + v[len(o):]
     out['install_base'] = str(new.parent)
     return out
 
 
 def _copy(src: Path, dest: Path, total: int) -> None:
-    """cp -a (reflinked where the filesystem can), reporting progress as
+    """platform.copy_tree (cp -a, reflinked where it can be), reporting progress as
     `@nexus move {done,total}` events while it runs."""
     stop = threading.Event()
 
@@ -59,13 +64,10 @@ def _copy(src: Path, dest: Path, total: int) -> None:
     t = threading.Thread(target=report, daemon=True)
     t.start()
     try:
-        r = subprocess.run(['cp', '-a', '--reflink=auto', f"{src}/.", f"{dest}/"],
-                           capture_output=True, text=True)
+        platform.copy_tree(src, dest)
     finally:
         stop.set()
         t.join()
-    if r.returncode != 0:
-        raise OSError(r.stderr.strip() or f"cp exited {r.returncode}")
     emit_event('move', {'done': total, 'total': total})
 
 
@@ -95,7 +97,7 @@ def cmd_move(install_base: Path, slug: str, dest_base: str, as_json: bool = Fals
         return _fail(f"'{slug}' is already in {base}", as_json)
     if dest.exists() or dest.is_symlink():
         return _fail(f"{dest} already exists", as_json)
-    if prefix_processes(_prefix_markers(entry)):
+    if game_processes(entry):
         return _fail(f"'{entry['display_name']}' is running — quit it first", as_json)
     if entry.get('steam_appid') and steam_is_running():
         return _fail("Steam is running — quit it first (it rewrites its shortcuts on exit)",
@@ -177,7 +179,7 @@ def fix_heroic_prefix(entry: dict | None) -> None:
         return
     gc_path = cfg_dir / 'GamesConfig' / f"{entry['heroic_app_name']}.json"
     try:
-        gc = json.loads(gc_path.read_text())
+        gc = json.loads(gc_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return                                  # none, or unreadable: never rewritten
     inner = gc.get(entry['heroic_app_name']) if isinstance(gc, dict) else None
@@ -227,4 +229,4 @@ from .registry import (load_registry, registry_get, update_registry_entry,
     update_registry_size)  # noqa: E402
 from .snapshots import make_game_dir, remove_game_dir, snapshot_dirs, SnapshotError  # noqa: E402
 from .steam import steam_is_running  # noqa: E402
-from .sunshine import _owned_game_dir, _prefix_markers, prefix_processes  # noqa: E402
+from .sunshine import _owned_game_dir, game_processes  # noqa: E402

@@ -6,6 +6,7 @@ from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGra
     QPainter, QPainterPath, QPen)
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QToolButton, QWidget
 
+from ..features import has
 from .common import WORDMARK_SVG
 from .theme import FONTS, FS, G, GRAD, P, pill, SP
 
@@ -163,6 +164,10 @@ class _TabHandle:
         pass                                   # the control tracks its own current
 
 
+# System-page icons that need a Linux-only feature (features.has), by glyph.
+ICON_NEEDS = {G['proton']: 'proton'}
+
+
 class TopBar(QFrame):
     """The app's navigation: wordmark, the four content tabs, then search,
     the system pages as icons, and Install. A faint gradient hairline sits
@@ -233,8 +238,12 @@ class TopBar(QFrame):
             + (f" — {len(pads)} controllers, lowest shown" if len(pads) > 1 else ''))
 
     def add_icon(self, glyph, tip) -> TopIcon:
+        """A system-page icon; hidden when its page needs a feature this
+        build lacks (the Proton page on Windows)."""
         b = TopIcon(glyph, tip)
         self.icons_lay.addWidget(b)
+        if (need := ICON_NEEDS.get(glyph)) and not has(need):
+            b.hide()
         return b
 
     def set_compact(self, on: bool):

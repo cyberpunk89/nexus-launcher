@@ -22,7 +22,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import paths as NX, platform
 
 from .common import atomic_write, backup_file
 
@@ -150,7 +150,8 @@ def export_settings(dest: Path, with_art: bool = False, with_secrets: bool = Fal
                         'files': files, 'secrets': with_secrets, 'art_images': with_art}
             _add(tf, 'manifest.json', json.dumps(manifest, indent=1).encode())
         os.chmod(tmp, 0o600)
-        os.replace(tmp, dest)
+        platform.keep_private(tmp)
+        platform.replace(tmp, dest)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -211,7 +212,7 @@ def import_settings(src: Path, dry_run: bool = False) -> dict:
             text = data.decode('utf-8', 'replace')
             if name == 'config/config.toml':
                 try:
-                    old = dest.read_text()
+                    old = dest.read_text(encoding='utf-8')
                 except OSError:
                     old = ''
                 text, kept = keep_secrets(text, old)
@@ -248,7 +249,7 @@ def import_settings(src: Path, dry_run: bool = False) -> dict:
                                               'was': str(d) if d else None})
     if SESSIONS in files:
         try:
-            have = set((NX.DATA_DIR / 'sessions.jsonl').read_text().splitlines())
+            have = set((NX.DATA_DIR / 'sessions.jsonl').read_text(encoding='utf-8').splitlines())
         except OSError:
             have = set()
         new = [ln for ln in files[SESSIONS].decode('utf-8', 'replace').splitlines()
@@ -279,8 +280,8 @@ def import_settings(src: Path, dry_run: bool = False) -> dict:
     if plan['sessions_added']:
         p = NX.DATA_DIR / 'sessions.jsonl'
         p.parent.mkdir(parents=True, exist_ok=True)
-        have = set(p.read_text().splitlines()) if p.exists() else set()
-        with open(p, 'a') as f:
+        have = set(p.read_text(encoding='utf-8').splitlines()) if p.exists() else set()
+        with open(p, 'a', encoding='utf-8') as f:
             for ln in files[SESSIONS].decode('utf-8', 'replace').splitlines():
                 if ln.strip() and ln not in have:
                     f.write(ln + '\n')

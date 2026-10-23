@@ -8,12 +8,17 @@ service (`--agent-enable`); one at a time (an flock on DATA_DIR/agent.lock).
 With a Nexus window open, the agent hands it what it finds: a finished
 download (`--agent-ready`) or an install to start (`--agent-install`), so
 those show as the window's own toasts and jobs. Without one it says so with
-notify-send (and alerts push to the phone) and installs by itself. Both
-sides decide through the same locked files (watch.py, torrent.claim_install,
-alerts.json), so nothing is announced or installed twice."""
+a desktop notification (platform.notify_local; alerts push to the phone)
+and installs by itself. Both sides decide through the same locked files
+(watch.py, torrent.claim_install, alerts.json), so nothing is announced or
+installed twice.
+
+Windows has no systemd: `--agent-enable` there puts a shortcut in the
+Startup folder that starts the window in the tray (`nexus --hidden`), and
+the window does this work on its own timers while hidden. `--agent` still
+runs this console agent for anyone who wants one."""
 
 import contextlib
-import fcntl
 import io
 import json
 import os
@@ -24,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from nexus import instance, paths as NX
+from nexus import features, instance, paths as NX, platform
 
 from .common import CLI_BIN, DATA_DIR, LOG_DIR
 
@@ -46,7 +51,7 @@ def _take_lock():
     fh = open(AGENT_LOCK, 'a')
     for _ in range(10):
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            platform.lock(fh, blocking=False)
             return fh
         except OSError:
             time.sleep(0.2)
@@ -59,12 +64,10 @@ def _say(msg: str) -> None:
 
 
 def _desktop(title: str, body: str) -> None:
-    if shutil.which('notify-send'):
-        try:
-            subprocess.run(['notify-send', '-a', 'Nexus', '-i', 'nexus', title, body],
-                           capture_output=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    try:
+        platform.notify_local(title, body)
+    except OSError as e:
+        _say(f"[!] desktop notification: {e}")
 
 
 def playing() -> bool:
@@ -80,7 +83,7 @@ def playing() -> bool:
 def install_cmd(path: str, h: str, config: dict) -> list[str]:
     """The install the window's one-click toast would start (its Settings
     defaults), for a finished download."""
-    cmd = [str(CLI_BIN), path, '--yes', '--log', '--defer-steam']
+    cmd = [*NX.cli_command(), path, '--yes', '--log', '--defer-steam']
     if not config.get('unattended', True):
         cmd.append('--interactive')
     if protongen_default_config() is not None:
@@ -184,7 +187,7 @@ class Agent:
         with log:
             proc = subprocess.Popen(install_cmd(path, h, config), stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT,
-                                    start_new_session=True)
+                                    **platform.new_group())
         self.children.append((proc, name))
         _say(f"Installing {name} (pid {proc.pid})")
         _desktop(f"Installing {name}", "The download finished; Nexus is installing it.")
@@ -263,7 +266,7 @@ class Agent:
         if not load_config().get('api_key') or playing():
             return EVERY['art']
         # Its own process (it's long, and stamps itself: at most once a day).
-        subprocess.run([str(CLI_BIN), '--fill-art', '--if-stale', '--json'],
+        subprocess.run([*NX.cli_command(), '--fill-art', '--if-stale', '--json'],
                        stdin=subprocess.DEVNULL, capture_output=True, timeout=1800)
         return EVERY['art']
 
@@ -279,6 +282,8 @@ def cmd_agent(base: Path) -> int:
         agent.stop = True
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    if hasattr(signal, 'SIGBREAK'):           # Windows: Ctrl+Break to our group
+        signal.signal(signal.SIGBREAK, stop)
     with fh:
         agent.run()
     return 0
@@ -314,16 +319,54 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
+# ── Windows: "Start with Windows", a Startup-folder shortcut ─────────────
+
+STARTUP_NAME = 'Nexus.lnk'          # its name in Task Manager's Startup apps
+
+
+def startup_link() -> Path | None:
+    """Where "Start with Windows" puts its shortcut; None on Linux."""
+    d = platform.startup_dir(NX.HOME)
+    return d / STARTUP_NAME if d else None
+
+
+def set_startup(on: bool) -> None:
+    """Create or remove the shortcut that starts Nexus in the tray at
+    sign-in (`nexus --hidden`). Raises OSError."""
+    link = startup_link()
+    if link is None:
+        raise OSError("there's no Startup folder here")
+    if not on:
+        link.unlink(missing_ok=True)
+        return
+    exe, *args = platform.gui_command(NX.REPO)
+    platform.create_shortcut(link, Path(exe), args=subprocess.list2cmdline([*args, '--hidden']),
+                             workdir=NX.REPO if args else Path(exe).parent,
+                             icon=None if args else Path(exe))
+
+
+def _agent_state() -> dict:
+    try:
+        return json.loads(AGENT_STATE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
 def agent_status() -> dict:
+    state = _agent_state()
+    if not features.has('systemd_agent'):
+        link = startup_link()
+        on = bool(link and link.is_file())
+        return {'startup': True, 'systemd': False, 'installed': on, 'current': on,
+                'enabled': on, 'active': on, 'path': str(link) if link else None,
+                'running': instance.agent_running() or instance.window_running(),
+                'updated_at': state.get('updated_at'), 'ran': state.get('ran') or {},
+                'installing': state.get('installing') or []}
     unit = UNIT_DIR / UNIT_NAME
     enabled = _systemctl('is-enabled', UNIT_NAME)
     active = _systemctl('is-active', UNIT_NAME)
     try:
-        state = json.loads(AGENT_STATE.read_text())
-    except (OSError, ValueError):
-        state = {}
-    try:
-        current = unit.read_text() == unit_text()
+        current = unit.read_text(encoding='utf-8') == unit_text()
     except OSError:
         current = False
     return {'installed': unit.exists(), 'current': current,
@@ -338,7 +381,12 @@ def agent_status() -> dict:
 def cmd_agent_enable(enable: bool, as_json: bool) -> int:
     unit = UNIT_DIR / UNIT_NAME
     errors = []
-    if enable:
+    if not features.has('systemd_agent'):
+        try:
+            set_startup(enable)
+        except OSError as e:
+            errors.append(f"couldn't {'add' if enable else 'remove'} the Startup shortcut: {e}")
+    elif enable:
         try:
             if unit.exists():
                 backup_file(unit)
@@ -363,7 +411,10 @@ def cmd_agent_enable(enable: bool, as_json: bool) -> int:
     else:
         for e in errors:
             print(f"  [!] {e}", file=sys.stderr)
-        if not errors:
+        if not errors and status.get('startup'):
+            print("Nexus " + ("starts in the tray when you sign in to Windows." if enable
+                              else "no longer starts with Windows."))
+        elif not errors:
             print("The Nexus agent is " + ("on: it runs in the background from now on."
                                            if enable else "off."))
     return 1 if errors else 0
@@ -374,9 +425,12 @@ def cmd_agent_status(as_json: bool) -> None:
     if as_json:
         print(json.dumps(s))
         return
-    print(f"Service: {'installed' if s['installed'] else 'not installed'}, "
-          f"{'enabled' if s['enabled'] else 'disabled'}, "
-          f"{'active' if s['active'] else 'inactive'}")
+    if s.get('startup'):
+        print(f"Start with Windows: {'on (' + s['path'] + ')' if s['enabled'] else 'off'}")
+    else:
+        print(f"Service: {'installed' if s['installed'] else 'not installed'}, "
+              f"{'enabled' if s['enabled'] else 'disabled'}, "
+              f"{'active' if s['active'] else 'inactive'}")
     print(f"Agent running: {'yes' if s['running'] else 'no'}"
           + (f" (last seen {s['updated_at']})" if s['updated_at'] else ''))
     for task, when in sorted(s['ran'].items()):

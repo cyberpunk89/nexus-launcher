@@ -1,5 +1,7 @@
 """The Activity page and strip: one card per job, plus the debug log."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
@@ -118,6 +120,8 @@ class ActivityCard(QFrame):
         self.detail.setText(j.detail if j.active else '')
         self.detail.setVisible(not self.compact and bool(j.detail) and j.active)
         self.btn_cancel.setVisible(j.active and j.state != 'cancelling')
+        self.btn_cancel.setEnabled(j.stoppable)
+        self.btn_cancel.setToolTip('' if j.stoppable else ELEVATED_TIP)
         self.bar.setVisible(j.active)
         if j.state == 'queued':
             self.bar.setRange(0, 1)
@@ -148,9 +152,17 @@ class ActivityCard(QFrame):
             b.setToolTip(c['path'])
             b.setChecked(c['path'] == ev.get('chosen'))
             group.addButton(b)
-            b.toggled.connect(lambda on, p=c['path']: on and self.exe_chosen.emit(slug, p))
+            b.setProperty('exe_path', c['path'])
+            b.toggled.connect(self._exe_toggled)
             lay.addWidget(b)
+        self._exe_slug = slug
         self.layout().insertWidget(self.layout().indexOf(self.detail) + 1, self.exe_box)
+
+    def _exe_toggled(self, on):
+        # Bound methods, not lambdas, in this file: Qt drops them with their
+        # widget, and a lambda left behind crashed the Windows runner.
+        if on:
+            self.exe_chosen.emit(self._exe_slug, self.sender().property('exe_path'))
 
     def tick(self):
         j = self.job
@@ -177,7 +189,7 @@ class ActivityPage(QWidget):
         head.addWidget(clear)
         self.btn_debug = QPushButton("Debug log ▾")
         self.btn_debug.setToolTip("Raw output of every job (Ctrl+`)")
-        self.btn_debug.clicked.connect(lambda: self.show_debug(not self.debug.isVisible()))
+        self.btn_debug.clicked.connect(self._toggle_debug)
         head.addWidget(self.btn_debug)
         lay.addLayout(head)
 
@@ -219,10 +231,18 @@ class ActivityPage(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(1000)                # elapsed time, only while jobs run
         self.timer.timeout.connect(self._tick)
-        jobs.changed.connect(lambda: (self.timer.isActive() or self.timer.start())
-                             if jobs.active() else self.timer.stop())
+        # A bound method, not a lambda: Qt drops it when this page goes, while
+        # a lambda on the longer-lived JobManager would still be called into
+        # a deleted page (a native crash on the Windows CI runner).
+        jobs.changed.connect(self._jobs_changed)
 
     exe_chosen = pyqtSignal(str, str)
+
+    def _jobs_changed(self):
+        if not self.jobs.active():
+            self.timer.stop()
+        elif not self.timer.isActive():
+            self.timer.start()
 
     def _pruned(self, jobs):
         for job in jobs:
@@ -270,6 +290,9 @@ class ActivityPage(QWidget):
         self.debug.moveCursor(self.debug.textCursor().MoveOperation.End)
         self.debug.insertPlainText(text)
 
+    def _toggle_debug(self):
+        self.show_debug(not self.debug.isVisible())
+
     def show_debug(self, on=True):
         self.debug.setVisible(on)
         if on:
@@ -301,7 +324,11 @@ class ActivityStrip(QWidget):
         jobs.changed.connect(self.refresh)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
-        self.timer.timeout.connect(lambda: self.card and self.card.tick())
+        self.timer.timeout.connect(self._tick)
+
+    def _tick(self):
+        if self.card:
+            self.card.tick()
 
     def refresh(self):
         active = self.jobs.active()
@@ -328,5 +355,5 @@ class ActivityStrip(QWidget):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .jobs import Job, JobManager  # noqa: E402
+from .jobs import ELEVATED_TIP, Job, JobManager  # noqa: E402
 from .widgets import ask, EmptyState, icon_button, icon_label, label, plain_label  # noqa: E402

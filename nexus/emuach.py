@@ -174,7 +174,7 @@ def schema(appid: int, steam_root: Path | None = None, cache_only: bool = False)
                      if a['icon_gray'] else None} for a in local]
     path = CACHE_DIR / 'achschema' / f"{appid}.json"
     try:
-        cached = json.loads(path.read_text())
+        cached = json.loads(path.read_text(encoding='utf-8'))
         # An empty schema is as likely an age gate or a changed page as a game
         # with no achievements, so it's only trusted for a few hours.
         if cache_only or time.time() - path.stat().st_mtime < (SCHEMA_AGE if cached
@@ -188,12 +188,12 @@ def schema(appid: int, steam_root: Path | None = None, cache_only: bool = False)
         items = parse_community(page.decode('utf-8', 'replace'))
     except net.NetError:
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             return []
     if not items:
         try:                                    # never replace a good schema with nothing
-            old = json.loads(path.read_text())
+            old = json.loads(path.read_text(encoding='utf-8'))
             if old:
                 os.utime(path)                  # and don't re-ask on every call
                 return old

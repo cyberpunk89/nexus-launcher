@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRect, QRectF, QSize, Qt, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QFont, QImage, QImageReader, QLinearGradient,
-    QPainter, QPainterPath, QPixmap)
+from PyQt6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QImage, QImageReader,
+    QLinearGradient, QPainter, QPainterPath, QPixmap)
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 from nexus import net, paths as NX
@@ -22,6 +22,24 @@ MOTION = os.environ.get('NEXUS_NO_MOTION') != '1'
 
 def anim_ms(ms: int) -> int:
     return ms if MOTION else 0
+
+
+def screen_dpr() -> float:
+    """Device pixels per logical pixel (1.25 at 125% display scaling): art
+    is decoded at w*dpr x h*dpr and tagged with it, so it stays sharp and
+    is still drawn at w x h."""
+    app = QGuiApplication.instance()
+    return app.devicePixelRatio() if app is not None else 1.0
+
+
+def _device(n: int, dpr: float) -> int:
+    return max(1, round(n * dpr))
+
+
+def hidpi_pixmap(img: QImage, dpr: float) -> QPixmap:
+    pm = QPixmap.fromImage(img)
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 _TINTS: dict[str, QColor] = {}
@@ -74,9 +92,11 @@ def fit_image(path: str, w: int, h: int, cover: bool) -> QImage | None:
 
 
 def cover_pixmap(path: str, w: int, h: int) -> QPixmap | None:
-    """Load and center-crop cover art to fill w x h (see cover_image)."""
-    img = cover_image(path, w, h)
-    return QPixmap.fromImage(img) if img is not None else None
+    """Load and center-crop cover art to fill w x h logical pixels (see
+    cover_image), at the screen's device pixel ratio."""
+    dpr = screen_dpr()
+    img = cover_image(path, _device(w, dpr), _device(h, dpr))
+    return hidpi_pixmap(img, dpr) if img is not None else None
 
 
 def cover_image(path: str, w: int, h: int, grey: bool = False) -> QImage | None:
@@ -154,7 +174,8 @@ def rounded_pixmap(src: QPixmap, radius: float) -> QPixmap:
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
     pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     clip = QPainterPath()
-    clip.addRoundedRect(QRectF(0, 0, src.width(), src.height()), radius, radius)
+    size = src.deviceIndependentSize()           # logical: the painter's units
+    clip.addRoundedRect(QRectF(0, 0, size.width(), size.height()), radius, radius)
     pt.setClipPath(clip)
     pt.drawPixmap(0, 0, src)
     pt.end()
@@ -168,17 +189,18 @@ def placeholder_pixmap(name: str, w: int, h: int) -> QPixmap:
     """Stand-in art: the spec's `{color.surface-2}` tile fill with a faint accent
     wash and the game's initials in muted text. Memoised (it's painted on
     every hero repaint while a game has no art)."""
-    key = (name, w, h, P['surface_2'], P['accent'])
+    key = (name, w, h, P['surface_2'], P['accent'], screen_dpr())
     pm = _PLACEHOLDERS.get(key)
     if pm is None:
         if len(_PLACEHOLDERS) > 400:
             _PLACEHOLDERS.clear()
-        pm = _PLACEHOLDERS[key] = _paint_placeholder(name, w, h)
+        pm = _PLACEHOLDERS[key] = _paint_placeholder(name, w, h, key[-1])
     return pm
 
 
-def _paint_placeholder(name: str, w: int, h: int) -> QPixmap:
-    out = QPixmap(w, h)
+def _paint_placeholder(name: str, w: int, h: int, dpr: float = 1.0) -> QPixmap:
+    out = QPixmap(_device(w, dpr), _device(h, dpr))
+    out.setDevicePixelRatio(dpr)
     out.fill(QColor(P['surface_2']))
     pt = QPainter(out)
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -322,7 +344,7 @@ class ArtCache(QObject):
     @staticmethod
     def _key(path, w, h, radius, grey):
         try:
-            return (path, Path(path).stat().st_mtime, w, h, radius, grey)
+            return (path, Path(path).stat().st_mtime, w, h, radius, grey, screen_dpr())
         except (OSError, TypeError):
             return None
 
@@ -341,12 +363,13 @@ class ArtCache(QObject):
         self.queue.setdefault(key, []).append(callback)
         if first:
             thumbs = self.thumbs
-            in_thread(lambda k=key: thumb_image(k[0], k[1], k[2], k[3], k[5], thumbs),
+            in_thread(lambda k=key: thumb_image(k[0], k[1], _device(k[2], k[6]),
+                                                _device(k[3], k[6]), k[5], thumbs),
                       lambda img, _err, k=key: self._decoded(k, img))
 
     def _decoded(self, key, img):
         cbs = self.queue.pop(key, [])
-        pm = QPixmap.fromImage(img) if img is not None else None
+        pm = hidpi_pixmap(img, key[6]) if img is not None else None
         if pm is not None:
             self.pix.pop(key, None)
             while len(self.pix) >= self.MAX_PIX:
@@ -369,15 +392,15 @@ class ArtCache(QObject):
             mtime = None
         if mtime is None:
             return None
-        key = (path, mtime, w, h, radius, grey)
+        key = (path, mtime, w, h, radius, grey, screen_dpr())
         pm = self.pix.pop(key, None)
         if pm is None:
             pm = cover_pixmap(path, w, h)
             if pm is None:
                 return None
             if grey:
-                pm = QPixmap.fromImage(pm.toImage().convertToFormat(
-                    QImage.Format.Format_Grayscale8))
+                pm = hidpi_pixmap(pm.toImage().convertToFormat(
+                    QImage.Format.Format_Grayscale8), pm.devicePixelRatio())
             pm = rounded_pixmap(pm, radius)
             while len(self.pix) >= self.MAX_PIX:
                 self.pix.pop(next(iter(self.pix)))
@@ -388,7 +411,7 @@ class ArtCache(QObject):
         """pixmap(), decoded on the thread pool: callback(pixmap) here, now if
         it's already decoded, else once it is (never with None)."""
         try:
-            key = (path, Path(path).stat().st_mtime, w, h, radius, False)
+            key = (path, Path(path).stat().st_mtime, w, h, radius, False, screen_dpr())
         except (OSError, TypeError):
             return
         if key in self.pix:

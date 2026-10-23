@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QProgress
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from nexus import gamedb
+from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_hours, fmt_relative, fmt_size
@@ -139,7 +140,9 @@ def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict]
             tiles.append(('health', 'health', "All good", f"{len(checks)} checks passed",
                           'success'))
     ge = ((proton or {}).get('families') or {}).get('ge') or {}
-    if not proton:
+    if not has('proton'):               # no Proton page on Windows
+        ge = {}
+    elif not proton:
         tiles.append(('proton', 'proton', "Checking…", "Proton", 'muted'))
     elif ge.get('update'):
         tiles.append(('proton', 'proton', "Update", f"{ge.get('latest')} is out", 'warning'))
@@ -453,22 +456,26 @@ def _visible_games(hub):
             and not g.get('dup_of')]
 
 
-DUP_ORDER = ('nexus', 'steam', 'heroic')
+DUP_ORDER = ('nexus', 'steam', 'heroic', 'epic')
 
 
 def _game_store_id(g: dict) -> int | None:
     if g.get('source') == 'steam' and str(g.get('appid', '')).isdigit():
         return int(g['appid'])
+    # A store source (nexus/sources) that knows the game's Steam appid.
+    if str(g.get('store_appid') or '').isdigit() and 0 < int(g['store_appid']) < 0x80000000:
+        return int(g['store_appid'])
     v = str(g.get('umu_gameid') or '').removeprefix('umu-')
     return int(v) if v.isdigit() and 0 < int(v) < 0x80000000 else None
 
 
 def mark_duplicates(games: list[dict], enabled: bool = True) -> None:
     """The same game from more than one source (a repack and a Steam copy,
-    a Heroic and a Steam one…) keeps one tile: installed beats owned, then
-    repack > Steam > Heroic, then more play time. The others get `dup_of`
-    (the kept slug); the kept one lists the others' sources in `dup_also`.
-    Matched by Steam store id, else by name."""
+    an Epic and a Steam one…) keeps one tile: installed beats owned, then
+    repack > Steam > Heroic > Epic, then more play time. The others get
+    `dup_of` (the kept slug); the kept one lists the others' sources in
+    `dup_also`. Matched by Steam store id (a source's `store_appid` counts),
+    else by name."""
     for g in games:
         g.pop('dup_of', None)
         g.pop('dup_also', None)
@@ -648,7 +655,7 @@ class SystemWidget(DashWidget):
     KIND, TITLE, GLYPH, GRAD, LINK = 'system', "System", G['system'], 'tide', 'system'
 
     def status(self, hub) -> dict:
-        proton = getattr(hub.protonpage, 'info', None)
+        proton = getattr(getattr(hub, 'protonpage', None), 'info', None)
         return system_status(job_facts(hub.jobs.jobs), hub._disks,
                              getattr(hub.health, 'checks', []), proton)
 

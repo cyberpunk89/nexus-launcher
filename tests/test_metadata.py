@@ -152,6 +152,25 @@ class Gui(unittest.TestCase):
         nx.mark_duplicates(games, enabled=False)
         self.assertFalse(any(g.get('dup_of') for g in games))
 
+    def test_duplicates_across_epic_and_steam(self):
+        games = [{'slug': 'epic-Fig', 'display_name': 'Hades™', 'source': 'epic',
+                  'installed': True},
+                 {'slug': 'steam-1145360', 'display_name': 'Hades', 'source': 'steam',
+                  'appid': 1145360, 'installed': True, 'playtime_minutes': 5},
+                 # A source that knows the Steam appid matches whatever the name.
+                 {'slug': 'epic-Owl', 'display_name': 'Control Ultimate Edition',
+                  'source': 'epic', 'store_appid': 870780, 'installed': True},
+                 {'slug': 'steam-870780', 'display_name': 'Control', 'source': 'steam',
+                  'appid': 870780, 'installed': False},
+                 {'slug': 'epic-Solo', 'display_name': 'Solo', 'source': 'epic',
+                  'installed': True}]
+        nx.mark_duplicates(games)
+        self.assertEqual(games[0]['dup_of'], 'steam-1145360')       # Steam before Epic
+        self.assertEqual(games[1]['dup_also'], ['epic'])
+        self.assertEqual(games[3]['dup_of'], 'epic-Owl')            # installed wins
+        self.assertNotIn('dup_of', games[4])
+        self.assertEqual(nx.SOURCE_LABEL['epic'], 'Epic')
+
     def test_about_html_escapes_and_links_only_known_sites(self):
         out = nx.about_html({'blurb': '<script>x</script>', 'genres': ['A'],
                              'url': 'https://store.steampowered.com/app/1/'},

@@ -2,7 +2,7 @@
 keeping the machine awake.
 
 Discord: the local IPC socket every desktop client (and Vesktop's arRPC)
-opens — no library, no network. It needs the id of a Discord application
+opens — a named pipe on Windows — no library, no network. It needs the id of a Discord application
 the user created (config `[discord] client_id`); without one nothing is
 sent.
 
@@ -10,9 +10,11 @@ Awake: a small holder process. `systemd-inhibit` blocks sleep through
 logind, and inside it the holder asks the session's
 org.freedesktop.ScreenSaver (niri implements it) to inhibit idle, when
 dbus-python is available. The holder reads stdin until EOF, so it lets go
-the moment its parent exits — however that happens.
+the moment its parent exits — however that happens. On Windows
+platform.inhibit_sleep holds SetThreadExecutionState instead, in-process.
 
-Stdlib only at import: this file is also run directly as the holder."""
+Stdlib only at import: this file is also run directly as the holder (the
+nexus imports below happen only when it's imported as part of Nexus)."""
 
 import json
 import os
@@ -25,22 +27,45 @@ import time
 import uuid
 from pathlib import Path
 
-DISCORD_DIRS = ('', 'app/com.discordapp.Discord', '.flatpak/dev.vencord.Vesktop/xdg-run',
-                'app/dev.vencord.Vesktop', 'snap.discord')
+if __package__:
+    from . import platform
+
 STEAM_HEADER = "https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg"
 
 
-def _discord_sockets() -> list[Path]:
-    bases = [os.environ.get('XDG_RUNTIME_DIR') or f"/run/user/{os.getuid()}",
-             os.environ.get('TMPDIR') or '/tmp']
-    out = []
-    for base in bases:
-        for sub in DISCORD_DIRS:
-            for i in range(10):
-                p = Path(base, sub, f"discord-ipc-{i}")
-                if p.is_socket():
-                    out.append(p)
-    return out
+class _Pipe:
+    """A Windows named pipe opened as a file, with the socket calls Discord
+    uses. The framing is the same either way."""
+
+    def __init__(self, f):
+        self.f = f
+
+    def sendall(self, data: bytes) -> None:
+        self.f.write(data)
+        self.f.flush()
+
+    def recv(self, n: int) -> bytes:
+        return self.f.read(n) or b''
+
+    def close(self) -> None:
+        self.f.close()
+
+
+def _open_pipe(path: str):
+    return open(path, 'r+b', buffering=0)
+
+
+def _connect(path, timeout: float):
+    if str(path).startswith('\\\\.\\pipe\\'):
+        return _Pipe(_open_pipe(str(path)))
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(str(path))
+    except OSError:
+        s.close()
+        raise
+    return s
 
 
 class Discord:
@@ -73,18 +98,18 @@ class Discord:
     def connect(self, timeout: float = 3) -> bool:
         if not self.client_id.isdigit():
             return False
-        for path in _discord_sockets():
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(timeout)
+        for path in platform.discord_ipc_paths():
             try:
-                s.connect(str(path))
-                self.sock = s
+                self.sock = _connect(path, timeout)
+            except OSError:
+                continue
+            try:
                 self._send(0, {'v': 1, 'client_id': self.client_id})
                 if self._recv().get('evt') == 'READY':
                     return True
             except (OSError, ValueError):
                 pass
-            s.close()
+            self.sock.close()
             self.sock = None
         return False
 
@@ -131,6 +156,9 @@ def discord_presence(client_id: str | None, name: str, store_appid: int | None =
 def inhibit(why: str) -> subprocess.Popen | None:
     """Keep the machine awake until the returned process ends (or this
     process exits). None when there is nothing to inhibit with."""
+    held = platform.inhibit_sleep(why)
+    if held is not None:
+        return held
     holder = [sys.executable, '-I', str(Path(__file__).resolve()), 'hold', why]
     if shutil.which('systemd-inhibit'):
         cmd = ['systemd-inhibit', '--what=sleep:idle', '--who=Nexus', f'--why={why}',
@@ -146,6 +174,9 @@ def inhibit(why: str) -> subprocess.Popen | None:
 
 def release(proc: subprocess.Popen | None) -> None:
     if proc is None:
+        return
+    if hasattr(proc, 'release'):                  # platform.inhibit_sleep's
+        proc.release()
         return
     try:
         proc.stdin.close()

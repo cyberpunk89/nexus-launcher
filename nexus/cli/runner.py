@@ -1,5 +1,6 @@
 """Running Windows games: Proton discovery, umu, Wine prefixes, launch.sh."""
 
+import contextlib
 import hashlib
 import io
 import platform
@@ -349,6 +350,50 @@ def init_prefix(game_dir: Path, base_env: dict, proton: Path | None,
     else:
         rc = run(['wine', 'wineboot', '--init'], extra_env=base_env, capture=True)
     log.print("done" if rc == 0 else f"exited {rc} (may be OK)")
+
+
+# The last [Run] step of a FitGirl setup opens FitGirl's site. Wine hands URLs
+# to winebrowser, which runs the first of the prefix's WineBrowser\Browsers it
+# finds on the host (xdg-open by default). Pointed at a name that is nowhere,
+# winebrowser exits quietly: no browser tab. (Disabling winebrowser.exe
+# instead makes the hand-off itself fail, and Wine shows a "no application
+# associated" box at the end of every install.)
+NO_BROWSER = 'nexus-no-browser'
+_WINEBROWSER_KEY = r'HKCU\Software\Wine\WineBrowser'
+_BROWSERS_RE = re.compile(r'^\[Software\\\\Wine\\\\WineBrowser\][^\n]*\n'
+                          r'(?:(?!\[)[^\n]*\n)*?"Browsers"="([^"\n]*)"', re.M)
+
+
+def _prefix_reg(args: list[str], wine_prefix: Path, base_env: dict,
+                runner: str, proton: Path | None) -> int:
+    """`reg <args>` in the prefix, through the same runner as setup.exe."""
+    if runner == 'umu':
+        return run(['umu-run', 'reg', *args], extra_env=_umu_env(base_env, wine_prefix, proton),
+                   capture=True)
+    if runner == 'proton':
+        return run([str(proton), 'run', 'reg', *args], extra_env=base_env, capture=True)
+    return run(['wine', 'reg', *args], extra_env=base_env, capture=True)
+
+
+@contextlib.contextmanager
+def browser_muted(wine_prefix: Path, base_env: dict, runner: str, proton: Path | None):
+    """While inside, URLs opened in the prefix go nowhere (see NO_BROWSER).
+    The prefix's own Browsers setting comes back afterwards, so the game's
+    links still open; one left over from an interrupted install is dropped."""
+    try:
+        reg = (wine_prefix / 'user.reg').read_text(encoding='utf-8', errors='replace')
+        m = _BROWSERS_RE.search(reg)
+    except OSError:
+        m = None
+    before = m.group(1) if m and m.group(1) != NO_BROWSER else None
+    _prefix_reg(['add', _WINEBROWSER_KEY, '/v', 'Browsers', '/d', NO_BROWSER, '/f'],
+                wine_prefix, base_env, runner, proton)
+    try:
+        yield
+    finally:
+        _prefix_reg(['add', _WINEBROWSER_KEY, '/v', 'Browsers', '/d', before, '/f'] if before
+                    else ['delete', _WINEBROWSER_KEY, '/v', 'Browsers', '/f'],
+                    wine_prefix, base_env, runner, proton)
 
 
 def _proton_wine_bins(proton: Path) -> dict:

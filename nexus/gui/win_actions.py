@@ -3,15 +3,55 @@ jobs, confirmations, and what happens when a job finishes."""
 
 import shutil
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from PyQt6.QtCore import QProcess, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
-from .common import alive, CLI_BIN, HOME, MAX_TITLE
+from nexus import platform
+from nexus.features import has
+
+from .common import alive, CLI, cli_args, HOME, MAX_TITLE
 from .fmt import fmt_bytes
 from .theme import G
+
+# Windows Security on its Virus & threat protection page (Protection history
+# is there). Opening it changes nothing.
+DEFENDER_URL = 'windowsdefender://threat'
+FITGIRL_FAQ = 'https://fitgirl-repacks.site/faq/'
+
+
+def _breakable(path: str) -> str:
+    """A path that may wrap after any separator (a zero-width space)."""
+    return path.replace('\\', '\\​').replace('/', '/​')
+
+
+def antivirus_text(ev: dict) -> tuple[str, str]:
+    """(title, text) for an install the antivirus broke, from the CLI's
+    `antivirus` event: what Windows Defender quarantined (or, when it can't
+    tell, the setup log's unpacking errors), what that means and what the
+    user can do about it. Plain text; nothing in it changes a setting."""
+    found = ev.get('detections') or []
+    if found:
+        title = ("Windows Defender removed a game file" if len(found) == 1 else
+                 f"Windows Defender removed {len(found)} game files")
+        what = "\n".join(f"{PureWindowsPath(d['file']).name} — {d.get('threat') or 'a threat'}\n"
+                         f"in {_breakable(str(PureWindowsPath(d['file']).parent))}"
+                         for d in found[:5])
+        means = ("Repack files (unarc.dll, ISDone.dll, a game's cracked DLLs) are often flagged "
+                 "by mistake. Without it the game can't run, so it isn't in your library; its "
+                 "folder is kept for another try.")
+    else:
+        title = "An antivirus stopped the install"
+        what = "Setup couldn't unpack the repack:\n" + "\n".join(
+            ln[:160] for ln in ev.get('log_lines') or [])
+        means = ("That's usually an antivirus taking unarc.dll or ISDone.dll away "
+                 "mid-install, not a broken download.")
+    todo = ("If you trust this repack, restore the file or allow it in Windows Security → "
+            "Protection history, then install again. FitGirl's FAQ explains these false "
+            "positives. Nexus doesn't change antivirus settings.")
+    return title, f"{what}\n\n{means}\n\n{todo}"
 
 
 class ActionsMixin:
@@ -26,13 +66,13 @@ class ActionsMixin:
     def run(self, args, title, slug=None, kind='task', steam=False, name=None, on_skip=None):
         """Queue a CLI job. With steam=True it waits (via the banner) until
         Steam is closed, since Steam overwrites its files when it exits."""
-        if kind != 'launch' and (self.jobs.find([CLI_BIN, *args]) or self.gate.waiting(title)):
+        if kind != 'launch' and (self.jobs.find([*CLI, *args]) or self.gate.waiting(title)):
             self.toast(f"“{title}” is already queued.", 'info', None, 3000)
             return
 
         def submit():
-            if not self.jobs.find([CLI_BIN, *args]):
-                self.jobs.submit(Job([CLI_BIN, *args], title, slug, kind, name))
+            if not self.jobs.find([*CLI, *args]):
+                self.jobs.submit(Job([*CLI, *args], title, slug, kind, name))
         if steam:
             self.gate.run(title, submit, on_skip)
             if self._theatre and self.gate.pending:
@@ -71,7 +111,8 @@ class ActionsMixin:
             return
         if action == 'restore-saves' and not getattr(self, '_confirmed', False):
             self.confirm(f"Restore {name}'s saves?",
-                         "Copies the newest save backup over the saves in its prefix. The "
+                         "Copies the newest save backup over the saves in "
+                         f"{'its prefix' if has('proton') else 'its save folders'}. The "
                          "current saves are backed up first, so this can be undone.",
                          "Restore saves", lambda: self._confirmed_action(action, game))
             return
@@ -106,7 +147,7 @@ class ActionsMixin:
             self.run(['--discard-incomplete', slug], f"Discarding the unfinished install "
                      f"of {name}", slug)
         elif action == 'install-update' and game.get('repack_update'):
-            self._start_install([CLI_BIN, game['repack_update'], '--yes', '--log',
+            self._start_install([*CLI, game['repack_update'], '--yes', '--log',
                                  '--defer-steam'], name, slug)
         elif action == 'launch' and not play_enabled(game):
             return                                  # already starting / running
@@ -401,6 +442,22 @@ class ActionsMixin:
         sheet.ask(title, text, yes, on_yes, danger)
         self._update_hints()
 
+    def show_antivirus(self, job):
+        """The sheet for an install the antivirus broke (the CLI's `antivirus`
+        event): what was quarantined, what it means, and the way to Windows
+        Security. No button here changes anything."""
+        ev = job.events.get('antivirus') or {}
+        title, text = antivirus_text(ev)
+        faq = ev['faq'] if str(ev.get('faq') or '').startswith('https://') else FITGIRL_FAQ
+        sheet = self.theatre_sheet if self._theatre else self.sheet
+        sheet.choose(title, [
+            ("Open Windows Security", G['shield'], lambda: platform.open_url(DEFENDER_URL)),
+            ("FitGirl's FAQ on false positives", G['external'],
+             lambda: QDesktopServices.openUrl(QUrl(faq))),
+            ("Show log", G['log'], lambda: self._open_job(job)),
+            ("Close", G['close'], lambda: None)], job.name or '', text)
+        self._update_hints()
+
     def open_artwork(self, game, kind='hero'):
         cur = self.current()
         self._art_from = cur if cur in (self.HOME, self.LIBRARY) else self.HOME
@@ -485,7 +542,8 @@ class ActionsMixin:
             if not self.isActiveWindow():
                 notify_desktop(f"{job.title} failed", job.detail or "Open Nexus for "
                                "the log.")
-        if job.kind == 'install-proton' or (job.argv[1:2] and job.argv[1].startswith('--proton')):
+        first = cli_args(job.argv)[:1]
+        if job.kind == 'install-proton' or (first and first[0].startswith('--proton')):
             self.protonpage.refresh()
             if job.state == 'done' and job.kind == 'install-proton':
                 self.toast("New Proton installed. Restart Steam to see it there; pick it per "

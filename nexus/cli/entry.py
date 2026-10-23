@@ -7,9 +7,10 @@ import signal
 import sys
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import features, paths as NX
 
-from .common import _handle_sigterm, INSTALL_BASE, Logger, require_slug, use_logger
+from .common import (_handle_sigterm, INSTALL_BASE, Logger, require_slug, use_logger,
+    watch_gui_cancel)
 
 
 def main() -> None:
@@ -122,8 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
                              'removing the prefix (default: off — asks interactively unless '
                              '--yes is also given, in which case saves are NOT backed up)')
     parser.add_argument('--import-save', action='store_true', dest='import_save',
-                        help='On install, restore a previous save backup into a fresh prefix '
-                             'if one exists (default: off — asks interactively unless --yes '
+                        help='On install, restore a previous save backup if one exists: into '
+                             'the fresh Wine prefix, or on Windows back to the '
+                             "game's save folders through the Ludusavi manifest "
+                             '(default: off — asks interactively unless --yes '
                              'is also given, in which case no backup is imported)')
     parser.add_argument('--use-protongen-default', action='store_true',
                         dest='use_protongen_default',
@@ -470,11 +473,53 @@ def build_parser() -> argparse.ArgumentParser:
     g7.add_argument('--gamedb-lookup', nargs='+', metavar='APPID', dest='gamedb_lookup',
                     help='Cached Game-db info (price, HLTB, release) for Steam appids; '
                          'never hits the network')
+    _hide_unavailable(parser)
     return parser
+
+
+# Options for things only Linux has (nexus.features), by feature. Where the
+# feature is off they're left out of --help, and passing one anyway is a
+# clear refusal, not a traceback. The parser still knows them all, so code
+# reading args.<dest> doesn't change.
+GATED = {
+    'proton': ('try_proton', 'set_proton', 'list_protons', 'protons', 'proton_releases',
+               'proton_install', 'proton_remove', 'proton_migrate', 'protondb', 'prefix_tool'),
+    'launch_profiles': ('set_launch', 'apply_launch'),
+    'perf': ('perf', 'benchmark', 'bench_results'),
+    'protongen': ('from_protongen', 'protongen_default', 'use_protongen_default',
+                  'apply_recipe'),
+    'compatdata': ('clean_orphan', 'orphans'),
+    'btrfs': ('snapshots', 'snapshot', 'rollback', 'delete_snapshot', 'snapshots_enable'),
+    'sunshine': ('sunshine', 'remove_sunshine'),
+    'pause': ('pause', 'resume', 'pause_toggle'),
+    'systemd_agent': ('agent_enable', 'agent_disable'),
+    'tips': ('game_tips',),
+}
+_FEATURE_OF = {dest: f for f, dests in GATED.items() for dest in dests}
+
+
+def _unavailable(parser) -> list:
+    return [a for a in parser._actions
+            if a.dest in _FEATURE_OF and not features.has(_FEATURE_OF[a.dest])]
+
+
+def _hide_unavailable(parser) -> None:
+    for a in _unavailable(parser):
+        a.help = argparse.SUPPRESS
+
+
+def _refuse_unavailable(parser, args) -> None:
+    for a in _unavailable(parser):
+        if getattr(args, a.dest) != a.default:
+            where = "on Windows" if sys.platform == 'win32' else "here (NEXUS_FEATURES)"
+            print(f"{a.option_strings[0]} isn't available {where}.", file=sys.stderr)
+            sys.exit(2)
 
 
 def _cmd_restore_saves(args, install_base):
     entry = registry_get(args.restore_saves)
+    if entry and entry.get('platform') == 'windows':
+        _restore_manifest_saves(args.restore_saves, entry)
     if not entry or not entry.get('wine_prefix'):
         print(f"'{args.restore_saves}' is not a managed game with a prefix",
               file=sys.stderr)
@@ -494,6 +539,39 @@ def _cmd_restore_saves(args, install_base):
         print(f"Kept the current saves ({before[1]} file(s)) in {before[0]}")
     n, failed = restore_prefix_saves(args.restore_saves, Path(entry['wine_prefix']))
     print(f"Restored {n} save file(s) from {latest.name} into {entry['wine_prefix']}")
+    if failed:
+        _report_failed_copies(failed, "save file(s)")
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _restore_manifest_saves(slug: str, entry: dict) -> None:
+    """--restore-saves for a native Windows install: its saves are where the
+    Ludusavi manifest says, and the backup's files.json says where each goes."""
+    latest = latest_save_backup(slug)
+    if latest is None:
+        print(f"No save backup found for '{slug}'")
+        sys.exit(1)
+    if not is_manifest_backup(latest):
+        print(f"The latest save backup ({latest.name}) came from a Wine prefix; Nexus can't "
+              f"tell where those files go on Windows.", file=sys.stderr)
+        sys.exit(1)
+    save_entry, why = manifest_save_entry(entry)
+    if save_entry is None:
+        print(f"{why}, so it can't keep the current ones first. Nothing was restored.",
+              file=sys.stderr)
+        sys.exit(1)
+    # What's there now is kept first: a restore never loses progress.
+    game_dir = Path(entry.get('install_dir') or Path(entry['exe']).parent)
+    before = backup_manifest_saves(slug, game_dir, save_entry, suffix=PRE_RESTORE)
+    if before and before[2]:
+        _report_failed_copies(before[2], "current save file(s)")
+        print("Nothing was restored, so nothing was overwritten.", file=sys.stderr)
+        sys.exit(1)
+    if before:
+        print(f"Kept the current saves ({before[1]} file(s)) in {before[0]}")
+    n, failed = restore_manifest_saves(slug) or (0, [])
+    print(f"Restored {n} save file(s) from {latest.name}")
     if failed:
         _report_failed_copies(failed, "save file(s)")
         sys.exit(1)
@@ -697,21 +775,30 @@ COMMANDS = (
 
 
 def _main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    _refuse_unavailable(parser, args)
     _check_slug_args(args)
 
     # A GUI front-end's Cancel button sends SIGTERM to this process; make sure
     # that also stops whatever subprocess run() is currently waiting on
     # (umu-run/wine/winetricks), instead of just orphaning it.
     signal.signal(signal.SIGTERM, _handle_sigterm)
+    if hasattr(signal, 'SIGBREAK'):           # Windows: Ctrl+Break to our group
+        signal.signal(signal.SIGBREAK, _handle_sigterm)
+    watch_gui_cancel()                        # Windows GUI: Stop sets an event
     for line in NX.migrate():
         print(f"  Moved {line} (old path kept as a symlink).", file=sys.stderr)
     # Under the GUI stdout is a pipe (block-buffered by default), which held
     # status lines like "[3/4] Running setup.exe" back for the whole install.
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except (AttributeError, ValueError):
-        pass
+    # UTF-8 always: a Windows console's code page (cp1252/cp437) can't print
+    # Doctor's ✓/✗ or many titles, and the GUI decodes our output as UTF-8.
+    for stream, line_buffered in ((sys.stdout, True), (sys.stderr, False)):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace',
+                               **({'line_buffering': True} if line_buffered else {}))
+        except (AttributeError, ValueError):
+            pass
 
     # Which Steam account gets the shortcuts. CLI beats config; both beat
     # auto-detection. Must be set before any find_steam_userdata() call.
@@ -723,7 +810,10 @@ def _main() -> None:
         if when(args) if callable(when) else getattr(args, when):
             handler(args, install_base)
             sys.exit(0)
-    cmd_install(args, install_base)
+    if features.has('proton'):
+        cmd_install(args, install_base)
+    else:                       # Windows: setup.exe natively, as administrator
+        cmd_install_win(args, install_base)
 
 
 # Siblings, imported last: they import this module too, and every use
@@ -750,11 +840,14 @@ from .registry import load_registry, registry_get  # noqa: E402
 from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause  # noqa: E402
 from .sgdb import (cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search,
     SGDB_KINDS)  # noqa: E402
-from .steam import (_report_failed_copies, backup_prefix_saves, cmd_check_integrity,
-    latest_save_backup, PRE_RESTORE, restore_prefix_saves, set_steam_account_pin)  # noqa: E402
+from .steam import (_report_failed_copies, backup_manifest_saves, backup_prefix_saves,
+    cmd_check_integrity, is_manifest_backup, latest_save_backup, manifest_save_entry,
+    PRE_RESTORE, restore_manifest_saves, restore_prefix_saves,
+    set_steam_account_pin)  # noqa: E402
 from .sunshine import (cmd_launch, cmd_launch_via, cmd_sunshine, cmd_track_session,
     cmd_uninstall, remove_steam_shortcut)  # noqa: E402
 from .install import cmd_install  # noqa: E402
+from .install_win import cmd_install_win  # noqa: E402
 from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402
 from .importgame import cmd_import  # noqa: E402
 from .move import cmd_move, move_targets  # noqa: E402

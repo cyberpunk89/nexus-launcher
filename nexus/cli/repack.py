@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .common import atomic_write, emit_event, existing_ancestor, log, make_slug
+from nexus import platform
 from nexus.inno import inno_header
 
 
@@ -207,9 +208,6 @@ _SKIPPABLE_REDIST = re.compile(
 # The installer's background music needs one of these; without them Wine has
 # no audio device, the music never starts and setup carries on regardless.
 AUDIO_DRIVERS = ('winealsa.drv', 'wineoss.drv', 'winepulse.drv')
-# The last [Run] step opens FitGirl's site; Wine hands URLs to winebrowser,
-# which passes them to xdg-open. Disabled, the browser tab never opens.
-NO_BROWSER = 'winebrowser.exe=d'
 
 
 # A name that can go into WINEDLLOVERRIDES as is: no ; = , or spaces.
@@ -236,7 +234,7 @@ def silent_setup_overrides(setup_exe: Path, skip: set[str] | None = None) -> str
     redists; the disabled audio drivers mute its music. Only setup.exe (and
     what it spawns) gets these; the game itself is untouched."""
     names = sorted(setup_redists(setup_exe) if skip is None else skip) + list(AUDIO_DRIVERS)
-    return ';'.join([*(f'{n}=d' for n in names), NO_BROWSER])
+    return ';'.join(f'{n}=d' for n in names)
 
 
 def silent_target(wine_prefix: Path, slug: str) -> Path:
@@ -308,7 +306,7 @@ def write_incomplete_marker(game_dir: Path, info: dict) -> None:
 
 def read_incomplete_marker(game_dir: Path) -> dict | None:
     try:
-        data = json.loads((game_dir / INCOMPLETE_MARKER).read_text())
+        data = json.loads((game_dir / INCOMPLETE_MARKER).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -367,7 +365,7 @@ class InstallProgress(threading.Thread):
 
 def parse_md5_file(md5_path: Path) -> dict[str, str]:
     hashes = {}
-    for line in md5_path.read_text(errors='ignore').splitlines():
+    for line in md5_path.read_text(errors='ignore', encoding='utf-8').splitlines():
         line = line.strip()
         if not line or line.startswith(';'):
             continue
@@ -485,7 +483,7 @@ def _diagnose_abnormal_exit(label: str, rc: int, started_at: datetime) -> None:
     sig = _signal_name(rc)
     log.print(f"\n  [!] {label} was TERMINATED ABNORMALLY (killed by {sig}, exit code {rc}).",
               flush=True)
-    if -rc == signal.SIGKILL:
+    if -rc == getattr(signal, 'SIGKILL', None):
         log.print("      SIGKILL almost always means the kernel OOM-killer stepped in.")
         note = _check_oom_journal(started_at)
         if note:
@@ -499,9 +497,15 @@ def _diagnose_abnormal_exit(label: str, rc: int, started_at: datetime) -> None:
         log.print("      This was not the installer's own error; it was killed by the OS/user.")
 
 
+def _beside_unity(exe: Path) -> bool:
+    return any((exe.parent / dll).is_file() for dll in ('UnityPlayer.dll', 'GameAssembly.dll'))
+
+
 def exe_candidates(root: Path) -> list[tuple[int, Path]]:
     """Likely game exes under `root`, largest first: every .exe over 500 KB
-    that isn't an uninstaller / redist / crash handler / setup helper."""
+    that isn't an uninstaller / redist / crash handler / setup helper, and
+    a smaller one sitting next to Unity's runtime (a Unity game's exe is a
+    thin launcher; the game is in UnityPlayer.dll / GameAssembly.dll)."""
     if not root.is_dir():
         return []
     candidates: list[tuple[int, Path]] = []
@@ -520,7 +524,7 @@ def exe_candidates(root: Path) -> list[tuple[int, Path]]:
             size = exe.stat().st_size
         except OSError:
             continue
-        if size < 500_000:
+        if size < 500_000 and not (size >= 50_000 and _beside_unity(exe)):
             continue
         candidates.append((size, exe))
     candidates.sort(reverse=True)
@@ -554,18 +558,15 @@ def detect_compatdata(exe: Path) -> tuple[Path | None, Path]:
 
 
 def read_meminfo() -> dict[str, int]:
-    try:
-        with open('/proc/meminfo') as f:
-            return {k.rstrip(':'): int(v.split()[0])
-                    for k, v in (l.split(':', 1) for l in f if ':' in l)}
-    except OSError:
-        return {}
+    """/proc/meminfo's fields in kB (MemAvailable, SwapFree, ...); {} when
+    unreadable. See platform.meminfo."""
+    return platform.meminfo()
 
 
 def _swap_is_compressed() -> bool:
     """True if active swap is zram (compressed, RAM-backed) rather than real disk swap."""
     try:
-        lines = Path('/proc/swaps').read_text().splitlines()[1:]
+        lines = Path('/proc/swaps').read_text(encoding='utf-8').splitlines()[1:]
     except OSError:
         return False
     return any(line.startswith('/dev/zram') for line in lines)

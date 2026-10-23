@@ -30,6 +30,8 @@ def load_cli():
 
 
 fi = load_cli()
+import tests.sandbox  # noqa: E402  (home_env)
+from tests.oskind import IS_WINDOWS, linux_only  # noqa: E402
 from tests.patching import patch_cli  # noqa: E402
 
 try:
@@ -148,6 +150,7 @@ class ChildOutput(unittest.TestCase):
         self.assertEqual(env, {'HOME': '/h'})
 
 
+@linux_only
 class SteamRoot(unittest.TestCase):
     def test_finds_debian_and_flatpak_steam(self):
         from nexus import paths
@@ -172,7 +175,8 @@ class FileSafety(unittest.TestCase):
             os.chmod(p, 0o600)
             fi.atomic_write(p, 'two')
             self.assertEqual(p.read_text(), 'two')
-            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            if not IS_WINDOWS:              # keep_mode: a mode Windows doesn't have
+                self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             for i in range(8):
                 (Path(d) / f'shortcuts.vdf.bak-2026010{i}-000000').write_text(str(i))
             (Path(d) / 'shortcuts.vdf.bak-user-copy').write_text('keep me')
@@ -220,6 +224,28 @@ class FileSafety(unittest.TestCase):
             (art / 'hero.png').unlink()
             self.assertNotIn('hero', fi._local_artwork('game'))
 
+    def test_config_saved_with_a_bom_reads(self):
+        # Notepad and PowerShell 5's "UTF8" write a BOM, which tomllib rejects.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'config.toml'
+            p.write_bytes('\ufeff[torrent]\nclient = "transmission"\n'.encode('utf-8'))
+            self.assertEqual(fi._load_toml(p), {'torrent': {'client': 'transmission'}})
+            from nexus import torrent
+            with mock.patch.object(torrent, 'CONFIG_PATH', p):
+                self.assertEqual(torrent.settings()['client'], 'transmission')
+
+    def test_child_output_decoding(self):
+        # What run() reads from a child: UTF-8, UTF-16 with or without a BOM
+        # (wsl.exe and friends), and bytes that are neither.
+        def lines(raw):
+            return list(fi.decoded(io.BufferedReader(io.BytesIO(raw))))
+        self.assertEqual(lines(b'a\r\nb\rc\n'), ['a\n', 'b\n', 'c\n'])
+        self.assertEqual(lines('Ünï ✓\n'.encode()), ['Ünï ✓\n'])
+        self.assertEqual(lines('no distro\r\n'.encode('utf-16-le')), ['no distro\n'])
+        self.assertEqual(lines(b'\xff\xfe' + 'bom\n'.encode('utf-16-le')), ['bom\n'])
+        self.assertEqual(len(lines(b'caf\xe9\n')[0]), 5)       # one char, whatever the code page
+        self.assertEqual(lines(b''), [])
+
     def test_read_cache_follows_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'state.toml'
@@ -227,10 +253,12 @@ class FileSafety(unittest.TestCase):
             self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 1})
             p.write_text('a = 22\n')                       # new size: re-read
             self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 22})
-            os.utime(p, ns=(1, 1))                          # same size, new mtime
             p.write_text('a = 33\n')
+            os.utime(p, ns=(1, 1))      # same size, new mtime (a write alone may not
+                                        # change it: Windows' clock ticks every ~16 ms)
             self.assertEqual(fi._cached_read(p, fi._load_toml), {'a': 33})
 
+    @linux_only                 # Proton (and Windows' coarse directory mtimes)
     def test_proton_scan_is_cached_until_a_build_changes(self):
         with tempfile.TemporaryDirectory() as d, \
                 patch_cli('PROTON_SEARCH_DIRS', [Path(d)]), \
@@ -307,7 +335,7 @@ def fi_sandbox(test, fn, *a):
     test's fake HOME (module globals are bound at import)."""
     from unittest import mock
     steam = test.steam
-    data = test.home / '.local/share/nexus'
+    data = tests.sandbox.data_dir(test.home)
     with patch_cli('STEAM_ROOT', steam), \
             patch_cli('REGISTRY_PATH', data / 'games.json'), \
             patch_cli('find_steam_userdata', lambda *a, **k: test.cfg.parent), \
@@ -318,6 +346,35 @@ def fi_sandbox(test, fn, *a):
 
 
 class CommandTable(unittest.TestCase):
+    def test_gated_options_exist_and_name_real_features(self):
+        from nexus import features
+        from nexus.cli import entry
+        dests = {a.dest for a in fi.build_parser()._actions}
+        for feature, gated in entry.GATED.items():
+            self.assertIn(feature, features.ALL)
+            for dest in gated:
+                self.assertIn(dest, dests)
+
+    def test_linux_only_options_are_hidden_and_refused_without_their_feature(self):
+        import contextlib
+        import io
+        from nexus import features
+        from nexus.cli import entry
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            parser = fi.build_parser()
+            helptext = parser.format_help()
+            self.assertNotIn('--proton-install', helptext)
+            self.assertNotIn('--perf', helptext)
+            self.assertIn('--library', helptext)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                entry._refuse_unavailable(parser, parser.parse_args(['--pause-toggle']))
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn('--pause-toggle', err.getvalue())
+            entry._refuse_unavailable(parser, parser.parse_args(['--library']))   # fine
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            self.assertIn('--proton-install', fi.build_parser().format_help())
+
     def test_every_command_flag_exists_and_none_fires_by_default(self):
         parser = fi.build_parser()
         defaults = parser.parse_args(['/some/repack'])
@@ -457,7 +514,7 @@ class Sandbox(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         h = self.home
-        self.steam = h / '.local/share/Steam'
+        self.steam = tests.sandbox.steam_root(h)
         self.cfg = self.steam / 'userdata' / self.ACCOUNT / 'config'
         self.cfg.mkdir(parents=True)
         (self.cfg / 'localconfig.vdf').write_text('"UserLocalConfigStore"\n{\n}\n')
@@ -488,11 +545,11 @@ class Sandbox(unittest.TestCase):
         exe_dir.mkdir(parents=True)
         self.exe = exe_dir / 'Test$Game.exe'
         self.exe.write_bytes(b'\0' * 600_000)
-        (h / '.config/nexus').mkdir(parents=True)
-        (h / '.config/nexus/config.toml').write_text(
+        tests.sandbox.config_dir(h).mkdir(parents=True)
+        (tests.sandbox.config_dir(h) / 'config.toml').write_text(
             '[integrations]\nsteam = true\ndesktop = false\nheroic = true\n'
             '[runner]\nbackend = "proton"\n')
-        data = h / '.local/share/nexus'
+        data = tests.sandbox.data_dir(h)
         data.mkdir(parents=True)
         (data / 'games.json').write_text(json.dumps({'version': 1, 'games': {'test-game': {
             'slug': 'test-game', 'display_name': 'Test Game', 'exe': str(self.exe),
@@ -505,7 +562,7 @@ class Sandbox(unittest.TestCase):
         self.tmp.cleanup()
 
     def cli(self, *args, check=True):
-        env = {**os.environ, 'HOME': str(self.home), 'STEAMGRIDDB_API_KEY': ''}
+        env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': ''}
         r = subprocess.run([sys.executable, str(CLI), *args], env=env, text=True,
                            capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
         if check and r.returncode != 0:
@@ -517,7 +574,7 @@ class Sandbox(unittest.TestCase):
             return list(vdf.binary_load(f)['shortcuts'].values())
 
     def registry(self):
-        return json.loads((self.home / '.local/share/nexus/games.json')
+        return json.loads((tests.sandbox.data_dir(self.home) / 'games.json')
                           .read_text())['games']['test-game']
 
     def test_corrupt_shortcuts_is_never_overwritten(self):
@@ -549,7 +606,7 @@ class Sandbox(unittest.TestCase):
         r = self.cli('--library', '--json', check=False)
         self.assertEqual(r.returncode, 0)
         # An exception anywhere ends in one JSON error object, not a traceback.
-        env = {**os.environ, 'HOME': str(self.home)}
+        env = {**os.environ, **tests.sandbox.home_env(self.home)}
         code = ("import sys; sys.argv=['nexus-cli','--list','--json'];"
                 "import nexus.cli.entry as c; c._main=lambda: 1/0; c.main()")
         r = subprocess.run([sys.executable, '-c', code], env=env, text=True,
@@ -575,6 +632,7 @@ class Sandbox(unittest.TestCase):
         self.cli('--remove-heroic', 'test-game')
         self.assertEqual(len(json.loads(lib.read_text())['games']), 4)
 
+    @linux_only
     def test_launch_profile_everywhere_and_preserved_fields(self):
         if steam_running():
             self.skipTest("Steam is running")
@@ -643,6 +701,7 @@ class Sandbox(unittest.TestCase):
             self.cli('--set-launch', 'test-game', f'N={_} %command%')
         self.assertLessEqual(len(list(self.cfg.glob('shortcuts.vdf.bak-*'))), fi.BACKUP_KEEP)
 
+    @linux_only
     def test_from_protongen_reads_state_read_only(self):
         if steam_running():
             self.skipTest("Steam is running")
@@ -661,6 +720,7 @@ class Sandbox(unittest.TestCase):
         self.assertEqual(self.registry()['launch']['env'], [['PROTON_FSR4_UPGRADE', '1']])
         self.assertEqual(state.read_bytes(), before)
 
+    @linux_only
     def test_protongen_default_profile(self):
         r = self.cli('--protongen-default', 'test-game', check=False)
         self.assertNotEqual(r.returncode, 0)
@@ -710,7 +770,7 @@ class Sandbox(unittest.TestCase):
             r = self.cli('--uninstall', bad, '--yes', check=False)
             self.assertEqual(r.returncode, 2, (bad, r.stdout, r.stderr))
         self.assertTrue(self.game_dir.is_dir())
-        self.assertTrue((self.home / '.local/share/nexus/games.json').exists())
+        self.assertTrue((tests.sandbox.data_dir(self.home) / 'games.json').exists())
         self.assertTrue(base.is_dir())
 
     def test_prune_lists_then_removes_games_deleted_by_hand(self):
@@ -720,11 +780,11 @@ class Sandbox(unittest.TestCase):
         self.assertEqual([s['slug'] for s in data['stale']], ['test-game'])
         self.assertEqual(data['removed'], [])
         self.assertIn('test-game', json.loads(
-            (self.home / '.local/share/nexus/games.json').read_text())['games'])
+            (tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games'])
         data = json.loads(self.cli('--prune', '--yes', '--json').stdout)
         self.assertEqual(data['removed'], ['test-game'])
         self.assertNotIn('test-game', json.loads(
-            (self.home / '.local/share/nexus/games.json').read_text())['games'])
+            (tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games'])
 
     def test_prune_keeps_games_on_an_unmounted_drive(self):
         import shutil
@@ -750,14 +810,39 @@ class Sandbox(unittest.TestCase):
                 self.assertIsInstance(a['args'], list)
 
     def test_launch_reports_immediate_crash_and_tracks(self):
-        launcher = self.game_dir / 'launch.sh'
-        launcher.write_text('#!/bin/bash\necho boom\nexit 3\n')
+        if IS_WINDOWS:          # no launch.sh: the exe runs itself (a .cmd stands in)
+            exe = self.game_dir / 'game.cmd'
+            exe.write_text('@echo boom\r\n@exit /b 3\r\n')
+            reg = tests.sandbox.data_dir(self.home) / 'games.json'
+            data = json.loads(reg.read_text(encoding='utf-8'))
+            data['games']['test-game'].update(exe=str(exe), launcher=None, compatdata=None,
+                                              wine_prefix=None, platform='windows',
+                                              install_dir=str(self.game_dir))
+            reg.write_text(json.dumps(data), encoding='utf-8')
+        else:
+            launcher = self.game_dir / 'launch.sh'
+            launcher.write_text('#!/bin/bash\necho boom\nexit 3\n')
         r = self.cli('--launch', 'test-game', check=False)
         self.assertEqual(r.returncode, 1)
         self.assertIn('exited immediately with code 3', r.stderr)
         self.assertIn('boom', r.stderr)
         self.assertIsNotNone(self.registry().get('last_played'))
         self.assertFalse(self.registry().get('playtime_seconds'))   # a crash isn't play time
+
+    def test_non_ascii_title_survives_a_console_that_cant_print_it(self):
+        # PYTHONIOENCODING=ascii stands in for a Windows console code page.
+        reg = tests.sandbox.data_dir(self.home) / 'games.json'
+        data = json.loads(reg.read_text(encoding='utf-8'))
+        data['games']['test-game']['display_name'] = 'Pokémon Légendes ✓'
+        reg.write_text(json.dumps(data), encoding='utf-8')
+        env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': '',
+               'PYTHONIOENCODING': 'ascii', 'PYTHONUTF8': '0'}
+        for args in (['--list'], ['--list', '--json']):
+            r = subprocess.run([sys.executable, str(CLI), *args], env=env, capture_output=True,
+                               encoding='utf-8', stdin=subprocess.DEVNULL, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('Pokémon Légendes ✓', r.stdout if args == ['--list'] else
+                          json.loads(r.stdout)['games'][0]['display_name'])
 
     def test_list_json_has_disk_and_play_stats(self):
         data = json.loads(self.cli('--list', '--json').stdout)
@@ -766,10 +851,11 @@ class Sandbox(unittest.TestCase):
         self.assertIn('playtime_minutes', g)
         self.assertIn('last_played', g)
 
+    @linux_only
     def test_legacy_dirs_are_migrated_once(self):
-        new_data = self.home / '.local/share/nexus'
+        new_data = tests.sandbox.data_dir(self.home)
         old_data = self.home / '.local/share/fitgirl-install'
-        new_cfg = self.home / '.config/nexus'
+        new_cfg = tests.sandbox.config_dir(self.home)
         old_cfg = self.home / '.config/fitgirl-install'
         new_data.rename(old_data)
         new_cfg.rename(old_cfg)
@@ -805,8 +891,8 @@ class Sandbox(unittest.TestCase):
                 f'"AppState"\n{{\n"appid" "{appid}"\n"name" "{name}"\n'
                 f'"StateFlags" "{flags}"\n"installdir" "{name}"\n{extra}}}\n')
         token = 'gdb_' + 'a' * 43
-        url = gamedb.check_url(gamedb.DEFAULT_URL)
-        cache = self.home / 'cache/nexus/gamedb'
+        url = gamedb.check_url('https://gamedb.test')
+        cache = tests.sandbox.cache_dir(self.home) / 'gamedb'
         cache.mkdir(parents=True)
         (cache / 'summary.json').write_text(json.dumps({
             'fingerprint': gamedb._fingerprint(url, token), 'fetched_at': 0,
@@ -825,9 +911,9 @@ class Sandbox(unittest.TestCase):
         (self.heroic / 'store').mkdir()
         (self.heroic / 'store' / 'download-manager.json').write_text(json.dumps(
             {'finished': [], 'queue': [{'params': {'appName': 'Own', 'runner': 'legendary'}}]}))
-        env = {**os.environ, 'HOME': str(self.home), 'STEAMGRIDDB_API_KEY': '',
-               'XDG_CACHE_HOME': str(self.home / 'cache'), 'NEXUS_GAMEDB_TOKEN': token,
-               'NEXUS_GAMEDB_URL': ''}
+        env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': '',
+               'NEXUS_GAMEDB_TOKEN': token,
+               'NEXUS_GAMEDB_URL': url}
 
         def library(*extra):
             r = subprocess.run([sys.executable, str(CLI), '--library', '--json', *extra],
@@ -855,6 +941,7 @@ class Sandbox(unittest.TestCase):
         self.assertNotIn('heroic-legendary-Dlc', games)
         self.assertTrue(games['heroic-legendary-Inst']['installed'])
 
+    @linux_only                     # compatdata prefixes; the freedesktop Trash
     def test_cleanup_quarantine_and_trash(self):
         cd = self.steam / 'steamapps' / 'compatdata'
         stray = cd / '2999999999'
@@ -889,7 +976,7 @@ class Sandbox(unittest.TestCase):
         self.assertIsInstance(data['playing'], list)
 
     def test_corrupt_registry_is_quarantined(self):
-        reg = self.home / '.local/share/nexus/games.json'
+        reg = tests.sandbox.data_dir(self.home) / 'games.json'
         reg.write_text('{not json')
         r = self.cli('--list', '--json')
         # Falls back to a filesystem scan instead of an empty library.
@@ -1044,3 +1131,43 @@ class SteamGridDB(unittest.TestCase):
         self.assertTrue((fi.ARTWORK_DIR / 'steam-10' / 'hero.png').exists())
         self.assertFalse((fi.ARTWORK_DIR / 'steam-11').exists())
         self.assertTrue(second['skipped'])
+
+    def test_store_source_games_get_art_by_name_once(self):
+        from unittest import mock
+        from nexus import sources, steamlib
+        epic = {'slug': 'epic-Fig', 'source': 'epic', 'display_name': 'Hades',
+                'cover_url': None, 'hero_url': None}
+        got = {}
+
+        def fake_json(path, key):
+            self.calls.append(path)
+            if path.startswith('/search/autocomplete/'):
+                return [{'id': 42}], None
+            kind = path.split('/')[1]
+            return [{'id': 1, 'url': f'https://cdn2.steamgriddb.com/{kind}/a.png'}], None
+        with patch_cli('managed_entries', lambda *a, **k: []), \
+                patch_cli('_sgdb_json', fake_json), \
+                mock.patch.object(steamlib, 'scan', lambda *a, **k: []), \
+                mock.patch.object(steamlib, 'heroic_store_games', lambda *a, **k: []), \
+                mock.patch.object(sources, 'installed_games', lambda: [dict(epic)]), \
+                patch_cli('find_heroic_config', lambda: None), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+            fi.cmd_fill_art(Path(self.tmp.name), True, False)
+            got = json.loads(out.getvalue().splitlines()[-1])
+            # The library and the art picker find the game and its settled id.
+            self.assertEqual(fi.cached_sgdb_id(dict(epic)), 42)
+            self.assertEqual(fi._game_by_id('epic-Fig')['sgdb_id'], 42)
+        d = fi.ARTWORK_DIR / 'epic-Fig'
+        self.assertEqual(got['filled'], 4)                      # cover too: Epic has none
+        self.assertTrue((d / 'cover.png').exists())
+        # A scan's game carries the id: no search at all.
+        self.calls.clear()
+        self.assertEqual(fi.sgdb_game_id({**epic, 'display_name': 'Renamed', 'sgdb_id': 42},
+                                         'k'), (42, None))
+        self.assertEqual(self.calls, [])
+
+    def test_store_appid_looks_up_by_steam_id(self):
+        g = {'slug': 'epic-Owl', 'source': 'epic', 'display_name': 'Control UE',
+             'store_appid': 10}
+        self.assertEqual(fi.sgdb_game_id(g, 'k'), (42, None))
+        self.assertEqual(self.calls, ['/games/steam/10'])

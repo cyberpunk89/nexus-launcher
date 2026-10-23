@@ -15,6 +15,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.oskind import linux_only  # noqa: E402
 from tests.patching import patch_cli  # noqa: E402
 from nexus import cli, session  # noqa: E402
 
@@ -157,6 +158,7 @@ class Session(unittest.TestCase):
         run.assert_not_called()
 
 
+@linux_only
 class Pause(unittest.TestCase):
     def test_pause_and_resume_everything_in_the_prefix(self):
         with tempfile.TemporaryDirectory() as d:

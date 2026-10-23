@@ -3,19 +3,16 @@
 Candidates are described as plain dicts ({id, category, title, path, size,
 reason, action, preselect, saves}); the CLI gathers the facts (registry,
 Steam libraries, shortcut ids) and these helpers apply the rules and do the
-removal. Default removal is the freedesktop Trash, so a mistake can be undone
+removal. Default removal is the Trash (Recycle Bin on Windows), so a mistake can be undone
 from the file manager; "forever" is a separate, explicit choice."""
 
 import os
 import re
 import shutil
-import subprocess
 import time
-from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 
-TRASH = Path.home() / ".local/share/Trash"
+from . import platform
 
 CATEGORIES = {
     'orphan-prefix':  ("Stray Steam prefixes",
@@ -149,36 +146,9 @@ def mesa_caches(cache_home: Path) -> list[dict]:
 
 # ---- removal -------------------------------------------------------------
 
-def _trash_manual(path: Path) -> None:
-    """freedesktop Trash spec, for the home trash (used when gio is absent)."""
-    files, info = TRASH / 'files', TRASH / 'info'
-    files.mkdir(parents=True, exist_ok=True)
-    info.mkdir(parents=True, exist_ok=True)
-    name, n = path.name, 1
-    while (files / name).exists() or (info / f"{name}.trashinfo").exists():
-        n += 1
-        name = f"{path.name}.{n}"
-    (info / f"{name}.trashinfo").write_text(
-        "[Trash Info]\n"
-        f"Path={quote(str(path.resolve()))}\n"
-        f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n")
-    shutil.move(str(path), str(files / name))
-
-
 def trash(path: Path) -> None:
-    """Move to the Trash (recoverable). gio picks the right trash for the
-    volume — on the same btrfs volume that's an instant rename."""
-    if shutil.which('gio'):
-        try:
-            # Same volume: a rename. Across volumes gio copies, which can take
-            # a while for a big folder — but never forever.
-            r = subprocess.run(['gio', 'trash', '--', str(path)], capture_output=True,
-                               text=True, timeout=1800)
-            if r.returncode == 0:
-                return
-        except subprocess.TimeoutExpired:
-            pass
-    _trash_manual(path)
+    """Move to the Trash / Recycle Bin (recoverable): see platform.trash."""
+    platform.trash(path)
 
 
 def delete(path: Path) -> None:
@@ -189,4 +159,4 @@ def delete(path: Path) -> None:
 
 
 def trash_size() -> int:
-    return dir_size(TRASH / 'files')
+    return platform.trash_size()

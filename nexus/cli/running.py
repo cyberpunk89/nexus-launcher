@@ -9,12 +9,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import features, paths as NX
 
 
 def _proc_state(pid: int) -> str | None:
     try:
-        stat = Path(f'/proc/{pid}/stat').read_text()
+        stat = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8')
         return stat.rsplit(')', 1)[1].split()[0]
     except (OSError, IndexError):
         return None
@@ -34,6 +34,9 @@ def cmd_pause(slug: str | None, mode: str) -> None:
     """Freeze (SIGSTOP) or thaw (SIGCONT) everything running in a repack's
     prefix; mode 'toggle' picks by the processes' state. Without a slug: the
     one repack that's running."""
+    if not features.has('pause'):
+        print("Pausing a game isn't available on this system.", file=sys.stderr)
+        sys.exit(1)
     running = running_repacks()
     if slug is None:
         if len(running) != 1:
@@ -70,7 +73,7 @@ def cmd_benchmark(install_base: Path, slug: str, seconds: int, delay: int) -> No
     entry = _require_entry(slug)
     sh = Path(entry.get('launcher') or '')
     try:
-        hooked = BENCH_HOOK in sh.read_text()
+        hooked = BENCH_HOOK in sh.read_text(encoding='utf-8')
     except OSError:
         hooked = False
     if not hooked:
@@ -138,7 +141,7 @@ def cmd_bench_results(slug: str, as_json: bool) -> None:
         if f.name.endswith('_summary.csv'):
             continue
         try:
-            r = parse_mangohud_csv(f.read_text(errors='replace'))
+            r = parse_mangohud_csv(f.read_text(encoding='utf-8', errors='replace'))
         except OSError:
             r = None
         if r:
@@ -164,13 +167,15 @@ _OPEN_URL_RE = re.compile(
 
 def cmd_open_url(url: str) -> None:
     """Launch a Steam or Heroic game (or open a Steam page) by URL. Only the
-    steam:// and heroic:// forms in _OPEN_URL_RE are accepted."""
-    from nexus import steamlib
-    if not _OPEN_URL_RE.match(url):
+    steam:// and heroic:// forms in _OPEN_URL_RE are accepted, and the pages
+    Doctor's fixes open (platform.fix_page: Windows settings, help links)."""
+    from nexus import platform, steamlib
+    if not _OPEN_URL_RE.match(url) and not platform.fix_page(url):
         print(f"Refusing to open {url!r}: only steam:// and heroic:// URLs", file=sys.stderr)
         sys.exit(2)
     if not steamlib.open_url(url):
-        print("Neither `steam` nor `xdg-open` is available", file=sys.stderr)
+        print(f"Nothing here can open {url} (on Linux: no `steam` or `xdg-open`).",
+              file=sys.stderr)
         sys.exit(1)
     print(f"Opened {url}")
 

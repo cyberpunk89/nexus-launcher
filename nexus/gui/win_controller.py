@@ -154,6 +154,8 @@ class ControllerMixin:
         if '--leave-theatre' in argv:
             self.set_theatre(False)
             return
+        if '--hidden' in argv:              # the Startup shortcut, with Nexus already up
+            return
         if '--theatre' in argv:
             self.set_theatre(True)
         self.bring_to_front()

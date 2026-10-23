@@ -33,7 +33,7 @@ def _heroic_proton_bins() -> dict[str, list[str]]:
     for name in ('sideload_apps/library.json', 'store_cache/legendary_library.json',
                  'store_cache/gog_library.json'):
         try:
-            data = json.loads((cfg_dir / name).read_text())
+            data = json.loads((cfg_dir / name).read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
         lib = data.get('games', data.get('library', [])) if isinstance(data, dict) else data
@@ -42,7 +42,7 @@ def _heroic_proton_bins() -> dict[str, list[str]]:
                 titles[g['app_name']] = g.get('title') or g['app_name']
     for gc in (cfg_dir / 'GamesConfig').glob('*.json'):
         try:
-            data = json.loads(gc.read_text())
+            data = json.loads(gc.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
         inner = data.get(gc.stem)
@@ -164,7 +164,8 @@ def cmd_protons(config: dict, as_json: bool, refresh: bool = False) -> None:
         or _pacman_version('proton-cachyos')
     try:
         dismissed = __import__('tomllib').loads(
-            (NX.PROTONGEN_CONFIG / 'state.toml').read_text()).get('dismissed_runtime_updates', [])
+            (NX.PROTONGEN_CONFIG / 'state.toml').read_text(encoding='utf-8')
+        ).get('dismissed_runtime_updates', [])
     except (OSError, ValueError):
         dismissed = []
     info = {'installed': rows, 'valve': _valve_protons(), 'families': families,
@@ -312,7 +313,7 @@ def cmd_proton_migrate(old: str, new: str, config: dict) -> None:
         n = 0
         for gc in (cfg_dir / 'GamesConfig').glob('*.json'):
             try:
-                data = json.loads(gc.read_text())
+                data = json.loads(gc.read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 continue
             inner = data.get(gc.stem)

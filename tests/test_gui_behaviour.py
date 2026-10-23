@@ -2,19 +2,20 @@
 what a game being busy or running allows, duplicate jobs, confirmations,
 search. Offscreen, one window for the class, every CLI call stubbed."""
 
+import time
 import unittest
 from unittest import mock
 
 try:
-    from test_gui_layout import nx
+    from test_gui_layout import nx, stop_leftovers
     from test_gui_window import fake_games
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx
+    from tests.test_gui_layout import nx, stop_leftovers
     from tests.test_gui_window import fake_games
-from tests.patching import patch_gui, set_gui  # noqa: E402
+from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402
 
 if nx is not None:
-    from PyQt6.QtCore import Qt, QPoint, QPointF
+    from PyQt6.QtCore import Qt, QPoint, QPointF, QProcess
     from PyQt6.QtGui import QWheelEvent
     from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
@@ -24,6 +25,7 @@ class Gates(unittest.TestCase):
     def keys(self, g):
         return {a.key: a for a in nx.game_actions(g)}
 
+    @linux_features
     def test_running_game_cant_be_uninstalled_or_restored(self):
         g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a', 'playing': True}
         acts = self.keys(g)
@@ -207,6 +209,16 @@ class Regressions(unittest.TestCase):
             self.assertTrue(t.isActive())
             self.assertLess(t.remainingTime(), 900)        # not restarted from 1000
 
+    def test_a_deleted_page_isnt_called_by_its_jobs(self):
+        # The JobManager outlives the window's pages; a job still running
+        # then (a test's leftover) used to call a lambda into the dead page.
+        from PyQt6.QtCore import QEvent
+        jm = nx.JobManager()
+        page = nx.ActivityPage(jm)
+        page.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        jm.changed.emit()                                  # nothing listens now
+
     def test_achievements_error_clears_on_an_empty_success(self):
         w = nx.AchievementsWidget()
         self.addCleanup(w.deleteLater)
@@ -249,7 +261,7 @@ class Behaviour(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.win.jobs.jobs.clear()
+        stop_leftovers(cls.win.jobs)
         cls.win.close()
         cls.win.deleteLater()
         QApplication.processEvents()
@@ -268,7 +280,7 @@ class Behaviour(unittest.TestCase):
 
     def tearDown(self):
         del self.win.toast
-        self.win.jobs.jobs.clear()
+        stop_leftovers(self.win.jobs)
         self.win._busy = frozenset()
 
     def test_failed_reload_keeps_the_library(self):
@@ -330,7 +342,9 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(ran[0][0], ['--restore-saves', 'alpha'])
 
     def test_launch_that_never_shows_up_is_cleared(self):
-        self.win._launching['alpha'] = 0.0                # long ago
+        # Long ago. Not 0.0: monotonic() counts from boot, and on a freshly
+        # started CI runner that can be less than LAUNCH_WAIT.
+        self.win._launching['alpha'] = time.monotonic() - self.win.LAUNCH_WAIT - 1
         self.win._mark_states()
         self.assertEqual(nx.play_label(self.win.game('alpha')), "Starting…")
         self.win._poll_running()
@@ -468,6 +482,80 @@ class Behaviour(unittest.TestCase):
                  if b.text() == "Stop install").click()
         self.assertEqual(cancelled, [1])
         card.deleteLater()
+
+    def test_elevated_installer_greys_out_stop(self):
+        job = nx.Job(['x'], "Installing T", 't', 'install', 'T')
+        job.state = 'running'
+        card = nx.ActivityCard(job)
+        job._emit_text("[2/3] Running setup.exe as administrator...\n")
+        self.assertTrue(job.elevated)
+        card.refresh()
+        self.assertFalse(card.btn_cancel.isEnabled())
+        self.assertIn("close it from its own window", card.btn_cancel.toolTip())
+        job.cancel()                                  # Quit's cancel waits instead
+        self.assertEqual(job.state, 'running')
+        job._emit_text("[3/3] Searching for the game executable...\n")
+        card.refresh()
+        self.assertTrue(card.btn_cancel.isEnabled())
+        card.deleteLater()
+
+    def test_cancel_sets_the_jobs_event_when_it_has_one(self):
+        class Event:
+            def __init__(self, ok):
+                self.ok, self.sets, self.closed = ok, 0, False
+
+            def set(self):
+                self.sets += 1
+                return self.ok
+
+            def close(self):
+                self.closed = True
+        job = nx.Job(['x'], "Task", 't', 'task')
+        ev = Event(True)
+        job.state, job.proc, job._cancel_event = 'running', QProcess(), ev
+        with mock.patch.object(QProcess, 'terminate') as term:
+            job.cancel()                              # Windows: the CLI watches it
+        self.assertEqual(ev.sets, 1)
+        term.assert_not_called()
+        self.assertEqual(job.state, 'cancelling')
+        job._finished(130, None)
+        self.assertEqual(job.state, 'cancelled')
+        self.assertTrue(ev.closed)
+        self.assertIsNone(job._cancel_event)
+        job2 = nx.Job(['x'], "Task", 't', 'task')
+        job2.state, job2.proc = 'running', QProcess()     # Linux: no event
+        with mock.patch.object(QProcess, 'terminate') as term:
+            job2.cancel()                             # SIGTERM as before
+        term.assert_called_once()
+        job3 = nx.Job(['x'], "Task", 't', 'task')
+        job3.state, job3.proc, job3._cancel_event = 'running', QProcess(), Event(False)
+        with mock.patch.object(QProcess, 'terminate') as term:
+            job3.cancel()                             # couldn't set it: terminate()
+        term.assert_called_once()
+
+    def test_a_job_hands_its_event_to_the_cli(self):
+        import sys
+        from nexus.gui import jobs
+
+        class Event:
+            name, closed = 'Local\\nexus-cancel-test', False
+
+            def close(self):
+                self.closed = True
+        ev = Event()
+        code = "import os; print('event=' + str(os.environ.get('NEXUS_CANCEL_EVENT')))"
+        job = nx.Job([sys.executable, '-c', code], "Task", None, 'tool')
+        with mock.patch.object(jobs.platform, 'cancel_event', return_value=ev):
+            job.start()
+        self.assertTrue(job.proc.waitForFinished(30000))
+        self.assertEqual(job.state, 'done', job.log)
+        self.assertIn('event=Local\\nexus-cancel-test', ''.join(job.log))
+        self.assertTrue(ev.closed)
+        job2 = nx.Job([sys.executable, '-c', code], "Task", None, 'tool')
+        with mock.patch.object(jobs.platform, 'cancel_event', return_value=None):
+            job2.start()                              # Linux: the environment as before
+        self.assertTrue(job2.proc.waitForFinished(30000))
+        self.assertIn('event=None', ''.join(job2.log))
 
     def test_search_matches_words_not_punctuation(self):
         games = fake_games()

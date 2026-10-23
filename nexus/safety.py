@@ -46,7 +46,7 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
     findings = []
 
     def add(level, path, why):
-        rel = str(path.relative_to(repack_dir)) if isinstance(path, Path) else path
+        rel = path.relative_to(repack_dir).as_posix() if isinstance(path, Path) else path
         findings.append({'level': level, 'file': rel, 'why': why})
 
     files = []
@@ -59,13 +59,13 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
                 files.append(p)
         except OSError:
             continue
-    names = {str(p.relative_to(repack_dir)).lower() for p in files}
+    names = {p.relative_to(repack_dir).as_posix().lower() for p in files}
     if 'setup.exe' not in names:
         add('warn', 'setup.exe', "missing — this doesn't look like a FitGirl repack")
     if not any(BIN_RE.match(p.name) for p in files):
         add('warn', 'fg-01.bin', "no fg-NN.bin parts — not the usual repack layout")
     for p in files:
-        rel = str(p.relative_to(repack_dir)).lower()
+        rel = p.relative_to(repack_dir).as_posix().lower()     # ALLOWED uses /
         name = p.name
         if RTLO in name or any(ord(c) < 32 for c in name):
             add('danger', p, "the name hides its real extension (right-to-left override)")
@@ -81,7 +81,8 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
             add('warn', p, "an extra program or script FitGirl repacks don't include")
     bat = repack_dir / 'Verify BIN files before installation.bat'
     try:
-        lines = bat.read_text(errors='replace').splitlines() if bat.is_file() else []
+        lines = (bat.read_text(encoding='utf-8', errors='replace').splitlines()
+                 if bat.is_file() else [])
     except OSError:
         lines = []
     if any(not BAT_SAFE.match(line) for line in lines):

@@ -19,7 +19,8 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from tests.patching import patch_cli  # noqa: E402
+from tests.oskind import linux_only  # noqa: E402
+from tests.patching import linux_features, patch_cli  # noqa: E402
 from nexus import compat, gamepad, net, notify, presence, repackfeed  # noqa: E402
 from nexus import cli  # noqa: E402
 
@@ -107,13 +108,18 @@ class Compat(unittest.TestCase):
 
 class FakeDiscord(threading.Thread):
     """Speaks just enough of Discord's IPC: READY after the handshake, then
-    echoes SET_ACTIVITY back as a success."""
+    echoes SET_ACTIVITY back as a success. Listens on an AF_UNIX socket at
+    `path`, or talks over `conn` (one end of a socketpair standing in for a
+    Windows named pipe)."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path | None = None, conn=None):
         super().__init__(daemon=True)
-        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(str(path))
-        self.srv.listen(1)
+        self.srv = None
+        self.conn = conn
+        if conn is None:
+            self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.srv.bind(str(path))
+            self.srv.listen(1)
         self.frames = []
 
     def _read(self, conn):
@@ -131,7 +137,7 @@ class FakeDiscord(threading.Thread):
         conn.sendall(struct.pack('<II', op, len(data)) + data)
 
     def run(self):
-        conn, _ = self.srv.accept()
+        conn = self.conn or self.srv.accept()[0]
         with conn:
             while (frame := self._read(conn)) is not None:
                 self.frames.append(frame)
@@ -146,6 +152,7 @@ class FakeDiscord(threading.Thread):
 
 
 class Presence(unittest.TestCase):
+    @linux_only
     def test_discord_handshake_and_activity(self):
         with tempfile.TemporaryDirectory() as d:
             fake = FakeDiscord(Path(d, 'discord-ipc-0'))
@@ -161,6 +168,41 @@ class Presence(unittest.TestCase):
         activity = act['args']['activity']
         self.assertEqual(activity['details'], 'Hades')
         self.assertIn('1145360', activity['assets']['large_image'])
+
+    def test_discord_over_a_named_pipe(self):
+        # Windows: the same frames, written to \\.\pipe\discord-ipc-N opened
+        # as a file. A socketpair plays the pipe.
+        ours, theirs = socket.socketpair()
+        fake = FakeDiscord(conn=theirs)
+        fake.start()
+        pipe = ours.makefile('rwb', buffering=0)
+        with mock.patch.object(presence.platform, 'discord_ipc_paths',
+                               return_value=[r'\\.\pipe\discord-ipc-0']), \
+                mock.patch.object(presence, '_open_pipe', return_value=pipe) as opened:
+            client = presence.discord_presence('1234567890', 'Hades')
+        self.assertIsNotNone(client)
+        self.assertEqual(opened.call_args[0][0], r'\\.\pipe\discord-ipc-0')
+        client.close()
+        ours.close()
+        fake.join(5)
+        self.assertEqual([op for op, _ in fake.frames], [0, 1, 2])
+        self.assertEqual(fake.frames[1][1]['args']['activity']['details'], 'Hades')
+
+    def test_a_missing_pipe_is_skipped(self):
+        with mock.patch.object(presence.platform, 'discord_ipc_paths',
+                               return_value=[r'\\.\pipe\discord-ipc-0']), \
+                mock.patch.object(presence, '_open_pipe', side_effect=FileNotFoundError):
+            self.assertIsNone(presence.discord_presence('123', 'X'))
+
+    def test_windows_keeps_awake_in_process(self):
+        held = mock.Mock(spec=['release'])
+        with mock.patch.object(presence.platform, 'inhibit_sleep', return_value=held), \
+                mock.patch.object(presence.subprocess, 'Popen') as popen:
+            got = presence.inhibit('Playing Hades')
+            presence.release(got)
+        self.assertIs(got, held)
+        held.release.assert_called_once_with()
+        popen.assert_not_called()
 
     def test_discord_needs_a_client_id_and_a_socket(self):
         self.assertIsNone(presence.discord_presence(None, 'X'))
@@ -184,6 +226,7 @@ class Notify(unittest.TestCase):
             with mock.patch.object(notify, 'CONFIG_PATH', p):
                 return notify.settings()
 
+    @linux_features
     def test_settings(self):
         s = self._settings('[notify]\nntfy = "http://insecure/x"\nkdeconnect = true\n')
         self.assertIsNone(s['ntfy'])                      # https only
@@ -206,6 +249,7 @@ class Notify(unittest.TestCase):
             net.post('http://ntfy.sh/t', b'x')
 
 
+@linux_only
 class Battery(unittest.TestCase):
     def test_reads_controller_batteries_only(self):
         with tempfile.TemporaryDirectory() as d:
@@ -367,6 +411,7 @@ class Gui(unittest.TestCase):
         self.assertIsNone(nx.anticheat_warning({'anticheat': {'status': 'Running'}}))
         self.assertEqual(nx.compat_facts({}), ([], ''))
 
+    @linux_features
     def test_menu_offers_sunshine_and_the_posted_update(self):
         g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a', 'sunshine': True,
              'repack_online': {'url': 'https://fitgirl-repacks.site/a/'}}

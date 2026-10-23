@@ -97,7 +97,7 @@ def keys(title: str) -> list[str]:
 
 def load() -> dict:
     try:
-        data = json.loads(STORE.read_text())
+        data = json.loads(STORE.read_text(encoding='utf-8'))
         if isinstance(data, dict) and isinstance(data.get('posts'), dict):
             data.setdefault('rejected', {})
             return data

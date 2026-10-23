@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import features, paths as NX, platform
 
 from .common import (ARTWORK_DIR, dir_size_bytes, LAUNCHERS_DIR, log, Logger, make_slug,
     STEAM_ROOT, use_logger, valid_slug, wine_env)
@@ -61,8 +61,7 @@ def cmd_prefix_tool(slug: str, tool: str, config: dict) -> None:
     else:
         cmd = [tool] if tool == 'winetricks' else ['wine', tool]
     print(f"Running {tool} for '{slug}' ({' '.join(cmd)})...")
-    subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
+    platform.spawn_detached(cmd, env=env)
 
 
 def cmd_set_exe(slug: str, exe_path: str, config: dict) -> None:
@@ -105,9 +104,9 @@ def _local_artwork(slug: str) -> dict:
 def cmd_add_steam(slug: str, config: dict) -> None:
     """Add a Steam shortcut for an already-managed game (by slug). Steam runs
     the game .exe through a forced Proton, with the prefix redirected to the
-    install."""
+    install; on Windows the exe itself (or a Store app through explorer)."""
     entry = registry_get(slug)
-    if not entry or not entry.get('launcher'):
+    if not entry or not (entry.get('launcher') or entry.get('install_dir')):
         print(f"'{slug}' is not a managed game with a launcher", file=sys.stderr)
         sys.exit(1)
     use_logger(Logger())
@@ -161,7 +160,7 @@ def _launcher_display_name(launch_path: Path, slug: str,
     """Best display name for a game: prefer the launcher's '# Game: <name>'
     comment, then a matching Steam shortcut AppName, then a prettified slug."""
     try:
-        for line in launch_path.read_text().splitlines():
+        for line in launch_path.read_text(encoding='utf-8').splitlines():
             if line.startswith('# Game: '):
                 return line[len('# Game: '):].strip() or slug
     except OSError:
@@ -392,7 +391,8 @@ def cmd_repair_launchers(install_base: Path, config: dict, slug: str | None = No
     """Regenerate launch.sh for managed games from their registry entry, launch
     profile and Proton (resolve_game_proton — the same build Steam and Heroic
     use, so a repair never silently moves a game to a different Proton). Does
-    not touch Steam/Heroic — use --apply-launch <slug> for that."""
+    not touch Steam/Heroic — use --apply-launch <slug> for that. On Windows
+    (no launch.sh) it recreates missing Start Menu shortcuts instead."""
     use_logger(Logger())
     reg = load_registry()
     if slug and slug not in reg['games']:
@@ -401,6 +401,14 @@ def cmd_repair_launchers(install_base: Path, config: dict, slug: str | None = No
     entries = [reg['games'][slug]] if slug else list(reg['games'].values())
     n = 0
     for e in entries:
+        if not features.has('desktop_entry'):     # Windows: the Start Menu shortcuts
+            if e.get('has_desktop') and e.get('exe') and not _desktop_path(e['slug']).exists():
+                path = _best_effort("The Start Menu shortcut", write_desktop_entry,
+                                    e['display_name'], e['slug'], Path(e['exe']), None)
+                if path:
+                    print(f"  recreated {path}")
+                    n += 1
+            continue
         proton = resolve_game_proton(e, config)
         if proton and not e.get('proton'):
             update_registry_entry(e['slug'], proton=proton.parent.name)

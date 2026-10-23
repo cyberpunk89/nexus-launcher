@@ -1,0 +1,12 @@
+{
+ "FormatVersion": 0,
+ "bIsIncompleteInstall": true,
+ "DisplayName": "Half Done",
+ "InstallLocation": "D:\\Epic Games\\Half Done",
+ "LaunchExecutable": "Bin/Half.exe",
+ "AppName": "Half",
+ "MainGameAppName": "Half",
+ "CatalogNamespace": "nshalf",
+ "CatalogItemId": "itemhalf",
+ "InstallSize": 1234567
+}

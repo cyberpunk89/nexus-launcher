@@ -70,3 +70,11 @@ def set_gui(name: str, value) -> None:
     """`nexus.gui.<name> = value`, in every GUI module that holds it."""
     for mod in _holders('nexus.gui', name):
         setattr(mod, name, value)
+
+
+def linux_features(fn):
+    """Run a test with every Linux feature on (nexus.features.ALL), so a test
+    of Linux-only behaviour checks the same thing on Windows, where those
+    features are off. The Windows set is checked in test_gui_features."""
+    from nexus import features
+    return mock.patch.object(features, 'FEATURES', features.ALL)(fn)

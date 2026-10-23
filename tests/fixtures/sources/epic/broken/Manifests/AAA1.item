@@ -1,0 +1,12 @@
+{
+ "FormatVersion": 0,
+ "bIsIncompleteInstall": false,
+ "DisplayName": "Sample Fable",
+ "InstallLocation": "D:\\Epic Games\\Sample Fable",
+ "LaunchExecutable": "Bin/Fable.exe",
+ "AppName": "Fable",
+ "MainGameAppName": "Fable",
+ "CatalogNamespace": "nsfable",
+ "CatalogItemId": "itemfable",
+ "InstallSize": 1234567
+}

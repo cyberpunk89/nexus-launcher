@@ -9,9 +9,9 @@ import time
 from PyQt6.QtCore import (pyqtSignal, QObject, QProcess, QProcessEnvironment, QRunnable,
     QThreadPool, QTimer)
 
-from nexus import steamlib
+from nexus import platform, steamlib
 
-from .common import CLI_BIN
+from .common import CLI
 from .fmt import fmt_bytes
 
 
@@ -24,6 +24,10 @@ _INSTALL_STEPS = {1: "Checking files", 2: "Setting up the prefix",
                   3: "Installer running — finish it in its window",
                   4: "Adding to your launchers"}
 _SILENT_STEP = "Installing — no setup window needed"
+# A step that runs an installer as administrator (Windows: "[2/3] Running
+# setup.exe as administrator..."). Nexus can't stop it while it runs.
+_ELEVATED_RE = re.compile(r'\bas administrator\b')
+ELEVATED_TIP = "The installer runs as admin; close it from its own window"
 # Machine-readable lines from the CLI: "@nexus <event> <json>".
 _EVENT_RE = re.compile(r'^@nexus ([\w-]+) (\{.*\})\s*$')
 
@@ -44,6 +48,7 @@ class Job(QObject):
     done = pyqtSignal(int)
 
     PARALLEL = ('launch', 'open', 'tool')
+    _cancel_event = None                    # Windows: what Stop sets, see start()
 
     def __init__(self, argv, title, slug=None, kind='task', name=None):
         super().__init__()
@@ -61,6 +66,7 @@ class Job(QObject):
         self._buf = ''
         self.events: dict[str, dict] = {}     # last @nexus event of each kind
         self._rate: tuple[float, int] | None = None
+        self.elevated = False            # an admin installer is running: no Stop
         self._change_due = False
 
     # Output can arrive hundreds of times a second (an installer's log); the
@@ -86,7 +92,15 @@ class Job(QObject):
         self.state, self.started = 'running', time.monotonic()
         self.step = {'install': "Starting…", 'launch': "Launching…"}.get(self.kind, "Working…")
         self.proc = QProcess(self)
-        self.proc.setProcessEnvironment(_cli_env())
+        env = _cli_env()
+        # Windows: no signal reaches the CLI alone (PyQt6 can't give it a
+        # process group), so Stop sets this event, which the CLI watches.
+        # No console window either way: QProcess adds CREATE_NO_WINDOW when
+        # Nexus has no console of its own.
+        self._cancel_event = platform.cancel_event()
+        if self._cancel_event is not None:
+            env.insert(platform.CANCEL_EVENT_ENV, self._cancel_event.name)
+        self.proc.setProcessEnvironment(env)
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         # Incremental: a multi-byte UTF-8 character split across two reads
         # would otherwise decode as two replacement characters.
@@ -103,14 +117,16 @@ class Job(QObject):
     def cancel(self):
         if self.state == 'queued':
             self._end('cancelled', -1)
-        elif self.state == 'running' and self.proc is not None:
-            # SIGTERM: the CLI stops whatever it's waiting on (umu-run/wine)
-            # too; SIGKILL follows if it hasn't exited in 5 s.
+        elif self.state == 'running' and self.proc is not None and self.stoppable:
+            # SIGTERM (the cancel event on Windows): the CLI stops whatever
+            # it's waiting on (umu-run/wine/an unpacker) too; a kill follows
+            # if it hasn't exited in 5 s.
             self.state = 'cancelling'
             self.step = "Cancelling…"
             self.changed.emit()
             proc = self.proc
-            proc.terminate()
+            if not (self._cancel_event is not None and self._cancel_event.set()):
+                proc.terminate()
             # A child timer dies with the process object: a lambda on a bare
             # singleShot outlived it and aborted the app (deleted QProcess).
             # kill() on a process that has already exited does nothing.
@@ -118,6 +134,12 @@ class Job(QObject):
             kill.setSingleShot(True)
             kill.timeout.connect(proc.kill)
             kill.start(5000)
+
+    @property
+    def stoppable(self) -> bool:
+        """False while an elevated installer runs: the CLI can't stop it, and
+        stopping the CLI would leave it running unwatched."""
+        return not self.elevated
 
     @property
     def active(self) -> bool:
@@ -163,12 +185,23 @@ class Job(QObject):
         m = _STEP_RE.match(line)
         if m:
             n, total = int(m.group(1)), int(m.group(2))
-            silent = self.kind == 'install' and n == 3 and '--interactive' not in self.argv
-            self.step = (_SILENT_STEP if silent else
-                         _INSTALL_STEPS.get(n) if self.kind == 'install' else None) \
+            elevated = bool(_ELEVATED_RE.search(m.group(3)))
+            # The installer's own step: [3/4] of a repack on Linux; on Windows
+            # the one that runs as administrator ([2/3] of a repack, [1/2] of
+            # --import, silent only when it says so).
+            running = self.kind == 'install' and ((total == 4 and n == 3) or elevated)
+            silent = running and '--interactive' not in self.argv and (
+                not elevated or '--import' not in self.argv or 'silently' in m.group(3))
+            named = self.kind == 'install' and (total == 4 or (n == 1 and '--import'
+                                                               not in self.argv))
+            self.step = (_SILENT_STEP if silent else _INSTALL_STEPS[3] if running else
+                         _INSTALL_STEPS.get(n) if named else None) \
                 or m.group(3).strip().rstrip('.')
-            self.progress = None if (self.kind == 'install' and n == 3) else (n, total)
+            self.progress = None if running else (n, total)
             self.detail = ''
+            if elevated != self.elevated:
+                self.elevated = elevated
+                self._changed_soon()
             return
         m = _FILE_RE.match(line)
         if m:
@@ -214,6 +247,9 @@ class Job(QObject):
         if state == 'failed' and self.detail:
             self.step = f"Failed — {self.detail}"
         self.progress = None
+        if self._cancel_event is not None:
+            self._cancel_event.close()
+            self._cancel_event = None
         self._change_due = False               # the final state goes out now
         self.changed.emit()
         self.done.emit(code)
@@ -322,7 +358,7 @@ class CliQuery(QObject):
         self.proc.errorOccurred.connect(self._error)
         CliQuery._live.add(self)
         QTimer.singleShot(timeout_ms, self._timeout)
-        self.proc.start(CLI_BIN, args)
+        self.proc.start(CLI[0], [*CLI[1:], *args])
 
     def _complete(self, out, err):
         if self._done:
@@ -343,7 +379,7 @@ class CliQuery(QObject):
 
     def _error(self, e):
         if e == QProcess.ProcessError.FailedToStart:
-            self._complete(None, f"could not run {CLI_BIN}: {self.proc.errorString()}")
+            self._complete(None, f"could not run {CLI[-1]}: {self.proc.errorString()}")
 
     def _timeout(self):
         if not self._done:

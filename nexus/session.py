@@ -28,7 +28,7 @@ _SCX_RUNNING = re.compile(r'running\s+(?:scx_)?(\w+)\s+in\s+(\w+)\s+mode', re.I)
 
 def settings() -> dict:
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text()).get('session') or {}
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig')).get('session') or {}
     except (OSError, ValueError):
         data = {}
     scx = str(data.get('scx') or '').strip().lower().removeprefix('scx_')

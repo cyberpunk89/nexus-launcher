@@ -88,12 +88,12 @@ class UserFeeds(unittest.TestCase):
         import subprocess
         import tempfile
         with tempfile.TemporaryDirectory() as home:
-            cfg = Path(home, '.config/nexus/news.toml')
+            cfg = tests.sandbox.config_dir(home) / 'news.toml'
             cfg.parent.mkdir(parents=True)
             cfg.write_text('disabled = ["gol", "user:https://b.example/feed"]\n'
                            '[[feed]]\nname = "A"\nurl = "https://a.example/feed"\n'
                            '[[feed]]\nname = "B"\nurl = "https://b.example/feed"\n')
-            env = {**os.environ, 'HOME': home}
+            env = {**os.environ, **tests.sandbox.home_env(home)}
             cli = Path(__file__).resolve().parent.parent / 'bin' / 'nexus-cli'
             subprocess.run([sys.executable, str(cli), '--news-add-feed', 'https://c.example/rss'],
                            env=env, check=True, capture_output=True, timeout=60)

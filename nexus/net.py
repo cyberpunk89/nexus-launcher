@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import __version__
+from . import __version__, platform
 from .paths import CACHE_DIR
 
 UA = f"nexus/{__version__} (+https://github.com/cyberpunk89/nexus-launcher)"
@@ -49,7 +49,7 @@ def write_atomic(path: Path, data: str | bytes, *, fsync: bool = False,
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                      0o666 if mode is None else mode)
-        if mode is not None:
+        if mode is not None and hasattr(os, 'fchmod'):
             os.fchmod(fd, mode)                # umask can't widen or narrow it
         with os.fdopen(fd, 'wb') as f:
             f.write(data.encode('utf-8') if isinstance(data, str) else data)
@@ -61,7 +61,9 @@ def write_atomic(path: Path, data: str | bytes, *, fsync: bool = False,
                 shutil.copymode(path, tmp)
             except OSError:
                 pass
-        os.replace(tmp, path)
+        if mode is not None and not mode & 0o077:
+            platform.keep_private(tmp)         # Windows: an owner-only ACL (kept by the rename)
+        platform.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -166,6 +168,13 @@ def final_url(url: str, timeout: float = 20) -> str:
 FAIL_TTL = 600            # seconds a failed fetch is remembered
 
 
+def _age(path: Path) -> float:
+    """Seconds since `path` was written. Never negative: on Windows a file
+    written just now can carry an mtime a little ahead of time.time(), and a
+    max age of 0 must still mean "stale"."""
+    return max(0.0, time.time() - path.stat().st_mtime)
+
+
 def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
                 errors_: tuple = (NetError, ValueError, KeyError, TypeError)):
     """fetch() through a JSON file cache at `path` (for per-game lookups:
@@ -178,7 +187,7 @@ def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
 
     def read():                         # the cached value, or _corrupt (missing/unreadable)
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             return _corrupt
 
@@ -186,7 +195,7 @@ def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
         v = read()
         return None if v is _corrupt else v
     try:
-        if not refresh and time.time() - path.stat().st_mtime < max_age:
+        if not refresh and _age(path) < max_age:
             hit = read()
             if hit is not _corrupt:
                 return hit
@@ -194,7 +203,7 @@ def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
         pass
     failed = path.with_name(path.name + '.failed')
     try:
-        if not refresh and time.time() - failed.stat().st_mtime < FAIL_TTL:
+        if not refresh and _age(failed) < FAIL_TTL:
             return last()
     except OSError:
         pass
@@ -227,7 +236,7 @@ def cached(url: str, name: str, max_age: float, refresh: bool = False,
             return None
 
     try:
-        fresh = time.time() - path.stat().st_mtime < max_age
+        fresh = _age(path) < max_age
     except OSError:
         fresh = False
     if fresh and not refresh:
@@ -245,8 +254,8 @@ def cached(url: str, name: str, max_age: float, refresh: bool = False,
     # offline, every caller would otherwise wait out the timeout again.
     failed = path.with_name(path.name + '.failed')
     try:
-        if not refresh and time.time() - failed.stat().st_mtime < FAIL_TTL:
-            return stale(f"{url}: failed recently ({failed.read_text().strip()})")
+        if not refresh and _age(failed) < FAIL_TTL:
+            return stale(f"{url}: failed recently ({failed.read_text(encoding='utf-8').strip()})")
     except OSError:
         pass
     try:
@@ -299,5 +308,5 @@ def download(url: str, dest: Path, progress=None, timeout: float = 60,
     if total and done != total:            # cut short without an error
         part.unlink(missing_ok=True)
         raise NetError(f"{url}: got {done} of {total} bytes")
-    os.replace(part, dest)
+    platform.replace(part, dest)
     return done

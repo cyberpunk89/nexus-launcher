@@ -1,6 +1,7 @@
 """Shared by every part of the CLI: paths and constants, the logger, atomic
 writes and backups, slugs, running Wine/Proton processes."""
 
+import codecs
 import hashlib
 import io
 import json
@@ -8,7 +9,6 @@ import os
 import platform
 import re
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nexus import paths as NX
+from nexus import platform as nxplatform
 
 
 # The executable stub (bin/nexus-cli runs this module); used to re-invoke the
@@ -27,9 +28,10 @@ CLI_BIN = Path(__file__).resolve().parents[2] / 'bin' / 'nexus-cli'
 
 def default_install_base() -> Path:
     """Where games install when neither --install-dir nor config overrides it:
-    ~/Games/FitGirl (created on demand). Kept as a function so it is evaluated
-    per-user rather than baked in at import time."""
-    return Path.home() / "Games" / "FitGirl"
+    ~/Games/FitGirl, or a Games folder on a roomy drive on Windows (created on
+    demand). Kept as a function so it is evaluated per-user rather than baked
+    in at import time."""
+    return nxplatform.default_install_base(Path.home())
 
 
 def default_scan_dir() -> Path:
@@ -52,7 +54,7 @@ ARTWORK_DIR = NX.ARTWORK_DIR
 LAUNCHERS_DIR = NX.LAUNCHERS_DIR
 SAVES_DIR = NX.SAVES_DIR
 CONFIG_PATH = NX.CONFIG_PATH
-APPLICATIONS_DIR = Path.home() / ".local/share/applications"
+APPLICATIONS_DIR = NX.APPLICATIONS_DIR
 STEAM_ROOT = NX.STEAM_ROOT
 STEAM_CONFIG_VDF = STEAM_ROOT / "config" / "config.vdf"
 
@@ -256,8 +258,7 @@ def _cached_read(path: Path, load):
 
 def _load_toml(path: Path) -> dict:
     import tomllib
-    with open(path, 'rb') as f:
-        return tomllib.load(f)
+    return tomllib.loads(path.read_text(encoding='utf-8-sig'))     # a BOM (Notepad) is fine
 
 
 def dir_size_bytes(path: Path) -> int:
@@ -290,17 +291,7 @@ def _terminate_active_proc() -> None:
     proc = _ACTIVE_PROC
     if proc is None or proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
-        proc.wait(timeout=5)
-    except (ProcessLookupError, OSError):
-        pass
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
+    nxplatform.kill_tree(proc)
 
 
 def _handle_sigterm(signum, frame) -> None:
@@ -310,6 +301,20 @@ def _handle_sigterm(signum, frame) -> None:
         pass
     _terminate_active_proc()
     os._exit(130)  # 128+SIGTERM, the usual shell convention for "killed"
+
+
+def _cancelled_by_gui() -> None:
+    _handle_sigterm(None, None)
+
+
+def watch_gui_cancel() -> None:
+    """The Windows GUI's Stop sets a named event instead (it can't send this
+    process alone a signal, see platform.cancel_event): handled like SIGTERM,
+    from a thread, so at once. Taken out of the environment, so nothing we
+    start sees it."""
+    name = os.environ.pop(nxplatform.CANCEL_EVENT_ENV, None)
+    if name:
+        nxplatform.watch_cancel(name, _cancelled_by_gui)
 
 
 WINE_ABORTS: list[str] = []      # "wine: Call from … to unimplemented function X, aborting"
@@ -333,6 +338,30 @@ def wine_env(base: dict | None = None) -> dict:
     return env
 
 
+def _oem_fallback(err: UnicodeDecodeError):
+    """Bytes that aren't UTF-8: the console's OEM code page on Windows (what
+    its own tools print), U+FFFD elsewhere."""
+    bad = err.object[err.start:err.end]
+    return bad.decode(nxplatform.console_encoding(), 'replace'), err.end
+
+
+codecs.register_error('nexus-oem', _oem_fallback)
+
+
+def decoded(stream) -> io.TextIOWrapper:
+    """A child's binary stdout as text: UTF-16 when it starts like UTF-16
+    (some Windows tools, wsl.exe for one), else UTF-8 with the OEM code page
+    for anything that isn't. Universal newlines, as text=True gives."""
+    head = stream.peek(256)[:256] if hasattr(stream, 'peek') else b''
+    if head[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        enc, errors = 'utf-16', 'replace'                      # the BOM says which
+    elif len(head) >= 8 and head[1::2].count(0) >= len(head) // 4:
+        enc, errors = 'utf-16-le', 'replace'                   # ASCII as UTF-16, no BOM
+    else:
+        enc, errors = 'utf-8', 'nexus-oem'
+    return io.TextIOWrapper(stream, encoding=enc, errors=errors, newline=None)
+
+
 def run(cmd: list[str], extra_env: dict | None = None,
         capture: bool = False, check: bool = False,
         diagnose: bool = False, label: str | None = None) -> int:
@@ -343,21 +372,20 @@ def run(cmd: list[str], extra_env: dict | None = None,
         env.update(wine_env(extra_env))
     started_at = datetime.now()
 
-    # start_new_session makes the child its own process group leader, so
+    # new_group() makes the child its own process group leader, so
     # _terminate_active_proc() can kill it (and anything it spawned in turn,
-    # e.g. umu-run's own children) with a single killpg.
+    # e.g. umu-run's own children) in one go.
     if (capture and log.log_path) or not sys.stdout.isatty():
         # Stream stdout+stderr to both terminal and log file in real time (and
         # through write_raw whenever the GUI is reading, see _CHILD_EVENT_RE)
         proc = subprocess.Popen(
             cmd, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors='replace', start_new_session=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **nxplatform.new_group(),
         )
         _ACTIVE_PROC = proc
         try:
             assert proc.stdout
-            for line in proc.stdout:
+            for line in decoded(proc.stdout):
                 log.write_raw(line)
                 if 'unimplemented function' in line and 'aborting' in line:
                     WINE_ABORTS.append(line.strip())
@@ -366,7 +394,7 @@ def run(cmd: list[str], extra_env: dict | None = None,
             _ACTIVE_PROC = None
         rc = proc.returncode
     else:
-        proc = subprocess.Popen(cmd, env=env, start_new_session=True)
+        proc = subprocess.Popen(cmd, env=env, **nxplatform.new_group())
         _ACTIVE_PROC = proc
         try:
             rc = proc.wait()

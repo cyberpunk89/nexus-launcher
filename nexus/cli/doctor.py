@@ -10,10 +10,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import features, paths as NX, platform
 
-from .common import (ARTWORK_DIR, atomic_write, CONFIG_PATH, dir_size_bytes, LAUNCHERS_DIR,
-    LOG_DIR, SAVES_DIR, STEAM_ROOT, VDF_ERRORS)
+from .common import (ARTWORK_DIR, atomic_write, CONFIG_PATH, dir_size_bytes, existing_ancestor,
+    LAUNCHERS_DIR, LOG_DIR, SAVES_DIR, STEAM_ROOT, VDF_ERRORS)
 
 
 def cmd_list_steam_accounts() -> None:
@@ -193,7 +193,7 @@ def quarantined() -> list[dict]:
             if not d.is_dir():
                 continue
             try:
-                meta = json.loads(d.with_name(d.name + '.origin').read_text())
+                meta = json.loads(d.with_name(d.name + '.origin').read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 meta = {'origin': str(lib / 'steamapps' / 'compatdata' /
                                       re.sub(r'-\d{8}-\d{6}$', '', d.name))}
@@ -388,7 +388,7 @@ def _launch_sh_proton_ok(entry: dict, proton: Path | None) -> bool:
     if not (launcher and proton):
         return True
     try:
-        text = Path(launcher).read_text(errors='replace')
+        text = Path(launcher).read_text(encoding='utf-8', errors='replace')
     except OSError:
         return True
     if 'umu-run' not in text and ' run ' not in text:
@@ -407,6 +407,9 @@ def doctor_checks(install_base: Path) -> list[dict]:
                     'detail': detail, 'fix': fix, 'actions': actions or []})
 
     cfg = load_config()
+    if not features.has('proton'):
+        _windows_checks(install_base, cfg, add)
+        return out
     R = 'Requirements'
     wv = shutil.which('wine')
     try:
@@ -544,7 +547,8 @@ def doctor_checks(install_base: Path) -> list[dict]:
         if wp:
             wt = Path(wp) / 'winetricks.log'
             try:
-                if wt.is_file() and 'dxvk' in wt.read_text(errors='replace').split():
+                if wt.is_file() and \
+                        'dxvk' in wt.read_text(encoding='utf-8', errors='replace').split():
                     add(G, 'warn', f'{name}: winetricks DXVK overrides Proton\'s',
                         'The prefix pins native d3d11/dxgi overrides, so Proton no longer '
                         'manages DXVK.',
@@ -590,6 +594,119 @@ def doctor_checks(install_base: Path) -> list[dict]:
     return out
 
 
+LONG_PATHS_HELP = ('https://learn.microsoft.com/windows/win32/fileio/'
+                   'maximum-file-path-limitation')
+
+
+def _windows_checks(install_base: Path, cfg: dict, add) -> None:
+    """Doctor on Windows: no Wine, Proton, umu or compatdata to check; the
+    install folder, long paths, Steam, the integrations and Defender instead.
+    Fixes open Windows' own settings pages; nothing here changes a setting."""
+    R, I, G = 'Requirements', 'Integrations', 'Games'
+    py = sys.version_info
+    add(R, 'ok' if py >= (3, 11) else 'fail', 'Python', sys.version.split()[0],
+        '' if py >= (3, 11) else 'Nexus needs Python 3.11 or newer')
+    try:
+        import vdf  # noqa: F401
+        add(R, 'ok', 'python-vdf', 'found')
+    except ImportError:
+        add(R, 'warn', 'python-vdf', 'missing', 'Steam shortcuts are disabled — pip install vdf')
+    base_ok = False
+    try:
+        install_base.mkdir(parents=True, exist_ok=True)
+        base_ok = os.access(install_base, os.W_OK)
+    except OSError:
+        pass
+    add(R, 'ok' if base_ok else 'fail', 'Install folder', str(install_base),
+        '' if base_ok else f'Not writable — set [install] base in {CONFIG_PATH}')
+    for why in platform.install_base_warnings(install_base):
+        add(R, 'warn', 'Install folder', f"{install_base}: {why}",
+            f'Pick a plain folder on a local drive (e.g. D:\\Games) as [install] base in '
+            f'{CONFIG_PATH}')
+    try:
+        free = shutil.disk_usage(existing_ancestor(install_base)).free
+        add(R, 'ok' if free >= 50e9 else 'warn', 'Free space', f"{free / 1e9:.0f} GB free",
+            '' if free >= 50e9 else 'Big repacks need as much again to unpack',
+            [] if free >= 50e9 else [{'label': 'Storage settings', 'steam': False,
+                                      'args': ['--open-url', 'ms-settings:storagesense']}])
+    except OSError:
+        pass
+    lp = platform.long_paths_enabled()
+    add(R, 'ok' if lp else 'warn', 'Long paths', 'on' if lp else 'off',
+        '' if lp else ("Games with deep folders can fail to install past 260 characters. "
+                       "Keep the install folder short, or turn on \"Enable Win32 long "
+                       "paths\" (Group Policy, or LongPathsEnabled in the registry; needs "
+                       "admin). Nexus doesn't change it."),
+        [] if lp else [{'label': 'How to turn it on', 'steam': False,
+                        'args': ['--open-url', LONG_PATHS_HELP]}])
+
+    account, why = resolve_steam_account()
+    add(I, 'ok' if STEAM_ROOT.is_dir() else 'info', 'Steam',
+        str(STEAM_ROOT) if STEAM_ROOT.is_dir() else 'not installed (optional)')
+    if account:
+        add(I, 'ok', 'Steam account', f"{steam_account_label(account)} — {why}")
+    add(I, 'ok' if cfg.get('api_key') else 'info', 'SteamGridDB artwork',
+        'API key set' if cfg.get('api_key') else 'no API key — games get placeholder art',
+        '' if cfg.get('api_key') else 'Add an API key in Settings')
+    try:
+        gamedb_doctor(add, I)
+    except Exception:
+        pass
+    config_secrets_doctor(add, I)
+    _torrent_row(add, I)
+    av = platform.defender_status()
+    if av is not None:
+        add(I, 'info', 'Windows Defender',
+            'real-time protection on' if av['realtime'] else 'real-time protection off',
+            "It sometimes flags FitGirl's unpackers (unarc.dll, ISDone.dll) by mistake; "
+            "an install that fails says so. Exclusions are your call: "
+            "https://fitgirl-repacks.site/faq/",
+            [{'label': 'Windows Security', 'steam': False,
+              'args': ['--open-url', 'windowsdefender://threatsettings']}])
+
+    for slug, entry in sorted(load_registry()['games'].items()):
+        d = entry.get('install_dir')
+        if d and not Path(d).is_dir():
+            add(G, 'fail', f"{entry.get('display_name') or slug}: install folder is missing", d,
+                'Reinstall it, or prune the stale entry.',
+                actions=[{'label': 'Prune missing games', 'args': ['--prune', '--yes'],
+                          'steam': True}])
+
+
+_REMOTE_HOWTO = {
+    'transmission': "Edit → Preferences → Remote → Allow remote access",
+    'qbittorrent': "Tools → Options → Web UI → Web user interface (remote control)",
+}
+
+
+def _torrent_row(add, group: str) -> None:
+    """Windows: is a torrent client reachable, and if one is installed with
+    its remote access off, how to turn that on (in the client; Nexus doesn't
+    edit its settings)."""
+    from nexus import torrent
+    s = torrent.settings()
+    if s['client']:
+        try:
+            v = torrent.client(s).info().get('version') or ''
+            add(group, 'ok', 'Torrent client', f"{s['client']} {v} at {s['url']}")
+        except torrent.TorrentError as e:
+            add(group, 'warn', 'Torrent client', str(e))
+        return
+    found = torrent.detect()
+    if found:
+        add(group, 'info', 'Torrent client', f"{found['client']} answers at {found['url']}",
+            'Set it in Settings → Downloads to download repacks from Nexus')
+        return
+    off = [c for c in torrent.installed_clients() if not c['remote']]
+    if off:
+        c = off[0]
+        add(group, 'warn', 'Torrent client',
+            f"{c['client'].capitalize()} is installed, but its remote access is off",
+            f"Turn it on in {c['client'].capitalize()}: {_REMOTE_HOWTO[c['client']]}")
+    else:
+        add(group, 'info', 'Torrent client', 'none found (optional) — Transmission or qBittorrent')
+
+
 def _looks_unmounted(path: Path, entry: dict) -> bool:
     """A missing game folder whose drive is probably just not mounted: its
     install base is gone too, or nothing exists below a mount point."""
@@ -599,8 +716,8 @@ def _looks_unmounted(path: Path, entry: dict) -> bool:
     while not a.exists() and a != a.parent:
         a = a.parent
     mounts = (Path('/mnt'), Path('/media'), Path('/run/media'))
-    return a == Path('/') or a in mounts or a.parent in mounts \
-        or a.parent.parent == Path('/run/media')
+    return not a.exists() or a == Path('/') or a in mounts or a.parent in mounts \
+        or a.parent.parent == Path('/run/media')            # (a missing Windows drive)
 
 
 def stale_registry_entries() -> list[dict]:

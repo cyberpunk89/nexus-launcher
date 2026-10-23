@@ -7,10 +7,11 @@ import unittest
 from unittest import mock
 
 try:
-    from test_gui_layout import nx
+    from test_gui_layout import nx, stop_leftovers
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx
-from tests.patching import patch_gui, set_gui  # noqa: E402
+    from tests.test_gui_layout import nx, stop_leftovers
+from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402
+from tests.oskind import linux_only  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtCore import Qt, QPoint
@@ -153,6 +154,7 @@ class Search(unittest.TestCase):
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Actions(unittest.TestCase):
+    @linux_features
     def test_theatre_drops_desktop_only_actions(self):
         g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a', 'steam': True}
         desk = [a.key for a in nx.game_actions(g)]
@@ -238,7 +240,9 @@ class Window(unittest.TestCase):
 
     def tearDown(self):
         from PyQt6.QtCore import QEvent
-        self.win.jobs.jobs.clear()
+        # A job or CLI query a failed test left running: kill it first, or it
+        # calls back into this window after it's gone.
+        stop_leftovers(self.win.jobs)
         self.win.close()
         self.win.deleteLater()
         QApplication.processEvents()
@@ -266,6 +270,39 @@ class Window(unittest.TestCase):
         self.assertEqual(w.game('alpha')['collections'], [])
         self.assertEqual(nx.COLLECTION_NAMES, [])
 
+    def test_store_chips(self):
+        w = self.win
+        self.assertTrue(w.chips['epic'].isHidden())            # no Epic games yet
+        epic = {'slug': 'epic-Kiwi', 'display_name': 'Kiwi', 'source': 'epic',
+                'installed': True, 'launcher': 'com.epicgames.launcher://apps/x'}
+        dup = {'slug': 'epic-Beta', 'display_name': 'Beta', 'source': 'epic', 'installed': True}
+        w._on_library({'games': fake_games() + [epic, dup], 'disks': []}, '')
+        self.assertFalse(w.chips['epic'].isHidden())
+        w.go(w.LIBRARY)
+        w._set_chip('epic')
+        # Beta is on Steam too: one tile, the Steam one.
+        self.assertEqual([g['slug'] for g in w._shown_games], ['epic-Kiwi'])
+        self.assertEqual(w.game('epic-Beta')['dup_of'], 'steam-1')
+        self.assertEqual(w.game('steam-1')['dup_also'], ['epic'])
+        w._on_library({'games': fake_games(), 'disks': []}, '')
+        self.assertFalse(w.chips['epic'].isHidden())           # still the chip in use
+        w._set_chip('all')
+        self.assertTrue(w.chips['epic'].isHidden())
+
+    def test_no_heroic_chip_without_the_feature(self):
+        from nexus import features
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            w = nx.MainWindow()
+        self.addCleanup(w.deleteLater)
+        self.assertNotIn('heroic', w.chips)
+        self.assertEqual(w.filter.findData('no-heroic'), -1)
+        self.assertLessEqual({'nexus', 'steam', 'epic'}, set(w.chips))
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            w = nx.MainWindow()
+        self.addCleanup(w.deleteLater)
+        self.assertIn('heroic', w.chips)                       # Linux keeps it
+        self.assertGreaterEqual(w.filter.findData('no-heroic'), 0)
+
     def test_surprise_opens_a_game_page(self):
         w = self.win
         w.go(w.LIBRARY)
@@ -274,6 +311,7 @@ class Window(unittest.TestCase):
         self.assertTrue(w.details.isVisible())
         self.assertIn(w.selected[0], ('alpha', 'steam-1', 'gamma'))
 
+    @linux_only                     # sh + SIGTERM; Windows cancelling is phase 4
     def test_quit_waits_for_running_jobs(self):
         import time
         from PyQt6.QtGui import QCloseEvent
@@ -630,6 +668,7 @@ class Window(unittest.TestCase):
         self.assertEqual({k: v for k, v in saved[-1].items() if k[0] == 'alerts'},
                          {('alerts', 'proton'): False, ('alerts', 'sale_min_cut'): 50})
 
+    @linux_features
     def test_agent_switch_asks_before_turning_on(self):
         st = self.win.settings
         calls = []
@@ -683,6 +722,119 @@ class Window(unittest.TestCase):
             self.assertFalse(w.isVisible())
             self.assertFalse(w._tray_quit)
             w._apply_controls({'close_to_tray': False})
+
+    def test_tray_menu_entries_do_their_thing(self):
+        w = self.win
+        launched, started = [], []
+        with patch_gui('tray_available', lambda: True), \
+                mock.patch.object(w, 'on_game_action',
+                                  side_effect=lambda what, g: launched.append(g['slug'])), \
+                mock.patch.object(w, '_start_install',
+                                  side_effect=lambda cmd, name, slug: started.append(name)):
+            w._apply_controls({'close_to_tray': True})
+            t = w.tray
+            t.add_ready({'path': '/r/G', 'name': 'G'})
+            t._fill()
+            acts = {a.text(): a for a in t.menu.actions() if a.text()}
+            acts["Alpha"].trigger()
+            acts["Install G"].trigger()
+            self.assertEqual(launched, ['alpha'])
+            self.assertEqual(started, ['G'])
+            self.assertEqual(t.ready, [])                   # offered once
+            self.assertIs(nx.Tray.current, t)
+            w._apply_controls({'close_to_tray': False})
+        self.assertIsNone(nx.Tray.current)
+
+    def test_notifications_without_notify_send(self):
+        """Windows: the tray icon says it when the tray is on, else a toast
+        (platform.notify_local); notify-send stays first where it exists."""
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        from nexus import platform
+        from nexus.gui import widgets
+        w = self.win
+        with mock.patch.object(widgets.shutil, 'which', return_value=None), \
+                mock.patch.object(platform, 'notify_local') as toast:
+            self.assertFalse(nx.tray.tray_message("T", "B"))      # no tray yet
+            widgets.notify_desktop("T", "B")
+            toast.assert_called_once_with("T", "B")
+            toast.reset_mock()
+            with patch_gui('tray_available', lambda: True), \
+                    mock.patch.object(QSystemTrayIcon, 'supportsMessages', return_value=True):
+                w._apply_controls({'close_to_tray': True})
+                with mock.patch.object(w.tray.icon, 'showMessage') as show:
+                    widgets.notify_desktop("T", "B")
+                show.assert_called_once()
+                self.assertEqual(show.call_args[0][:2], ("T", "B"))
+                toast.assert_not_called()
+                w._apply_controls({'close_to_tray': False})
+        with mock.patch.object(widgets.shutil, 'which', return_value='/usr/bin/notify-send'), \
+                mock.patch.object(widgets.QProcess, 'startDetached') as det, \
+                mock.patch.object(platform, 'notify_local') as toast:
+            widgets.notify_desktop("T", "B")
+        self.assertEqual(det.call_args[0][0], 'notify-send')
+        toast.assert_not_called()
+
+    def test_a_second_hidden_launch_stays_in_the_tray(self):
+        with mock.patch.object(self.win, 'bring_to_front') as front:
+            self.win.handle_remote(['--hidden'])
+            front.assert_not_called()
+            self.win.handle_remote([])
+            front.assert_called_once()
+
+    def test_start_with_windows_needs_no_question_and_turns_the_tray_on(self):
+        from nexus import features
+        w = self.win
+        calls = []
+
+        def cli(args, cb, *_a):
+            calls.append(args)
+            cb({'startup': True, 'systemd': False, 'enabled': args[0] == '--agent-enable',
+                'errors': []}, '')
+        with mock.patch.object(features, 'FEATURES', frozenset()), \
+                patch_gui('cli_json', cli), patch_gui('tray_available', lambda: True), \
+                mock.patch.object(w, 'toast') as toast:
+            w._apply_controls({'close_to_tray': False})
+            w._background_changed('agent', True)
+            self.assertEqual(calls, [['--agent-enable', '--json']])
+            self.assertFalse(w.sheet.isVisible())                # no question first
+            self.assertTrue(w.prefs.controls['close_to_tray'])   # where Nexus starts
+            self.assertIsNotNone(w.tray)
+            self.assertTrue(w.settings.tray.isChecked())
+            self.assertIn("sign in", toast.call_args[0][0])
+            w._background_changed('agent', False)
+            self.assertEqual(calls[-1], ['--agent-disable', '--json'])
+            self.assertTrue(w.prefs.controls['close_to_tray'])   # left as it is
+            w._apply_controls({'close_to_tray': False})
+
+    def test_the_window_stands_in_for_the_agent_on_windows(self):
+        from nexus import features, instance
+        from nexus.gui import win_downloads
+        w = self.win
+        asked = []
+        alerts = [{'kind': 'atl', 'key': 'atl:1', 'title': 'One', 'text': 'One is at its low'},
+                  {'kind': 'proton', 'key': 'p:1', 'title': 'GE', 'text': 'GE is out'}]
+        w.config = {**w.config, 'api_key': 'k', 'gamedb_enabled': False}
+        with mock.patch.object(instance, 'agent_running', return_value=False), \
+                patch_gui('cli_json', lambda args, cb, *_a: asked.append(args[0])):
+            with mock.patch.object(features, 'FEATURES', frozenset()):
+                for _ in range(win_downloads.STANDIN_ART_EVERY):
+                    w._check_repack_feed()
+                self.assertEqual(w._feed_timer.interval(), win_downloads.STANDIN_MS)
+                self.assertEqual(asked.count('--fill-art'), 1)       # every 6 h
+                self.assertEqual(asked.count('--check-alerts'),
+                                 win_downloads.STANDIN_ART_EVERY)
+            with mock.patch.object(features, 'FEATURES', features.ALL):
+                w._check_repack_feed()
+                self.assertEqual(w._feed_timer.interval(), 6 * 3600 * 1000)   # Linux as before
+        said = []
+        with patch_gui('notify_desktop', lambda t, b: said.append(t)), \
+                mock.patch.object(w, 'toast'):
+            w._alerts_checked({'alerts': alerts}, '')
+            self.assertEqual(said, [])                       # the window is showing
+            w.hide()
+            w._alerts_checked({'alerts': alerts}, '')
+            w.show()
+        self.assertEqual(said, ["Nexus", "Nexus"])
 
     def test_shift_click_selects_a_range_and_batch_is_gated(self):
         w = self.win
@@ -814,7 +966,7 @@ class Window(unittest.TestCase):
             st = w.setup
             self.assertIn("1 thing(s) to fix first: Wine", st.lead.text())
             self.assertFalse(st.get_ge.isHidden())                 # no GE-Proton: offer it
-            for _ in range(5):
+            for _ in range(len(st.steps) - 1):                 # no Proton step on Windows
                 st._next()
             self.assertEqual(st.btn_next.text(), "Done")
             st.base.setText('/g/Games')
@@ -1063,6 +1215,7 @@ class Window(unittest.TestCase):
         self.assertFalse(t.btn_play.isVisible())
         self.assertFalse(t.btn_more.isVisible())
 
+    @linux_features
     def test_details_sections(self):
         d = self.win.details
         self.win._tile_activated(self.win._games[0])           # a repack
@@ -1475,6 +1628,7 @@ class Window(unittest.TestCase):
         self.win._on_library({'games': fake_games(), 'disk': disk, 'disks': [disk]}, '')
         self.assertAlmostEqual(self.win.icons[self.win.SYSTEM].usage, 0.9)
 
+    @linux_features
     def test_system_widget_tiles(self):
         w = self.win
         w.prefs.dashboard = nx.dash_default()

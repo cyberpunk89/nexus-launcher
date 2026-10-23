@@ -1,0 +1,12 @@
+{
+ "FormatVersion": 0,
+ "bIsIncompleteInstall": false,
+ "DisplayName": "Sample Comet",
+ "InstallLocation": "D:\\Epic Games\\Sample Comet",
+ "LaunchExecutable": "Bin/Comet.exe",
+ "AppName": "Comet",
+ "MainGameAppName": "Comet",
+ "CatalogNamespace": "nscomet",
+ "CatalogItemId": "itemcomet",
+ "InstallSize": 1234567
+}

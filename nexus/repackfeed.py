@@ -85,7 +85,7 @@ def parse_feed(xml_text: str) -> list[dict]:
 
 def load() -> dict:
     try:
-        data = json.loads(STORE.read_text())
+        data = json.loads(STORE.read_text(encoding='utf-8'))
         if isinstance(data, dict) and isinstance(data.get('posts'), dict):
             return data
     except (OSError, ValueError):

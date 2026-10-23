@@ -24,6 +24,23 @@ def _best_effort(what: str, fn, *a, **kw):
         return None
 
 
+def safety_gate(args, repack_dir: Path) -> None:
+    """Stop (exit 1) before anything happens when the repack looks tampered
+    with, unless --ignore-safety. Shared by the Linux and Windows installs."""
+    if args.ignore_safety:
+        return
+    from nexus import safety
+    verdict = safety.check(repack_dir)
+    if verdict['verdict'] == 'danger':
+        print("  [!] This repack looks tampered with:", file=sys.stderr)
+        for f in verdict['findings']:
+            if f['level'] == 'danger':
+                print(f"      {f['file']}: {f['why']}", file=sys.stderr)
+        print("      Not installing it. If you're sure it's fine, pass --ignore-safety.",
+              file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_install(args, install_base: Path) -> None:
     """Install a repack: verify, prefix, setup.exe (silent unless
     --interactive), launch.sh, then register the game and add it to Steam,
@@ -34,17 +51,7 @@ def cmd_install(args, install_base: Path) -> None:
     if not repack_dir.is_dir():
         print(f"Error: '{repack_dir}' is not a directory", file=sys.stderr)
         sys.exit(1)
-    if not args.ignore_safety:
-        from nexus import safety
-        verdict = safety.check(repack_dir)
-        if verdict['verdict'] == 'danger':
-            print("  [!] This repack looks tampered with:", file=sys.stderr)
-            for f in verdict['findings']:
-                if f['level'] == 'danger':
-                    print(f"      {f['file']}: {f['why']}", file=sys.stderr)
-            print("      Not installing it. If you're sure it's fine, pass --ignore-safety.",
-                  file=sys.stderr)
-            sys.exit(1)
+    safety_gate(args, repack_dir)
 
     if args.from_torrent:
         _torrent_mark(args.from_torrent, install_started=time.strftime('%Y-%m-%dT%H:%M:%S'))
@@ -278,82 +285,86 @@ def cmd_install(args, install_base: Path) -> None:
                   if already_installed else None) or silent_target(wine_prefix, slug)
     setup_extra = inno_args(win_path(target, wine_prefix)) if target else []
     # Silent installs also skip the VC++/DirectX redists and the installer's
-    # music; every install keeps setup from opening FitGirl's site at the end.
-    # The user's own WINEDLLOVERRIDES (from the environment) is kept.
+    # music; every install keeps setup from opening FitGirl's site at the end
+    # (browser_muted). The user's own WINEDLLOVERRIDES (from the environment)
+    # is kept.
     skipped = setup_redists(setup_exe) if target else set()
-    overrides = silent_setup_overrides(setup_exe, skipped) if target else NO_BROWSER
+    overrides = silent_setup_overrides(setup_exe, skipped) if target else None
     setup_env = {**base_env, 'WINEDLLOVERRIDES': ';'.join(
         o for o in (os.environ.get('WINEDLLOVERRIDES'),
                     base_env.get('WINEDLLOVERRIDES'), overrides) if o)}
 
     # 4. Installer (bounded retry: a signal-killed attempt can retry in-place;
     #    a normal exit — success or the installer's own nonzero code — does not)
-    for attempt in range(MAX_SETUP_RETRIES + 1):
-        if not preflight_hard_memory_check(skip=args.skip_mem_check):
-            log.print("\nAborted due to low memory.")
-            sys.exit(1)
-        if not preflight_hard_disk_check(install_base, repack_size, skip=args.skip_disk_check):
-            log.print("\nAborted due to insufficient disk space.")
-            sys.exit(1)
+    with browser_muted(wine_prefix, base_env, runner, proton):
+        for attempt in range(MAX_SETUP_RETRIES + 1):
+            if not preflight_hard_memory_check(skip=args.skip_mem_check):
+                log.print("\nAborted due to low memory.")
+                sys.exit(1)
+            if not preflight_hard_disk_check(install_base, repack_size, skip=args.skip_disk_check):
+                log.print("\nAborted due to insufficient disk space.")
+                sys.exit(1)
 
-        suffix = f" (attempt {attempt + 1}/{MAX_SETUP_RETRIES + 1})" if attempt else ""
-        log.print(f"\n[3/4] Running {setup_exe.name} via {runner_label}...{suffix}")
-        if target:
-            log.print(f"  Installing silently into {win_path(target, wine_prefix)} — no setup "
-                      f"window (--interactive shows it).")
-            log.print("  Skipping its VC++/DirectX redists (Proton ships them) and its music:")
-            log.print(f"    {', '.join(sorted(skipped))}\n")
-        else:
-            log.print("  The installer GUI will open. Follow the on-screen steps.")
-            log.print("  You can install to any path — it stays inside this prefix.\n")
-
-        progress = InstallProgress(target) if target else None
-        if progress:
-            progress.start()
-        try:
-            if runner == 'umu':
-                rc = run(['umu-run', str(setup_exe), *setup_extra],
-                          extra_env=_umu_env(setup_env, wine_prefix, proton),
-                          capture=True, diagnose=True, label="setup.exe (via umu-run)")
-            elif runner == 'proton':
-                rc = run([str(proton), 'run', str(setup_exe), *setup_extra], extra_env=setup_env,
-                          capture=True, diagnose=True, label="setup.exe (via Proton)")
+            suffix = f" (attempt {attempt + 1}/{MAX_SETUP_RETRIES + 1})" if attempt else ""
+            log.print(f"\n[3/4] Running {setup_exe.name} via {runner_label}...{suffix}")
+            if target:
+                log.print(f"  Installing silently into {win_path(target, wine_prefix)} — no setup "
+                          f"window (--interactive shows it).")
+                log.print("  Skipping its VC++/DirectX redists (Proton ships them) and its music:")
+                log.print(f"    {', '.join(sorted(skipped))}\n")
             else:
-                rc = run(['wine', str(setup_exe), *setup_extra], extra_env=setup_env,
-                          capture=True, diagnose=True, label="setup.exe (via Wine)")
-        finally:
+                log.print("  The installer GUI will open. Follow the on-screen steps.")
+                log.print("  You can install to any path — it stays inside this prefix.\n")
+
+            progress = InstallProgress(target) if target else None
             if progress:
-                progress.stop()
-
-        if rc >= 0:
-            if rc == 0:
-                log.print("\n  Installer closed.")
-            else:
-                log.print(f"\n  [!] Installer exited with code {rc} — it may not have "
-                          f"finished. Checking for the game anyway...")
-            break
-
-        if attempt == MAX_SETUP_RETRIES:
-            log.print("\n  [!] Max retries reached — giving up on the installer step.")
-            log.print(f"      Prefix retained at {wine_prefix} for manual retry:")
-            if runner == 'umu':
-                log.print(f"        WINEPREFIX=\"{wine_prefix}\" GAMEID=umu-0 "
-                          f"PROTONPATH=\"{proton.parent}\" umu-run \"{setup_exe}\"")
-            else:
-                log.print(f"        WINEPREFIX=\"{wine_prefix}\" wine \"{setup_exe}\"")
-            sys.exit(1)
-
-        if args.yes:
-            ans = 'y'
-            log.print("  Retrying in the same prefix (--yes)...")
-        else:
+                progress.start()
             try:
-                ans = input("  Retry running the installer in the same prefix? [Y/n] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                ans = 'n'
-        if ans in ('n', 'no'):
-            log.print("Aborted.")
-            sys.exit(1)
+                if runner == 'umu':
+                    rc = run(['umu-run', str(setup_exe), *setup_extra],
+                              extra_env=_umu_env(setup_env, wine_prefix, proton),
+                              capture=True, diagnose=True, label="setup.exe (via umu-run)")
+                elif runner == 'proton':
+                    rc = run([str(proton), 'run', str(setup_exe), *setup_extra],
+                              extra_env=setup_env,
+                              capture=True, diagnose=True, label="setup.exe (via Proton)")
+                else:
+                    rc = run(['wine', str(setup_exe), *setup_extra], extra_env=setup_env,
+                              capture=True, diagnose=True, label="setup.exe (via Wine)")
+            finally:
+                if progress:
+                    progress.stop()
+
+            if rc >= 0:
+                if rc == 0:
+                    log.print("\n  Installer closed.")
+                else:
+                    log.print(f"\n  [!] Installer exited with code {rc} — it may not have "
+                              f"finished. Checking for the game anyway...")
+                break
+
+            if attempt == MAX_SETUP_RETRIES:
+                log.print("\n  [!] Max retries reached — giving up on the installer step.")
+                log.print(f"      Prefix retained at {wine_prefix} for manual retry:")
+                if runner == 'umu':
+                    log.print(f"        WINEPREFIX=\"{wine_prefix}\" GAMEID=umu-0 "
+                              f"PROTONPATH=\"{proton.parent}\" umu-run \"{setup_exe}\"")
+                else:
+                    log.print(f"        WINEPREFIX=\"{wine_prefix}\" wine \"{setup_exe}\"")
+                sys.exit(1)
+
+            if args.yes:
+                ans = 'y'
+                log.print("  Retrying in the same prefix (--yes)...")
+            else:
+                try:
+                    ans = input("  Retry running the installer in the same prefix? "
+                                "[Y/n] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    ans = 'n'
+            if ans in ('n', 'no'):
+                log.print("Aborted.")
+                sys.exit(1)
 
     # 5. Deps — opt-in. Proton bundles the VC++ runtimes, d3dcompiler_47 and
     #    DXVK, so the winetricks pass is dead weight (and harmful for dxvk) on
@@ -564,11 +575,11 @@ from .launchprofile import format_launch_options, protongen_default_profile  # n
 from .registry import register_game, registry_get  # noqa: E402
 from .repack import (_install_session, clear_incomplete_marker, DISK_SPACE_WARN_MULTIPLIER,
     exe_candidates, existing_install_root, find_setup_exe, inno_args, InstallProgress,
-    MAX_SETUP_RETRIES, NO_BROWSER, preflight_hard_disk_check, preflight_hard_memory_check,
+    MAX_SETUP_RETRIES, preflight_hard_disk_check, preflight_hard_memory_check,
     read_meminfo, repack_fingerprint, repack_info, setup_redists, silent_setup_overrides,
     silent_target, verify_bins, write_incomplete_marker)  # noqa: E402
-from .runner import (_umu_env, damaged_protons, find_proton, init_prefix, install_deps,
-    proton_repair_tag, resolve_game_proton, resolve_umu_gameid, select_runner,
+from .runner import (_umu_env, browser_muted, damaged_protons, find_proton, init_prefix,
+    install_deps, proton_repair_tag, resolve_game_proton, resolve_umu_gameid, select_runner,
     write_launch_script)  # noqa: E402
 from .sgdb import fetch_artwork  # noqa: E402
 from .snapshots import auto_snapshot, make_game_dir  # noqa: E402

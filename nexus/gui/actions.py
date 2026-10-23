@@ -8,6 +8,7 @@ from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLineEdit, QMenu, QPushButton,
     QScrollArea, QVBoxLayout, QWidget)
 
+from ..features import has
 from .common import COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import G, P, SP
 
@@ -54,6 +55,18 @@ def action_glyph(a: 'GameAction') -> str:
 # Desktop-only things nobody wants from the couch: file managers, Wine's
 # own dialogs, another app. Not offered in Theatre at all.
 COUCH_SKIP = ('open-folder', 'protongen', 'tool:')
+
+# Actions that need a Linux-only feature (features.has), by key or key prefix.
+NEEDS_FEATURE = {'add-heroic': 'heroic', 'remove-heroic': 'heroic',
+                 'pg-default': 'protongen', 'protongen': 'protongen',
+                 'restore-saves': 'save_backup', 'benchmark': 'perf',
+                 'tool:': 'proton', 'pause-toggle': 'pause',
+                 'add-sunshine': 'sunshine', 'remove-sunshine': 'sunshine'}
+
+
+def _supported(key: str) -> bool:
+    return all(has(f) for k, f in NEEDS_FEATURE.items()
+               if key == k or (k.endswith(':') and key.startswith(k)))
 
 
 # Actions that change a game's files or registration: not while a job is
@@ -147,7 +160,7 @@ def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
                                             'hide', 'col-new') or a.key.startswith('col:')]
     if theatre:
         out = [a for a in out if not a.key.startswith(COUCH_SKIP)]
-    return _gate_actions(game, out)
+    return _gate_actions(game, [a for a in out if _supported(a.key)])
 
 
 def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:
@@ -291,17 +304,21 @@ class ActionSheet(QFrame):
         self.show()
         no.setFocus(Qt.FocusReason.TabFocusReason)
 
-    def choose(self, title: str, items: list, sub: str = ''):
+    def choose(self, title: str, items: list, sub: str = '', text: str = ''):
         """The sheet as a plain list of choices — anything that isn't a game
         action (a deal's links, a game's collections). `items` are
         (text, glyph, fn) or (text, glyph, fn, checked); fn runs once the
-        sheet has closed."""
+        sheet has closed. `text`, plain, explains above them (a failed
+        install's cause)."""
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
         clear_layout(self.rows)
         self.title.setText(title)
         self.sub.setText(sub)
+        if text:
+            self.rows.addWidget(plain_label(text, "Muted", wrap=True))
+            self.rows.addSpacing(int(SP['3'] * self.scale))
         px = int(18 * self.scale)
         first = None
         for text, glyph, fn, *rest in items:
@@ -550,4 +567,4 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> s
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .widgets import clear_layout, icon_button, label, set_glyph_icon  # noqa: E402
+from .widgets import clear_layout, icon_button, label, plain_label, set_glyph_icon  # noqa: E402

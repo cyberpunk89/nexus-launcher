@@ -87,7 +87,7 @@ def lookup(name: str, year: int | None = None, refresh: bool = False) -> dict | 
         return None
     path = CACHE_DIR / 'hltb' / (re.sub(r'\s+', '-', key)[:120] + '.json')
     try:
-        cached = json.loads(path.read_text())
+        cached = json.loads(path.read_text(encoding='utf-8'))
         age = time.time() - path.stat().st_mtime
         limit = (HIT_AGE if cached.get('hit') else
                  FAIL_AGE if cached.get('failed') else MISS_AGE)

@@ -21,6 +21,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from nexus import features
+
 from .common import emit_event, log, Logger, use_logger
 
 SNAP_DIR = '.nexus-snapshots'
@@ -43,7 +45,7 @@ def fs_type(path: Path) -> str | None:
     p = existing_ancestor(Path(path))
     try:
         real = os.path.realpath(p)
-        lines = Path('/proc/self/mountinfo').read_text().splitlines()
+        lines = Path('/proc/self/mountinfo').read_text(encoding='utf-8').splitlines()
     except OSError:
         return None
     best, kind = '', None
@@ -59,7 +61,8 @@ def fs_type(path: Path) -> str | None:
 
 
 def btrfs_ready(path: Path) -> bool:
-    return fs_type(path) == 'btrfs' and shutil.which('btrfs') is not None
+    return (features.has('btrfs') and fs_type(path) == 'btrfs'
+            and shutil.which('btrfs') is not None)
 
 
 def is_subvolume(path: Path) -> bool:

@@ -1,22 +1,15 @@
 """Which Nexus processes are running, without Qt. The window listens on a
 socket (nexus/gui/app.py InstanceServer, a QLocalServer — a plain Unix
-socket on Linux), and a second `nexus` launch or the background agent hands
+socket on Linux, a named pipe on Windows), and a second `nexus` launch or the background agent hands
 it an argv as one JSON line. The background agent (nexus/cli/agent.py)
 holds an flock on AGENT_LOCK while it runs."""
 
-import fcntl
 import json
 import os
-import socket
 
-from . import paths as NX
+from . import paths as NX, platform
 
-# In the user's private runtime dir. Without one, a 0700 folder of our own,
-# never a name in shared /tmp another user could take first.
-INSTANCE = os.environ.get("NEXUS_INSTANCE") or (
-    os.path.join(os.environ['XDG_RUNTIME_DIR'], 'nexus.sock')
-    if os.path.isdir(os.environ.get('XDG_RUNTIME_DIR') or '')
-    else str(NX.CACHE_DIR / 'run' / 'nexus.sock'))
+INSTANCE = os.environ.get("NEXUS_INSTANCE") or platform.instance_address(NX.CACHE_DIR)
 INSTANCE_MAX = 64 << 10           # bytes one forwarded launch may send
 
 
@@ -26,11 +19,7 @@ def forward(argv: list[str], timeout: float = 0.3) -> bool:
     if len(data) > INSTANCE_MAX:
         return False
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(INSTANCE)
-            s.settimeout(2)
-            s.sendall(data)
+        platform.send_local(INSTANCE, data, timeout)
     except OSError:
         return False
     return True
@@ -39,9 +28,7 @@ def forward(argv: list[str], timeout: float = 0.3) -> bool:
 def window_running() -> bool:
     """Whether a Nexus window is listening (connects, sends nothing)."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(0.3)
-            s.connect(INSTANCE)
+        platform.send_local(INSTANCE, b'', 0.3)
     except OSError:
         return False
     return True
@@ -59,8 +46,8 @@ def agent_running() -> bool:
         return False
     with fh:
         try:
-            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            platform.lock(fh, shared=True, blocking=False)
         except OSError:
             return True
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        platform.unlock(fh)
     return False

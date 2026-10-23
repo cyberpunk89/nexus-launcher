@@ -186,7 +186,7 @@ def _llm_config() -> dict | None:
     """protongen's local-LLM settings, only when enabled and pointing at this
     machine (log text never leaves it)."""
     try:
-        st = __import__('tomllib').loads(PROTONGEN_STATE.read_text())
+        st = __import__('tomllib').loads(PROTONGEN_STATE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     ep = st.get('llm_endpoint') or 'http://127.0.0.1:1234/v1'
@@ -210,7 +210,7 @@ def cmd_explain_log(ident: str) -> None:
     if not path.exists():
         path = latest_install_log(ident) or path
     try:
-        text = path.read_text(errors='replace')[-64_000:]
+        text = path.read_text(encoding='utf-8', errors='replace')[-64_000:]
     except OSError:
         print(f"No log for {ident!r} yet", file=sys.stderr)
         sys.exit(1)
@@ -297,10 +297,12 @@ def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1
     from nexus import gamedb, steamlib
     s = gamedb.settings()
     if not gamedb.configured(s):
-        url = s['url'] or gamedb.DEFAULT_URL
-        why = s['url_error'] or ("Game-db isn't set up — create a token on "
-                                 f"{url}/account and add it in Settings "
-                                 "([gamedb] token / NEXUS_GAMEDB_TOKEN, [gamedb] enabled = true)")
+        why = s['url_error'] or (
+            "Game-db isn't set up — create a token on " f"{s['url']}/account and add it in "
+            "Settings ([gamedb] token / NEXUS_GAMEDB_TOKEN, [gamedb] enabled = true)"
+            if s['url'] else
+            "Game-db isn't set up — add your Game-db server's address and a desktop app token "
+            "in Settings ([gamedb] url, token, enabled = true)")
         if as_json:                   # the GUI renders the error itself
             print(json.dumps({'configured': False, 'error': {'kind': 'config', 'message': why},
                               'url': s['url']}))
@@ -390,7 +392,7 @@ def config_secrets_doctor(add, group: str) -> None:
     (the GUI writes it 0600; a hand-made one is usually 0644)."""
     try:
         import tomllib
-        data = tomllib.loads(CONFIG_PATH.read_text())
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))
         mode = CONFIG_PATH.stat().st_mode & 0o777
     except (OSError, ValueError, ImportError):
         return

@@ -125,7 +125,7 @@ def counts(steam_root: Path, account_id: int | str, appids,
     cached: dict = {}
     if cache_file:
         try:
-            cached = json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             cached = {}
     stats = _stats_dir(steam_root)

@@ -8,7 +8,7 @@ try:
     from test_gui_layout import nx
 except ImportError:             # run as tests.<module>
     from tests.test_gui_layout import nx
-from tests.patching import patch_gui  # noqa: E402
+from tests.patching import linux_features, patch_gui  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtCore import Qt
@@ -33,6 +33,8 @@ class Stylesheet(unittest.TestCase):
         css = nx.build_stylesheet()
         self.assertNotIn('$', css.replace('$$', ''))
         self.assertIn('qlineargradient', css)
+        # A backslash in url("...") is an escape: Windows paths broke the sheet.
+        self.assertEqual([u for u in re.findall(r'url\("([^"]*)"\)', css) if '\\' in u], [])
 
     def test_pill(self):
         self.assertEqual(nx.pill(28), 14)
@@ -106,6 +108,17 @@ class Segmented(unittest.TestCase):
     def test_unknown_key_ignored(self):
         self.seg.set_current('nope')
         self.assertEqual(self.seg.current(), 'home')
+
+    def test_thumb_follows_items_that_move_mid_slide(self):
+        """A Size change restyles the app while the thumb slides: it lands on
+        the item where it is now, not where it was (it stuck between items)."""
+        from PyQt6.QtTest import QTest
+        self.seg.set_current('list')
+        for b in (self.seg.item(k) for k in self.seg.keys()):
+            b.setFixedSize(b.width() + 20, b.height())
+        QTest.qWait(400)
+        self.assertAlmostEqual(self.seg._thumb.center().x(),
+                               self.seg.item('list').geometry().center().x(), delta=1)
 
 
 if __name__ == '__main__':
@@ -191,6 +204,7 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(nx.system_badge(0, 2, 0), ('2', 'warning'))
         self.assertEqual(nx.system_badge(0, 0, 0), ('', 'accent'))
 
+    @linux_features
     def test_system_status(self):
         st = nx.system_status([], [], [], {})
         self.assertEqual([t['key'] for t in st['tiles']],

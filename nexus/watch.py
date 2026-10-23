@@ -7,10 +7,9 @@ edited under a lock. No file yet means "nothing recorded": the first scan
 then only records what's there instead of announcing every old folder."""
 
 import contextlib
-import fcntl
 import json
 
-from . import net
+from . import net, platform
 from .paths import DATA_DIR
 
 STATE = DATA_DIR / 'watch-state.json'
@@ -24,7 +23,7 @@ def key(c: dict) -> str:
 def load_seen() -> list[str] | None:
     """The announced keys, or None when nothing was ever recorded."""
     try:
-        data = json.loads(STATE.read_text())
+        data = json.loads(STATE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     seen = data.get('seen') if isinstance(data, dict) else None
@@ -36,8 +35,7 @@ def edit_seen():
     """Yield {'seen': the announced keys, or None when never recorded} for
     the caller to replace under the lock; saved if it changed."""
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE.with_name(STATE.name + '.lock'), 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with platform.file_lock(STATE.with_name(STATE.name + '.lock')):
         before = load_seen()
         box = {'seen': None if before is None else list(before)}
         yield box

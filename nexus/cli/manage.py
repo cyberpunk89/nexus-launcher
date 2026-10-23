@@ -95,7 +95,7 @@ def heroic_play_stats() -> dict[str, dict]:
     if not cfg_dir:
         return {}
     try:
-        data = json.loads((cfg_dir / 'store' / 'timestamp.json').read_text())
+        data = json.loads((cfg_dir / 'store' / 'timestamp.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
     out = {}
@@ -313,6 +313,7 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
     Steam/Heroic are downloading (installing={done, total})."""
     from nexus import steamlib
     from nexus import repackfeed
+    from nexus import sources
     games = managed_entries(install_base)
     online = repackfeed.updates(games)            # the stored feed only, no network
     for g in games:
@@ -329,12 +330,19 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
         h['disk_bytes'] = size if h['installed'] else None
         if not h['installed']:
             h['download_bytes'] = size
-    games += steam + heroic + extra
+    stores = sources.installed_games()            # Epic etc.; a failing one is skipped
+    games += steam + stores + heroic + extra
     _add_achievement_counts(games)
     try:
-        sun_apps = json.loads(SUNSHINE_APPS.read_text()).get('apps') or []
+        sun_apps = json.loads(SUNSHINE_APPS.read_text(encoding='utf-8')).get('apps') or []
     except (OSError, ValueError, AttributeError):
         sun_apps = []
+    for g in stores:
+        # The SteamGridDB game its art came from, as --fill-art settled it:
+        # later lookups (the art picker) start there instead of searching.
+        gid = cached_sgdb_id(g)
+        if gid:
+            g['sgdb_id'] = gid
     for g in games:
         overlay_art(g)
         if g.get('source') == 'nexus' or g.get('launcher'):
@@ -353,7 +361,7 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
 
     disks, seen = [], set()
     for p in [install_base, *(Path(g['library']) for g in steam if g.get('library')),
-              *(Path(g['install_dir']).parent for g in heroic if g.get('install_dir'))]:
+              *(Path(g['install_dir']).parent for g in heroic + stores if g.get('install_dir'))]:
         try:
             dev = os.stat(existing_ancestor(p)).st_dev
         except OSError:
@@ -396,7 +404,9 @@ def cmd_running(install_base: Path, as_json: bool) -> None:
     for g in managed_entries(install_base):
         exe = (g.get('exe') or '').replace('\\', '/').rsplit('/', 1)[-1].lower()
         if (g['slug'] in r['slugs'] or int(g.get('steam_appid') or 0) in r['appids']
-                or (exe and exe in r['exes'])):
+                or (exe and exe in r['exes'])
+                or (g.get('install_dir') and steamlib.in_dir_cmdline(g['install_dir'],
+                                                                     r['paths']))):
             playing.append(g['slug'])
     playing += [f"steam-{a}" for a in r['appids'] if a < 0x80000000]
     for h in steamlib.heroic_store_games(find_heroic_config()):
@@ -430,6 +440,11 @@ def _game_by_id(ident: str, light: bool = False) -> dict | None:
     for g in steamlib.heroic_store_games(find_heroic_config(), owned=True):
         if g['slug'] == ident or g['app_name'] == ident:
             return g
+    from nexus import sources
+    for g in sources.installed_games():          # Epic etc.
+        if g['slug'] == ident:
+            gid = cached_sgdb_id(g)
+            return {**g, 'sgdb_id': gid} if gid else g
     return None
 
 
@@ -454,6 +469,6 @@ from .heroic import (_heroic_exe, _heroic_lib_path, _load_heroic_library, find_h
 from .launchprofile import format_launch_options, protongen_heroic_id  # noqa: E402
 from .registry import load_registry, update_registry_size  # noqa: E402
 from .repack import incomplete_installs  # noqa: E402
-from .sgdb import _art_file, overlay_art  # noqa: E402
+from .sgdb import _art_file, cached_sgdb_id, overlay_art  # noqa: E402
 from .steam import _read_compat_mapping, _shortcut_uid, find_steam_userdata  # noqa: E402
 from .sunshine import _owned_game_dir, _sunshine_find, SUNSHINE_APPS  # noqa: E402

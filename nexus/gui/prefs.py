@@ -20,7 +20,7 @@ class LibraryPrefs:
 
     def __init__(self):
         try:
-            data = json.loads(self.PATH.read_text())
+            data = json.loads(self.PATH.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             data = {}
         self._data = data if isinstance(data, dict) else {}
@@ -85,6 +85,8 @@ class LibraryPrefs:
             if isinstance(mt, list) else []
         # First-run setup (gui/setup.py): done once, or skipped.
         self.setup_done = self._data.get('setup_done') is True
+        # Windows: the note on the UAC prompt before the first install, shown once.
+        self.uac_note_shown = self._data.get('uac_note_shown') is True
         # The command palette's recent picks (Ctrl+K), newest first.
         pr = self._data.get('palette_recent')
         self.palette_recent = [str(k) for k in pr if isinstance(k, str)][:8] \
@@ -101,6 +103,7 @@ class LibraryPrefs:
                     'library_state': self.library_state, 'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
+                    'uac_note_shown': self.uac_note_shown,
                     'overrides': self.overrides, 'notes': self.notes})
         if self.seen_repacks is not None:
             out['seen_repacks'] = list(self.seen_repacks)[-300:]

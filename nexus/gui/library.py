@@ -12,6 +12,7 @@ from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QImageReader, QLinearGra
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
 from .theme import FS, G, GRAD, P, pill_qss, R, SP, TILE_LIFT, TILE_W
 
@@ -509,7 +510,7 @@ class HeroCarousel(QWidget):
         self.title.setText(g.get('display_name', ''))
         self.title.setVisible(pm.isNull())
         clear_layout(self.facts)
-        tier = g.get('protondb')
+        tier = g.get('protondb') if has('proton') else None
         facts = [(SOURCE_LABEL.get(g.get('source', 'nexus'), ''), None),
                  (f"Played {last}" if last else '', None),
                  (fmt_hours(g.get('playtime_minutes')) or '', None),
@@ -832,7 +833,9 @@ class HomeView(QScrollArea, _TileSignals):
         else:
             self.hero.setVisible(False)
             shelves = [("Installing", [], pending_jobs, 'cover', None)]
-            for src, name in (('nexus', "Repacks"), ('steam', "Steam"), ('heroic', "Heroic")):
+            for src, name in (('nexus', "Repacks"), ('steam', "Steam"),
+                              *((('heroic', "Heroic"),) if has('heroic') else ()),
+                              ('epic', "Epic")):
                 items = sorted((g for g in games if g.get('source', 'nexus') == src),
                                key=lambda g: (g.get('display_name') or '').lower())
                 shelves.append((name, items, (), 'cover', (src, 'name')))
@@ -925,6 +928,7 @@ class ListView(QTableWidget):
             self.horizontalHeaderItem(i).setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         hh.setMinimumSectionSize(64)
+        self.setColumnHidden(self.COLS.index("Proton"), not has('proton'))
         # No sort column until the user picks one: keep the toolbar's order
         # (otherwise Qt sorts by the empty thumbnail column).
         hh.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)

@@ -5,7 +5,7 @@ import html
 from .theme import P
 
 
-SOURCE_LABEL = {'nexus': 'Repack', 'steam': 'Steam', 'heroic': 'Heroic'}
+SOURCE_LABEL = {'nexus': 'Repack', 'steam': 'Steam', 'heroic': 'Heroic', 'epic': 'Epic'}
 TIER_COLORS = {'platinum': '#b4c7dc', 'gold': '#cfb53b', 'silver': '#a6a6a6',
                'bronze': '#cd7f32', 'borked': '#eb6f92', 'native': '#9ccfd8'}
 PCGW_COLORS = {'true': 'success', 'always on': 'success', 'limited': 'warning',

@@ -8,19 +8,21 @@ paired KDE Connect device. Configured in config.toml:
     kdeconnect = true
     min_minutes = 3                          # installs shorter than this don't push
 
-Everything is best-effort: a push that fails is reported, never fatal."""
+Everything is best-effort: a push that fails is reported, never fatal.
+KDE Connect counts on Windows only when kdeconnect-cli is installed there."""
 
 import shutil
 import subprocess
 import tomllib
 
 from . import net
+from .features import has
 from .paths import CONFIG_PATH
 
 
 def settings() -> dict:
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text()).get('notify') or {}
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig')).get('notify') or {}
     except (OSError, ValueError):
         data = {}
     url = str(data.get('ntfy') or '').strip()
@@ -30,7 +32,8 @@ def settings() -> dict:
         minutes = 3.0
     return {'ntfy': url if url.startswith('https://') else None,
             'ntfy_token': str(data.get('ntfy_token') or '') or None,
-            'kdeconnect': data.get('kdeconnect') is True,
+            'kdeconnect': data.get('kdeconnect') is True
+            and (has('kdeconnect') or shutil.which('kdeconnect-cli') is not None),
             'min_minutes': minutes}
 
 

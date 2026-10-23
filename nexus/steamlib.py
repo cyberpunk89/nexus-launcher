@@ -6,12 +6,10 @@ Steam's or Heroic's files."""
 import json
 import os
 import re
-import shutil
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import net
+from . import net, platform
 
 # Steam "apps" that are runtimes/tools, not games.
 TOOL_APPIDS = {228980, 1070560, 1391110, 1628350, 4183110, 1493710, 2180100,
@@ -100,7 +98,7 @@ def play_stats(steam_root: Path, cache_file: Path | None = None) -> dict[int, di
     cache_file = cache_file or _play_cache()
     if key is not None:
         try:
-            hit = json.loads(cache_file.read_text())
+            hit = json.loads(cache_file.read_text(encoding='utf-8'))
             if hit.get('key') == key:
                 return {int(a): v for a, v in hit['stats'].items()}
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -315,7 +313,7 @@ def steam_owned_entry(steam_root: Path, item: dict) -> dict:
 def heroic_downloads(heroic_cfg: Path | None) -> set[str]:
     """App names in Heroic's download queue."""
     try:
-        d = json.loads((heroic_cfg / 'store' / 'download-manager.json').read_text())
+        d = json.loads((heroic_cfg / 'store' / 'download-manager.json').read_text(encoding='utf-8'))
     except (OSError, ValueError, TypeError):
         return set()
     q = d.get('queue') if isinstance(d, dict) else None
@@ -368,7 +366,7 @@ def heroic_store_games(heroic_cfg: Path | None, owned: bool = False) -> list[dic
     if not heroic_cfg:
         return []
     try:
-        stamps = json.loads((heroic_cfg / 'store' / 'timestamp.json').read_text())
+        stamps = json.loads((heroic_cfg / 'store' / 'timestamp.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         stamps = {}
     queued = heroic_downloads(heroic_cfg) if owned else set()
@@ -376,7 +374,7 @@ def heroic_store_games(heroic_cfg: Path | None, owned: bool = False) -> list[dic
     for runner, fname in (('legendary', 'legendary_library.json'),
                           ('gog', 'gog_library.json'), ('nile', 'nile_library.json')):
         try:
-            data = json.loads((heroic_cfg / 'store_cache' / fname).read_text())
+            data = json.loads((heroic_cfg / 'store_cache' / fname).read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
         lib = data.get('library', data.get('games', [])) if isinstance(data, dict) else data
@@ -424,19 +422,9 @@ def _iso_local(ts: str | None) -> str | None:
 
 
 def open_url(url: str) -> bool:
-    """Hand a steam:// or heroic:// URL to its launcher, detached. `steam URL`
-    reaches a running client (or starts one); anything else goes through
-    xdg-open so whatever registered the scheme handles it."""
-    if url.startswith('steam://') and shutil.which('steam'):
-        cmd = ['steam', url]
-    elif shutil.which('xdg-open'):
-        cmd = ['xdg-open', url]
-    else:
-        return False
-    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True,
-                     env={k: v for k, v in os.environ.items() if k != 'LD_PRELOAD'})
-    return True
+    """Hand a steam:// or heroic:// URL to its launcher, detached. False when
+    nothing here can open it. See platform.open_url."""
+    return platform.open_url(url)
 
 
 def manifest_appids(steam_root: Path) -> set[int]:
@@ -452,21 +440,16 @@ def manifest_appids(steam_root: Path) -> set[int]:
 
 
 def running() -> dict:
-    """What's being played right now, from /proc (read-only, ~ms):
+    """What's being played right now, from the process list (read-only, ~ms):
     Steam's reaper carries `SteamLaunch AppId=<id>` (Steam games and non-Steam
     shortcuts alike), Nexus's own launches run under `--track-session <slug>`,
     and any .exe names / paths seen let Heroic launches be matched too."""
     appids, slugs, exes, cmdlines = set(), set(), set(), []
-    for p in Path('/proc').iterdir():
-        if not p.name.isdigit():
+    for p in platform.processes():
+        args = p.cmdline
+        if not args:
             continue
-        try:
-            raw = (p / 'cmdline').read_bytes()
-        except OSError:
-            continue
-        if not raw:
-            continue
-        cmd = raw.replace(b'\0', b' ').decode('utf-8', 'replace')
+        cmd = ' '.join(args)
         m = re.search(r'SteamLaunch AppId=(\d+)', cmd)
         if m:
             appids.add(int(m.group(1)))
@@ -477,12 +460,15 @@ def running() -> dict:
             exes.add(tok.lower())
         # Whole arguments too: "Disco Elysium.exe" has a space the token
         # pattern above would cut it at.
-        for arg in raw.split(b'\0'):
-            a = arg.decode('utf-8', 'replace').strip()
+        for arg in args:
+            a = arg.strip()
             if a.lower().endswith('.exe'):
                 exes.add(re.split(r'[\\/]', a)[-1].lower())
         if '.exe' in cmd.lower() or 'wine' in cmd.lower():
             cmdlines.append(cmd)
+    steam_game = platform.steam_running_appid()         # Windows: no reaper to read
+    if steam_game:
+        appids.add(steam_game)
     exes -= {'steam.exe', 'explorer.exe', 'services.exe', 'winedevice.exe', 'plugplay.exe',
              'svchost.exe', 'rpcss.exe', 'tabtip.exe', 'conhost.exe', 'start.exe',
              'wineboot.exe', 'steamwebhelper.exe', 'rundll32.exe'}
@@ -494,5 +480,7 @@ def in_dir_cmdline(install_dir: str, cmdlines: list[str]) -> bool:
     """Whether a command line runs something inside install_dir: the
     folder followed by a separator (so /games/Foo doesn't match
     /games/FooBar), Wine's Z:\\ form included."""
-    d = install_dir.rstrip('/') + '/'
-    return any(d in c.replace('\\', '/') for c in cmdlines)
+    def norm(s: str) -> str:                     # Windows paths ignore case
+        return os.path.normcase(s).replace('\\', '/')
+    d = norm(install_dir).rstrip('/') + '/'
+    return any(d in norm(c) for c in cmdlines)

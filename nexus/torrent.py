@@ -18,18 +18,19 @@ whether to install when done), so it can pick the finished folder. The
 Downloads page also shows and controls everything else in the client
 (all_status / control): pause, resume, remove."""
 
+from __future__ import annotations
+
 import base64
 import contextlib
-import fcntl
 import hashlib
 import json
 import re
 import time
 import tomllib
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import net
+from . import net, platform
 from .paths import CONFIG_PATH, DATA_DIR
 
 TRACKED = DATA_DIR / 'torrents.json'
@@ -45,7 +46,7 @@ class TorrentError(Exception):
 
 def settings() -> dict:
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text())
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError):
         data = {}
     t = data.get('torrent') or {}
@@ -371,7 +372,7 @@ def client(s: dict | None = None):
 
 def load_tracked() -> dict:
     try:
-        data = json.loads(TRACKED.read_text())
+        data = json.loads(TRACKED.read_text(encoding='utf-8'))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -388,8 +389,7 @@ def edit_tracked():
     can't undo each other. Saved only if something changed; an exception in
     the block saves nothing."""
     TRACKED.parent.mkdir(parents=True, exist_ok=True)
-    with open(TRACKED.with_name(TRACKED.name + '.lock'), 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with platform.file_lock(TRACKED.with_name(TRACKED.name + '.lock')):
         data = load_tracked()
         before = json.dumps(data, sort_keys=True)
         yield data
@@ -436,13 +436,21 @@ def add(source: str, auto_install: bool = False, s: dict | None = None,
     return {'hash': h, 'name': name}
 
 
+_WIN_FOLDER = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
+
+
 def _content_path(folder, name) -> str | None:
     """`folder/name` for a torrent, or None when the name isn't one plain path
     component (a client's '..' or '/x' would point outside the download
-    folder, and that path gets installed from and later trashed)."""
-    if not folder or not name or name in ('.', '..') or '/' in name or '\0' in name:
+    folder, and that path gets installed from and later trashed). Joined in
+    the client's own style: a Windows client's folder with backslashes, a
+    Linux one's (a NAS behind a tunnel included) with slashes, wherever Nexus
+    runs."""
+    win = bool(folder and _WIN_FOLDER.match(folder))
+    if not folder or not name or name in ('.', '..') or '/' in name or '\0' in name \
+            or (win and ('\\' in name or ':' in name)):
         return None
-    return str(Path(folder) / name)
+    return str(PureWindowsPath(folder, name) if win else PurePosixPath(folder, name))
 
 
 def _merge(t: dict, meta: dict | None) -> dict:
@@ -501,12 +509,43 @@ def control(action: str, hashes: list[str], delete_data: bool = False,
         raise TorrentError(f"unknown action {action!r}")
 
 
+def installed_clients() -> list[dict]:
+    """Torrent clients whose settings Nexus can read here (Windows: their
+    files under AppData): [{'client', 'url', 'remote'}], where `remote` says
+    whether its web/RPC access is on. Linux: [] (detect() probes ports).
+    A hint only: Transmission writes settings.json when it quits, so a
+    switch flipped in the running client shows here only after a restart."""
+    out = []
+    for client, path in platform.torrent_client_settings():
+        try:
+            text = Path(path).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        if client == 'transmission':
+            try:
+                cfg = json.loads(text)
+            except ValueError:
+                continue
+            out.append({'client': client, 'remote': bool(cfg.get('rpc-enabled', True)),
+                        'url': f"http://127.0.0.1:{int(cfg.get('rpc-port', 9091))}"})
+        else:                                   # qBittorrent.ini: [Preferences] WebUI\...
+            on = re.search(r'^WebUI\\Enabled=(\w+)', text, re.M)
+            port = re.search(r'^WebUI\\Port=(\d+)', text, re.M)
+            out.append({'client': client, 'remote': bool(on and on.group(1) == 'true'),
+                        'url': f"http://127.0.0.1:{port.group(1) if port else 8080}"})
+    return out
+
+
 def detect() -> dict | None:
-    """A torrent client answering on its default local port, unconfigured:
-    {'client', 'url'} or None."""
-    for name, url, path, codes in (
-            ('transmission', 'http://127.0.0.1:9091', '/transmission/rpc', (409, 401)),
-            ('qbittorrent', 'http://127.0.0.1:8080', '/api/v2/app/version', (200, 403))):
+    """A torrent client answering on its local port, unconfigured: {'client',
+    'url'} or None. The default ports, and on Windows the ports its settings
+    file names."""
+    probes = [(c['client'], c['url']) for c in installed_clients() if c['remote']]
+    probes += [('transmission', 'http://127.0.0.1:9091'), ('qbittorrent', 'http://127.0.0.1:8080')]
+    paths = {'transmission': ('/transmission/rpc', (409, 401)),
+             'qbittorrent': ('/api/v2/app/version', (200, 403))}
+    for name, url in dict.fromkeys(probes):
+        path, codes = paths[name]
         try:
             status, headers, _raw = _http(url + path, b'{}' if name == 'transmission' else None,
                                           timeout=2)

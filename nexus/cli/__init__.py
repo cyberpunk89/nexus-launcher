@@ -15,7 +15,7 @@ from .common import (
     _terminate_active_proc, APPLICATIONS_DIR, ARTWORK_DIR, atomic_write, backup_file,
     BACKUP_KEEP, CLI_BIN, CONFIG_PATH, DATA_DIR, default_install_base, default_scan_dir,
     dir_size_bytes, disable_cow, emit_event, existing_ancestor, glob_escape, INSTALL_BASE,
-    LAUNCHERS_DIR, log, LOG_DIR, Logger, make_slug, require_slug, run, SAVES_DIR, SECRET_ENV,
+    LAUNCHERS_DIR, log, LOG_DIR, Logger, make_slug, require_slug, run, decoded, SAVES_DIR, SECRET_ENV,
     SGDB_API, STEAM_CONFIG_VDF, STEAM_ROOT, use_logger, valid_slug, VDF_ERRORS, win_path,
     WINE_ABORTS, wine_env, WINE_ENV_DROP)  # noqa: F401
 from .repack import (
@@ -26,7 +26,7 @@ from .repack import (
     DISK_SPACE_WARN_MULTIPLIER, DISK_SWAP_CREDIT, exe_candidates, existing_install_root,
     find_exe_in_dir, find_game_exe, find_setup_exe, FITGIRL_PATTERNS, HARD_MIN_AVAILABLE_MB,
     HARD_MIN_EFFECTIVE_MB, incomplete_installs, INCOMPLETE_MARKER, inno_args, INNO_SILENT,
-    InstallProgress, MAX_SETUP_RETRIES, NO_BROWSER, parse_md5_file, preflight_hard_disk_check,
+    InstallProgress, MAX_SETUP_RETRIES, parse_md5_file, preflight_hard_disk_check,
     preflight_hard_memory_check, read_incomplete_marker, read_meminfo, REDIST_EXES,
     repack_complete, repack_fingerprint, repack_info, setup_product_name, setup_redists,
     silent_setup_overrides, silent_target, SKIP_EXE_DIRS, SKIP_EXE_NAMES, verify_bins,
@@ -35,6 +35,7 @@ from .runner import (
     _comment_safe, _elf_machine, _HOST_ELF_MACHINE, _proton_dirs_sig, _proton_rank_key,
     _PROTON_SCAN, _proton_version_tuple, _proton_wine_bins, _proton_wine_is_native,
     _scan_protons, _title_key, _umu_env, _UMU_ID_RE, _WARNED_ARCH, _WARNED_DAMAGE, BENCH_HOOK,
+    browser_muted, NO_BROWSER,
     damaged_protons, find_proton, find_umu, init_prefix, install_deps, list_protons,
     proton_by_name, proton_repair_tag, PROTON_SEARCH_DIRS, proton_tool_name,
     resolve_game_proton, resolve_umu_gameid, select_runner, STEAM_SEARCH_URL, UMU_DB_URL,
@@ -47,6 +48,7 @@ from .registry import (
     touch_last_played, unregister_game, update_registry_entry, update_registry_size)  # noqa: F401
 from .sgdb import (
     _art_file, _cache_json, _cache_put, _cache_set, _download, _SGDB_CDN, _sgdb_get,
+    cached_sgdb_id,
     _sgdb_json, _SGDB_LOCK, _variant, art_dir_for, ART_MAX_BYTES, art_variants,
     cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search, fetch_artwork,
     MISS_TTL, overlay_art, read_picks, read_sgdb_match, save_art, SGDB_CACHE, sgdb_game_id,

@@ -1,10 +1,9 @@
 """Reading and writing config.toml from the GUI."""
 
 import json
-import os
 import re
 
-from nexus import gamedb, net
+from nexus import gamedb, net, platform
 
 from .common import CONFIG_PATH
 
@@ -18,8 +17,7 @@ def _read_config_toml() -> dict:
     but isn't valid TOML — callers must then not write over it."""
     import tomllib
     try:
-        with open(CONFIG_PATH, 'rb') as f:
-            return tomllib.load(f)
+        return tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))   # Notepad's BOM
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as e:
@@ -129,7 +127,7 @@ def save_config(updates: dict) -> None:
     import tomllib
     _read_config_toml()                          # raises if currently invalid
     try:
-        text = CONFIG_PATH.read_text()
+        text = CONFIG_PATH.read_text(encoding='utf-8-sig')
     except FileNotFoundError:
         text = ''
     new = toml_update(text, updates)
@@ -142,18 +140,6 @@ def save_config(updates: dict) -> None:
 
 
 def steam_running() -> bool:
-    """Same test as the CLI's: the client or its web helper — read from
-    /proc directly (two pgrep runs cost ~15 ms; this is a few)."""
-    try:
-        with os.scandir('/proc') as it:
-            pids = [e.name for e in it if e.name.isdigit()]
-    except OSError:
-        return False
-    for pid in pids:
-        try:
-            with open(f'/proc/{pid}/comm', 'rb') as f:
-                if f.read().strip() in (b'steam', b'steamwebhelper'):
-                    return True
-        except OSError:
-            continue
-    return False
+    """Same test as the CLI's: the client or its web helper — from the
+    process names alone (two pgrep runs cost ~15 ms; this is a few)."""
+    return any(p.name in ('steam', 'steamwebhelper') for p in platform.processes())

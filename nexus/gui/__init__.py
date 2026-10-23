@@ -24,8 +24,9 @@ tests/patching.py (each module imports what it uses).
 """
 
 from .common import (
-    _REPO, alive, APPLICATIONS_DIR, ATTRACT_MINUTES, CLI_BIN, COLLECTION_NAMES, CONFIG_PATH,
-    DATA_DIR, DESKTOP_PATH, HOME, ICON_PATH, INSTALL_BASE_DEFAULT, LEGACY_DESKTOP, LOGO_SVG,
+    _REPO, alive, APPLICATIONS_DIR, ATTRACT_MINUTES, CLI, cli_args, CLI_BIN, COLLECTION_NAMES,
+    CONFIG_PATH, DATA_DIR, DESKTOP_PATH, HOME, ICON_PATH, INSTALL_BASE_DEFAULT, LEGACY_DESKTOP,
+    LOGO_SVG,
     MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE)  # noqa: F401
 from .theme import (
     _check_icon_path, _chevron_icon_path, _first_installed, _hex_ok, _ICON_CACHE, _mix, _rgba,

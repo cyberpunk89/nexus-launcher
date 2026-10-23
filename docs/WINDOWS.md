@@ -1,44 +1,122 @@
-# Using Windows?
+# Nexus on Windows
 
-Nexus only runs on **Linux**, and that's on purpose. This page explains why and what to use
-instead.
+Nexus has a Windows edition, called **nexus-launcher** for now (the name may change). Games
+on Windows already run natively, so it installs repacks with their own `setup.exe`, adds them
+to your library and keeps them tidy. It doesn't use Proton or Wine.
 
-> Nexus is an unofficial hobby project, not affiliated with FitGirl, Valve, Heroic or any
+> Nexus is an unofficial hobby project, not affiliated with FitGirl, Valve, Epic or any
 > store. Only install software you are legally allowed to use.
 
-## Why Nexus is Linux-only
+> **Draft.** No Windows release has been published yet; details may change once the
+> first one is tested.
 
-Most of what Nexus does is run *Windows* game installers and games on *Linux*, through
-Proton, Wine and umu. It sets up a Wine prefix for each game, picks a Proton build and
-writes the launchers. It also adds the game to Steam and Heroic on Linux, and tunes things
-like gamescope and MangoHud.
+## Install
 
-On Windows none of that is needed, because the games already run natively. That's why
-starting `nexus` or `nexus-cli` on Windows (or macOS) just prints a short message pointing
-here.
+Download from the release page (Windows 10 or 11, 64-bit). Pick one:
 
-## What to use on Windows instead
+- **Installer:** `nexus-launcher-Setup-<version>.exe`. It installs just for you (no admin
+  prompt) into `%LOCALAPPDATA%\Programs\nexus-launcher` and adds a Start Menu entry. It can
+  also start Nexus in the tray when you sign in to Windows (a tick box, off by default). To
+  update, run the newer installer over the old one; close Nexus first, or let the installer
+  close it.
+- **Portable zip:** `nexus-launcher-<version>-portable.zip`. Unzip it anywhere (say
+  `C:\Tools`) and run `nexus-launcher.exe` in the `nexus-launcher` folder. Nothing is
+  installed. `nexus-cli.exe` beside it is the command line.
 
-- **Installing a repack:** run the repack's `setup.exe` directly. First, run the repack's
-  own *Verify BIN files* script (in its `MD5` folder) to check the download is complete and
-  undamaged.
-- **A launcher like Nexus:** [Playnite](https://playnite.link) is free and open source. It
-  puts Steam, Epic, GOG, other stores, emulators and installed repacks in one library,
-  fetches cover art, and has a **Fullscreen mode** with controller support for the TV,
-  similar to Nexus's Theatre mode.
-- **Epic, GOG and Amazon games:** [Heroic Games Launcher](https://heroicgameslauncher.com)
-  also runs on Windows.
+Either way, Nexus keeps its settings under `%APPDATA%\nexus-launcher` and its data and cache
+under `%LOCALAPPDATA%\nexus-launcher`. That holds for the portable zip too, so the zip and
+an installed copy share the same settings and library.
 
-## Trying Nexus anyway
+Uninstalling (Settings → Apps) asks whether to delete that data too. The answer defaults to
+**No**, so a reinstall picks up where you left off. Installed games are never touched.
 
-If you'd like to try it, you need Linux on the machine itself:
+## First run and SmartScreen
 
-- **Steam Deck:** switch to Desktop Mode and follow the README's
-  [Quick start](../README.md#quick-start) (the *Steam Deck* venv step).
-- **A gaming-focused Linux distro**, such as [Bazzite](https://bazzite.gg),
-  [CachyOS](https://cachyos.org) or [Nobara](https://nobaraproject.org). You can try one
-  from a live USB stick, or install it on a spare drive or alongside Windows (dual boot).
-  Then follow the README's Quick start.
+The build isn't code-signed, so Windows SmartScreen may show *"Windows protected your PC"*.
+Click **More info**, then **Run anyway**. You'll only see this the first time. There are no
+plans for a signed build.
 
-**WSL** (Windows Subsystem for Linux) isn't a good fit: Nexus would be running Windows
-games through Proton inside Linux inside Windows. They'd run slower, not faster.
+To check a download, compare its SHA-256 with the one in the release notes or the release's
+`SHA256SUMS` file:
+
+```
+certutil -hashfile nexus-launcher-Setup-<version>.exe SHA256
+```
+
+A setup wizard then checks what this machine has and offers to pick a torrent client. By
+default games are installed under `<drive>:\Games`, on the local drive with the most free
+space other than the Windows one (else `C:\Games`). Never Program Files: some older games
+write their saves next to the exe, which fails there. You can change the folder in Settings.
+
+## Torrent client
+
+Nexus can show and control your downloads through a torrent client you already run. It
+supports two:
+
+- **Transmission:** turn on remote access (*Edit → Preferences → Remote → Allow remote
+  control*; port 9091 by default).
+- **qBittorrent:** turn on the Web UI (*Tools → Options → Web UI → Web User Interface*; port
+  8080 by default).
+
+Nexus finds the client from its settings file, or by trying those two default local ports.
+If it finds none, the wizard says so; you can set one up later in **Settings → Torrent
+client**. Transmission only writes its settings file when it quits, so restart it after
+changing them.
+
+## Antivirus and FitGirl repacks
+
+Windows Defender (and other antivirus) often flags repack files, such as `unarc.dll`,
+`ISDone.dll` or a game's modified DLLs, as threats. These are usually false alarms, but
+whether to trust a download is **your call**. The FitGirl FAQ explains why it happens.
+
+What Nexus does:
+
+- It never changes Defender's settings or exclusions, and never asks you to turn it off.
+- If an install fails, it reads the setup log and Defender's recent detections (read-only)
+  and tells you when Defender removed a file, which one, and why that probably broke the
+  install.
+
+What you can do: restore the file from **Windows Security → Protection history**, or allow
+it or exclude your games folder there, then install again. If you'd rather not, don't.
+
+## The admin prompt
+
+FitGirl's `setup.exe` asks for administrator rights, so Windows shows a UAC prompt each time
+Nexus starts an install. Nexus itself doesn't run as administrator. If you click **No**, the
+install is cancelled and the empty folder is cleaned up.
+
+## Which stores are read
+
+Steam and Epic only. Steam games come from your Steam library folders. Epic games come from
+the Epic Games Launcher's install list, so only games that are **installed** show up. Other
+stores aren't read yet. Games installed by Nexus appear with their own Start Menu shortcut.
+
+## Saves backup
+
+Games on Windows keep saves in your real `AppData` and Documents folders. To know which ones
+belong to a game, Nexus uses the community
+[Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest) (built from
+PCGamingWiki), downloaded once and cached. Backing up and restoring saves around an uninstall
+uses it.
+
+Backups go to `%LOCALAPPDATA%\nexus-launcher\saves`. A game the manifest doesn't list
+gets no backup: Nexus says it doesn't know where that game keeps its saves rather than
+guessing.
+
+## Not available on Windows
+
+These are Linux-only, or not ported yet, and are hidden or skipped:
+
+- **Proton, umu and Wine:** not needed. This includes the Proton page, ProtonDB, per-game
+  runtime choice, launch profiles and the Wine prefix tools.
+- **Performance presets:** lsfg-vk, gamescope and MangoHud.
+- **protongen.**
+- **Heroic:** its games and shortcuts are skipped.
+- **Sunshine:** not ported yet (planned).
+- **Linux system extras:** system tuning tips, pausing a running game, KDE Connect, the
+  systemd background service and `.desktop` launchers (Windows uses Start Menu shortcuts).
+
+There is no background service on Windows. Instead, **Settings → Start with Windows** (or
+the installer's tick box) puts a `Nexus` shortcut in your Startup folder that starts Nexus
+in the tray when you sign in, and the tray does that work while the window is closed.
+Turn it off in Settings or in Task Manager → Startup apps.

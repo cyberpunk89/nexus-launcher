@@ -4,9 +4,8 @@ Python caches its bytecode instead of recompiling it on every run."""
 import sys
 from pathlib import Path
 
-if not sys.platform.startswith("linux"):
-    sys.exit("Nexus runs on Linux only (it runs Windows games through Proton/Wine).\n"
-             "On Windows, see docs/WINDOWS.md in the Nexus folder.")
+if sys.platform == "darwin":
+    sys.exit("Nexus runs on Linux and Windows only.")
 if sys.version_info < (3, 11):
     sys.exit(f"Nexus needs Python 3.11 or newer (this is {sys.version.split()[0]}).")
 

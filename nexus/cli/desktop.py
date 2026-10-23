@@ -1,19 +1,66 @@
-"""The freedesktop/KDE desktop entry for a game."""
+"""A game's entry in the app menu: the freedesktop/KDE desktop entry, or a
+Start Menu shortcut on Windows."""
 
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
+from nexus import features, platform
+
 from .common import APPLICATIONS_DIR, atomic_write, log
+
+# Not allowed in a Windows file name, plus control characters.
+_BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED = re.compile(r'^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$', re.I)
+
+
+def _lnk_name(display_name: str) -> str:
+    """The game's name as a Windows file name."""
+    name = _BAD_NAME.sub('', display_name).strip().rstrip('. ') or 'Game'
+    return f'{name} (game)' if _RESERVED.match(name) else name[:120]
 
 
 def _desktop_path(slug: str) -> Path:
-    return APPLICATIONS_DIR / f"fitgirl-{slug}.desktop"
+    if features.has('desktop_entry'):
+        return APPLICATIONS_DIR / f"fitgirl-{slug}.desktop"
+    entry = registry_get(slug) or {}
+    if entry.get('menu_entry'):
+        return Path(entry['menu_entry'])
+    return APPLICATIONS_DIR / f"{_lnk_name(entry.get('display_name') or slug)}.lnk"
+
+
+def write_start_menu_entry(display_name: str, slug: str, exe: Path,
+                           aumid: str | None = None) -> Path:
+    """A Start Menu shortcut to the game's exe, run from its folder (many
+    games break when started from anywhere else); for a Store app (`aumid`)
+    explorer.exe on its shell:AppsFolder URI. A rename replaces the old
+    shortcut; the registry keeps the path when the game is registered."""
+    path = APPLICATIONS_DIR / f"{_lnk_name(display_name)}.lnk"
+    old = _desktop_path(slug)
+    if aumid:
+        from nexus import appx
+        platform.create_shortcut(path, Path(os.environ.get('SystemRoot', r'C:\Windows'))
+                                 / 'explorer.exe', args=appx.shell_uri(aumid),
+                                 workdir=Path(exe).parent, icon=exe)
+    else:
+        platform.create_shortcut(path, exe, workdir=Path(exe).parent, icon=exe)
+    if old != path and old.suffix == '.lnk':
+        old.unlink(missing_ok=True)
+    if registry_get(slug):
+        update_registry_entry(slug, menu_entry=str(path))
+    log.print(f"  Start Menu: {path}")
+    return path
 
 
 def write_desktop_entry(display_name: str, slug: str, launch: Path,
                         artwork: dict | None) -> Path | None:
-    """Write a .desktop launcher so the game appears in the app menu."""
+    """Write a .desktop launcher so the game appears in the app menu. On
+    Windows `launch` is the game's exe and this writes a Start Menu shortcut."""
+    if not features.has('desktop_entry'):
+        return write_start_menu_entry(display_name, slug, launch,
+                                      (registry_get(slug) or {}).get('appx'))
     icon = 'applications-games'
     if artwork:
         icon_src = artwork.get('icon') or artwork.get('cover')
@@ -55,3 +102,8 @@ def write_desktop_entry(display_name: str, slug: str, launch: Path,
             pass
     log.print(f"  Desktop entry: {path}")
     return path
+
+
+# Siblings, imported last: they import this module too, and every use
+# below is inside a function, so the cycle resolves at call time.
+from .registry import registry_get, update_registry_entry  # noqa: E402

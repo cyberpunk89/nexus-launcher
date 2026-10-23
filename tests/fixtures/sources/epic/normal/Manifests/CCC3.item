@@ -1,0 +1,12 @@
+{
+ "FormatVersion": 0,
+ "bIsIncompleteInstall": false,
+ "DisplayName": "Sample Fable DLC",
+ "InstallLocation": "D:\\Epic Games\\Sample Fable",
+ "LaunchExecutable": "Bin/FableDLC.exe",
+ "AppName": "FableDLC",
+ "MainGameAppName": "Fable",
+ "CatalogNamespace": "nsfabledlc",
+ "CatalogItemId": "itemfabledlc",
+ "InstallSize": 1234567
+}

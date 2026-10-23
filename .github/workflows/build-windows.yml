@@ -1,0 +1,123 @@
+# The Windows edition's build: PyInstaller one-folder app (p5-04), Inno Setup
+# installer and a portable zip (p5-05). On version tags, on pushes that change
+# the packaging (any branch: workflow_dispatch only works once this file is on
+# the default branch), and by hand. Not on every push: a Windows minute bills
+# double, and tests.yml already covers every push.
+#
+# The tag build only uploads workflow artifacts. packaging/release.py
+# downloads them (gh run download) and attaches them to the nexus-launcher
+# release, so this repo needs no token for the other one.
+name: build-windows
+
+on:
+  push:
+    tags: ['v*']                # GitHub doesn't apply `paths` to tag pushes
+    branches: ['**']
+    paths:
+      - 'packaging/windows/**'  # not packaging/release.py: it isn't in the build
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: windows / py3.12
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen      # make_icon.py renders the SVG headless
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'      # what the VM and tests.yml's Windows job use
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            packaging/windows/build-constraints.txt
+
+      # Exact versions (build-constraints.txt): every tag bundles the same Qt.
+      - name: Build tools
+        run: python -m pip install -r requirements.txt pyinstaller -c packaging/windows/build-constraints.txt
+
+      # One source each: APP_NAME in nexus/platform/windows.py, __version__ in
+      # nexus/__init__.py. A tag must match the version (v0.3.0 <-> 0.3.0);
+      # a branch build has no tag to check.
+      - name: Name and version
+        id: meta
+        shell: python
+        run: |
+          import os, re, sys
+          read = lambda pat, path: re.search(pat, open(path, encoding='utf-8').read(), re.M).group(1)
+          name = read(r"^APP_NAME\s*=\s*['\"]([^'\"]+)", 'nexus/platform/windows.py')
+          version = read(r"^__version__\s*=\s*['\"]([^'\"]+)", 'nexus/__init__.py')
+          ref = os.environ['GITHUB_REF']
+          if not ref.startswith('refs/tags/'):
+              print(f"{ref}: not a tag build, tag/version check skipped")
+          elif ref != f'refs/tags/v{version}':
+              sys.exit(f"tag {ref[10:]} doesn't match nexus.__version__ {version}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"name={name}\nversion={version}\n")
+          print(name, version)
+
+      - name: SDL2.dll (pinned, checksummed)
+        run: python packaging/windows/fetch_sdl2.py
+
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --clean packaging/windows/nexus.spec
+
+      - name: Smoke test
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+        run: |
+          $dir = "dist\$env:NAME"
+          foreach ($f in "$env:NAME.exe", 'nexus-cli.exe', '_internal\SDL2.dll',
+                         '_internal\assets\fonts\lucide.ttf', '_internal\nexus\data\recipes.toml') {
+            if (-not (Test-Path "$dir\$f")) { throw "missing $f" }
+          }
+          $help = & "$dir\nexus-cli.exe" --help
+          if ($LASTEXITCODE) { throw "nexus-cli --help exited $LASTEXITCODE" }
+          $help | Select-Object -First 3
+          $mb = [math]::Round(((Get-ChildItem $dir -Recurse | Measure-Object Length -Sum).Sum) / 1MB)
+          "dist\$env:NAME`: $mb MB"
+
+      - name: Portable zip
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: Compress-Archive -Path "dist\$env:NAME" -DestinationPath "dist\$env:NAME-$env:VERSION-portable.zip"
+
+      - name: Installer (Inno Setup)
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE) { throw "choco install innosetup exited $LASTEXITCODE" }
+          }
+          & $iscc /Qp "/DAppName=$env:NAME" "/DAppVersion=$env:VERSION" `
+                  "/DIconFile=$PWD\build\nexus\$env:NAME.ico" packaging\windows\nexus.iss
+          if ($LASTEXITCODE) { throw "iscc exited $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.name }}-${{ steps.meta.outputs.version }}-windows-x64
+          path: dist/${{ steps.meta.outputs.name }}/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.name }}-${{ steps.meta.outputs.version }}-installers
+          path: |
+            dist/${{ steps.meta.outputs.name }}-Setup-${{ steps.meta.outputs.version }}.exe
+            dist/${{ steps.meta.outputs.name }}-${{ steps.meta.outputs.version }}-portable.zip
+          if-no-files-found: error
+          compression-level: 0        # both are compressed already

@@ -8,7 +8,10 @@
 
 import os
 import re
-import resource
+try:
+    import resource
+except ImportError:             # Windows
+    resource = None
 import shlex
 import shutil
 import subprocess
@@ -34,7 +37,8 @@ AMD_IDS = {
 def _protongen_gpu_gen() -> str | None:
     """The GPU generation the user picked in protongen (it wins there too)."""
     try:
-        return tomllib.loads((PROTONGEN_CONFIG / 'state.toml').read_text()).get('gpu_gen') or None
+        state = tomllib.loads((PROTONGEN_CONFIG / 'state.toml').read_text(encoding='utf-8'))
+        return state.get('gpu_gen') or None
     except (OSError, ValueError):
         return None
 
@@ -45,7 +49,7 @@ def _pci_name(vendor: str, device: str) -> str | None:
     v, d = vendor.removeprefix('0x').lower(), device.removeprefix('0x').lower()
     for p in PCI_IDS:
         try:
-            lines = p.read_text(errors='replace').splitlines()
+            lines = p.read_text(encoding='utf-8', errors='replace').splitlines()
         except OSError:
             continue
         in_vendor = False
@@ -68,8 +72,8 @@ def hardware() -> dict:
     for card in sorted(Path('/sys/class/drm').glob('card[0-9]*')):
         dev = card / 'device'
         try:
-            vendor = (dev / 'vendor').read_text().strip()
-            device = (dev / 'device').read_text().strip()
+            vendor = (dev / 'vendor').read_text(encoding='utf-8').strip()
+            device = (dev / 'device').read_text(encoding='utf-8').strip()
             slot = dev.resolve().name
         except OSError:
             continue
@@ -82,7 +86,8 @@ def hardware() -> dict:
         m = re.search(r'Navi\s*(\d)', name)
         if VENDORS.get(vendor) == 'amd' and m and not gen:
             gen = {'3': 'rdna3', '4': 'rdna4', '2': 'rdna2', '1': 'rdna1'}.get(m.group(1))
-        boot = (dev / 'boot_vga').read_text().strip() == '1' if (dev / 'boot_vga').exists() else False
+        bv = dev / 'boot_vga'
+        boot = bv.exists() and bv.read_text(encoding='utf-8').strip() == '1'
         gpus.append({'vendor': VENDORS.get(vendor, vendor), 'name': name, 'gen': gen,
                      'slot': slot, 'boot_vga': boot,
                      'integrated': bool(re.search(r'Raphael|Granite Ridge|Phoenix|Rembrandt|'
@@ -113,7 +118,7 @@ def load_recipes() -> tuple[list[dict], str]:
     """protongen's recipes: the user's override if present, else our bundled copy."""
     for p in (PROTONGEN_CONFIG / 'recipes.toml', BUNDLED_RECIPES):
         try:
-            return tomllib.loads(p.read_text()).get('recipe', []), str(p)
+            return tomllib.loads(p.read_text(encoding='utf-8')).get('recipe', []), str(p)
         except (OSError, ValueError):
             continue
     return [], ''
@@ -208,7 +213,7 @@ def system_checks(hw: dict | None = None) -> list[dict]:
         add('ok', 'Power profile', prof)
 
     try:
-        mmc = int(Path('/proc/sys/vm/max_map_count').read_text())
+        mmc = int(Path('/proc/sys/vm/max_map_count').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         mmc = None
     if mmc is not None and mmc < 1048576:
@@ -219,10 +224,11 @@ def system_checks(hw: dict | None = None) -> list[dict]:
     elif mmc:
         add('ok', 'vm.max_map_count', str(mmc))
 
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    if hard != resource.RLIM_INFINITY and hard < 524288:
-        add('warn', f'Open-file limit is low ({hard})', 'esync needs a high file limit.',
-            'Raise DefaultLimitNOFILE in /etc/systemd/system.conf (e.g. 1048576), then reboot')
+    if resource:
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        if hard != resource.RLIM_INFINITY and hard < 524288:
+            add('warn', f'Open-file limit is low ({hard})', 'esync needs a high file limit.',
+                'Raise DefaultLimitNOFILE in /etc/systemd/system.conf (e.g. 1048576), then reboot')
 
     if hw['features']['ntsync']:
         add('ok', 'ntsync', '/dev/ntsync is available — recent Proton builds use it for '

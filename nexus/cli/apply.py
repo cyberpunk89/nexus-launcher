@@ -8,6 +8,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from nexus import features
+
 from .common import glob_escape, log, LOG_DIR, Logger, use_logger
 
 
@@ -19,13 +21,17 @@ def profile_owns_options(prof: dict | None) -> bool:
 
 
 def _entry_paths(entry: dict) -> tuple[Path | None, Path | None, Path | None]:
-    """(exe, game_dir/compatdata, wine_prefix) for a registry entry."""
+    """(exe, game_dir/compatdata, wine_prefix) for a registry entry. A
+    Windows install has no prefix: game_dir is its install_dir."""
     wine_prefix = Path(entry['wine_prefix']) if entry.get('wine_prefix') else None
+    install_dir = Path(entry['install_dir']) if entry.get('install_dir') else None
     exe = Path(entry['exe']) if entry.get('exe') else None
     if not exe and wine_prefix:
         exe = find_game_exe(wine_prefix)
+    elif not exe and install_dir:
+        exe = find_exe_in_dir(install_dir)
     game_dir = (Path(entry['compatdata']) if entry.get('compatdata')
-                else (wine_prefix.parent if wine_prefix else None))
+                else wine_prefix.parent if wine_prefix else install_dir)
     return exe, game_dir, wine_prefix
 
 
@@ -69,6 +75,11 @@ def sync_steam(entry: dict, config: dict, proton: Path | None,
         log.print(f"  [i] Steam: '{entry['slug']}' needs a detected exe + prefix — skipping.")
         return None
     prof = entry.get('launch')
+    if entry.get('appx'):                    # Windows Store app: explorer on its URI
+        from .install_win import steam_target
+        exe, opts = steam_target(exe, entry['appx'])
+        return add_steam_shortcut_native(entry['display_name'], entry['slug'], exe, game_dir,
+                                         proton, artwork, launch_options=opts)
     return add_steam_shortcut_native(
         entry['display_name'], entry['slug'], exe, game_dir, proton, artwork,
         launch_options=format_launch_options(prof) if profile_owns_options(prof) else None)
@@ -112,6 +123,8 @@ def cmd_apply(slug: str, config: dict, steam: bool | None = None,
         log.print(f"  launch.sh: {sh}")
     if entry.get('has_desktop') and sh:
         write_desktop_entry(entry['display_name'], slug, sh, _local_artwork(slug) or None)
+    elif entry.get('has_desktop') and not features.has('desktop_entry') and entry.get('exe'):
+        write_desktop_entry(entry['display_name'], slug, Path(entry['exe']), None)
     if steam is None:
         steam = bool(entry.get('steam_appid')) or game_has_steam_shortcut(slug)
     if steam:
@@ -359,7 +372,7 @@ from .launchprofile import (apply_perf, decode_protongen_code, format_launch_opt
     protongen_default_config, protongen_default_profile, protongen_memory_for)  # noqa: E402
 from .registry import (load_registry, registry_get, set_registry_steam_appid,
     update_registry_entry)  # noqa: E402
-from .repack import find_game_exe  # noqa: E402
+from .repack import find_exe_in_dir, find_game_exe  # noqa: E402
 from .runner import (list_protons, proton_by_name, resolve_game_proton, resolve_umu_gameid,
     select_runner, write_launch_script)  # noqa: E402
 from .steam import add_steam_shortcut_native  # noqa: E402

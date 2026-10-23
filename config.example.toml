@@ -25,6 +25,13 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # subvolumes = false                     # on btrfs each game gets its own subvolume so it can
                                          # be snapshotted (default true); false = plain folders
 
+# On Windows (the config lives in %APPDATA%\nexus-launcher\config.toml):
+# base = 'D:\Games'                      # default: \Games on the fixed drive with most free
+                                         # space other than C:, else C:\Games. Avoid OneDrive,
+                                         # network drives and Program Files (Doctor warns).
+# scan_dir = '~\Downloads'
+# [runner], [snapshots] and the Proton keys below are ignored there.
+
 [snapshots]               # btrfs game snapshots (Undo update)
 # keep = 3                               # per game; older ones are removed automatically
 
@@ -36,10 +43,14 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 [news]
 # enabled = true          # show the News page
 
-[gamedb]                  # optional private service (wishlist deals, releases, backlog)
+[gamedb]                  # optional, self-hosted (wishlist deals, releases, backlog)
 # enabled = false
-# url = "https://gamedb.crowsden.cc"
-# token = ""              # needs an account on that Game-db instance
+# url = "https://gamedb.example.com"   # your Game-db server; there is no default
+# token = ""              # a desktop app token from that server's /account page
+
+[updates]
+# github_token = ""       # read access to the private nexus-launcher repo: Nexus then checks once
+                          # a day for a newer release and shows a notice with a link. Unset = no check.
 
 [discord]
 # client_id = ""          # an application you created at discord.com/developers;

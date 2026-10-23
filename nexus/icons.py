@@ -4,7 +4,8 @@ assets/fonts/lucide.ttf — one consistent 2px-stroke outline set.
 Codepoints come from lucide-static's font/codepoints.json; each entry notes the
 Lucide name, so swapping one is a one-line change. Lucide has no brand logos
 and no filled shapes, so the two marked `Nerd Font` keep their Material Design
-glyph (U+F0000 plane); Qt's font fallback finds them in the installed Nerd Font.
+glyph (U+F0000 plane) from assets/fonts/nerd-symbols.ttf, a subset of Symbols
+Nerd Font (OFL) holding just those two.
 """
 
 ICONS = {

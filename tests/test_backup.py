@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import paths as NX  # noqa: E402
 from nexus.cli import backup as B  # noqa: E402
+from tests.oskind import why_not_private  # noqa: E402
 
 CONFIG = """# mine
 [steamgriddb]
@@ -83,7 +84,7 @@ class Backup(unittest.TestCase):
         self.assertEqual(json.loads((NX.CONFIG_DIR / 'library.json').read_text())['favorites'],
                          ['here'])
         self.assertTrue(list(NX.CONFIG_DIR.glob('library.json.bak*')))
-        self.assertEqual(NX.CONFIG_PATH.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(why_not_private(NX.CONFIG_PATH), '')
         self.assertEqual(plan['keep_secrets'], ['steamgriddb.api_key'])
 
     def test_games_only_where_their_folder_is(self):

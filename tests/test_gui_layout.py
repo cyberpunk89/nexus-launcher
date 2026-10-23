@@ -28,7 +28,7 @@ except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
 
 sys.path.insert(0, str(REPO))
-from tests.patching import patch_gui, set_gui  # noqa: E402,F401  (the GUI tests import them from here too)
+from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402,F401  (the GUI tests import them from here too)
 
 nx = None
 if QApplication is not None:
@@ -47,6 +47,26 @@ if QApplication is not None:
     # Nor the user's library prefs: a saved filter chip or sort would change
     # what the window tests see.
     nx.LibraryPrefs.PATH = Path(_tmp) / 'library.json'
+    _CliQuery = nx.CliQuery         # the real one: tests swap the name
+
+
+def stop_leftovers(jobs) -> None:
+    """Kill what a GUI test left running in JobManager `jobs` and in any
+    background CLI query (cli_json), then forget it. Left alone, its process
+    outlives the test's window and calls back into deleted widgets a test or
+    two later: a native crash that takes the whole Windows CI run down."""
+    from PyQt6.QtCore import QProcess
+    for j in jobs.jobs:
+        if j.proc is not None and j.proc.state() != QProcess.ProcessState.NotRunning:
+            j.proc.kill()
+            j.proc.waitForFinished(2000)
+    jobs.jobs.clear()
+    for q in list(_CliQuery._live):
+        q._done = True
+        _CliQuery._live.discard(q)
+        if q.proc.state() != QProcess.ProcessState.NotRunning:
+            q.proc.kill()
+            q.proc.waitForFinished(2000)
 
 LONG_OPTS = ("PROTON_FSR4_UPGRADE=1 MANGOHUD_CONFIG=" + ",".join(
     f"option_{i}=value_{i}" for i in range(60)) + " %command%")
@@ -90,8 +110,8 @@ class DetailsPanelWidth(unittest.TestCase):
         self.panel.show_games([game])
         QApplication.processEvents()
         self.assertLessEqual(self._page_min_width(), self.panel.maximumWidth())
-        # The raw value is still what gets copied.
-        self.assertEqual(self.panel._folder, DEEP)
+        # The raw value is still what gets copied (in the OS's own separators).
+        self.assertEqual(self.panel._folder, str(Path(DEEP)))
 
     def test_steam_game_long_install_dir_fits(self):
         game = {'slug': 'y', 'display_name': 'Y', 'source': 'steam', 'launcher': 'steam',
@@ -99,6 +119,55 @@ class DetailsPanelWidth(unittest.TestCase):
         self.panel.show_games([game])
         QApplication.processEvents()
         self.assertLessEqual(self._page_min_width(), self.panel.maximumWidth())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class HiDpiArt(unittest.TestCase):
+    """Art is decoded at the display's scale and drawn at its logical size."""
+
+    def test_cover_is_sharp_and_logical_sized(self):
+        import tempfile
+        from PyQt6.QtGui import QImage, QColor
+        dpr = _app.devicePixelRatio()
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/c.png"
+            img = QImage(600, 900, QImage.Format.Format_RGB32)
+            img.fill(QColor(10, 20, 30))
+            img.save(src)
+            for pm in (nx.ArtCache().pixmap(src, 100, 150, radius=8),
+                       nx.cover_pixmap(src, 100, 150)):
+                self.assertEqual(pm.devicePixelRatio(), dpr)
+                self.assertEqual(pm.width(), round(100 * dpr))
+                size = pm.deviceIndependentSize()
+                self.assertAlmostEqual(size.width(), round(100 * dpr) / dpr, delta=0.01)
+                self.assertAlmostEqual(size.height(), round(150 * dpr) / dpr, delta=0.01)
+        ph = nx.placeholder_pixmap('Some Game', 100, 150)
+        self.assertEqual(ph.devicePixelRatio(), dpr)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+@unittest.skipIf(os.environ.get('QT_SCALE_FACTOR'), "already the scaled run")
+class DisplayScaling(unittest.TestCase):
+    """The layout and art tests again at 125% and 150% display scaling. Qt
+    reads QT_SCALE_FACTOR once, at QApplication(), so each scale is its own
+    process."""
+
+    TESTS = ['tests.test_gui_layout.SoftWrap', 'tests.test_gui_layout.DetailsPanelWidth',
+             'tests.test_gui_layout.HiDpiArt']
+
+    def _run(self, scale):
+        import subprocess
+        env = {**os.environ, 'QT_SCALE_FACTOR': scale}
+        out = subprocess.run([sys.executable, '-m', 'unittest', *self.TESTS], cwd=REPO,
+                             env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-3000:])
+        self.assertNotIn('skipped', out.stderr.splitlines()[-1])
+
+    def test_at_125_percent(self):
+        self._run('1.25')
+
+    def test_at_150_percent(self):
+        self._run('1.5')
 
 
 _HOST = []
@@ -272,6 +341,7 @@ class ProtongenDefault(unittest.TestCase):
         self.panel._apply_info({**base, 'protongen_default': {**pd, 'applied': True}}, None)
         self.assertFalse(self.panel.btn_pg_default.isEnabled())
 
+    @linux_features
     def test_menu_offers_it_for_repacks_on_the_couch_too(self):
         repack = {'slug': 'x', 'source': 'nexus', 'launcher': '/x', 'exe': '/x.exe'}
         for theatre in (False, True):

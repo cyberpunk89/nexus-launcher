@@ -9,11 +9,22 @@ from pathlib import Path
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
-from nexus import instance, net, paths as NX, steamlib, torrent
+from nexus import alerts, instance, net, paths as NX, steamlib, torrent
+from nexus.features import has
 
-from .common import alive, CLI_BIN, DATA_DIR
+from .common import alive, CLI, cli_args, DATA_DIR
 from .fmt import fmt_bytes
 from .theme import G
+
+UAC_TITLE = "Windows will ask for permission"
+UAC_NOTE = ("FitGirl's setup runs as administrator, so Windows asks first whether to let it "
+            "make changes, naming an unknown publisher: the installer comes with the repack, "
+            "not from Nexus. Choose Yes to install. No cancels it and nothing is installed.")
+
+# Standing in for the background agent (Windows, see _check_repack_feed):
+# its alerts pace, and artwork every this many checks (6 h).
+STANDIN_MS = 45 * 60 * 1000
+STANDIN_ART_EVERY = 8
 
 
 class DownloadsMixin:
@@ -23,10 +34,10 @@ class DownloadsMixin:
     def _default_install_cmd(self, path: str) -> list[str]:
         """An install with the Settings defaults (what the Install page would
         start with), for one-click installs from a toast."""
-        cmd = [CLI_BIN, path, '--yes', '--log', '--defer-steam']
+        cmd = [*CLI, path, '--yes', '--log', '--defer-steam']
         if not self.config.get('unattended', True):
             cmd.append('--interactive')
-        if protongen_has_default():
+        if has('protongen') and protongen_has_default():
             cmd.append('--use-protongen-default')
         return cmd
 
@@ -257,12 +268,25 @@ class DownloadsMixin:
     def _check_repack_feed(self):
         """Ask the CLI whether FitGirl posted newer repacks of installed
         games (it fetches at most every 6 h); reload the library when the
-        answer differs from what the tiles show."""
-        self._feed_timer.start(6 * 3600 * 1000)
+        answer differs from what the tiles show.
+
+        On Windows there's no agent service: Start with Windows opens this
+        window in the tray instead, so with no console agent running the
+        window keeps the agent's pace here (alerts every 45 min, artwork
+        every 6 h). The torrent and folder watchers run all the time anyway."""
+        agent = instance.agent_running()
+        standin = not agent and not has('systemd_agent')
+        self._feed_timer.start(STANDIN_MS if standin else 6 * 3600 * 1000)
+        self._feed_checks += 1
         if self.config.get('gamedb_enabled'):
             self._sync_repack_index()
-        if not instance.agent_running():          # else the agent checks, more often
+        if not agent:                             # else the agent checks, more often
             cli_json(['--check-alerts', '--json'], self._alerts_checked, 120000)
+        if standin and self._feed_checks % STANDIN_ART_EVERY == 0 \
+                and self.config.get('api_key') and not self._playing:
+            # The first fill ran when the library loaded; the CLI stamps it
+            # and skips it when it already ran today.
+            cli_json(['--fill-art', '--if-stale', '--json'], self._art_filled, 600000)
         if not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
             return
 
@@ -281,11 +305,20 @@ class DownloadsMixin:
                                + ".", 'info', None, 8000)
         cli_json(['--repack-feed', '--json'], done, 120000)
 
+    def _art_filled(self, data, _err):
+        if (data or {}).get('filled') and alive(self):
+            self.reload_library()
+
     def _alerts_checked(self, data, _err):
         """What --check-alerts just pushed to the phone (once each): deals get
-        a toast too; repack updates and GE-Proton have their own already."""
+        a toast too; repack updates and GE-Proton have their own already.
+        Hidden in the tray, the window says all of them on the desktop, as
+        the agent would."""
         if not data or not alive(self):
             return
+        if data.get('alerts') and not self.isVisible():
+            for title, body in alerts.messages(data['alerts']):
+                notify_desktop(title, body)
         deals = [a for a in data.get('alerts') or () if a.get('kind') in ('atl', 'sale')]
         if not deals:
             return
@@ -382,7 +415,7 @@ class DownloadsMixin:
             if flag not in argv:
                 argv.append(flag)
         game['resuming'] = True
-        self._start_install([CLI_BIN, *argv], name, slug)
+        self._start_install([*CLI, *argv], name, slug)
 
     def _request_install(self, game):
         """Install pressed on a game you own: Steam's install dialog (or
@@ -456,17 +489,46 @@ class DownloadsMixin:
     def _start_install(self, cmd, name, slug=''):
         """Installs start at once: with --defer-steam the CLI leaves the Steam
         shortcut for later if Steam is running (see _install_followups)."""
-        src = cmd[1] if len(cmd) > 1 else None
+        src = next(iter(cli_args(cmd)), None)
         if any(j.active and j.kind == 'install' and ((slug and j.slug == slug)
-                                                      or (src and j.argv[1:2] == [src]))
+                                                      or (src and cli_args(j.argv)[:1] == [src]))
                for j in self.jobs.jobs):
             self.toast(f"{name} is already being installed.", 'info', None, 3000)
+            return
+        if self._uac_note_first(cmd, name, slug):
             return
         self.jobs.submit(Job(cmd, f"Installing {name}", slug or None, 'install', name))
         # From the Install page, on to the library to watch it; started from a
         # toast or a menu, stay where you are (the bottom strip shows it).
         if self.current() == self.INSTALL:
             self.go(self.LIBRARY)
+
+    def _uac_note_first(self, cmd, name, slug) -> bool:
+        """Windows, before the first install: a note that setup runs as
+        administrator, so Windows asks (UAC). Shown once (library.json
+        `uac_note_shown`); installs asked for while it's up wait for it too.
+        True when this one waits."""
+        if has('proton'):
+            return False
+        sheet = self.theatre_sheet if self._theatre else self.sheet
+        waiting = getattr(self, '_uac_waiting', None)
+        if waiting and sheet.isVisible() and sheet.title.text() == UAC_TITLE:
+            waiting.append((cmd, name, slug))
+            return True
+        args = cli_args(cmd)
+        if self.prefs.uac_note_shown or (args[:1] == ['--import'] and len(args) > 1
+                                         and Path(args[1]).is_dir()):
+            return False                    # seen, or a game folder: nothing runs as admin
+        self._uac_waiting = [(cmd, name, slug)]
+        self.prefs.uac_note_shown = True
+        self.prefs.save()
+
+        def go():
+            queued, self._uac_waiting = self._uac_waiting, []
+            for c, n, s in queued:
+                self._start_install(c, n, s)
+        self.confirm(UAC_TITLE, UAC_NOTE, "Install", go, danger=False)
+        return True
 
     def _install_followups(self, job):
         """What an install job's events ask for once it ends: the success
@@ -499,7 +561,18 @@ class DownloadsMixin:
         elif job.state == 'failed':
             argv = [a for a in job.argv if a not in ('--interactive', '--unattended')]
             log = ("Show log", lambda: self._open_job(job))
-            if 'retry-interactive' in ev:
+            if (ev.get('install-cancelled') or {}).get('why') == 'uac':
+                # No at the admin prompt: the user's choice, not a failure.
+                self.toast(f"{name or 'The game'} wasn't installed — Windows' admin prompt "
+                           f"was declined.", 'info',
+                           [("Try again", lambda: self._resubmit(job, job.argv))], 10000)
+                return
+            if 'antivirus' in ev:
+                # What Defender took, in a sheet; the toast brings it back.
+                self.show_antivirus(job)
+                actions = [("What happened", lambda: self.show_antivirus(job)),
+                           ("Retry", lambda: self._resubmit(job, job.argv)), log]
+            elif 'retry-interactive' in ev:
                 actions = [("Retry with setup window", lambda: self._resubmit(
                     job, [*argv, '--interactive'])), log]
             else:
@@ -521,7 +594,7 @@ class DownloadsMixin:
         """Shortcuts still owed to Steam, on disk: quitting Nexus before
         Steam doesn't lose them (they're picked up at the next start)."""
         try:
-            items = json.loads(self.STEAM_PENDING.read_text())
+            items = json.loads(self.STEAM_PENDING.read_text(encoding='utf-8'))
             items = [i for i in items if isinstance(i, dict) and i.get('slug')]
         except (OSError, ValueError):
             items = []
@@ -548,7 +621,7 @@ class DownloadsMixin:
 
         def go():
             self._steam_pending(slug, add=False)
-            j = Job([CLI_BIN, '--steam', slug], f"Adding {name} to Steam", slug, 'task', name)
+            j = Job([*CLI, '--steam', slug], f"Adding {name} to Steam", slug, 'task', name)
             j.done.connect(lambda code: code == 0 and self.toast(
                 f"{name} is in Steam now.", 'success', ("Start Steam", start_steam), 10000))
             self.jobs.submit(j)

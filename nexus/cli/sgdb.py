@@ -134,7 +134,7 @@ def _sgdb_json(path: str, api_key: str) -> tuple[object, str | None]:
 
 def _cache_json(name: str) -> dict:
     try:
-        return json.loads((SGDB_CACHE / name).read_text())
+        return json.loads((SGDB_CACHE / name).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
 
@@ -159,15 +159,36 @@ def _cache_set(name: str, key: str, value) -> None:
         _cache_put(name, data)
 
 
+def _sgdb_key(g: dict) -> tuple[int | None, str]:
+    """(Steam appid or None, the ids.json key) for a library game. A store
+    source (nexus/sources) may know the Steam appid as `store_appid`."""
+    appid = g.get('appid') if g.get('source') == 'steam' else g.get('store_appid')
+    appid = int(appid) if str(appid or '').isdigit() and 0 < int(appid) < 0x80000000 else None
+    return appid, (f"steam:{appid}" if appid
+                   else f"name:{(g.get('display_name') or '').lower()}")
+
+
+def cached_sgdb_id(g: dict) -> int | None:
+    """The SteamGridDB game id already settled for a game (the user's match,
+    else an earlier lookup), without asking SteamGridDB."""
+    forced = read_sgdb_match(art_dir_for(g)) if g.get('slug') else None
+    if forced:
+        return forced['id']
+    gid = _cache_json('ids.json').get(_sgdb_key(g)[1])
+    return gid if isinstance(gid, int) and gid > 0 else None
+
+
 def sgdb_game_id(g: dict, api_key: str) -> tuple[int | None, str | None]:
     """The SteamGridDB game id for a library game: by Steam appid when it has
     a real one (a repack's steam_appid is a *shortcut* id, not a store id),
-    otherwise the best name match. Cached; misses are remembered a week."""
+    otherwise the best name match. Cached; misses are remembered a week.
+    A store source's game carries the cached id as `sgdb_id` (cmd_library)."""
     forced = read_sgdb_match(art_dir_for(g)) if g.get('slug') else None
     if forced:
         return forced['id'], None
-    appid = g.get('appid') if g.get('source') == 'steam' else None
-    key = f"steam:{appid}" if appid else f"name:{(g.get('display_name') or '').lower()}"
+    if isinstance(g.get('sgdb_id'), int) and g['sgdb_id'] > 0:
+        return g['sgdb_id'], None
+    appid, key = _sgdb_key(g)
     ids, misses = _cache_json('ids.json'), _cache_json('misses.json')
     if key in ids:
         return ids[key], None
@@ -226,7 +247,7 @@ def art_dir_for(g: dict) -> Path:
 
 def read_picks(d: Path) -> dict:
     try:
-        data = json.loads((d / 'picks.json').read_text())
+        data = json.loads((d / 'picks.json').read_text(encoding='utf-8'))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -235,7 +256,7 @@ def read_picks(d: Path) -> dict:
 def read_sgdb_match(d: Path) -> dict | None:
     """The SteamGridDB game the user chose for this game (sgdb.json), if any."""
     try:
-        data = json.loads((d / 'sgdb.json').read_text())
+        data = json.loads((d / 'sgdb.json').read_text(encoding='utf-8'))
         return data if isinstance(data, dict) and int(data.get('id')) > 0 else None
     except (OSError, ValueError, TypeError):
         return None
@@ -407,15 +428,19 @@ def cmd_fill_art(install_base: Path, as_json: bool, if_stale: bool) -> None:
     elif if_stale and stamp.exists() and time.time() - stamp.stat().st_mtime < 24 * 3600:
         out['skipped'] = True
     else:
-        from nexus import steamlib
+        from nexus import sources, steamlib
         games = [{**g, 'source': 'nexus'} for g in managed_entries(install_base)]
         games += steamlib.scan(STEAM_ROOT, _read_compat_mapping())
         games += steamlib.heroic_store_games(find_heroic_config())
+        stores = sources.installed_games()       # Epic etc.: no art of their own
+        games += stores
+        bare = {id(g) for g in stores}
         todo = []
         for g in games:
             overlay_art(g)
             d = art_dir_for(g)
-            for kind in ('hero', 'logo', 'wide'):
+            kinds = ('cover', 'hero', 'logo', 'wide') if id(g) in bare else ('hero', 'logo', 'wide')
+            for kind in kinds:
                 local = g.get(kind) and Path(g[kind]).exists()
                 if local or g.get(f'{kind}_url') or (d.is_dir() and _art_file(d, kind)):
                     continue

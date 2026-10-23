@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGrid
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from nexus import gamedb
+from nexus.features import has
 
 from .common import alive, HOME, MAX_NOTE
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
@@ -278,6 +279,9 @@ BATCH_ACTIONS = (
     ('move', "Move to another drive…", "Move them all to one folder"),
     ('uninstall', "Uninstall…", "Uninstall them all (saves are backed up first)"),
 )
+# Batch buttons that need a Linux-only feature (features.has).
+BATCH_NEEDS = {'proton': 'proton', 'heroic': 'heroic', 'pg-default': 'protongen',
+               'snapshot': 'btrfs'}
 
 class Disclosure(QWidget):
     """A section that opens and closes under a one-line header, so the
@@ -590,6 +594,9 @@ class DetailsPanel(QFrame):
         for i, t in enumerate((self.st_played, self.st_last, self.st_size, self.st_added,
                                self.st_proton, self.st_rating)):
             grid.addWidget(t, i // 2, i % 2)
+        if not has('proton'):           # hide only: a parentless show() is a window
+            self.st_proton.hide()
+            self.st_rating.hide()
         self.st_ach = StatTile(G['trophy'], "Achievements", 'success')   # Steam games
         self.st_ach.setVisible(False)
         grid.addWidget(self.st_ach, 3, 0, 1, 2)
@@ -621,6 +628,8 @@ class DetailsPanel(QFrame):
         cl.addWidget(self.confirm_text)
         self.confirm_backup = QCheckBox("Back up save-game files first, if any are found")
         self.confirm_backup.setChecked(True)
+        if not has('save_backup'):
+            self.confirm_backup.hide()
         cl.addWidget(self.confirm_backup)
         crow = QHBoxLayout()
         crow.addStretch()
@@ -826,7 +835,11 @@ class DetailsPanel(QFrame):
         self.btn_heroic = QPushButton()
         self.btn_heroic.clicked.connect(self._toggle_heroic)
         r.addWidget(self.btn_heroic)
-        _, self.ov_proton = self._row(lay, "Proton")
+        if not has('heroic'):
+            _hide_row(r)
+        r, self.ov_proton = self._row(lay, "Proton")
+        if not has('proton'):
+            _hide_row(r)
         r, self.ov_opts = self._row(lay, "Options")
         self.btn_copy_opts = icon_button(G['copy'], "Copy launch options", 28, "Ghost")
         self.btn_copy_opts.clicked.connect(
@@ -1010,7 +1023,9 @@ class DetailsPanel(QFrame):
                                                for g in games))
             win = self.window()
             for key, b in self.batch_btns.items():
-                b.setVisible(not hasattr(win, 'batch_applies') or win.batch_applies(key, games))
+                b.setVisible((key not in BATCH_NEEDS or has(BATCH_NEEDS[key]))
+                             and (not hasattr(win, 'batch_applies')
+                                  or win.batch_applies(key, games)))
             self.stack.setCurrentIndex(1)
             return
         self.stack.setCurrentIndex(0)
@@ -1033,7 +1048,7 @@ class DetailsPanel(QFrame):
         self._refresh_info()
         if not same:
             self._load_tips()
-        self.sec_snap.setVisible(self.game.get('source', 'nexus') == 'nexus'
+        self.sec_snap.setVisible(has('btrfs') and self.game.get('source', 'nexus') == 'nexus'
                                  and bool(self.game.get('owned_dir')))
         if self.sec_snap.is_open and self.sec_snap.isVisibleTo(self):
             self._load_snapshots(force=not same)
@@ -1193,7 +1208,7 @@ class DetailsPanel(QFrame):
         warn = anticheat_warning(info)
         self.ac_notice.setText(warn or '')
         self.ac_notice.setVisible(bool(warn))
-        has_tune = bool(pdb or show_pg or recipes or deal)
+        has_tune = has('proton') and bool(pdb or show_pg or recipes or deal)
         self.sec_tune.setVisible(has_tune)
         self.sec_tune.set_summary(f"{len(recipes)} suggestion{'s' if len(recipes) != 1 else ''}"
                                   if recipes else '')
@@ -1352,6 +1367,7 @@ class DetailsPanel(QFrame):
         external = src != 'nexus'
         for sec in (self.sec_launch, self.sec_files, self.sec_log):
             sec.setVisible(not external)
+        self.sec_launch.setVisible(not external and has('launch_profiles'))
         if external:
             self.confirm.setVisible(False)
         self._fill_quick(g)
@@ -1577,7 +1593,7 @@ class DetailsPanel(QFrame):
             self.pg_opts.setCursorPosition(0)
             self.pg_opts.setVisible(True)
             self.btn_pg_pull.setEnabled(bool(pg.get('differs')))
-            self.pg_notice.setVisible(bool(pg.get('differs')))
+            self.pg_notice.setVisible(bool(pg.get('differs')) and has('protongen'))
             self.pg_notice_text.setText("protongen has different tuning for this game. Pull it "
                                         "in to use it in Steam, Heroic and launch.sh.")
         else:
@@ -1720,10 +1736,17 @@ class DetailsPanel(QFrame):
     def _do_uninstall(self):
         self.confirm.setVisible(False)
         args = ['--uninstall', self.slug, '--yes']
-        if self.confirm_backup.isChecked():
+        if has('save_backup') and self.confirm_backup.isChecked():
             args.append('--save-backup')
         self._emit(args, "Uninstalling", bool(self.game.get('steam')))
 
+
+
+def _hide_row(row):
+    """Hide every widget in one of DetailsPanel._row's rows."""
+    for i in range(row.count()):
+        if (w := row.itemAt(i).widget()) is not None:
+            w.hide()
 
 
 # Siblings, imported last: they import this module too, and every use

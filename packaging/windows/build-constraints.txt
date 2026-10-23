@@ -1,0 +1,18 @@
+# Exact versions for the Windows build (build-windows.yml):
+#
+#     pip install -r requirements.txt pyinstaller -c packaging/windows/build-constraints.txt
+#
+# requirements.txt stays loose for Linux users on distro packages; the build
+# pins everything it bundles so each tag ships the same Qt and Python libs.
+# Taken from the first green build (run 40005580100). To update: bump a line,
+# push, and check that build-windows still passes.
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
+vdf==3.4
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+altgraph==0.17.5
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+setuptools==84.2.1

@@ -360,7 +360,7 @@ def lsfg_state(entry: dict) -> dict | None:
         return None
     import tomllib
     try:
-        data = tomllib.loads(LSFG_CONF.read_text())
+        data = tomllib.loads(LSFG_CONF.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     name = _lsfg_name(entry)
@@ -378,7 +378,7 @@ def lsfg_set(entry: dict, multiplier: int | None, flow: float = 1.0,
     exe = _entry_paths(entry)[0]
     if multiplier and not exe:
         raise ValueError("the game's exe isn't known (set it in Game settings)")
-    text = LSFG_CONF.read_text()
+    text = LSFG_CONF.read_text(encoding='utf-8')
     try:
         data = tomllib.loads(text)
     except ValueError as e:

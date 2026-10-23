@@ -927,7 +927,10 @@ class DealsPage(QWidget):
                 + (self.res.get('installed_appids') or []) if str(a).isdigit()}
 
     def _open_site(self):
-        base = self._base() or gamedb.settings()['url'] or gamedb.DEFAULT_URL
+        base = self._base() or gamedb.settings()['url']
+        if not base:
+            self.toast.emit("Add your Game-db address in Settings → Game-db first.", 'info')
+            return
         self._open(base + ('/' if self.res.get('summary') else '/account'))
 
     def _open(self, url):
@@ -1088,14 +1091,17 @@ class DealsPage(QWidget):
         t = label("Connect Game-db", None)
         t.setStyleSheet(f"color: {P['text']}; font-size: {FS['sm']}px; font-weight: 500;")
         lay.addWidget(t)
-        url = self._base() or gamedb.DEFAULT_URL
+        url = self._base() or gamedb.settings()['url']
         lay.addWidget(label(
             "See deals on your Steam wishlist, upcoming releases and what to play tonight. "
-            f"Create a desktop app token on {url}/account, then paste it into "
-            "Settings → Game-db.", "Muted", wrap=True))
+            + (f"Create a desktop app token on {url}/account, then paste it into "
+               "Settings → Game-db." if url else
+               "Add your Game-db server's address and a desktop app token in "
+               "Settings → Game-db."), "Muted", wrap=True))
         row = QHBoxLayout()
         site = QPushButton("Create a token…")
         site.clicked.connect(lambda: self._open(url + '/account'))
+        site.setVisible(bool(url))
         go = QPushButton("Open Settings")
         go.setObjectName("Primary")
         go.clicked.connect(self.open_settings.emit)

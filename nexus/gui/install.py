@@ -7,9 +7,10 @@ from PyQt6.QtCore import pyqtSignal, QFileSystemWatcher, QObject, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import paths as NX, watch
+from nexus import paths as NX, platform, watch
+from nexus.features import has
 
-from .common import CLI_BIN, HOME
+from .common import CLI, HOME, INSTALL_BASE_DEFAULT
 from .fmt import fmt_bytes, fmt_size
 from .theme import P, SP
 
@@ -199,7 +200,8 @@ class InstallPage(QWidget):
         b_exe.clicked.connect(self._browse_installer)
         b_dir = QPushButton("From a game folder…")
         b_dir.setToolTip("A folder that already holds the game (portable or extracted). "
-                         "It's copied into the game's own prefix.")
+                         + ("It's copied into the game's own prefix." if has('proton') else
+                            "It's added where it is; nothing is copied."))
         b_dir.clicked.connect(self._browse_game_folder)
         orow.addWidget(b_exe)
         orow.addWidget(b_dir)
@@ -256,6 +258,12 @@ class InstallPage(QWidget):
         self.deps = QLineEdit()
         self.deps.setPlaceholderText("Extra winetricks verbs, usually none (e.g. vcrun2019)")
         lay.addWidget(self.deps)
+        # Why the install folder is a poor place for games (Windows: OneDrive,
+        # Program Files, a network drive, a long path); hidden when it's fine.
+        self.base_note = plain_label("", None, wrap=True)
+        self.base_note.setStyleSheet(f"color: {P['warning']};")
+        self.base_note.setVisible(False)
+        lay.addWidget(self.base_note)
         outer.addWidget(card)
         row = QHBoxLayout()
         row.addStretch()
@@ -269,6 +277,16 @@ class InstallPage(QWidget):
         outer.addWidget(w)
         outer.addStretch()
         self._detected = {}
+        # Windows: setup.exe runs as itself, no prefix, no Proton, no Heroic
+        # (hide only: these were never shown, and a parentless show() is a window).
+        if not has('protongen'):
+            self.pg_default.setVisible(False)
+        if not has('proton'):
+            self.deps.setVisible(False)
+        if not has('heroic'):
+            self.heroic.setVisible(False)
+        if not has('desktop_entry'):
+            self.desktop.setText("Start Menu shortcut")
 
     def open(self, config):
         self._import = None
@@ -282,20 +300,28 @@ class InstallPage(QWidget):
         self.btn_clam.setVisible(False)
         self.btn_go.setEnabled(True)
         self.steam.setChecked(config.get('steam', True))
-        self.heroic.setChecked(config.get('heroic', True))
+        self.heroic.setChecked(config.get('heroic', True) and has('heroic'))
         self.desktop.setChecked(config.get('desktop', True))
         self.silent.setChecked(config.get('unattended', True))
-        has_pg = protongen_has_default()
+        has_pg = has('protongen') and protongen_has_default()
         self.pg_default.setEnabled(has_pg)
         self.pg_default.setChecked(has_pg)
         self.pg_default.setToolTip(
             "Launch options and Proton from protongen's default profile, so the game is "
             "tuned from its first launch" if has_pg else
             "No default profile in protongen yet (Settings → Save as default profile)")
+        self.show_base_warnings(config.get('install_base') or INSTALL_BASE_DEFAULT)
         clear_layout(self.scan_list)
         self.scan_list.addWidget(label("Scanning…", "Muted"))
         self.scan_label.setVisible(True)
         cli_json(['--scan', '--json'], self._scanned, 120000)
+
+    def show_base_warnings(self, base: str):
+        warns = platform.install_base_warnings(Path(base))
+        self.base_note.setText(f"Games install to {base}: " + "; ".join(warns) + ". Pick a "
+                               "plain folder on a local drive (e.g. D:\\Games) in Settings → "
+                               "Installing games." if warns else "")
+        self.base_note.setVisible(bool(warns))
 
     def _scanned(self, data, err):
         try:
@@ -525,7 +551,7 @@ class InstallPage(QWidget):
         """The install command line for the options on this page. Steam never
         holds it up: the shortcut is added afterwards, once Steam is closed.
         `imported`: any other game (--import), which has no repack checks."""
-        cmd = ([CLI_BIN, "--import", folder] if imported else [CLI_BIN, folder]) + \
+        cmd = ([*CLI, "--import", folder] if imported else [*CLI, folder]) + \
             ["--yes", "--log", "--defer-steam"]
         if name:
             cmd += ["--name", name]

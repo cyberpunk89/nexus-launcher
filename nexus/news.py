@@ -138,7 +138,7 @@ def parse_feed(xml_text: str, source: str) -> list[dict]:
 
 def _news_config() -> dict:
     try:
-        data = tomllib.loads(NEWS_CONFIG.read_text())
+        data = tomllib.loads(NEWS_CONFIG.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}

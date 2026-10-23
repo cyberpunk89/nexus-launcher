@@ -5,7 +5,6 @@ import email.message
 import io
 import json
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import gamedb  # noqa: E402
+from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
 
@@ -133,7 +133,8 @@ class Settings(Base):
     def test_defaults_when_missing(self):
         s = gamedb.settings()
         self.assertFalse(s['enabled'])
-        self.assertEqual(s['url'], gamedb.DEFAULT_URL)
+        self.assertIsNone(s['url'])            # no built-in server
+        self.assertIsNone(s['url_error'])
         self.assertIsNone(s['token'])
         self.assertFalse(gamedb.configured(s))
 
@@ -210,7 +211,7 @@ class Cache(Base):
         self.assertEqual(len(fake.requests), 1)
         self.assertFalse(first['stale'] or second['stale'])
         f = self.cache / 'summary.json'
-        self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
+        self.assertEqual(why_not_private(f), '')
         self.assertNotIn(TOKEN, f.read_text())
 
     def test_refresh_bypasses_and_failure_serves_stale(self):
@@ -359,15 +360,15 @@ class Cli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         h = Path(self.tmp.name)
-        (h / '.config/nexus').mkdir(parents=True)
-        (h / '.config/nexus/config.toml').write_text(
+        tests.sandbox.config_dir(h).mkdir(parents=True)
+        (tests.sandbox.config_dir(h) / 'config.toml').write_text(
             f'[gamedb]\nenabled = true\nurl = "https://gdb.invalid"\ntoken = "{TOKEN}"\n')
-        cache = h / '.cache/nexus/gamedb'
+        cache = tests.sandbox.cache_dir(h) / 'gamedb'
         cache.mkdir(parents=True)
         (cache / 'summary.json').write_text(json.dumps({
             'fingerprint': gamedb._fingerprint('https://gdb.invalid', TOKEN),
             'fetched_at': time.time(), 'data': SUMMARY}))
-        self.env = {**os.environ, 'HOME': str(h), 'XDG_CACHE_HOME': str(h / '.cache')}
+        self.env = {**os.environ, **tests.sandbox.home_env(h), 'XDG_CACHE_HOME': str(h / '.cache')}
         self.env.pop('NEXUS_GAMEDB_TOKEN', None)
         self.env.pop('NEXUS_GAMEDB_URL', None)
 
@@ -400,8 +401,8 @@ class Cli(unittest.TestCase):
     def test_wishlist_repacks_offline(self):
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        data = Path(self.env['HOME']) / '.local/share/nexus'
-        data.mkdir(parents=True)
+        data = tests.sandbox.data_dir(Path(self.env['HOME']))
+        data.mkdir(parents=True, exist_ok=True)       # Windows: the cache is inside
         (data / 'repack-index.json').write_text(json.dumps({
             'posts': {'baldurs-gate-3': {
                 'id': 1, 'slug': 'baldurs-gate-3', 'modified': '2026-01-01T00:00:00',
@@ -425,10 +426,15 @@ class Cli(unittest.TestCase):
         self.assertEqual(json.loads(self.cli('--gamedb', '--json').stdout)['repacks'], {})
 
     def test_not_configured_exits_2(self):
-        (Path(self.env['HOME']) / '.config/nexus/config.toml').write_text('')
+        (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')
         r = self.cli('--deals')
         self.assertEqual(r.returncode, 2)
-        self.assertIn('/account', r.stderr)
+        self.assertIn("server's address", r.stderr)     # no built-in server to point at
+        (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text(
+            '[gamedb]\nurl = "https://gamedb.test"\n')
+        r = self.cli('--deals')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('https://gamedb.test/account', r.stderr)
 
 
 if __name__ == '__main__':

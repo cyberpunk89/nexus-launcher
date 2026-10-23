@@ -16,12 +16,14 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.oskind import linux_only  # noqa: E402
 from tests.patching import patch_cli  # noqa: E402
 from tests import test_nexus_cli as T  # noqa: E402
 from nexus import cli  # noqa: E402
 from nexus.cli import move as MV, snapshots as SN, importgame as IG  # noqa: E402
 
 
+@linux_only                     # Windows: test_install_win.WindowsMove/WindowsImport
 class MoveCli(T.Sandbox):
     def test_move_rewires_everything_and_keeps_heroic_entry(self):
         if T.steam_running():
@@ -61,7 +63,7 @@ class MoveCli(T.Sandbox):
         (src / 'bin' / 'Game.exe').write_bytes(b'\0' * 700_000)
         r = self.cli('--import', str(src), '--yes', '--no-steam', '--no-heroic',
                      '--no-artwork', '--no-desktop')
-        reg = json.loads((self.home / '.local/share/nexus/games.json').read_text())['games']
+        reg = json.loads((tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games']
         e = reg['some-game']
         self.assertEqual(e['display_name'], 'Some Game')
         self.assertIs(e['local'], True)
@@ -78,6 +80,7 @@ for _name in dir(T.Sandbox):
         setattr(MoveCli, _name, None)
 
 
+@linux_only                     # a Wine prefix; Windows: test_install_win.WindowsMove
 class MoveCopy(unittest.TestCase):
     """Across drives: a copy, checked file by file, the old one set aside."""
 
@@ -224,11 +227,12 @@ class Snapshots(unittest.TestCase):
         self.assertEqual(SN.list_snapshots(self.entry, 'g'), [])
 
 
+@linux_only
 class FsType(unittest.TestCase):
     def test_reads_mountinfo_longest_match(self):
         info = ("22 1 0:21 / / rw - ext4 /dev/a rw\n"
                 "40 22 0:35 /@games /home/u/Games rw,noatime - btrfs /dev/b rw\n")
-        with mock.patch.object(SN.Path, 'read_text', lambda self: info), \
+        with mock.patch.object(SN.Path, 'read_text', lambda self, **kw: info), \
                 mock.patch.object(SN, 'existing_ancestor', lambda p: p), \
                 mock.patch.object(SN.os.path, 'realpath', lambda p: str(p)):
             self.assertEqual(SN.fs_type(Path('/home/u/Games/FitGirl/x')), 'btrfs')
@@ -273,6 +277,7 @@ class Names(unittest.TestCase):
             self.assertTrue(IG.guess_name(folder).startswith('Celeste'))
 
 
+@linux_only
 class TryProton(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

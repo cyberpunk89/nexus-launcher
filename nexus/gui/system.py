@@ -8,8 +8,23 @@ from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
     QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
+from .. import platform
+from ..features import has
 from .fmt import fmt_hours
 from .theme import FONTS, FS, G, P, SP
+
+
+# Health checks that need a Linux-only feature (features.has), by (group,
+# title); a title of None covers the whole group. --doctor sends the Windows
+# set already; this keeps a stray one (or NEXUS_FEATURES) from showing.
+CHECK_NEEDS = {('Performance', None): 'tips', ('Integrations', 'Heroic'): 'heroic',
+               ('Integrations', 'Play Proton'): 'proton',
+               ('Integrations', 'protongen'): 'protongen'}
+
+
+def check_supported(c: dict) -> bool:
+    need = CHECK_NEEDS.get((c['group'], c['title'])) or CHECK_NEEDS.get((c['group'], None))
+    return not need or has(need)
 
 
 class HealthPage(QWidget):
@@ -66,7 +81,7 @@ class HealthPage(QWidget):
             if data is None:
                 self.summary.setText(f"Couldn't run the checks: {err}")
                 return
-            self.checks = data.get('checks', [])
+            self.checks = [c for c in data.get('checks', []) if check_supported(c)]
             self._checked_at = time.time()
             self._render()
         cli_json(['--doctor', '--json'], done, 120000)
@@ -128,6 +143,18 @@ class HealthPage(QWidget):
             texts.addWidget(label(c['fix'], "Muted", wrap=True))
         lay.addLayout(texts, 1)
         for a in c['actions']:
+            if a['args'][:1] == ['--open-url']:
+                # Windows' fixes only open a page (Settings, Windows Security,
+                # a help link): straight from here, no job, nothing else.
+                url = a['args'][1] if len(a['args']) == 2 else ''
+                if not platform.fix_page(url):
+                    continue
+                b = QPushButton(a['label'])
+                b.setToolTip(url)
+                b.setProperty('url', url)
+                b.clicked.connect(self._open_page)
+                lay.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+                continue
             b = QPushButton(a['label'])
             b.clicked.connect(lambda _=False, a=a, b=b: (
                 b.setEnabled(False),
@@ -135,6 +162,11 @@ class HealthPage(QWidget):
                                   bool(a.get('steam')), 'task')))
             lay.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
         return w
+
+    def _open_page(self):
+        url = self.sender().property('url') or ''
+        if not platform.fix_page(url) or not platform.open_url(url):
+            self.toast.emit(f"Couldn't open {url}", 'error')
 
     def _copy(self):
         def done(out, err):

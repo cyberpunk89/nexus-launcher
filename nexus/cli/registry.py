@@ -1,13 +1,12 @@
 """The game registry (games.json): the source of truth for managed games."""
 
 import contextlib
-import fcntl
 import json
 import os
 import sys
 from datetime import datetime
 
-from nexus import paths as NX
+from nexus import paths as NX, platform
 
 from .common import atomic_write, DATA_DIR
 
@@ -28,21 +27,21 @@ def registry_lock():
     if _REGISTRY_LOCK_DEPTH == 0:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _REGISTRY_LOCK_FH = open(DATA_DIR / 'games.json.lock', 'a')
-        fcntl.flock(_REGISTRY_LOCK_FH, fcntl.LOCK_EX)
+        platform.lock(_REGISTRY_LOCK_FH)
     _REGISTRY_LOCK_DEPTH += 1
     try:
         yield
     finally:
         _REGISTRY_LOCK_DEPTH -= 1
         if _REGISTRY_LOCK_DEPTH == 0 and _REGISTRY_LOCK_FH:
-            fcntl.flock(_REGISTRY_LOCK_FH, fcntl.LOCK_UN)
+            platform.unlock(_REGISTRY_LOCK_FH)
             _REGISTRY_LOCK_FH.close()
             _REGISTRY_LOCK_FH = None
 
 
 def load_registry() -> dict:
     try:
-        with open(REGISTRY_PATH) as f:
+        with open(REGISTRY_PATH, encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict) and isinstance(data.get('games'), dict):
             return data
@@ -75,7 +74,10 @@ def save_registry(reg: dict) -> None:
 _CARRIED_KEYS = ('disk_bytes', 'disk_bytes_at', 'last_played', 'launch', 'proton',
                  'playtime_seconds', 'repack_fingerprint', 'repack_version',
                  'repack_source', 'repack_installed_at', 'umu_gameid', 'local',
-                 'import_source', 'launch_via')
+                 'import_source', 'launch_via',
+                 # Windows installs: where the game is, its uninstaller and
+                 # its Start Menu shortcut (no prefix, no launch.sh there)
+                 'platform', 'install_dir', 'uninstaller', 'menu_entry', 'appx')
 
 
 def register_game(*, slug: str, display_name: str, exe, compatdata, wine_prefix,

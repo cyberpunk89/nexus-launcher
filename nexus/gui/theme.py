@@ -22,10 +22,15 @@ SANS_STACK = ['Lexend', 'Inter', 'Inter Display', 'Cantarell', 'Noto Sans',
               'DejaVu Sans']
 MONO_STACK = ['JetBrainsMono Nerd Font', 'JetBrains Mono', 'Fira Code',
               'Noto Sans Mono', 'DejaVu Sans Mono']
-ICON_TTF = _REPO / 'assets' / 'fonts' / 'lucide.ttf'
+FONT_DIR = _REPO / 'assets' / 'fonts'
+ICON_TTF = FONT_DIR / 'lucide.ttf'
+# Bundled so a machine without them (Windows) looks the same: Lexend (OFL)
+# and a two-glyph subset of Symbols Nerd Font (see ICON_FALLBACK_STACK).
+BUNDLED_TTF = [FONT_DIR / 'lexend.ttf', FONT_DIR / 'nerd-symbols.ttf']
 # Lucide lacks brand logos and filled shapes; those few icons keep their
-# Material Design glyph, which Qt's fallback finds in a Nerd Font. The
-# symbols-only one first: its metrics are made for icons, not for text.
+# Material Design glyph, from the bundled Symbols Nerd Font subset (or an
+# installed Nerd Font). The symbols-only one first: its metrics are made for
+# icons, not for text.
 ICON_FALLBACK_STACK = ['Symbols Nerd Font', 'Symbols Nerd Font Mono',
                        'JetBrainsMono Nerd Font', 'MesloLGL Nerd Font',
                        'FantasqueSansM Nerd Font']
@@ -45,7 +50,10 @@ def _first_installed(candidates: list[str], fallback: str) -> str:
 
 def resolve_fonts() -> None:
     """Pick the best installed face for each role. Must run after QApplication
-    exists (QFontDatabase needs a live app)."""
+    exists (QFontDatabase needs a live app). The bundled faces in
+    assets/fonts are registered first, so they win over installed ones."""
+    for ttf in BUNDLED_TTF:
+        QFontDatabase.addApplicationFont(str(ttf))
     FONTS.ui = _first_installed(SANS_STACK, QFont().defaultFamily())
     FONTS.mono = _first_installed(MONO_STACK, 'monospace')
     fid = QFontDatabase.addApplicationFont(str(ICON_TTF))
@@ -721,28 +729,34 @@ _ICON_CACHE: dict[str, str] = {}
 
 def _stroke_icon(name: str, color: str, points, size=(18, 18), width=2.4) -> str:
     """QSS can't draw glyphs for indicators/arrows, so render a stroked
-    polyline to a PNG once and reference it by path."""
+    polyline to a PNG once and reference it by path. A name@2x.png is
+    written beside it, which Qt picks on a scaled display (125%, 150%, ...)
+    so the stroke stays crisp."""
     cached = _ICON_CACHE.get(name)
     if cached and Path(cached).exists():
         return cached
     path = DATA_DIR / f'ui-{name}.png'
-    pm = QPixmap(*size)
-    pm.fill(Qt.GlobalColor.transparent)
-    pt = QPainter(pm)
-    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color), width)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    pt.setPen(pen)
-    pt.drawPolyline(*(QPointF(x, y) for x, y in points))
-    pt.end()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pm.save(str(path), 'PNG')
-    except OSError:
-        return ''
-    _ICON_CACHE[name] = str(path)
-    return str(path)
+    for scale, out in ((1, path), (2, path.with_name(f'ui-{name}@2x.png'))):
+        pm = QPixmap(size[0] * scale, size[1] * scale)
+        pm.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(pm)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pt.scale(scale, scale)
+        pen = QPen(QColor(color), width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pt.setPen(pen)
+        pt.drawPolyline(*(QPointF(x, y) for x, y in points))
+        pt.end()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pm.save(str(out), 'PNG')
+        except OSError:
+            return ''
+    # Forward slashes: in a stylesheet's url("...") a Windows backslash is
+    # an escape, and Qt drops the whole application stylesheet.
+    _ICON_CACHE[name] = path.as_posix()
+    return path.as_posix()
 
 
 def _check_icon_path() -> str:

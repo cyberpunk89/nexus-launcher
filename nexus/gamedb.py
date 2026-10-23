@@ -23,7 +23,9 @@ from datetime import datetime, timezone
 
 from . import net, paths
 
-DEFAULT_URL = "https://gamedb.crowsden.cc"
+# No built-in server: Game-db is self-hosted, so the address comes from [gamedb] url
+# (or NEXUS_GAMEDB_URL). Shown in empty fields only.
+EXAMPLE_URL = "https://gamedb.example.com"
 ENDPOINT = "/api/nexus/v1/summary"
 MAX_AGE = 45 * 60
 SCHEMA = 1
@@ -63,7 +65,7 @@ def settings() -> dict:
     """{enabled, url, token, token_source ('env'|'config'|None), url_error}.
     Missing/unparseable config → disabled defaults; never raises."""
     try:
-        data = tomllib.loads(paths.CONFIG_PATH.read_text()).get('gamedb', {})
+        data = tomllib.loads(paths.CONFIG_PATH.read_text(encoding='utf-8-sig')).get('gamedb', {})
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
@@ -71,12 +73,13 @@ def settings() -> dict:
     env_token = os.environ.get('NEXUS_GAMEDB_TOKEN', '').strip()
     cfg_token = str(data.get('token') or '').strip()
     token = env_token or cfg_token
-    raw_url = os.environ.get('NEXUS_GAMEDB_URL', '').strip() or str(data.get('url') or DEFAULT_URL)
-    url_error = None
-    try:
-        url = check_url(raw_url)
-    except GameDbError as e:
-        url, url_error = None, str(e)
+    raw_url = os.environ.get('NEXUS_GAMEDB_URL', '').strip() or str(data.get('url') or '').strip()
+    url, url_error = None, None
+    if raw_url:                       # none set: not an error, just not set up
+        try:
+            url = check_url(raw_url)
+        except GameDbError as e:
+            url_error = str(e)
     return {
         'enabled': bool(data.get('enabled', False)) or bool(env_token),
         'url': url,
@@ -173,7 +176,7 @@ def _write_private(path, obj) -> None:
 
 def _read_json(path):
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
 

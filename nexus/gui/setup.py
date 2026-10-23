@@ -11,11 +11,17 @@ the rest of the app. Six steps, each skippable, in this order:
 6. Look & background — theme, size, the background agent, the tray.
 
 Shown once (library.json `setup_done`), when Nexus has never run here;
-Settings → Library → "Run setup again" opens it later."""
+Settings → Library → "Run setup again" opens it later. Windows has no Proton
+step (`steps` is STEPS without it)."""
+
+from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLineEdit, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget)
+
+from nexus import platform
+from nexus.features import has
 
 from .common import HOME, INSTALL_BASE_DEFAULT
 from .theme import G, P, SCALES, SP, THEMES
@@ -70,6 +76,7 @@ class SetupPage(QWidget):
         w.setLayout(nav)
         outer.addWidget(w)
         self.step = 0
+        self.steps = [s for s in STEPS if s[0] != 'proton' or has('proton')]
         self.checks: list[dict] = []
         self.answers: dict = {}
         self._build()
@@ -92,8 +99,16 @@ class SetupPage(QWidget):
         self.base = QLineEdit()
         self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
         lay.addLayout(self._browse_row(self.base))
-        lay.addWidget(label("Each game gets its own folder (and, on btrfs, its own subvolume "
-                            "so updates can be undone).", "Muted", wrap=True))
+        # Why the folder is a poor place for games (Windows: OneDrive, Program
+        # Files, a network drive, a long path), as it's typed.
+        self.base_warn = plain_label("", None, wrap=True)
+        self.base_warn.setStyleSheet(f"color: {P['warning']};")
+        self.base_warn.setVisible(False)
+        lay.addWidget(self.base_warn)
+        self.base.textChanged.connect(self._check_base)
+        lay.addWidget(label("Each game gets its own folder" + (
+            " (and, on btrfs, its own subvolume so updates can be undone)." if has('btrfs')
+            else "."), "Muted", wrap=True))
         lay.addSpacing(SP['2'])
         lay.addWidget(label("Repacks download to", "StatLabel"))
         self.scan = QLineEdit()
@@ -148,7 +163,8 @@ class SetupPage(QWidget):
         lay.addSpacing(SP['2'])
         self.agent = Switch()
         lay.addLayout(self._switch_row(self.agent, "Keep watching downloads and sending alerts "
-                                       "while Nexus is closed (a systemd user service)"))
+                                       "while Nexus is closed" + (" (a systemd user service)"
+                                       if has('systemd_agent') else "")))
         self.tray = Switch()
         lay.addLayout(self._switch_row(self.tray, "Close to the tray instead of quitting"))
         self.tray.setEnabled(tray_available())
@@ -163,6 +179,13 @@ class SetupPage(QWidget):
         row.addWidget(b)
         return row
 
+    def _check_base(self, _text=None):
+        warns = platform.install_base_warnings(
+            Path(self.base.text().strip() or INSTALL_BASE_DEFAULT))
+        self.base_warn.setText(("Not a good place for games: " + "; ".join(warns) + ".")
+                               if warns else "")
+        self.base_warn.setVisible(bool(warns))
+
     def _switch_row(self, sw, text):
         row = QHBoxLayout()
         row.addWidget(label(text, None, wrap=True), 1)
@@ -172,6 +195,7 @@ class SetupPage(QWidget):
     # ---- data from the CLI ----
     def open(self, config: dict, appearance: dict):
         self.base.setText(config.get('install_base') or '')
+        self._check_base()
         self.scan.setText(config.get('scan_dir') or '')
         self.key.setText(config.get('api_key') or '')
         i = self.theme.findData(appearance.get('theme'))
@@ -180,7 +204,8 @@ class SetupPage(QWidget):
         self.size.setCurrentIndex(max(0, i))
         self.show_step(0)
         cli_json(['--doctor', '--json'], self._got_checks, 120000)
-        cli_json(['--list-protons', '--json'], self._got_protons, 30000)
+        if has('proton'):
+            cli_json(['--list-protons', '--json'], self._got_protons, 30000)
         cli_json(['--torrent-detect', '--json'], self._got_torrent, 15000)
 
     def _rows(self, lay, rows):
@@ -253,6 +278,8 @@ class SetupPage(QWidget):
                   "install; the buttons do it.",
         'launchers': "Nexus works alongside Steam and Heroic: it adds games to them and shows "
                      "their games too.",
+        'launchers-win': "Nexus works alongside Steam: it adds games to it and shows its "
+                         "games too.",
         'folders': "Where games go, and where to look for downloads.",
         'proton': "Proton runs Windows games. Each game can use another one later.",
         'extras': "Both optional — and both can be set later in Settings.",
@@ -260,8 +287,8 @@ class SetupPage(QWidget):
     }
 
     def _lead(self):
-        key = STEPS[self.step][0]
-        text = self.LEADS[key]
+        key = self.steps[self.step][0]
+        text = self.LEADS[key + '-win' if key == 'launchers' and not has('heroic') else key]
         if key == 'checks' and self.checks:
             bad = [c for c in self.checks if c['group'] == 'Requirements'
                    and c['status'] == 'fail']
@@ -270,16 +297,18 @@ class SetupPage(QWidget):
         self.lead.setText(text)
 
     def show_step(self, i: int):
-        self.step = max(0, min(len(STEPS) - 1, i))
-        self.stack.setCurrentIndex(self.step)
-        self.step_note.setText(f"Step {self.step + 1} of {len(STEPS)} · {STEPS[self.step][1]}")
-        self.title.setText("Welcome to Nexus" if self.step == 0 else STEPS[self.step][1])
+        last = len(self.steps) - 1
+        self.step = max(0, min(last, i))
+        self.stack.setCurrentIndex(STEPS.index(self.steps[self.step]))   # a page per STEPS
+        self.step_note.setText(f"Step {self.step + 1} of {len(self.steps)} · "
+                               f"{self.steps[self.step][1]}")
+        self.title.setText("Welcome to Nexus" if self.step == 0 else self.steps[self.step][1])
         self.btn_back.setVisible(self.step > 0)
-        self.btn_next.setText("Done" if self.step == len(STEPS) - 1 else "Next")
+        self.btn_next.setText("Done" if self.step == last else "Next")
         self._lead()
 
     def _next(self):
-        if self.step == len(STEPS) - 1:
+        if self.step == len(self.steps) - 1:
             self._finish()
         else:
             self.show_step(self.step + 1)
@@ -296,7 +325,7 @@ class SetupPage(QWidget):
             u[('install', 'scan_dir')] = self.scan.text().strip()
         if self.key.text().strip():
             u[('steamgriddb', 'api_key')] = self.key.text().strip()
-        if self.proton.currentData():
+        if self.proton.currentData() and has('proton'):
             u[('runner', 'proton')] = self.proton.currentData()
         if self._torrent and self.use_torrent.isChecked():
             u[('torrent', 'client')] = self._torrent['client']
@@ -314,4 +343,4 @@ class SetupPage(QWidget):
 from .jobs import cli_json  # noqa: E402
 from .settings import Switch  # noqa: E402
 from .tray import tray_available  # noqa: E402
-from .widgets import clear_layout, icon_label, label, NoWheelCombo  # noqa: E402
+from .widgets import clear_layout, icon_label, label, NoWheelCombo, plain_label  # noqa: E402

@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame,
     QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget)
 
-from nexus import paths as NX
+from nexus import paths as NX, platform
 
 from .common import ICON_PATH
 from .theme import FONTS, G, GLYPHS, GRAD, LOOK, P, PAL, pill, pill_qss, SP
@@ -414,12 +414,19 @@ def start_steam() -> None:
 def notify_desktop(summary: str, body: str = '') -> None:
     """Desktop notification (only used while the window isn't focused).
     notify-send reaches whatever notification daemon the session runs; on a
-    bare compositor with none, it silently does nothing."""
+    bare compositor with none, it silently does nothing. Without notify-send
+    (Windows) the tray icon shows it, or with the tray off a toast
+    (platform.notify_local)."""
     if shutil.which('notify-send'):
         QProcess.startDetached('notify-send', [
             '-a', 'Nexus', '-i', str(ICON_PATH) if ICON_PATH.exists()
             else 'applications-games', '-h', f'string:desktop-entry:{NX.APP_ID}',
             '--', summary, body])
+    elif not tray_message(summary, body):
+        try:
+            platform.notify_local(summary, body)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -503,6 +510,9 @@ class SegmentedControl(QWidget):
         self._anim = QVariantAnimation(self)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._set_thumb)
+        # The items can move mid-slide (a Size change restyles the app): land on
+        # where the current item is now, not where it was when the slide began.
+        self._anim.finished.connect(self._sync_later)
         lay = QHBoxLayout(self)
         inset = 3 if style == 'pill' else 0
         lay.setContentsMargins(inset, inset, inset, inset)
@@ -651,7 +661,9 @@ class SegmentedControl(QWidget):
 
     def eventFilter(self, obj, ev):
         if ev.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
-            if self._anim.state() != QVariantAnimation.State.Running:
+            if self._anim.state() == QVariantAnimation.State.Running:
+                self._anim.setEndValue(self._target(self._current))
+            else:
                 self._set_thumb(self._target(self._current))
             lab = next((l for k, l in self._badges.items() if self._items[k] is obj), None)
             if lab is not None:
@@ -879,3 +891,4 @@ class SteamGate(QFrame):
 # below is inside a function, so the cycle resolves at call time.
 from .art import anim_ms, MOTION  # noqa: E402
 from .config import steam_running  # noqa: E402
+from .tray import tray_message  # noqa: E402

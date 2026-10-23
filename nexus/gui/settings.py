@@ -5,6 +5,7 @@ find and nothing is lost by walking away."""
 
 import os
 import re
+from pathlib import Path
 
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF,
     Qt, QTimer, QUrl)
@@ -13,7 +14,8 @@ from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, 
 from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
     QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import gamedb
+from nexus import gamedb, platform
+from nexus.features import has
 
 from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT
 from .theme import (_hex_ok, _mix, accent_hex, ACCENTS, APPEARANCE_DEFAULT, G,
@@ -171,10 +173,18 @@ class SettingRow(QWidget):
             lay.addWidget(holder)
         self.error = label("", "RowError", wrap=True)
         lay.addWidget(self.error)
+        self.note = label("", None, wrap=True)       # a caution, not an error
+        self.note.setStyleSheet(f"color: {P['warning']};")
+        lay.addWidget(self.note)
         # Only now: until `top` joined the row, its labels had no parent, and
         # showing one then would flash it up as a window of its own.
         self.desc.setHidden(not desc)
         self.error.hide()
+        self.note.hide()
+
+    def set_note(self, text: str | None):
+        self.note.setText(text or "")
+        self.note.setVisible(bool(text))
 
     def set_description(self, text: str):
         self.desc.setText(text)
@@ -475,6 +485,12 @@ class SettingsPage(QWidget):
         self._build_alerts()
         self._build_background()
         self._build_backup()
+        for control, feature in ((self.heroic, 'heroic'), (self.runner, 'proton'),
+                                 (self.proton, 'proton'), (self.al_proton, 'proton')):
+            if not has(feature):                # a Linux-only setting
+                self.row_of[control].set_available(False)
+        for sec in self.sections.values():
+            sec.relayout()
         self.tail = QWidget()                   # lets the last section scroll to the top
         self.content.addWidget(self.tail)
         self.content.addStretch()
@@ -613,7 +629,10 @@ class SettingsPage(QWidget):
         self._row(sec, "Show games you own but haven't installed",
                   "Steam games through Game-db, Epic and GOG through Heroic.", self.show_owned,
                   keywords="owned uninstalled epic gog")
-        self.ctl_dedupe = _combo((("Show it once (repack, then Steam, then Heroic)", True),
+        from .dashboard import DUP_ORDER           # the order a duplicate is kept in
+        names = {'nexus': "repack", 'steam': "Steam", 'heroic': "Heroic", 'epic': "Epic"}
+        order = ", then ".join(names[k] for k in DUP_ORDER if k != 'heroic' or has('heroic'))
+        self.ctl_dedupe = _combo(((f"Show it once ({order})", True),
                                   ("Show every copy", False)))
         self._row(sec, "A game in several stores", "Which copies the library shows.",
                   self.ctl_dedupe, keywords="duplicate dedupe")
@@ -643,6 +662,8 @@ class SettingsPage(QWidget):
         self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
         self._field_row(sec, "Install games to", "Each game gets its own folder here.",
                         self.base, browse=True, keywords="folder path location")
+        self.base.textChanged.connect(self._check_base)    # typed or picked
+        self._check_base()
         self.scan_dir = QLineEdit()
         self.scan_dir.setPlaceholderText(str(HOME / 'Downloads'))
         self._field_row(sec, "Look for repacks in", "Nexus says when a download here is "
@@ -666,8 +687,13 @@ class SettingsPage(QWidget):
         self.heroic = Switch()
         self._row(sec, "Add new games to Heroic", "", self.heroic)
         self.desktop = Switch()
-        self._row(sec, "Add new games to the app menu", "A launcher entry for each game.",
-                  self.desktop, keywords="desktop entry")
+        if has('desktop_entry'):
+            self._row(sec, "Add new games to the app menu", "A launcher entry for each game.",
+                      self.desktop, keywords="desktop entry")
+        else:                                   # Windows: the same key, as .lnk shortcuts
+            self._row(sec, "Start Menu shortcuts", "A shortcut for each new game, in the "
+                      "Start Menu's Nexus folder.", self.desktop,
+                      keywords="start menu shortcut lnk desktop app menu")
 
     def _build_running(self):
         sec = self._add_section(SettingsSection('running', "Running games", 'proton'))
@@ -711,7 +737,7 @@ class SettingsPage(QWidget):
         self._row(sec, "Deals page", "Show it in the top bar.", self.gdb_enabled,
                   keywords="wishlist releases backlog")
         self.gdb_url = QLineEdit()
-        self.gdb_url.setPlaceholderText(gamedb.DEFAULT_URL)
+        self.gdb_url.setPlaceholderText(gamedb.EXAMPLE_URL)
         self._field_row(sec, "Address", "", self.gdb_url, keywords="url server")
         self.gdb_token = self._secret(QLineEdit())
         self.gdb_token.setPlaceholderText("gdb_…")
@@ -787,12 +813,22 @@ class SettingsPage(QWidget):
     def _build_background(self):
         sec = self._add_section(SettingsSection('background', "Background", 'power'))
         self.agent = Switch()
-        self.agent.setToolTip("Runs `nexus-cli --agent` as a systemd user service: finished "
-                              "torrents install, ready repacks and alerts are announced, the "
-                              "FitGirl feed stays fresh")
         self.agent.toggled.connect(self._agent_toggled)
-        self.agent_row = self._row(sec, "Keep working while Nexus is closed", "", self.agent,
-                                   keywords="agent systemd service alerts downloads")
+        if has('systemd_agent'):
+            self.agent.setToolTip("Runs `nexus-cli --agent` as a systemd user service: "
+                                  "finished torrents install, ready repacks and alerts are "
+                                  "announced, the FitGirl feed stays fresh")
+            self.agent_row = self._row(sec, "Keep working while Nexus is closed", "",
+                                       self.agent,
+                                       keywords="agent systemd service alerts downloads")
+        else:
+            # Windows: a Startup-folder shortcut to `nexus --hidden`; the
+            # window then does the agent's work from the tray.
+            self.agent.setToolTip("A shortcut in your Startup folder (shell:startup) that "
+                                  "starts Nexus in the tray")
+            self.agent_row = self._row(sec, "Start with Windows", "", self.agent,
+                                       keywords="startup sign in login boot agent background "
+                                       "alerts downloads tray")
         self.agent_note = self.agent_row.desc
         self.tray = Switch()
         self.tray.toggled.connect(lambda on: self.controls_changed.emit({'close_to_tray': on}))
@@ -849,6 +885,12 @@ class SettingsPage(QWidget):
                                               "Nexus settings (*.tar.gz *.tgz)")
         if path:
             self.import_wanted.emit(path)
+
+    def _check_base(self, _text=None):
+        warns = platform.install_base_warnings(
+            Path(self.base.text().strip() or INSTALL_BASE_DEFAULT))
+        self.row_of[self.base].set_note(
+            "Not a good place for games: " + "; ".join(warns) + "." if warns else None)
 
     def _wire(self):
         """Switches and menus save when they change; text fields when you
@@ -993,6 +1035,14 @@ class SettingsPage(QWidget):
         self.agent.setChecked(bool(s.get('enabled')))
         self.agent.blockSignals(False)
         self.agent.update()
+        if s.get('startup') or not has('systemd_agent'):    # Windows: Start with Windows
+            self.agent.setEnabled(True)
+            self.agent_row.set_description(
+                "On: Nexus opens in the tray when you sign in, and installs finished "
+                "downloads and sends your alerts from there." if s.get('enabled') else
+                "Opens Nexus in the tray when you sign in. Off now: downloads install and "
+                "alerts come only while Nexus is open.")
+            return
         self.agent.setEnabled(s.get('systemd', True) is not False)
         if s.get('systemd') is False:
             note = "Needs systemd (systemctl --user), which this system doesn't have."
@@ -1017,6 +1067,12 @@ class SettingsPage(QWidget):
         self.tray.setChecked(bool(controls.get('close_to_tray')) and has_tray)
         self.tray.blockSignals(False)
         self.tray.setEnabled(has_tray)
+        if not has('systemd_agent'):            # Windows: the notification area
+            self.tray_row.set_description(
+                "Closing the window keeps Nexus by the clock, with your recent games, "
+                "downloads and Quit; notifications come from there too." if has_tray else
+                "The notification area isn't available right now.")
+            return
         self.tray_row.set_description(
             "Closing the window keeps Nexus in the tray, with your recent games, downloads "
             "and Quit. Start there with nexus\u00a0-\u2060-\u2060hidden." if has_tray else
@@ -1075,7 +1131,9 @@ class SettingsPage(QWidget):
 
     def _open_gamedb_account(self):
         try:
-            base = gamedb.check_url(self.gdb_url.text() or gamedb.DEFAULT_URL)
+            if not self.gdb_url.text().strip():
+                raise gamedb.GameDbError('config', "Enter your Game-db address first")
+            base = gamedb.check_url(self.gdb_url.text())
         except gamedb.GameDbError as e:
             self.row_of[self.gdb_url].set_error(str(e))
             return
@@ -1176,6 +1234,8 @@ class SettingsPage(QWidget):
         if self._proton_current:
             self.proton.addItem(self._proton_current, self._proton_current)
             self.proton.setCurrentIndex(1)
+        if not has('proton'):                   # no Proton row to fill (Windows)
+            return
 
         def done(data, err):
             try:

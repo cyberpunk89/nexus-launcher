@@ -15,6 +15,11 @@ from .common import alive, COLLECTION_NAMES
 from .theme import G, SP
 
 
+# Chips for the stores in nexus/sources: hidden until the library has a
+# game from one.
+STORE_CHIPS = ('epic',)
+
+
 class LibraryMixin:
     """Part of MainWindow (nexus/gui/window.py), which mixes it in; `self` is
     the window."""
@@ -63,7 +68,8 @@ class LibraryMixin:
         self.filter = QComboBox()
         for text, key in (("Any status", 'all'), ("Update pending", 'update'),
                           ("With launch options", 'options'), ("Not in Steam", 'no-steam'),
-                          ("Not in Heroic", 'no-heroic'), ("Hidden games", 'hidden')):
+                          *((("Not in Heroic", 'no-heroic'),) if has('heroic') else ()),
+                          ("Hidden games", 'hidden')):
             self.filter.addItem(text, key)
         self.filter.currentIndexChanged.connect(self.apply_filter)
         self.sort = QComboBox()
@@ -107,8 +113,11 @@ class LibraryMixin:
         cl.setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
         cl.setSpacing(SP['1_5'])
         self.chips = {}
+        # One chip per store. Heroic is Linux-only; a store source's chip
+        # (Epic) shows once the library has a game from it (_store_chips).
         for key, text in (('all', "All"), ('nexus', "Repacks"), ('steam', "Steam"),
-                          ('heroic', "Heroic"), ('favorite', "★ Favourites")):
+                          *((('heroic', "Heroic"),) if has('heroic') else ()),
+                          ('epic', "Epic"), ('favorite', "★ Favourites")):
             c = QPushButton(text)
             c.setObjectName("Chip")
             c.setCheckable(True)
@@ -117,6 +126,7 @@ class LibraryMixin:
             self.chips[key] = c
         self.chips['all'].setChecked(True)
         self._chip = 'all'
+        self._store_chips()
         self._col_chips = QHBoxLayout()            # one per collection, rebuilt as they change
         self._col_chips.setContentsMargins(0, 0, 0, 0)
         self._col_chips.setSpacing(SP['1_5'])
@@ -212,11 +222,24 @@ class LibraryMixin:
             self._col_chips.addWidget(c)
             self.chips[f'col:{name}'] = c
 
+    def _store_chips(self):
+        """Show a store source's chip only when the library has its games
+        (or it's the chip in use, so a restored filter stays reachable)."""
+        have = {g.get('source') for g in getattr(self, '_games', None) or ()}
+        if 'steam' in self.chips:           # Windows without Steam: no chip, unless in use
+            self.chips['steam'].setVisible(
+                has('proton') or 'steam' in have or self._chip == 'steam'
+                or NX.STEAM_ROOT.is_dir())
+        for key in STORE_CHIPS:
+            if key in self.chips:
+                self.chips[key].setVisible(key in have or key == self._chip)
+
     def _set_chip(self, key):
         key = key if key in self.chips else 'all'
         self._chip = key
         for k, c in self.chips.items():
             c.setChecked(k == key)
+        self._store_chips()
         self._save_library_state()
         self.apply_filter()
 
@@ -233,6 +256,7 @@ class LibraryMixin:
             self._chip = chip
             for k, c in self.chips.items():
                 c.setChecked(k == chip)
+            self._store_chips()
 
     def _save_library_state(self, *_):
         st = {'sort': self.sort.currentData(), 'status': self.filter.currentData(),
@@ -458,7 +482,7 @@ class LibraryMixin:
 
     def _paint_cached_library(self):
         try:
-            blob = json.loads(self.LIB_CACHE.read_text())
+            blob = json.loads(self.LIB_CACHE.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             return
         if not isinstance(blob, dict) or blob.get('args') != self._library_args() \
@@ -521,6 +545,7 @@ class LibraryMixin:
                 if g.get('repack_online'):             # FitGirl posted a newer one
                     g['update_pending'] = True
             mark_duplicates(self._games, self.prefs.controls['dedupe'])
+            self._store_chips()
             for g in [] if cached else self._games:
                 if g['slug'] in self._watch_finish and is_installed(g):
                     self._install_req.pop(g['slug'], None)
@@ -726,6 +751,7 @@ class LibraryMixin:
 from .actions import build_game_menu, game_actions  # noqa: E402
 from .art import ART  # noqa: E402
 from .dashboard import mark_duplicates  # noqa: E402
+from ..features import has  # noqa: E402
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,

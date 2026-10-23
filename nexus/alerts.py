@@ -17,14 +17,11 @@ switching alerts on doesn't push forty games that were at their low all
 along."""
 
 import contextlib
-import fcntl
 import json
-import shutil
-import subprocess
 import time
 import tomllib
 
-from . import net
+from . import net, platform
 from .paths import CONFIG_PATH, DATA_DIR
 
 STATE = DATA_DIR / 'alerts.json'
@@ -38,7 +35,7 @@ GROUP = 3                           # more new alerts of a kind than this: one s
 
 def settings() -> dict:
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text()).get('alerts') or {}
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig')).get('alerts') or {}
     except (OSError, ValueError):
         data = {}
     try:
@@ -54,7 +51,7 @@ def settings() -> dict:
 
 def _load() -> dict:
     try:
-        data = json.loads(STATE.read_text())
+        data = json.loads(STATE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
@@ -67,8 +64,7 @@ def _load() -> dict:
 @contextlib.contextmanager
 def _edit():
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE.with_name(STATE.name + '.lock'), 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with platform.file_lock(STATE.with_name(STATE.name + '.lock')):
         data = _load()
         before = json.dumps(data, sort_keys=True)
         yield data
@@ -166,25 +162,29 @@ def summarize(kind: str, new: list[dict]) -> tuple[str, str]:
     return head, names
 
 
-def deliver(new: list[dict], desktop: bool = False, push: bool = True) -> list[str]:
-    """Push `new` (grouped per kind once there are more than GROUP of a
-    kind) and, with `desktop`, show it with notify-send. Returns errors."""
-    from . import notify
-    errs = []
+def messages(new: list[dict]) -> list[tuple[str, str]]:
+    """(title, body) for each notification about `new`: one per alert, or
+    one summary per kind once there are more than GROUP of it."""
     by_kind: dict[str, list] = {}
     for i in new:
         by_kind.setdefault(i['kind'], []).append(i)
+    return [msg for kind, items in by_kind.items()
+            for msg in ([summarize(kind, items)] if len(items) > GROUP else
+                        [summarize(kind, [i]) for i in items])]
+
+
+def deliver(new: list[dict], desktop: bool = False, push: bool = True) -> list[str]:
+    """Push `new` (see messages) and, with `desktop`, show it as a desktop
+    notification (platform.notify_local). Returns errors."""
+    from . import notify
+    errs = []
     s = notify.settings()
-    for kind, items in by_kind.items():
-        msgs = [summarize(kind, items)] if len(items) > GROUP else \
-               [summarize(kind, [i]) for i in items]
-        for title, body in msgs:
-            if push and notify.configured(s):
-                errs += notify.push(title, body, True, s)
-            if desktop and shutil.which('notify-send'):
-                try:
-                    subprocess.run(['notify-send', '-a', 'Nexus', '-i', 'nexus', title, body],
-                                   capture_output=True, timeout=5)
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    errs.append(f"notify-send: {e}")
+    for title, body in messages(new):
+        if push and notify.configured(s):
+            errs += notify.push(title, body, True, s)
+        if desktop:
+            try:
+                platform.notify_local(title, body)
+            except OSError as e:
+                errs.append(f"desktop notification: {e}")
     return errs

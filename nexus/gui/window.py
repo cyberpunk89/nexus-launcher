@@ -8,13 +8,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt, QTimer
+from PyQt6.QtCore import QProcess, Qt, QTimer, QUrl
+from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
+from nexus import platform
+from nexus.features import has
+
+from .. import updates
 from .common import alive, CLI_BIN, COLLECTION_NAMES, CONFIG_PATH, HOME
 from .fmt import fmt_size
-from .theme import apply_appearance, build_stylesheet, FS, G, scaled, SP
+from .theme import apply_appearance, build_stylesheet, FS, G, P, scaled, SP
 from .topbar import _TabHandle, TopBar
 from .win_library import LibraryMixin
 from .win_nav import NavigationMixin
@@ -357,11 +362,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._session_start: dict[str, datetime] = {}      # Steam/Heroic play sessions
         self._feed_timer = QTimer(self)                     # FitGirl feed: newer repacks
         self._feed_timer.timeout.connect(self._check_repack_feed)
+        self._feed_checks = 0
         self.repacks = RepackWatcher(self.prefs, self)
         self.repacks.ready.connect(self._repack_ready)
         self.repacks.scanned.connect(self._repack_scanned)
         self.repacks.start()
         QTimer.singleShot(4000, self.protonpage.refresh)  # GE update badge (6 h cache)
+        QTimer.singleShot(6000, self._check_update)        # new Nexus release (daily, token only)
         # "Playing now": a cheap /proc scan, only while the window is visible.
         self._run_timer = QTimer(self)
         self._run_timer.setInterval(15000)
@@ -442,6 +449,16 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             ("Install", lambda: self.run(['--proton-install', tag], f"Installing {tag}", None,
                                          'install-proton')),
             ("Details", lambda: self.go(self.PROTON))], 12000)
+
+    def _check_update(self):
+        in_thread(updates.available, self._update_checked)
+
+    def _update_checked(self, rel, _err):
+        """A newer Nexus release (updates.available): a toast linking its page."""
+        if not rel:
+            return
+        self.toast(f"Version {rel['version']} is available.", 'info', [
+            ("Release page", lambda: QDesktopServices.openUrl(QUrl(rel['url'])))], 12000)
 
     def _on_activity(self):
         if getattr(self, '_theatre', False) and self.prefs.controls['attract']:
@@ -533,6 +550,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         app.setFont(f)
         app.setStyleSheet(build_stylesheet())
         self.theatre.setStyleSheet(build_stylesheet(THEATRE_SCALE))
+        self._style_title_bar()
         if self._theatre:
             self.hints.setStyleSheet(build_stylesheet(THEATRE_SCALE))
         refresh_icons()
@@ -548,6 +566,17 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self._sync_selection()
         for w in app.allWidgets():
             w.update()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._style_title_bar()
+
+    def _style_title_bar(self):
+        """Windows: the title bar in the page's colours instead of the system's."""
+        if not platform.TITLE_BAR_COLORS:           # winId() would make a native window
+            return
+        platform.style_title_bar(int(self.winId()), P['bg'], P['text'], P['border'],
+                                 QColor(P['bg']).lightnessF() < 0.5)
 
     def _health_counts(self, problems, fails):
         self._health_problems = (problems, fails)
@@ -658,10 +687,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _background_changed(self, what: str, on: bool):
         """Settings → Background. The agent is a systemd user service: ask
-        before installing one, then let the CLI switch it."""
+        before installing one, then let the CLI switch it. On Windows the
+        same switch is Start with Windows (a Startup-folder shortcut to
+        `nexus --hidden`), which needs no question; it turns the tray on too,
+        since that's where Nexus then starts."""
         if what != 'agent':
             return
         st = self.settings
+        startup = not has('systemd_agent')
 
         def switch():
             def done(data, err):
@@ -671,13 +704,24 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                 st.set_agent_status(data)
                 errs = data.get('errors') or ([err] if err and not data else [])
                 if errs:
-                    self.toast(f"Couldn't switch the background agent — {errs[0]}", 'error',
-                               None, 0)
+                    name = "Start with Windows" if startup else "the background agent"
+                    self.toast(f"Couldn't switch {name} — {errs[0]}", 'error', None, 0)
+                    return
+                tray = startup and on and tray_available() \
+                    and not self.prefs.controls.get('close_to_tray')
+                if tray:
+                    self._apply_controls({'close_to_tray': True})
+                    st.set_controls(self.prefs.controls)
+                if startup:
+                    self.toast("Nexus starts in the tray when you sign in to Windows"
+                               + (" — closing the window now keeps it there too." if tray
+                                  else ".") if on else
+                               "Nexus no longer starts with Windows.", 'success', None, 6000)
                 else:
                     self.toast("Nexus keeps working in the background now." if on else
                                "The background agent is off.", 'success', None, 5000)
             cli_json(['--agent-enable' if on else '--agent-disable', '--json'], done, 60000)
-        if not on:
+        if not on or startup:
             switch()
             return
         self.confirm("Keep Nexus working in the background?",
@@ -757,7 +801,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _quit_poll(self):
         left = self.jobs.active()
-        if left and time.monotonic() < self._quit_deadline:
+        # An elevated installer can't be stopped: wait for it, however long.
+        if left and (time.monotonic() < self._quit_deadline
+                     or any(j.elevated for j in left)):
             return
         self._quit_timer.stop()
         for j in left:
@@ -780,7 +826,7 @@ from .downloads import DownloadsPage  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
 from .input import (ControllerInput, FocusRing, HintBar, install_input_mode, SpatialNav)  # noqa: E402
 from .install import InstallPage, RepackWatcher  # noqa: E402
-from .jobs import cli_json, JobManager  # noqa: E402
+from .jobs import cli_json, in_thread, JobManager  # noqa: E402
 from .setup import SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402
 from .tray import Tray, tray_available  # noqa: E402

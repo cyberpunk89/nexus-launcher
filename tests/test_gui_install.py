@@ -15,6 +15,8 @@ except ImportError:             # run as tests.<module>
     from tests.test_gui_window import fake_games
 from tests.patching import set_gui  # noqa: E402
 
+from nexus import features, platform  # noqa: E402
+
 if nx is not None:
     from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
@@ -40,6 +42,20 @@ class Events(unittest.TestCase):
         job = nx.Job(['nexus-cli', '/r', '--interactive'], "Installing T", None, 'install')
         feed(job, "[3/4] Running setup.exe via umu-run + GE...")
         self.assertEqual(job.step, nx._INSTALL_STEPS[3])
+
+    def test_windows_install_steps(self):
+        # [2/3] runs setup.exe as administrator: the installer's step, no
+        # "prefix"; [3/3] is the CLI's own words.
+        job = nx.Job(['nexus-cli', '/r', '--yes'], "Installing T", None, 'install', 'T')
+        feed(job, "[1/3] Skipping file verification (use --verify to enable).")
+        self.assertEqual(job.step, nx._INSTALL_STEPS[1])
+        feed(job, "[2/3] Running setup.exe as administrator...")
+        self.assertEqual((job.step, job.progress, job.elevated), (nx._SILENT_STEP, None, True))
+        feed(job, "[3/3] Searching for the game executable...")
+        self.assertEqual((job.step, job.progress), ("Searching for the game executable", (3, 3)))
+        job = nx.Job(['nexus-cli', '--import', '/d/x.exe'], "Adding X", None, 'install', 'X')
+        feed(job, "[1/2] Running x.exe as administrator — install it into C:\\Games\\x so ...")
+        self.assertEqual(job.step, nx._INSTALL_STEPS[3])       # its own window
 
     def test_output_bursts_coalesce(self):
         from PyQt6.QtTest import QTest
@@ -281,7 +297,8 @@ class InstallCommand(unittest.TestCase):
         self.page.submit.connect(lambda cmd, name, slug: sent.append((cmd, name)))
         self.page._go()
         cmd, name = sent[0]
-        self.assertEqual(cmd[1:3], ['--import', '/d/setup_hollow_knight_1.5_(64bit)_(4).exe'])
+        self.assertEqual(nx.cli_args(cmd)[:2],
+                         ['--import', '/d/setup_hollow_knight_1.5_(64bit)_(4).exe'])
         self.assertNotIn('--verify', cmd)
         self.assertEqual(name, "Hollow knight")
         self.page._pick('/r/Repack')                          # back to a repack
@@ -297,7 +314,7 @@ class InstallCommand(unittest.TestCase):
 
     def test_install_all_queues_finished_downloads(self):
         sent = []
-        self.page.submit.connect(lambda cmd, name, slug: sent.append((cmd[1], slug)))
+        self.page.submit.connect(lambda cmd, name, slug: sent.append((nx.cli_args(cmd)[0], slug)))
         self.page._scanned({'candidates': [
             {'path': '/r/A', 'name': 'A', 'slug': 'a', 'complete': True, 'installed': False},
             {'path': '/r/B', 'name': 'B', 'slug': 'b', 'complete': True, 'installed': False},
@@ -404,7 +421,7 @@ class Followups(unittest.TestCase):
                                lambda cmd, name, slug='': started.append((cmd, slug))):
             self.win.on_game_action('launch', g)
         cmd, slug = started[0]
-        self.assertEqual(cmd[:3], [nx.CLI_BIN, '/r/Half', '--yes'])
+        self.assertEqual(cmd[:len(nx.CLI) + 2], [*nx.CLI, '/r/Half', '--yes'])
         self.assertIn('--defer-steam', cmd)
         self.assertEqual(slug, 'half')
 
@@ -434,6 +451,75 @@ class Followups(unittest.TestCase):
         self.win._on_library({'games': fake_games(), 'disks': []}, '')
         alpha = next(g for g in self.win._games if g['slug'] == 'alpha')
         self.assertEqual(alpha['repack_update'], '/r/A2')
+
+    # ---- Windows (FEATURES of the Windows build) ----
+    def sheet_rows(self):
+        return [b.text() for b in self.win.sheet.findChildren(QPushButton, "SheetRow")
+                if not b.isHidden()]
+
+    def test_declined_admin_prompt_is_not_a_failure(self):
+        job = self.finished('failed', {'install-cancelled': {'slug': 't', 'why': 'uac'}})
+        sent = []
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            self.win._install_followups(job)
+        text, kind, actions = self.toasts[-1]
+        self.assertIn("admin prompt was declined", text)
+        self.assertEqual(kind, 'info')
+        with mock.patch.object(self.win.jobs, 'submit', sent.append):
+            dict(actions)["Try again"]()
+        self.assertEqual(sent[0].argv, job.argv)
+        self.assertTrue(self.win.sheet.isHidden())
+
+    def test_defender_quarantine_opens_a_sheet_that_changes_nothing(self):
+        dll = r'C:\Games\t\vcruntime140_1_app.dll'
+        job = self.finished('failed', {'antivirus': {
+            'slug': 't', 'log_lines': [], 'faq': 'https://fitgirl-repacks.site/faq/',
+            'detections': [{'file': dll, 'threat': 'Trojan:Win32/Wacatac.H!ml', 'at': 'x'}]}})
+        self.addCleanup(self.win.sheet.close_sheet)
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            self.win._install_followups(job)
+        sheet = self.win.sheet
+        self.assertTrue(sheet.isVisible())
+        self.assertEqual(sheet.title.text(), "Windows Defender removed a game file")
+        body = " ".join(lab.text() for lab in sheet.findChildren(QLabel))
+        self.assertIn("vcruntime140_1_app.dll — Trojan:Win32/Wacatac.H!ml", body)
+        self.assertIn("Protection history", body)
+        self.assertEqual(self.sheet_rows(), ["Open Windows Security",
+                                             "FitGirl's FAQ on false positives", "Show log",
+                                             "Close"])
+        self.assertEqual([a[0] for a in self.toasts[-1][2]], ["What happened", "Retry",
+                                                              "Show log"])
+        with mock.patch.object(platform, 'open_url', return_value=True) as op:
+            next(b for b in sheet.findChildren(QPushButton, "SheetRow")
+                 if b.text() == "Open Windows Security").click()
+        op.assert_called_once_with('windowsdefender://threat')
+        self.assertTrue(sheet.isHidden())
+
+    def test_uac_note_before_the_first_install_only(self):
+        prefs = self.win.prefs
+        self.addCleanup(setattr, prefs, 'uac_note_shown', prefs.uac_note_shown)
+        self.addCleanup(self.win.sheet.close_sheet)
+        prefs.uac_note_shown = False
+        sent = []
+        with mock.patch.object(features, 'FEATURES', frozenset()), \
+                mock.patch.object(self.win.jobs, 'submit', sent.append):
+            self.win._start_install([*nx.CLI, '/r/A'], 'A', 'a')
+            self.win._start_install([*nx.CLI, '/r/B'], 'B', 'b')     # "Install all"
+            self.assertEqual(sent, [])
+            self.assertTrue(self.win.sheet.isVisible())
+            self.assertIn("as administrator", " ".join(
+                lab.text() for lab in self.win.sheet.findChildren(QLabel)))
+            self.assertTrue(prefs.uac_note_shown)
+            next(b for b in self.win.sheet.findChildren(QPushButton, "SheetRow")
+                 if b.text() == "Install").click()
+            self.assertEqual([j.slug for j in sent], ['a', 'b'])
+            self.win._start_install([*nx.CLI, '/r/C'], 'C', 'c')     # shown once
+            self.assertEqual([j.slug for j in sent], ['a', 'b', 'c'])
+        prefs.uac_note_shown = False
+        with mock.patch.object(features, 'FEATURES', features.ALL), \
+                mock.patch.object(self.win.jobs, 'submit', sent.append):
+            self.win._start_install([*nx.CLI, '/r/D'], 'D', 'd')     # Linux: no UAC
+        self.assertEqual(sent[-1].slug, 'd')
 
 
 if __name__ == '__main__':

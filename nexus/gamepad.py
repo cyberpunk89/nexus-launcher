@@ -5,11 +5,13 @@ Controller (via Steam) and most generic pads to one standard layout.
 Used by the GUI's poll timer: `Gamepads.poll()` returns abstract events —
 ('button', name, pressed), ('axis', name, value -1..1), ('added', name, kind),
 ('removed', name). It never blocks, and it's inert (available=False) when no
-SDL library is found."""
+SDL library is found (on Windows: SDL2.dll shipped beside the exe)."""
 
 import ctypes
 import ctypes.util
 from pathlib import Path
+
+from . import platform
 
 POWER_SUPPLY = Path('/sys/class/power_supply')
 # Kernel drivers that expose a pad's battery: hid-playstation (DualSense,
@@ -26,6 +28,9 @@ CONTROLLERDEVICEADDED = 0x653
 CONTROLLERDEVICEREMOVED = 0x654
 INIT_GAMECONTROLLER = 0x2000
 INIT_EVENTS = 0x4000
+# SDL_JoystickPowerLevel -> percent (the top of each band). UNKNOWN (-1) and
+# WIRED (4) have no battery to show.
+POWER_PERCENT = {0: 5, 1: 20, 2: 70, 3: 100, 5: 100}
 
 BUTTONS = ['a', 'b', 'x', 'y', 'back', 'guide', 'start', 'lstick', 'rstick',
            'lb', 'rb', 'up', 'down', 'left', 'right']
@@ -73,8 +78,12 @@ class _Event(ctypes.Structure):
                 ('_pad', ctypes.c_uint8 * 38)]            # SDL_Event is a 56-byte union
 
 
+# The Gamepads that's open, so battery() can ask SDL where sysfs has nothing.
+_live = None
+
+
 def _load():
-    for name in ('libSDL2-2.0.so.0', ctypes.util.find_library('SDL2') or ''):
+    for name in (*platform.sdl_library_paths(), ctypes.util.find_library('SDL2') or ''):
         if not name:
             continue
         try:
@@ -103,10 +112,10 @@ class Gamepads:
         L.SDL_SetHint(b"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", b"1")
         # Never take over SIGINT/SIGTERM from the application.
         L.SDL_SetHint(b"SDL_NO_SIGNAL_HANDLERS", b"1")
-        # Read controllers through evdev only. SDL's HIDAPI drivers talk to
-        # the device directly (lightbar, player LEDs, rumble setup on a
-        # DualSense) and could fight a running game or Steam Input over it.
-        L.SDL_SetHint(b"SDL_JOYSTICK_HIDAPI", b"0")
+        # Linux: evdev only, HIDAPI off. Windows: HIDAPI on (no evdev there),
+        # a DualSense kept in simple mode. See platform.sdl_hints.
+        for hint, value in platform.sdl_hints().items():
+            L.SDL_SetHint(hint, value)
         L.SDL_Init.argtypes = [ctypes.c_uint32]
         L.SDL_InitSubSystem.argtypes = [ctypes.c_uint32]
         L.SDL_QuitSubSystem.argtypes = [ctypes.c_uint32]
@@ -146,7 +155,13 @@ class Gamepads:
         if self._type:
             self._type.restype = ctypes.c_int
             self._type.argtypes = [ctypes.c_void_p]
+        self._power = getattr(L, 'SDL_JoystickCurrentPowerLevel', None)
+        if self._power:
+            self._power.restype = ctypes.c_int
+            self._power.argtypes = [ctypes.c_void_p]
         self.available = True
+        global _live
+        _live = self
         self.resume()
 
     def resume(self):
@@ -170,6 +185,9 @@ class Gamepads:
             self.suspend()
             self.lib.SDL_Quit()
             self.available = False
+        global _live
+        if _live is self:
+            _live = None
 
     def poll(self) -> list[tuple]:
         if not (self.available and self.active):
@@ -227,6 +245,26 @@ class Gamepads:
         return iid in self.virtual and any(i not in self.virtual for i in self.pads)
 
     @property
+    def steam_input(self) -> bool:
+        """Steam Input has the pad (its virtual pad is open): Steam may be
+        remapping it, and a game sees Steam's copy."""
+        return bool(self.virtual)
+
+    def battery(self) -> list[dict]:
+        """The open pads' batteries as SDL reports them: [{percent,
+        charging}], lowest first. SDL can't tell charging, so never True."""
+        if not (self._power and self.active):
+            return []
+        out = []
+        for iid, (h, _n, _k) in self.pads.items():
+            if iid in self.virtual:
+                continue
+            level = self._power(self.lib.SDL_GameControllerGetJoystick(h))
+            if level in POWER_PERCENT:
+                out.append({'percent': POWER_PERCENT[level], 'charging': False})
+        return sorted(out, key=lambda b: b['percent'])
+
+    @property
     def kind(self) -> str | None:
         return next(iter(self.pads.values()))[2] if self.pads else None
 
@@ -237,21 +275,24 @@ class Gamepads:
 
 def battery(root: Path = POWER_SUPPLY) -> list[dict]:
     """Connected controllers' batteries from sysfs: [{percent, charging}],
-    lowest first. Empty when no pad reports one (wired-only, or none)."""
+    lowest first. Empty when no pad reports one (wired-only, or none).
+    Where sysfs has none (Windows), the open Gamepads asks SDL."""
     out = []
     try:
         entries = list(root.iterdir())
     except OSError:
-        return out
+        entries = []
+    if not entries:
+        return _live.battery() if _live is not None and root == POWER_SUPPLY else []
     for d in entries:
         if not d.name.startswith(PAD_BATTERY_PREFIXES):
             continue
         try:
-            pct = int((d / 'capacity').read_text().strip())
+            pct = int((d / 'capacity').read_text(encoding='utf-8').strip())
         except (OSError, ValueError):
             continue
         try:
-            status = (d / 'status').read_text().strip()
+            status = (d / 'status').read_text(encoding='utf-8').strip()
         except OSError:
             status = ''
         out.append({'percent': max(0, min(100, pct)),

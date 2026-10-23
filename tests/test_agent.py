@@ -4,6 +4,7 @@ alerted once, and the systemd unit. Nothing runs for real: the torrent
 client, systemctl, notify-send and the window's socket are stand-ins."""
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -17,9 +18,10 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from tests.patching import patch_cli  # noqa: E402
-from nexus import alerts, instance, torrent, watch  # noqa: E402
+from nexus import alerts, features, instance, paths as NX, platform, torrent, watch  # noqa: E402
 from nexus import cli  # noqa: E402
 from nexus.cli import agent as A  # noqa: E402
+from tests.oskind import IS_WINDOWS  # noqa: E402
 
 
 def wish(appid, title, **price):
@@ -79,15 +81,26 @@ class Alerts(unittest.TestCase):
         new = [{'key': f'atl:{n}', 'kind': 'atl', 'title': f'G{n}', 'text': f'G{n} low'}
                for n in range(5)] + [{'key': 'proton:x', 'kind': 'proton', 'title': 'x',
                                       'text': 'x is out'}]
-        sent = []
+        sent, desk = [], []
         with mock.patch('nexus.notify.settings', return_value={'ntfy': 'https://n/t'}), \
                 mock.patch('nexus.notify.configured', return_value=True), \
                 mock.patch('nexus.notify.push',
                            side_effect=lambda t, b, ok, s: sent.append((t, b)) or []), \
-                mock.patch('shutil.which', return_value=None):
+                mock.patch.object(platform, 'notify_local',
+                                  side_effect=lambda t, b: desk.append((t, b))):
             self.assertEqual(alerts.deliver(new, desktop=True), [])
         self.assertEqual(sent, [("5 wishlist games are at their all-time low",
                                  "G0, G1, G2, G3, G4"), ("Nexus", "x is out")])
+        self.assertEqual(desk, sent)                    # the same, on the desktop
+        self.assertEqual(alerts.messages(new), sent)
+
+    def test_a_failing_desktop_notification_is_reported(self):
+        new = [{'key': 'proton:x', 'kind': 'proton', 'title': 'x', 'text': 'x is out'}]
+        with mock.patch('nexus.notify.configured', return_value=False), \
+                mock.patch.object(platform, 'notify_local', side_effect=OSError("no shell")):
+            self.assertEqual(alerts.deliver(new, desktop=True),
+                             ["desktop notification: no shell"])
+            self.assertEqual(alerts.deliver(new, desktop=False), [])
 
     def test_settings_from_config(self):
         from nexus.paths import CONFIG_PATH
@@ -152,27 +165,52 @@ class Lock(unittest.TestCase):
         self.assertFalse(instance.agent_running())
 
 
+def one_listener(folder: str):
+    """A stand-in window: (address, accept) where accept() takes one
+    connection and returns what it sent. A Unix socket; on Windows a named
+    pipe, which is what QLocalServer listens on there."""
+    if IS_WINDOWS:
+        import _winapi
+        name = f'nexus-test-{os.getpid()}'
+        h = _winapi.CreateNamedPipe(
+            '\\\\.\\pipe\\' + name, _winapi.PIPE_ACCESS_INBOUND,
+            _winapi.PIPE_WAIT,          # byte type and read mode are 0
+            1, 65536, 65536, 0, _winapi.NULL)
+
+        def accept():
+            try:
+                _winapi.ConnectNamedPipe(h, False)
+                return _winapi.ReadFile(h, 65536)[0]
+            finally:
+                _winapi.CloseHandle(h)
+        return name, accept
+    path = str(Path(folder, 's.sock'))
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(1)
+
+    def accept():
+        try:
+            conn, _ = srv.accept()
+            with conn:
+                return conn.recv(65536)
+        finally:
+            srv.close()
+    return path, accept
+
+
 class Forward(unittest.TestCase):
     def test_forward_reaches_a_listening_window(self):
         with tempfile.TemporaryDirectory() as d:
-            path = str(Path(d, 's.sock'))
-            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            srv.bind(path)
-            srv.listen(1)
+            address, accept = one_listener(d)
             got = []
-
-            def accept():
-                conn, _ = srv.accept()
-                with conn:
-                    got.append(conn.recv(65536))
-            t = threading.Thread(target=accept)
+            t = threading.Thread(target=lambda: got.append(accept()))
             t.start()
-            with mock.patch.object(instance, 'INSTANCE', path):
+            with mock.patch.object(instance, 'INSTANCE', address):
                 self.assertTrue(instance.forward(['--agent-ready', '{}']))
             t.join(5)
-            srv.close()
             self.assertEqual(json.loads(got[0]), {'argv': ['--agent-ready', '{}']})
-            with mock.patch.object(instance, 'INSTANCE', path):
+            with mock.patch.object(instance, 'INSTANCE', address):
                 self.assertFalse(instance.forward(['x']))            # nobody listening
                 self.assertFalse(instance.window_running())
 
@@ -218,7 +256,9 @@ class AgentTasks(unittest.TestCase):
         _d, spawned, sent = self._torrents(forwarded=False)
         self.assertEqual(len(spawned), 1)
         cmd = spawned[0]
-        self.assertEqual(cmd[1:], [str(self.folder), '--yes', '--log', '--defer-steam',
+        cli = NX.cli_command()
+        self.assertEqual(cmd[:len(cli)], cli)
+        self.assertEqual(cmd[len(cli):], [str(self.folder), '--yes', '--log', '--defer-steam',
                                    '--from-torrent', 'c' * 40])
         self.assertEqual([n for _p, n in self.agent.children], ['Game'])
 
@@ -259,6 +299,13 @@ class AgentTasks(unittest.TestCase):
 
 
 class Service(unittest.TestCase):
+    """The systemd side, on any OS (FEATURES as on Linux)."""
+
+    def setUp(self):
+        p = mock.patch.object(features, 'FEATURES', features.ALL)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_enable_writes_the_unit_then_asks_systemd(self):
         unit = A.UNIT_DIR / A.UNIT_NAME
         self.addCleanup(unit.unlink, missing_ok=True)
@@ -283,6 +330,78 @@ class Service(unittest.TestCase):
                 mock.patch('builtins.print', side_effect=lambda *a, **k: out.append(a[0])):
             self.assertEqual(A.cmd_agent_enable(True, True), 1)
         self.assertIn('systemctl not found', json.loads(out[-1])['errors'][0])
+
+    def test_the_desktop_line_goes_through_the_platform(self):
+        with mock.patch.object(platform, 'notify_local') as note:
+            A._desktop("T", "B")
+        note.assert_called_once_with("T", "B")
+        with mock.patch.object(platform, 'notify_local', side_effect=OSError("x")), \
+                mock.patch.object(A, '_say') as say:
+            A._desktop("T", "B")                        # reported, never raised
+        self.assertIn("desktop notification", say.call_args[0][0])
+
+
+class StartWithWindows(unittest.TestCase):
+    """No systemd on Windows: --agent-enable puts a shortcut to
+    `nexus --hidden` in the Startup folder instead. Checked on Linux with
+    FEATURES as on Windows and the platform calls stood in for."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.startup = Path(self.dir.name) / 'Startup'
+        self.made = []
+
+        def lnk(path, target, args='', workdir=None, icon=None):
+            self.made.append((Path(path), Path(target), args, workdir, icon))
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(b'L')
+        for p in (mock.patch.object(features, 'FEATURES', frozenset()),
+                  mock.patch.object(platform, 'startup_dir', return_value=self.startup),
+                  mock.patch.object(platform, 'gui_command', return_value=[
+                      r'C:\Py\pythonw.exe', r'C:\src\nexus\gui\__main__.py']),
+                  mock.patch.object(platform, 'create_shortcut', side_effect=lnk),
+                  mock.patch.object(instance, 'window_running', return_value=False),
+                  mock.patch.object(A, '_systemctl', side_effect=AssertionError("systemd"))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def enable(self, on: bool) -> tuple[int, dict]:
+        out = []
+        with mock.patch('builtins.print', side_effect=lambda *a, **k: out.append(a[0])):
+            rc = A.cmd_agent_enable(on, True)
+        return rc, json.loads(out[-1])
+
+    def test_on_writes_the_shortcut_and_off_removes_it(self):
+        rc, s = self.enable(True)
+        self.assertEqual((rc, s['errors']), (0, []))
+        link, target, args, _wd, _icon = self.made[0]
+        self.assertEqual(link, self.startup / 'Nexus.lnk')
+        self.assertEqual(target, Path(r'C:\Py\pythonw.exe'))
+        self.assertTrue(args.endswith('--hidden'), args)
+        self.assertIn('__main__.py', args)
+        self.assertTrue(s['startup'] and s['enabled'])
+        self.assertFalse(s['systemd'])
+        self.assertTrue(A.agent_status()['enabled'])
+        rc, s = self.enable(False)
+        self.assertEqual(rc, 0)
+        self.assertFalse(link.exists())
+        self.assertFalse(s['enabled'])
+        rc, s = self.enable(False)                      # already off: still fine
+        self.assertEqual((rc, s['errors']), (0, []))
+
+    def test_a_shortcut_that_fails_is_reported(self):
+        with mock.patch.object(platform, 'create_shortcut', side_effect=OSError("denied")):
+            rc, s = self.enable(True)
+        self.assertEqual(rc, 1)
+        self.assertIn("denied", s['errors'][0])
+        self.assertFalse(s['enabled'])
+
+    def test_status_text(self):
+        out = []
+        with mock.patch('builtins.print', side_effect=lambda *a, **k: out.append(a[0])):
+            A.cmd_agent_status(False)
+        self.assertEqual(out[0], "Start with Windows: off")
 
 
 if __name__ == '__main__':

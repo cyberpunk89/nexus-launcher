@@ -4,13 +4,19 @@ from pathlib import Path
 
 from PyQt6 import sip
 
-from nexus import paths as NX
+from nexus import paths as NX, platform
 
 
 HOME = Path.home()
 # The repo this package lives in (nexus/gui/), so GUI and CLI are always the
 # same version; bin/nexus and bin/nexus-cli are thin stubs that import us.
 _REPO = Path(__file__).resolve().parents[2]
+
+
+def cli_args(argv: list) -> list:
+    """A job's arguments after the CLI itself ([*CLI, '--x'] -> ['--x']);
+    other commands unchanged."""
+    return argv[len(CLI):] if argv[:len(CLI)] == CLI else argv
 
 
 def alive(*objs) -> bool:
@@ -20,7 +26,8 @@ def alive(*objs) -> bool:
     return all(o is not None and not sip.isdeleted(o) for o in objs)
 
 
-CLI_BIN = str(_REPO / 'bin' / 'nexus-cli')
+CLI_BIN = str(_REPO / 'bin' / 'nexus-cli')      # the Linux script itself (autostart, desktop files)
+CLI = NX.cli_command()                          # argv that runs the CLI: [*CLI, '--list']
 DATA_DIR = NX.DATA_DIR
 CONFIG_PATH = NX.CONFIG_PATH
 APPLICATIONS_DIR = NX.APPLICATIONS_DIR
@@ -29,7 +36,9 @@ LOGO_SVG = _REPO / 'assets' / 'nexus.svg'           # the app logo; ICON_PATH is
 WORDMARK_SVG = _REPO / 'assets' / 'wordmark.svg'    # "Nexus" lettering, painted in the accent
 DESKTOP_PATH = APPLICATIONS_DIR / f'{NX.APP_ID}.desktop'
 LEGACY_DESKTOP = APPLICATIONS_DIR / 'fitgirl-manager.desktop'
-INSTALL_BASE_DEFAULT = str((HOME / 'Games' / 'FitGirl'))  # autodetected; config [install] base overrides
+# Where games go when config has no [install] base: ~/Games/FitGirl; on
+# Windows \Games on the roomiest non-system drive (the CLI's own default).
+INSTALL_BASE_DEFAULT = str(platform.default_install_base(HOME))
 
 
 # The user's collections, in their order: set by MainWindow whenever they

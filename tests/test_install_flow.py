@@ -9,18 +9,23 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CLI = REPO / 'bin' / 'nexus-cli'
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.oskind import linux_only  # noqa: E402
 from nexus import cli as fi  # noqa: E402
+from nexus.cli import runner  # noqa: E402
 
 FAKE_WINE = r'''#!/bin/sh
-# wineboot: make a prefix. setup.exe: log argv, then "install" a game.
+# wineboot: make a prefix. reg: log it, in order with setup. setup.exe: log
+# argv, then "install" a game.
 if [ "$1" = wineboot ]; then mkdir -p "$WINEPREFIX/drive_c/windows"; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_LOG"
+[ "$1" = reg ] && exit 0
 [ "$FAKE_MODE" = fail ] && exit 5
 dir=""
 for a in "$@"; do case "$a" in /DIR=*) dir="${a#/DIR=}";; esac; done
@@ -70,6 +75,17 @@ class Names(unittest.TestCase):
             exe.write_bytes(b'MZ' + b'\0' * 200)
             self.assertIsNone(fi.setup_product_name(exe))
             self.assertIsNone(fi.setup_product_name(Path(t) / 'missing.exe'))
+
+    def test_a_unity_games_small_exe_is_found(self):
+        # FF XV Pocket Edition: a 0.3 MB exe beside UnityPlayer.dll is the game.
+        with tempfile.TemporaryDirectory() as t:
+            g = Path(t)
+            (g / 'FF15 PE.exe').write_bytes(b'\0' * 300_000)
+            (g / 'InstallApp.exe').write_bytes(b'')
+            (g / 'unins000.exe').write_bytes(b'\0' * 1_400_000)
+            self.assertEqual(fi.exe_candidates(g), [])               # no Unity runtime: too small
+            (g / 'UnityPlayer.dll').write_bytes(b'\0')
+            self.assertEqual(fi.exe_candidates(g), [(300_000, g / 'FF15 PE.exe')])
 
     def test_existing_install_root(self):
         pfx = Path('/p/pfx')
@@ -140,10 +156,50 @@ class InnoHeader(unittest.TestCase):
             ov = fi.silent_setup_overrides(p)
             self.assertIn('vc_redist.x64.exe=d', ov.split(';'))
             self.assertIn('winepulse.drv=d', ov.split(';'))
-            self.assertIn('winebrowser.exe=d', ov.split(';'))
+            self.assertNotIn('winebrowser.exe=d', ov.split(';'))    # see browser_muted
             self.assertNotIn('setup.exe=d', ov.split(';'))
 
 
+class BrowserMuted(unittest.TestCase):
+    def calls(self, user_reg: str | None, fail=False):
+        calls = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(runner, '_prefix_reg', lambda a, *_: calls.append(a)):
+            if user_reg is not None:
+                (Path(d) / 'user.reg').write_text(user_reg)
+            try:
+                with fi.browser_muted(Path(d), {}, 'wine', None):
+                    calls.append('setup')
+                    if fail:
+                        raise SystemExit(1)
+            except SystemExit:
+                pass
+        return calls
+
+    def test_mutes_then_drops_the_value(self):
+        for fail in (False, True):
+            c = self.calls(None, fail)
+            self.assertEqual(c[0][:5], ['add', r'HKCU\Software\Wine\WineBrowser', '/v',
+                                        'Browsers', '/d'])
+            self.assertEqual(c[0][5], fi.NO_BROWSER)
+            self.assertEqual(c[1], 'setup')
+            self.assertEqual(c[2][0], 'delete')
+
+    def test_puts_back_the_prefix_own_browser(self):
+        # user.reg as Wine writes it: key names with doubled backslashes.
+        reg = ('[Software\\\\Wine\\\\WineBrowser] 1792748419\n#time=1dd\n'
+               '"Browsers"="firefox,xdg-open"\n\n[Software\\\\Wine\\\\X] 1\n')
+        self.assertEqual(self.calls(reg)[2][:6], ['add', r'HKCU\Software\Wine\WineBrowser',
+                                                  '/v', 'Browsers', '/d', 'firefox,xdg-open'])
+        # Left behind by an install that was killed: not the prefix's own.
+        self.assertEqual(self.calls(reg.replace('firefox,xdg-open', fi.NO_BROWSER))[2][0],
+                         'delete')
+        # Another key's Browsers is not this one.
+        other = '[Software\\\\Wine\\\\X] 1\n"Browsers"="nope"\n'
+        self.assertEqual(self.calls(other)[2][0], 'delete')
+
+
+@linux_only
 class InstallFlow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -154,8 +210,8 @@ class InstallFlow(unittest.TestCase):
         (self.bin / 'gio').write_text('#!/bin/sh\nexit 1\n')     # Trash: the manual path
         for f in self.bin.iterdir():
             f.chmod(0o755)
-        (h / '.config/nexus').mkdir(parents=True)
-        (h / '.config/nexus/config.toml').write_text(
+        tests.sandbox.config_dir(h).mkdir(parents=True)
+        (tests.sandbox.config_dir(h) / 'config.toml').write_text(
             '[integrations]\nsteam = false\ndesktop = false\nheroic = false\n'
             '[runner]\nbackend = "wine"\n'
             f'[install]\nbase = "{h}/Games/FitGirl"\nscan_dir = "{h}/Downloads"\n')
@@ -171,7 +227,7 @@ class InstallFlow(unittest.TestCase):
         self.tmp.cleanup()
 
     def cli(self, *args, mode='ok', check=True):
-        env = {**os.environ, 'HOME': str(self.home), 'STEAMGRIDDB_API_KEY': '',
+        env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': '',
                'PATH': f"{self.bin}:/usr/bin:/bin", 'FAKE_LOG': str(self.log),
                'FAKE_MODE': mode, 'XDG_CACHE_HOME': str(self.home / 'cache')}
         env.pop('PYTHONDONTWRITEBYTECODE', None)
@@ -190,7 +246,7 @@ class InstallFlow(unittest.TestCase):
                 if line.startswith(f'@nexus {name} ')]
 
     def registry(self):
-        return json.loads((self.home / '.local/share/nexus/games.json').read_text())['games']
+        return json.loads((tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games']
 
     def test_silent_install_by_default(self):
         r = self.install()
@@ -207,13 +263,21 @@ class InstallFlow(unittest.TestCase):
         self.assertEqual(self.events(r.stdout, 'installed')[0]['slug'], 'test-game')
         self.assertFalse((self.home / 'Games/FitGirl/test-game' / fi.INCOMPLETE_MARKER).exists())
 
+    def test_setup_runs_with_the_browser_muted(self):
+        self.install()
+        calls = self.log.read_text().splitlines()
+        self.assertTrue(calls[0].startswith('reg add HKCU\\Software\\Wine\\WineBrowser '
+                                            '/v Browsers /d nexus-no-browser'), calls)
+        self.assertIn('setup.exe', calls[1])
+        self.assertTrue(calls[2].startswith('reg delete '), calls)
+
     def test_interactive_shows_the_setup_window(self):
         self.install('--interactive')
         self.assertNotIn('/VERYSILENT', self.log.read_text())
         self.assertIn('/Interactive/Test Game/bin/TestGame.exe', self.registry()['test-game']['exe'])
 
     def test_config_can_turn_silent_off(self):
-        cfg = self.home / '.config/nexus/config.toml'
+        cfg = tests.sandbox.config_dir(self.home) / 'config.toml'
         cfg.write_text(cfg.read_text() + 'unattended = false\n')
         self.install()
         self.assertNotIn('/VERYSILENT', self.log.read_text())
@@ -291,7 +355,7 @@ class InstallFlow(unittest.TestCase):
         self.assertFalse(self.repack.exists())
 
     def test_scan_dirs_list(self):
-        cfg = self.home / '.config/nexus/config.toml'
+        cfg = tests.sandbox.config_dir(self.home) / 'config.toml'
         more = self.home / 'Games/Install'
         more.mkdir(parents=True)
         cfg.write_text(cfg.read_text() + f'scan_dirs = ["{more}"]\n')

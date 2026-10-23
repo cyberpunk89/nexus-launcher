@@ -34,8 +34,7 @@ def load_config() -> dict:
     try:
         if tomllib is None:
             raise OSError
-        with open(CONFIG_PATH, 'rb') as f:
-            data = tomllib.load(f)
+        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))  # Notepad's BOM
         cfg['api_key'] = data.get('steamgriddb', {}).get('api_key') or None
         integ = data.get('integrations', {})
         cfg['steam'] = as_bool(integ.get('steam', True))

@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+from nexus import platform
+
 from .common import atomic_write, backup_file, log
 
 
@@ -69,7 +71,7 @@ def _load_heroic_library(lib_path: Path) -> dict | None:
     if not lib_path.exists():
         return {"games": []}
     try:
-        data = json.loads(lib_path.read_text())
+        data = json.loads(lib_path.read_text(encoding='utf-8'))
         if isinstance(data, dict) and isinstance(data.get('games'), list):
             return data
         if isinstance(data, dict) and 'games' not in data:
@@ -85,19 +87,7 @@ def _load_heroic_library(lib_path: Path) -> dict | None:
 def heroic_is_running() -> bool:
     """Heroic keeps its sideload library in memory and writes it back, so an
     external edit made while it runs can be silently undone."""
-    try:
-        for d in Path('/proc').iterdir():
-            if not d.name.isdigit():
-                continue
-            try:
-                comm = (d / 'comm').read_text().strip().lower()
-            except OSError:
-                continue
-            if comm.startswith('heroic'):
-                return True
-    except OSError:
-        pass
-    return False
+    return any(p.name.lower().startswith('heroic') for p in platform.processes())
 
 
 def _heroic_wine_version(proton: Path) -> dict:
@@ -192,7 +182,7 @@ def add_heroic_entry(display_name: str, slug: str, exe: Path | None,
                 gc[app_name].update(heroic_launch_fields(launch))
             atomic_write(gc_path, json.dumps(gc, indent=4))
         elif (force_proton and proton) or launch is not None:
-            gc = json.loads(gc_path.read_text())
+            gc = json.loads(gc_path.read_text(encoding='utf-8'))
             inner = gc.get(app_name) if isinstance(gc, dict) else None
             if isinstance(inner, dict):
                 before = json.dumps(inner, sort_keys=True)

@@ -1,4 +1,5 @@
-"""nexus/winfocus.py: picking the launched game's window out of niri's list."""
+"""nexus/winfocus.py: picking the launched game's window out of niri's list,
+and on Windows (faked: no niri feature) out of platform.top_windows()."""
 
 import sys
 import unittest
@@ -48,10 +49,50 @@ class PickWindow(unittest.TestCase):
 
     def test_unavailable_is_inert(self):
         from unittest import mock
-        with mock.patch.dict('os.environ', {'NIRI_SOCKET': ''}):
+        with mock.patch.dict('os.environ', {'NIRI_SOCKET': ''}), \
+                mock.patch.object(winfocus, 'has', return_value=True):
             self.assertFalse(winfocus.available())
             self.assertEqual(winfocus.windows(), [])
             self.assertFalse(winfocus.focus(3))
+
+
+class OnWindows(unittest.TestCase):
+    """No niri: the window list and focus go through the platform layer."""
+
+    def setUp(self):
+        from unittest import mock
+        p = mock.patch.object(winfocus, 'has', return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_lists_through_the_platform_and_names_our_own_windows(self):
+        from unittest import mock
+        import os
+        wins = [{'id': 100, 'pid': os.getpid(), 'app_id': 'python', 'title': 'Nexus'},
+                {'id': 200, 'pid': 4242, 'app_id': 'hades', 'title': 'Hades',
+                 'exe': r'D:\Games\Hades\x64\Hades.exe'}]
+        with mock.patch.object(winfocus.platform, 'top_windows', return_value=wins):
+            self.assertTrue(winfocus.available())
+            got = winfocus.windows()
+        self.assertEqual(winfocus.own_window(got, pid=os.getpid()), 100)
+        self.assertEqual(got[1]['app_id'], 'hades')
+
+    def test_focus_calls_the_platform(self):
+        from unittest import mock
+        with mock.patch.object(winfocus.platform, 'focus_window', return_value=True) as f:
+            self.assertTrue(winfocus.focus(200))
+        f.assert_called_once_with(200)
+        with mock.patch.object(winfocus.platform, 'focus_window', side_effect=OSError):
+            self.assertFalse(winfocus.focus(200))
+
+    def test_a_window_from_the_install_folder_wins(self):
+        wins = [{'id': 1, 'app_id': 'nexus', 'title': 'Nexus'},
+                {'id': 30, 'app_id': 'unitycrashhandler64', 'title': 'Crash Handler',
+                 'exe': r'C:\Program Files\Unity\UnityCrashHandler64.exe'},
+                {'id': 20, 'app_id': 'game', 'title': 'Untitled',
+                 'exe': r'D:\Games\Some Game\bin\game.exe'}]
+        g = {'display_name': 'Zz', 'install_dir': 'D:/Games/Some Game/'}
+        self.assertEqual(winfocus.pick_game_window(wins, {1}, g), 20)
 
 
 if __name__ == '__main__':

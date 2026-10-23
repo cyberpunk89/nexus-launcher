@@ -15,6 +15,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from nexus import features
+
 from .common import log, LOG_DIR, Logger, make_slug, run, STEAM_ROOT, use_logger, win_path
 
 _GOG_NAME = re.compile(r'^setup_(.+?)(?:_v?\d[\w.]*)?(?:_\(\d+bit\))?(?:_\(\d+\))*$',
@@ -63,6 +65,8 @@ def run_windows_exe(exe: Path, extra: list[str], runner: str, proton: Path | Non
 
 
 def cmd_import(args, install_base: Path) -> None:
+    if not features.has('proton'):          # Windows: no prefix to set up
+        return cmd_import_win(args, install_base)
     src = Path(args.import_path).expanduser()
     try:
         src = src.resolve()
@@ -175,6 +179,7 @@ from nexus.inno import inno_header  # noqa: E402
 from .common import emit_event  # noqa: E402
 from .config import load_config  # noqa: E402
 from .install import _finish_install  # noqa: E402
+from .install_win import cmd_import_win  # noqa: E402
 from .registry import registry_get  # noqa: E402
 from .repack import (clean_repack_name, exe_candidates, inno_args, setup_product_name,
     silent_target, write_incomplete_marker)  # noqa: E402

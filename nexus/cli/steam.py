@@ -4,13 +4,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import zlib
 from datetime import datetime
 from pathlib import Path
 
-from nexus import paths as NX
+from nexus import features, paths as NX, platform
 
 from .common import (atomic_write, backup_file, log, make_slug, SAVES_DIR, STEAM_CONFIG_VDF,
     STEAM_ROOT, VDF_ERRORS)
@@ -38,13 +37,10 @@ def _appid_signed(unsigned: int) -> int:
 
 
 def steam_is_running() -> bool:
-    for pat in (['-x', 'steam'], ['-f', 'steamwebhelper']):
-        try:
-            if subprocess.run(['pgrep', *pat], capture_output=True).returncode == 0:
-                return True
-        except OSError:
-            return False
-    return False
+    """The client or its web helper (comm is cut at 15 characters, so the
+    helper is matched by its start)."""
+    return any(n == 'steam' or n.startswith('steamwebhelper')
+               for n in (p.name.lower() for p in platform.processes()))
 
 
 def _load_vdf_text(path: Path) -> dict:
@@ -552,6 +548,91 @@ def restore_prefix_saves(slug: str, wine_prefix: Path) -> tuple[int, list[Path]]
     return count, failed
 
 
+# A manifest backup's map of each copied file to where it came from.
+SAVE_FILES_MAP = 'files.json'
+
+
+def backup_manifest_saves(slug: str, game_dir: Path, entry: list,
+                          folders: dict[str, str] | None = None,
+                          suffix: str = '') -> tuple[Path, int, list[Path]] | None:
+    """backup_prefix_saves for a game with no prefix (a native Windows
+    install): copy the files its Ludusavi manifest `entry` names (see
+    nexus.saves) into SAVES_DIR/<slug>/<timestamp>/, with files.json mapping
+    each copy to its original path so restore_manifest_saves can put it back.
+    Same return as backup_prefix_saves."""
+    from nexus import saves
+    hits = saves.resolve(entry, game_dir, folders, noise=_is_save_noise)
+    if not hits:
+        return None
+    ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+    dest_root = _unique_dir(SAVES_DIR / slug, ts, suffix)
+    # One numbered folder per save location keeps two locations' same-named files apart.
+    roots = list(dict.fromkeys(root for _f, root in hits))
+    mapping, failed = {}, []
+    for f, root in hits:
+        rel = Path(str(roots.index(root))) / f.relative_to(root)
+        try:
+            dest = dest_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest)
+            mapping[rel.as_posix()] = str(f)
+        except OSError:
+            failed.append(f)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    atomic_write(dest_root / SAVE_FILES_MAP, json.dumps(mapping, indent=1))
+    return dest_root, len(mapping), failed
+
+
+def restore_manifest_saves(slug: str) -> tuple[int, list[Path]] | None:
+    """Put the latest backup_manifest_saves backup for `slug` back where its
+    files.json says each file came from. Same return as restore_prefix_saves;
+    None also when the latest backup isn't a manifest one."""
+    latest = latest_save_backup(slug)
+    if not latest:
+        return None
+    try:
+        mapping = json.loads((latest / SAVE_FILES_MAP).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    count, failed = 0, []
+    for rel, original in mapping.items():
+        try:
+            dest = Path(original)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(latest / rel, dest)
+            count += 1
+        except OSError:
+            failed.append(Path(rel))
+    return count, failed
+
+
+# What a game outside the manifest gets, rather than a guess at its saves.
+NO_SAVE_PATHS = "Nexus doesn't know where this game keeps its saves"
+
+
+def manifest_save_entry(entry: dict) -> tuple[list | None, str]:
+    """The Ludusavi manifest's save paths for a registry entry (a native
+    Windows install), matched by store appid, else by name; (None, why) when
+    there are none to use."""
+    from nexus import compat, saves
+    idx = saves.load_index()
+    if idx is None:
+        return None, "Nexus couldn't load its list of save locations (offline?)"
+    appid = compat.store_appid(entry)
+    sid = entry.get('steam_appid')               # a shortcut's own id is never a store's
+    if appid is None and str(sid or '').isdigit() and 0 < int(sid) < 0x80000000:
+        appid = int(sid)
+    title = saves.find_game(idx, appid, entry.get('display_name') or entry.get('slug') or '')
+    files = (idx.get('games') or {}).get(title) if title else None
+    return (files, '') if files else (None, NO_SAVE_PATHS)
+
+
+def is_manifest_backup(backup: Path) -> bool:
+    """True for a backup_manifest_saves backup (restore_manifest_saves can put
+    it back), False for one copied out of a Wine prefix."""
+    return (backup / SAVE_FILES_MAP).is_file()
+
+
 def _report_failed_copies(failed: list[Path], what: str) -> None:
     print(f"  [!] {len(failed)} {what} could not be copied, e.g.:", file=sys.stderr)
     for f in failed[:5]:
@@ -591,7 +672,7 @@ def integrity_manifest_path(slug: str) -> Path:
 
 def load_integrity_manifest(slug: str) -> dict | None:
     try:
-        return json.loads(integrity_manifest_path(slug).read_text())
+        return json.loads(integrity_manifest_path(slug).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
 
@@ -814,7 +895,8 @@ def add_steam_shortcut_native(display_name: str, slug: str, exe: Path,
                               launch_options: str | None = None) -> int | None:
     """Add a non-Steam shortcut that Steam runs the *native* way: the raw game
     .exe through a forced Proton, with the prefix redirected to our installed
-    game_dir. This matches how Heroic runs it. Returns the appid or None.
+    game_dir. This matches how Heroic runs it. On Windows (no compatdata)
+    it's just the exe: no Proton, no prefix. Returns the appid or None.
 
     Re-adding an existing shortcut updates it in place: the user's collections,
     hidden flag, play time, custom icon and launch options are kept.
@@ -825,7 +907,8 @@ def add_steam_shortcut_native(display_name: str, slug: str, exe: Path,
     except ImportError:
         log.print("  [i] Steam: python 'vdf' library not available — skipping.")
         return None
-    if not (exe and proton):
+    compat = features.has('compatdata')    # Linux: through Proton, in our prefix
+    if not (exe and (proton or not compat)):
         log.print("  [i] Steam: need a game exe and a Proton for native mode — skipping.")
         return None
     cfg_dir = find_steam_userdata(announce=True)
@@ -878,13 +961,14 @@ def add_steam_shortcut_native(display_name: str, slug: str, exe: Path,
 
     # Force the chosen Proton, redirect the prefix, and clean up the old entry's
     # forced-tool mapping so it doesn't dangle.
-    for au in old_appids:
-        if au != unsigned:
-            _write_compat_mapping(au, None)
-    tool = proton_tool_name(proton)
-    if set_steam_compat_tool(unsigned, tool):
-        log.print(f"  Steam: forced compat tool {tool}.")
-    _redirect_compatdata(unsigned, game_dir)
+    if compat:
+        for au in old_appids:
+            if au != unsigned:
+                _write_compat_mapping(au, None)
+        tool = proton_tool_name(proton)
+        if set_steam_compat_tool(unsigned, tool):
+            log.print(f"  Steam: forced compat tool {tool}.")
+        _redirect_compatdata(unsigned, game_dir)
     if artwork:
         _copy_grid_art(cfg_dir / 'grid', unsigned, artwork)
 

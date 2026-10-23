@@ -12,6 +12,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from nexus import paths as NX
+from nexus.features import has
 from nexus.instance import INSTANCE, INSTANCE_MAX
 
 from .common import (_REPO, APPLICATIONS_DIR, DATA_DIR, DESKTOP_PATH, ICON_PATH,
@@ -84,10 +85,15 @@ def manager_exec() -> str:
 
 def forward_to_running(argv: list[str]) -> bool:
     """Give argv to an already-running Nexus. True if one took it."""
-    sock = QLocalSocket()
+    # Parented, not a local: a Windows pipe has no buffer, so the write
+    # finishes only once the server reads it, and a socket collected before
+    # then drops it. It goes away by itself when it disconnects.
+    sock = QLocalSocket(QApplication.instance())
     sock.connectToServer(INSTANCE)
     if not sock.waitForConnected(300):
+        sock.deleteLater()
         return False
+    sock.disconnected.connect(sock.deleteLater)
     sock.write(json.dumps({'argv': argv}).encode() + b'\n')
     sock.flush()
     sock.waitForBytesWritten(1000)
@@ -112,10 +118,12 @@ class InstanceServer(QObject):
                 os.makedirs(os.path.dirname(INSTANCE), mode=0o700, exist_ok=True)
             except OSError:
                 pass
-        if self.server.listen(INSTANCE):
-            return True
+        # Ask first: on Windows a second listen() on the same pipe name
+        # succeeds, so a failed listen can't be how we notice another Nexus.
         if forward_to_running(argv):
             return False
+        if self.server.listen(INSTANCE):
+            return True
         QLocalServer.removeServer(INSTANCE)     # a stale socket from a crash
         self.server.listen(INSTANCE)
         return True
@@ -139,7 +147,12 @@ class InstanceServer(QObject):
                         argv = []
                     self.request.emit([str(a) for a in argv])
             sock.readyRead.connect(read)
-            sock.disconnected.connect(sock.deleteLater)
+            # On Windows the pipe's readyRead can come after its disconnect, so
+            # the socket lives a moment longer. A child timer dies with it.
+            gone = QTimer(sock)
+            gone.setSingleShot(True)
+            gone.timeout.connect(sock.deleteLater)
+            sock.disconnected.connect(lambda gone=gone: gone.start(2000))
             if sock.bytesAvailable():
                 read()
 
@@ -163,7 +176,7 @@ def install_desktop_entry(icon: str):
         "\n"
         "[Desktop Action Theatre]\n"
         "Name=Theatre mode (TV)\n"
-        f"Exec={manager_exec()} --theatre\n"
+        f"Exec={manager_exec()} --theatre\n", encoding='utf-8'
     )
     DESKTOP_PATH.chmod(0o644)
     try:
@@ -206,6 +219,21 @@ def install_excepthook(win: 'MainWindow'):
     sys.excepthook = hook
 
 
+def refresh_desktop_entry(icon: str, argv) -> bool:
+    """Write the freedesktop launcher when it's missing, old or asked for.
+    Not on Windows, where that file would only land in the Start Menu folder
+    (its shortcuts are the installer's)."""
+    if not has('desktop_entry'):
+        return False
+    stale = DESKTOP_PATH.exists() and \
+        'SingleMainWindow' not in DESKTOP_PATH.read_text(encoding='utf-8')
+    if not DESKTOP_PATH.exists() or stale or LEGACY_DESKTOP.exists() \
+            or "--install-desktop" in argv:
+        install_desktop_entry(icon)
+        return True
+    return False
+
+
 def main():
     app = QApplication(sys.argv)
     argv = sys.argv[1:]
@@ -235,12 +263,10 @@ def main():
 
     icon = ensure_icon()
     app.setWindowIcon(QIcon(icon))
-    stale = DESKTOP_PATH.exists() and 'SingleMainWindow' not in DESKTOP_PATH.read_text()
-    if not DESKTOP_PATH.exists() or stale or LEGACY_DESKTOP.exists() \
-            or "--install-desktop" in sys.argv:
-        install_desktop_entry(icon)
+    refresh_desktop_entry(icon, sys.argv)
     if "--install-desktop" in sys.argv:
-        print(f"Installed {DESKTOP_PATH}")
+        if has('desktop_entry'):
+            print(f"Installed {DESKTOP_PATH}")
         return
 
     win = MainWindow()

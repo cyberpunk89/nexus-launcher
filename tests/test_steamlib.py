@@ -127,6 +127,96 @@ class SteamScan(unittest.TestCase):
         self.assertEqual(steamlib.library_folders(self.root), [self.root, self.lib2])
 
 
+# libraryfolders.vdf as Steam writes it on Windows: tabs, backslashes escaped.
+WIN_LIBRARYFOLDERS = r'''"libraryfolders"
+{
+	"0"
+	{
+		"path"		"C:\\Program Files (x86)\\Steam"
+		"label"		""
+		"contentid"		"1111111111111111111"
+		"apps"
+		{
+			"228980"		"1000"
+		}
+	}
+	"1"
+	{
+		"path"		"D:\\SteamLibrary"
+		"label"		""
+		"apps"
+		{
+			"400"		"7200000000"
+		}
+	}
+}
+'''
+
+
+@unittest.skipIf(vdf is None, "python-vdf not installed")
+class SteamScanWindowsShaped(unittest.TestCase):
+    """A Windows Steam layout (synthetic ids and paths): the drive-letter
+    paths in libraryfolders.vdf map onto temp dirs, the rest of the files
+    are the same as on Linux."""
+
+    def setUp(self):
+        from unittest import mock
+        self.tmp = tempfile.TemporaryDirectory()
+        p = mock.patch.object(steamlib, '_play_cache',
+                              lambda: Path(self.tmp.name) / 'playstats.json')
+        p.start()
+        self.addCleanup(p.stop)
+        root = self.root = Path(self.tmp.name) / 'Program Files (x86)' / 'Steam'
+        lib = self.lib = Path(self.tmp.name) / 'D' / 'SteamLibrary'
+        for d in (root / 'steamapps', lib / 'steamapps' / 'common' / 'Synthetic Game'):
+            d.mkdir(parents=True)
+        drives = {'C:\\Program Files (x86)\\Steam': root, 'D:\\SteamLibrary': lib}
+        p = mock.patch.object(steamlib, 'Path', lambda s: drives.get(s) or Path(s))
+        p.start()
+        self.addCleanup(p.stop)
+        (root / 'steamapps' / 'libraryfolders.vdf').write_text(WIN_LIBRARYFOLDERS)
+        (root / 'steamapps' / 'appmanifest_228980.acf').write_text(
+            acf(228980, 'Steamworks Common Redistributables'))
+        (lib / 'steamapps' / 'appmanifest_400.acf').write_text(
+            acf(400, 'Synthetic Game', size=7_200_000_000))
+        cfg = root / 'userdata' / '12345' / 'config'
+        cfg.mkdir(parents=True)
+        (cfg / 'localconfig.vdf').write_text(vdf.dumps({'UserLocalConfigStore': {'Software': {
+            'valve': {'Steam': {'Apps': {'400': {'LastPlayed': '1700000000',
+                                                 'Playtime': '42'}}}}}}}, pretty=True))
+        art = root / 'appcache' / 'librarycache'
+        (art / '400' / 'f00d').mkdir(parents=True)
+        (art / '400' / 'f00d' / 'library_600x900.jpg').write_bytes(b'x')
+        (art / '400_logo.png').write_bytes(b'x')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_escaped_paths_unescape(self):
+        data = steamlib._load_vdf(self.root / 'steamapps' / 'libraryfolders.vdf')
+        self.assertEqual(data['libraryfolders']['1']['path'], 'D:\\SteamLibrary')
+        self.assertEqual(data['libraryfolders']['0']['path'],
+                         'C:\\Program Files (x86)\\Steam')
+
+    def test_library_folders(self):
+        self.assertEqual(steamlib.library_folders(self.root), [self.root, self.lib])
+
+    def test_scan(self):
+        games = steamlib.scan(self.root)
+        self.assertEqual([g['appid'] for g in games], [400])   # redistributables dropped
+        g = games[0]
+        self.assertEqual(g['display_name'], 'Synthetic Game')
+        self.assertEqual(g['library'], str(self.lib))
+        self.assertEqual(g['install_dir'], str(self.lib / 'steamapps' / 'common' / 'Synthetic Game'))
+        self.assertEqual(g['disk_bytes'], 7_200_000_000)
+        self.assertEqual(g['playtime_minutes'], 42)
+        self.assertTrue(g['last_played'].startswith('2023-11-1'))
+        self.assertTrue(g['cover'].endswith('library_600x900.jpg'))
+        self.assertTrue(g['logo'].endswith('400_logo.png'))
+        self.assertEqual(g['install_url'], 'steam://install/400')
+        self.assertEqual(steamlib.manifest_appids(self.root), {228980, 400})
+
+
 class HeroicStore(unittest.TestCase):
     def test_installed_store_games(self):
         with tempfile.TemporaryDirectory() as d:

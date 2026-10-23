@@ -17,6 +17,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from tests.oskind import linux_only  # noqa: E402
 from tests.patching import patch_cli, patch_gui  # noqa: E402
 from nexus import cli, emuach, safety, torrent  # noqa: E402
 
@@ -184,12 +185,15 @@ class FakeTransmission(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        raw = self.rfile.read(int(self.headers['Content-Length']))
+        # (read before any answer, as Transmission does: Windows resets a
+        # connection closed with unread data, and the client sees WinError 10053)
         if self.headers.get('X-Transmission-Session-Id') != 'sid':
             self.send_response(409)
             self.send_header('X-Transmission-Session-Id', 'sid')
             self.end_headers()
             return
-        req = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        req = json.loads(raw)
         args = req['arguments']
         if req['method'] == 'torrent-add':
             h = torrent.infohash(args['filename'])
@@ -236,6 +240,24 @@ class Torrents(unittest.TestCase):
                          '/dl/Game [FitGirl Repack]')
         for name in ('..', '.', '../home', '/etc', 'a/b', ''):
             self.assertIsNone(torrent._content_path('/dl', name), name)
+        # A Windows client's folder stays Windows-shaped, wherever Nexus runs.
+        self.assertEqual(torrent._content_path('D:\\Downloads', 'Game'), 'D:\\Downloads\\Game')
+        for name in ('a\\b', 'C:x', '..'):
+            self.assertIsNone(torrent._content_path('D:\\Downloads', name), name)
+
+    def test_installed_clients_from_their_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            tr = Path(d, 'settings.json')
+            tr.write_text('{"rpc-enabled": false, "rpc-port": 9092}')
+            qb = Path(d, 'qBittorrent.ini')
+            qb.write_text('[Preferences]\nWebUI\\Enabled=true\nWebUI\\Port=8181\n')
+            with mock.patch.object(torrent.platform, 'torrent_client_settings',
+                                   return_value=[('transmission', tr), ('qbittorrent', qb),
+                                                 ('transmission', Path(d, 'missing.json'))]):
+                got = torrent.installed_clients()
+        self.assertEqual(got, [
+            {'client': 'transmission', 'remote': False, 'url': 'http://127.0.0.1:9092'},
+            {'client': 'qbittorrent', 'remote': True, 'url': 'http://127.0.0.1:8181'}])
 
     def test_only_loopback(self):
         with self.assertRaises(torrent.TorrentError):
@@ -244,8 +266,8 @@ class Torrents(unittest.TestCase):
     def test_add_follow_and_finish(self):
         srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)      # cleanups run last-first: stop serving, then close
         self.addCleanup(srv.shutdown)
-        self.addCleanup(srv.server_close)
         s = {'client': 'transmission', 'url': f'http://127.0.0.1:{srv.server_port}',
              'username': '', 'password': '', 'download_dir': '/games/Install',
              'seed_ratio': None}
@@ -261,6 +283,7 @@ class Torrents(unittest.TestCase):
             with self.assertRaises(torrent.TorrentError):
                 torrent.add('not a link', s=s)
 
+    @linux_only
     def test_windows_only_env_never_reaches_wine(self):
         from nexus import cli
         with mock.patch.dict(os.environ, {'NoDefaultCurrentDirectoryInExePath': '1',
@@ -355,8 +378,8 @@ class Torrents(unittest.TestCase):
         FakeTransmission.removed = []
         srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)      # cleanups run last-first: stop serving, then close
         self.addCleanup(srv.shutdown)
-        self.addCleanup(srv.server_close)
         s = {'client': 'transmission', 'url': f'http://127.0.0.1:{srv.server_port}',
              'username': '', 'password': '', 'download_dir': None, 'seed_ratio': None}
         with tempfile.TemporaryDirectory() as d, \

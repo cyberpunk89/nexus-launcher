@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import net  # noqa: E402
+from tests.oskind import why_not_private  # noqa: E402
 
 
 class Token(unittest.TestCase):
@@ -153,10 +154,12 @@ class Helpers(unittest.TestCase):
             net.write_atomic(p, '{"a": 1}')
             self.assertEqual(p.read_text(), '{"a": 1}')
             net.write_atomic(p, b'xyz', mode=0o600)
-            self.assertEqual((p.read_bytes(), p.stat().st_mode & 0o777), (b'xyz', 0o600))
+            self.assertEqual(p.read_bytes(), b'xyz')
+            self.assertEqual(why_not_private(p), '')
             os.chmod(p, 0o640)
             net.write_atomic(p, 'k', keep_mode=True, fsync=True)
-            self.assertEqual(p.stat().st_mode & 0o777, 0o640)
+            if sys.platform != 'win32':         # keep_mode: a mode Windows doesn't have
+                self.assertEqual(p.stat().st_mode & 0o777, 0o640)
             self.assertEqual(sorted(os.listdir(p.parent)), ['f.json'])     # no temp left
             with mock.patch('os.replace', side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):

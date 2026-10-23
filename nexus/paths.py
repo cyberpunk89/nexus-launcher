@@ -7,12 +7,15 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import platform
+
 HOME = Path.home()
 APP_ID = "nexus"                                   # Wayland app-id / desktop file
+REPO = Path(__file__).resolve().parent.parent      # the source folder
 
-DATA_DIR = HOME / ".local/share/nexus"
-CONFIG_DIR = HOME / ".config/nexus"
-CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "nexus"
+DATA_DIR = platform.data_dir(HOME)
+CONFIG_DIR = platform.config_dir(HOME)
+CACHE_DIR = platform.cache_dir(HOME)
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 NEWS_CONFIG = CONFIG_DIR / "news.toml"
 GAMEDB_CACHE = CACHE_DIR / "gamedb"                # Game-db summary (0600, personal)
@@ -25,18 +28,19 @@ INTEGRITY_DIR = DATA_DIR / "integrity"
 ORPHAN_HOLDING_DIR = DATA_DIR / "orphaned-compatdata"
 REGISTRY_PATH = DATA_DIR / "games.json"
 
-APPLICATIONS_DIR = HOME / ".local/share/applications"
+APPLICATIONS_DIR = platform.app_menu_dir(HOME)
 
 
 def find_steam_root(home: Path = HOME) -> Path:
-    """Where Steam keeps its data: the usual ~/.local/share/Steam, Debian and
-    Ubuntu's packaged Steam (~/.steam/debian-installation), or Flatpak Steam.
-    The first that exists; the usual one when none does."""
-    candidates = (home / ".local/share/Steam",
-                  home / ".steam/debian-installation",
-                  home / ".var/app/com.valvesoftware.Steam/.local/share/Steam")
-    return next((c for c in candidates if (c / "steamapps").is_dir()),
-                next((c for c in candidates if c.is_dir()), candidates[0]))
+    """Where Steam keeps its data (see platform.steam_root)."""
+    return platform.steam_root(home)
+
+
+def cli_command(same_python: bool = False) -> list[str]:
+    """The argv that runs nexus-cli as a child process (see
+    platform.cli_command). same_python: under this interpreter even on
+    Linux, where the script's shebang would otherwise pick one."""
+    return platform.cli_command(REPO, same_python)
 
 
 STEAM_ROOT = find_steam_root()
