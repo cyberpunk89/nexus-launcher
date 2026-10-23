@@ -11,7 +11,7 @@
 This build isn't code-signed, so Windows SmartScreen warns you the first time you run it.
 Click **More info**, then **Run anyway**. You'll only see this once.
 
-Antivirus programs often flag files inside FitGirl repacks too. The Windows guide explains
+Antivirus programs sometimes flag files inside game installers too. The Windows guide explains
 why, and what Nexus does about it: [docs/WINDOWS.md]($guide).
 
 ### Checksums (SHA-256)
