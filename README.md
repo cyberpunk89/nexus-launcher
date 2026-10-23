@@ -8,6 +8,8 @@ for playing from the couch with a controller.
 It runs on **Linux** (the main platform) and **Windows** (a newer edition, called
 *nexus-launcher* there).
 
+![Nexus Home page on Linux: a Continue playing banner and recently played games](docs/screenshots/home.jpg)
+
 > Nexus is an unofficial hobby project, not affiliated with Valve, Epic, Heroic or any
 > store. It never downloads games by itself. Only install software you are allowed to use.
 > MIT licensed, see [LICENSE](LICENSE).
@@ -24,6 +26,8 @@ It runs on **Linux** (the main platform) and **Windows** (a newer edition, calle
 | Deals, upcoming releases and backlog picks (needs a [Game-db](#game-db) server) | ✓ | ✓ |
 | Background alerts, tray icon, Discord status, phone notifications | ✓ | ✓ |
 | Proton manager, per-game tuning (gamescope, MangoHud, …), Sunshine streaming | ✓ | — |
+
+![The Library page: games grouped by source, with filters and view options](docs/screenshots/library.jpg)
 
 ## Install
 
