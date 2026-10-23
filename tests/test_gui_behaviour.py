@@ -387,18 +387,60 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(w.current(), w.LIBRARY)
         w.go(w.HOME)
 
-    def test_settings_edits_survive_leaving(self):
+    def test_settings_save_as_you_go(self):
+        from nexus.gui.common import CONFIG_PATH
+        old = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else None
+        self.addCleanup(lambda: CONFIG_PATH.write_text(old) if old is not None
+                        else CONFIG_PATH.unlink(missing_ok=True))
         w = self.win
+        st = w.settings
         w.go(w.SETTINGS)
-        w.settings.scan_more.setText("~/Elsewhere")
-        self.assertTrue(w.settings.dirty)
-        w.go(w.HOME)
-        self.assertIn("aren't saved", self.toasts[-1][0])
+        st.scan_more.setText("~/Elsewhere")
+        self.assertTrue(st.dirty)                         # typed, not left yet
+        w.go(w.HOME)                                      # leaving saves it
+        self.assertFalse(st.dirty)
+        self.assertEqual(nx.load_config()['scan_dirs'], ['~/Elsewhere'])
         w.go(w.SETTINGS)
-        self.assertEqual(w.settings.scan_more.text(), "~/Elsewhere")
-        w.settings.load()                                 # Discard
-        self.assertFalse(w.settings.dirty)
+        st.tor_ratio.setText("lots")                      # can't be saved
+        st.tor_ratio.editingFinished.emit()
+        self.assertIn("A number", st.row_of[st.tor_ratio].error.text())
+        st.steam.setChecked(False)                        # the rest still saves
+        self.assertFalse(nx.load_config()['steam'])
         w.go(w.HOME)
+        self.assertIn("Not saved", self.toasts[-1][0])
+        self.assertIsNone(nx.load_config().get('torrent_seed_ratio'))
+        w.go(w.SETTINGS)
+        self.assertEqual(st.tor_ratio.text(), "lots")     # still there to fix
+        st.load()                                         # Discard
+        self.assertFalse(st.dirty)
+        self.assertEqual(st.tor_ratio.text(), "")
+        w.go(w.HOME)
+
+    def test_settings_search_and_sections(self):
+        w = self.win
+        st = w.settings
+        w.go(w.SETTINGS)
+        st.search.setText("seeding")
+        shown = [k for k, sec in st.sections.items() if sec.isVisibleTo(st)]
+        self.assertEqual(shown, ['torrent'])
+        self.assertTrue(st.nav_btns['torrent'].isVisibleTo(st))
+        self.assertFalse(st.nav_btns['appearance'].isVisibleTo(st))
+        st.search.setText("zzz no such setting")
+        self.assertTrue(st.no_match.isVisibleTo(st))
+        st.search.clear()
+        self.assertTrue(all(sec.isVisibleTo(st) for sec in st.sections.values()))
+        w._open_settings('alerts')                        # Deals / Downloads link in
+        self.assertEqual(st.current_section(), 'alerts')
+        w.go(w.HOME)
+
+    def test_torrent_fields_only_with_a_client(self):
+        st = self.win.settings
+        st.tor_client.setCurrentIndex(st.tor_client.findData(None))
+        st._sync_torrent_rows()
+        self.assertFalse(any(r.available for r in st.tor_rows))
+        st.tor_client.setCurrentIndex(st.tor_client.findData('transmission'))
+        st._sync_torrent_rows()
+        self.assertTrue(all(r.available for r in st.tor_rows))
 
     def test_controls_reach_theatre_and_hints(self):
         w = self.win

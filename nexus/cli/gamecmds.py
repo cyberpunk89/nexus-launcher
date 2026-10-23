@@ -35,6 +35,8 @@ def cmd_prefix_tool(slug: str, tool: str, config: dict) -> None:
     if runner != 'wine' and not game_dir:
         runner = 'wine'
     env = {**wine_env(), 'WINEPREFIX': str(wine_prefix), 'WINEDEBUG': '-all'}
+    if tool == 'winetricks':
+        auto_snapshot(slug, 'winetricks', resolve_install_base(None))
     if tool == 'kill':
         bins = _proton_wine_bins(proton) if proton and runner != 'wine' else {}
         server = bins.get('WINESERVER') or shutil.which('wineserver') or 'wineserver'
@@ -520,3 +522,5 @@ from .runner import (_proton_wine_bins, _umu_env, resolve_game_proton, select_ru
     write_launch_script)  # noqa: E402
 from .sgdb import _art_file, fetch_artwork  # noqa: E402
 from .steam import _copy_grid_art, add_steam_shortcut_native, find_steam_userdata  # noqa: E402
+from .snapshots import auto_snapshot  # noqa: E402
+from .config import resolve_install_base  # noqa: E402

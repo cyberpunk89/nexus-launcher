@@ -3,6 +3,7 @@ settings and quitting. Everything else it does lives in its mixins
 (win_library, win_nav, win_controller, win_play, win_downloads, win_actions)."""
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -11,9 +12,9 @@ from PyQt6.QtCore import QProcess, Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
-from .common import alive, COLLECTION_NAMES, HOME
+from .common import alive, CLI_BIN, COLLECTION_NAMES, CONFIG_PATH, HOME
 from .fmt import fmt_size
-from .theme import apply_appearance, build_stylesheet, G, SP
+from .theme import apply_appearance, build_stylesheet, FS, G, scaled, SP
 from .topbar import _TabHandle, TopBar
 from .win_library import LibraryMixin
 from .win_nav import NavigationMixin
@@ -34,6 +35,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         'artwork')
 
     DOWNLOADS = 'downloads'
+    SETUP = 'setup'
 
     TABS = (HOME, LIBRARY, DEALS, NEWS)          # content tabs; the rest are icons
 
@@ -55,6 +57,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._loaded = False
         self._playing: set[str] = set()
         self._launching: dict[str, float] = {}       # slug -> monotonic start
+        self._trying: dict[str, str] = {}            # slug -> Proton tried for one run
         self._busy: frozenset[str] = frozenset()     # slugs a job is changing
         self._lib_inflight = self._lib_again = self._steam_resumed = False
         self._handoff_query = self._filter_dirty = False
@@ -179,6 +182,11 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             sh.closed.connect(self._update_hints)
         # Y on the desktop without Steam's on-screen keyboard: Theatre's
         # D-pad keyboard, over the desk.
+        self.palette = CommandPalette(
+            self.desk, lambda: game_entries(self._games) + page_entries(self),
+            lambda g: action_entries(self, g))
+        self.palette.recent = list(self.prefs.palette_recent)
+        self.palette.picked.connect(self._palette_picked)
         self.desk_search = TheatreSearch(self.desk)
         self.desk_search.picked.connect(self._desk_search_picked)
         self.desk_search.closed.connect(self._desk_search_closed)
@@ -244,6 +252,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.settings.controls_changed.connect(self._apply_controls)
         self.settings.request.connect(self._on_request)
         self.settings.background_changed.connect(self._background_changed)
+        self.settings.import_wanted.connect(self._import_settings)
         self.settings.appearance.load(self.prefs.appearance)
         # Re-styling ~2000 widgets takes about a second: coalesce quick clicks
         # through the swatches into one apply.
@@ -285,7 +294,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage.toast.connect(self.toast)
         self.dealspage.counts.connect(self._deals_count)
         self.dealspage.loaded.connect(lambda: self.dash_update('deals', 'upcoming'))
-        self.dealspage.open_settings.connect(self._open_settings)
+        self.dealspage.open_settings.connect(lambda: self._open_settings('gamedb'))
         self.dealspage.repack.connect(self._deal_repack)
         self._add_page(self.DEALS, self.dealspage)
         self.downloads = DownloadsPage()
@@ -293,14 +302,21 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.downloads.control.connect(self._torrent_control)
         self.downloads.add.connect(self._add_torrent)
         self.downloads.row_action.connect(self._download_action)
-        self.downloads.open_settings.connect(self._open_settings)
+        self.downloads.open_settings.connect(lambda: self._open_settings('torrent'))
         self.downloads.use_client.connect(self._use_torrent_client)
         self._add_page(self.DOWNLOADS, self.downloads)
         self.artpage = ArtPickerPage()
         self.artpage.request.connect(self._on_request)
         self.artpage.back.connect(self._art_back)
-        self.artpage.open_settings.connect(self._open_settings)
+        self.artpage.open_settings.connect(lambda: self._open_settings('artwork'))
         self._add_page(self.ARTWORK, self.artpage)
+        self.setup = SetupPage()
+        self.setup.request.connect(self._on_request)
+        self.setup.preview.connect(lambda look: self.set_appearance(
+            {**self.prefs.appearance, **look}))
+        self.setup.finished.connect(self._setup_finished)
+        self._add_page(self.SETUP, self.setup)
+        self.settings.setup_wanted.connect(self.open_setup)
         self._art_from = self.HOME
         self._deals_warmed = False
 
@@ -329,7 +345,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def _start(self):
         """First page, first library load, and the background timers. Runs last:
         everything the library handler touches exists by now."""
-        self.go(self.HOME)
+        if self._first_run:
+            self.open_setup()
+        else:
+            self.go(self.HOME)
         self.reload_library()
         QTimer.singleShot(0, lambda: alive(self) and (t := self.default_focus()) and t.setFocus())
         QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
@@ -509,6 +528,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.prefs.appearance = apply_appearance(ap)
         self.prefs.save()
         app = QApplication.instance()
+        f = app.font()
+        f.setPixelSize(scaled(FS['sm']))           # Size: the type QSS doesn't set
+        app.setFont(f)
         app.setStyleSheet(build_stylesheet())
         self.theatre.setStyleSheet(build_stylesheet(THEATRE_SCALE))
         if self._theatre:
@@ -535,8 +557,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.nav[self.DEALS].set_badge(n or '', 'accent')
         self.dash_update('deals', 'upcoming')
 
-    def _open_settings(self):
+    def _open_settings(self, section: str | None = None):
         self.go(self.SETTINGS)
+        if section:
+            self.settings.show_section(section)
 
     def _settings_saved(self, proton_changed):
         self.config = load_config()
@@ -550,12 +574,87 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                 self.dealspage.refresh()
         self.dash_update('news', 'deals', 'upcoming')
         self._poll_torrents()                  # the torrent client may have changed
-        self.toast("Settings saved.", 'success', None, 3000)
         if proton_changed and self._games:
             self.toast("Point every game at the new Proton now?", 'info',
                        ("Apply to all", lambda: self.run(
                            ['--apply-launch', 'all'], "Re-applying settings to every game",
                            steam=True)), 15000)
+
+    @property
+    def _first_run(self) -> bool:
+        """Nexus has never run here: no library.json and no config.toml, and
+        setup wasn't done or skipped. NEXUS_NO_SETUP=1 skips it (tests)."""
+        if self.prefs.setup_done or os.environ.get('NEXUS_NO_SETUP'):
+            return False
+        return not self.prefs.PATH.exists() and not CONFIG_PATH.exists()
+
+    def open_setup(self):
+        self.setup.open(load_config(), self.prefs.appearance)
+        self.go(self.SETUP)
+
+    def _setup_finished(self, updates: dict, opts: dict):
+        if updates:
+            try:
+                save_config(updates)
+            except (ConfigError, OSError) as e:
+                self.toast(f"Couldn't save the setup — {e}", 'error', None, 0)
+                return
+        self.prefs.setup_done = True
+        self.prefs.save()
+        self.config = load_config()
+        self.settings.load()
+        self.set_appearance({**self.prefs.appearance, **opts['appearance']})
+        if opts.get('tray'):
+            self._apply_controls({'close_to_tray': True})
+        self.go(self.HOME)
+        self.reload_library()
+        if opts.get('agent'):
+            self._background_changed('agent', True)          # asks first
+        else:
+            self.toast("All set. Settings has everything, and Ctrl+K finds anything.",
+                       'success', None, 6000)
+
+    def _import_settings(self, path: str):
+        """Settings → Back up & move → Import…: what it would change (a dry
+        run), a question, then the import and a restart to load it all."""
+        def planned(plan, err):
+            if not alive(self):
+                return
+            if not plan or not plan.get('ok'):
+                msg = (plan or {}).get('error') or err or "it couldn't be read"
+                self.toast(f"Not imported — {msg}", 'error', None, 0)
+                return
+            parts = [f"Replaces {len(plan['replace'])} settings file(s) (the old ones are kept "
+                     "as .bak)."]
+            if plan['keep_secrets']:
+                parts.append("Keeps this PC's keys and tokens.")
+            parts.append(f"Games: {len(plan['games_added'])} added, "
+                         f"{len(plan['games_here'])} already here"
+                         + (f", {len(plan['games_missing'])} not on this PC ("
+                            + ", ".join(g['name'] for g in plan['games_missing'][:3])
+                            + ("…" if len(plan['games_missing']) > 3 else "")
+                            + ") — reinstall those, or put their folders back" if
+                            plan['games_missing'] else "") + ".")
+            parts.append("Nexus restarts afterwards to load everything.")
+            self.confirm("Import these settings?", " ".join(parts), "Import and restart",
+                         lambda: cli_json(['--import-settings', path, '--json'], imported,
+                                          60000), danger=False)
+
+        def imported(r, err):
+            if not alive(self):
+                return
+            if not r or not r.get('ok'):
+                self.toast(f"Not imported — {(r or {}).get('error') or err}", 'error', None, 0)
+                return
+            self.restart()
+        cli_json(['--import-settings', path, '--dry-run', '--json'], planned, 60000)
+
+    def restart(self):
+        """Start Nexus again once this one is gone (the new one would hand its
+        arguments to us and exit while we still listen), then quit."""
+        exe = str(Path(CLI_BIN).with_name('nexus'))
+        QProcess.startDetached('sh', ['-c', 'sleep 2; exec "$0"', exe])
+        self.quit_after_jobs()
 
     def _background_changed(self, what: str, on: bool):
         """Settings → Background. The agent is a systemd user service: ask
@@ -673,7 +772,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 from .actions import ActionSheet, TrailerOverlay  # noqa: E402
 from .activity import ActivityPage, ActivityStrip  # noqa: E402
 from .artpicker import ArtPickerPage  # noqa: E402
-from .config import load_config, steam_running  # noqa: E402
+from .config import ConfigError, load_config, save_config, steam_running  # noqa: E402
 from .dashboard import Dashboard, system_badge  # noqa: E402
 from .deals import DealsPage  # noqa: E402
 from .details import DetailsPanel  # noqa: E402
@@ -682,6 +781,8 @@ from .gameinfo import is_installed  # noqa: E402
 from .input import (ControllerInput, FocusRing, HintBar, install_input_mode, SpatialNav)  # noqa: E402
 from .install import InstallPage, RepackWatcher  # noqa: E402
 from .jobs import cli_json, JobManager  # noqa: E402
+from .setup import SetupPage  # noqa: E402
+from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402
 from .tray import Tray, tray_available  # noqa: E402
 from .library import HomeView  # noqa: E402
 from .newspage import NewsPage  # noqa: E402

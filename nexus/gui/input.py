@@ -619,7 +619,8 @@ class FocusRing(QWidget):
         if m:
             return float(m.group(1))
         name = w.objectName()
-        if name in ('Chip', 'SegItem', 'TopIcon', 'ShelfArrow', 'GlassIcon', 'PlayRound'):
+        if name in ('Chip', 'SegItem', 'TopIcon', 'ShelfArrow', 'GlassIcon', 'PlayRound',
+                    'Switch'):
             return r.height() / 2
         if isinstance(w, (GameTile, ArtThumb)):
             return float(R['tile'])

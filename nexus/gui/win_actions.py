@@ -7,9 +7,11 @@ from pathlib import Path
 
 from PyQt6.QtCore import QProcess, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QFileDialog
 
-from .common import CLI_BIN, HOME, MAX_TITLE
+from .common import alive, CLI_BIN, HOME, MAX_TITLE
+from .fmt import fmt_bytes
+from .theme import G
 
 
 class ActionsMixin:
@@ -43,6 +45,9 @@ class ActionsMixin:
         if args and args[0] == '__action__':
             self.on_game_action(args[1], self.details.game)
             return
+        if args and args[0] == '__batch__':
+            self._batch_action(args[1], list(self.details.games))
+            return
         slugs = {g['slug'] for g in self._games}
         slug = next((a for a in args[1:] if a in slugs), None)
         self.run(args, title, slug, kind, steam)
@@ -60,6 +65,9 @@ class ActionsMixin:
         if action in NOT_WHILE_BUSY and self.jobs.busy(slug):
             self.toast(f"{name} is busy — wait for its current job to finish.", 'warn',
                        None, 4000)
+            return
+        if action.startswith('rollback:') and (live.get('playing') or live.get('launching')):
+            self.toast(f"{name} is running — close it first.", 'warn', None, 4000)
             return
         if action == 'restore-saves' and not getattr(self, '_confirmed', False):
             self.confirm(f"Restore {name}'s saves?",
@@ -180,6 +188,28 @@ class ActionsMixin:
         elif action == 'uninstall':
             self._reveal_game(slug)
             self.details.ask_uninstall()
+        elif action == 'snapshots':
+            self._reveal_game(slug)
+            self.details.open_section('snapshots')
+        elif action == 'snapshot-now':
+            self.run(['--snapshot', slug], f"Taking a snapshot of {name}", slug)
+        elif action == 'snapshots-enable':
+            self.run(['--snapshots-enable', slug], f"Enabling snapshots for {name}", slug)
+        elif action.startswith('rollback:'):
+            snap = action.split(':', 1)[1]
+            self.confirm(f"Roll {name} back?",
+                         "Puts the game's files and its prefix — settings and saves included "
+                         "— back the way they were then. What's there now is kept as a "
+                         "snapshot, so this can be undone.", "Roll back",
+                         lambda: self.run(['--rollback', slug, snap], f"Rolling {name} back",
+                                          slug))
+        elif action.startswith('snapshot-delete:'):
+            snap = action.split(':', 1)[1]
+            self.confirm("Delete this snapshot?", "It can't be rolled back to afterwards.",
+                         "Delete", lambda: self.run(['--delete-snapshot', slug, snap],
+                                                    f"Deleting a snapshot of {name}", slug))
+        elif action == 'move':
+            self._choose_move_target(game)
         else:
             spec = {
                 'add-steam': (['--steam', slug], f"Adding {name} to Steam", True),
@@ -194,6 +224,167 @@ class ActionsMixin:
             }.get(action)
             if spec:
                 self.run(spec[0], spec[1], slug, 'task', spec[2])
+
+    # Batch actions (several games selected): key -> the single-game action
+    # whose busy/playing gate applies, and whether it's for repacks only.
+    BATCH = {'apply': ('settings', True), 'steam': ('add-steam', True),
+             'heroic': ('add-heroic', True), 'art': ('refetch-art', True),
+             'proton': ('pg-default', True), 'pg-default': ('pg-default', True),
+             'collection': ('', False), 'move': ('move', True),
+             'snapshot': ('snapshot-now', True), 'uninstall': ('uninstall', True)}
+
+    def batch_applies(self, key: str, games: list[dict]) -> bool:
+        """Whether a batch action is offered for this selection: every game
+        must be one it can act on."""
+        _gate, repacks = self.BATCH[key]
+        if not games:
+            return False
+        if repacks and any(g.get('source', 'nexus') != 'nexus' for g in games):
+            return False
+        if key in ('move', 'snapshot'):
+            return all(g.get('owned_dir') for g in games)
+        return True
+
+    def _batch_action(self, key: str, games: list[dict]):
+        """One action for several games: the same gates as one at a time
+        (busy, running), and one toast saying what was done or skipped."""
+        if key not in self.BATCH or not self.batch_applies(key, games):
+            return
+        gate = self.BATCH[key][0]
+        ok, skipped = [], []
+        for g in games:
+            live = self.game(g['slug']) or g
+            if gate in NOT_WHILE_PLAYING and (live.get('playing') or live.get('launching')):
+                skipped.append((live, "running"))
+            elif gate in NOT_WHILE_BUSY and self.jobs.busy(live['slug']):
+                skipped.append((live, "busy"))
+            else:
+                ok.append(live)
+
+        def summary(verb):
+            parts = [f"{verb} {len(ok)} game{'s' if len(ok) != 1 else ''}"] if ok else []
+            for why in ("running", "busy"):
+                n = sum(1 for _g, w in skipped if w == why)
+                if n:
+                    parts.append(f"{n} skipped ({why})")
+            self.toast(" · ".join(parts) + ".", 'success' if ok else 'warn', None, 5000)
+
+        def each(args_of, title_of, steam_of=lambda g: False, verb="Queued"):
+            for g in ok:
+                self.run(args_of(g), title_of(g), g['slug'], 'task', steam_of(g))
+            summary(verb)
+        nm = lambda g: g.get('display_name', g['slug'])  # noqa: E731
+        if not ok:
+            summary("")
+            return
+        if key == 'apply':
+            each(lambda g: ['--apply-launch', g['slug']], lambda g: f"Re-applying {nm(g)}",
+                 lambda g: bool(g.get('steam')))
+        elif key == 'steam':
+            each(lambda g: ['--steam', g['slug']], lambda g: f"Adding {nm(g)} to Steam",
+                 lambda g: True)
+        elif key == 'heroic':
+            each(lambda g: ['--heroic', g['slug']], lambda g: f"Adding {nm(g)} to Heroic")
+        elif key == 'art':
+            each(lambda g: ['--refetch-art', g['slug']], lambda g: f"Fetching art for {nm(g)}")
+        elif key == 'pg-default':
+            each(lambda g: ['--protongen-default', g['slug']],
+                 lambda g: f"Applying protongen defaults to {nm(g)}",
+                 lambda g: bool(g.get('steam')))
+        elif key == 'snapshot':
+            each(lambda g: ['--snapshot', g['slug']], lambda g: f"Taking a snapshot of {nm(g)}")
+        elif key == 'proton':
+            def got(data, _err):
+                names = [p['name'] for p in (data or {}).get('protons') or []]
+                if not names or not alive(self):
+                    return
+                self.sheet.choose(f"Play {len(ok)} games with…", [
+                    (p, G['proton'], lambda p=p: each(
+                        lambda g: ['--proton', g['slug'], p],
+                        lambda g: f"Switching {nm(g)} to {p}", lambda g: bool(g.get('steam'))))
+                    for p in names])
+            cli_json(['--list-protons', '--json'], got, 20000)
+        elif key == 'collection':
+            def add_to(cname):
+                for g in ok:
+                    if g['slug'] not in self.prefs.collections.get(cname, []):
+                        self.prefs.toggle_member(cname, g['slug'])
+                self._collections_changed()
+                self.toast(f"Added {len(ok)} games to “{cname}”.", 'success', None, 3000)
+
+            def new():
+                self.ask_collection_name("New collection", "", lambda n: (
+                    (made := self.prefs.add_collection(n)) and add_to(made)))
+            self.sheet.choose(f"Add {len(ok)} games to…", [
+                (n, G['collection'], lambda n=n: add_to(n)) for n in self.prefs.collections]
+                + [("New collection…", G['plus'], new)])
+        elif key == 'move':
+            self._choose_move_target(ok[0], also=ok[1:])
+        elif key == 'uninstall':
+            names = ", ".join(nm(g) for g in ok[:4]) + ("…" if len(ok) > 4 else "")
+            self.confirm(f"Uninstall {len(ok)} games?",
+                         f"{names}. Their folders and prefixes are deleted; save games found "
+                         "in them are backed up first.",
+                         f"Uninstall {len(ok)} games",
+                         lambda: each(lambda g: ['--uninstall', g['slug'], '--yes',
+                                                 '--save-backup'],
+                                      lambda g: f"Uninstalling {nm(g)}",
+                                      lambda g: bool(g.get('steam')), verb="Uninstalling"))
+        self._update_hints()
+
+    def _choose_move_target(self, game, also: list | None = None):
+        """Move to…: the folders games can live in (free space shown against
+        the game's size), or any folder."""
+        games = [game, *(also or [])]
+        slug, name = game['slug'], game.get('display_name', game['slug'])
+        if also:
+            name = f"{len(games)} games"
+        size = sum(g.get('disk_bytes') or 0 for g in games)
+        here = str(Path(game.get('compatdata') or '').parent) if not also else None
+
+        def go(base):
+            self.prefs.move_targets = ([base] + [t for t in self.prefs.move_targets
+                                                 if t != base])[:5]
+            self.prefs.save()
+            for g in games:
+                if str(Path(g.get('compatdata') or '').parent) == base:
+                    continue                            # already there
+                self.run(['--move', g['slug'], base],
+                         f"Moving {g.get('display_name', g['slug'])} to {base}", g['slug'],
+                         'task', bool(g.get('steam')))
+
+        def pick():
+            d = QFileDialog.getExistingDirectory(self, f"Move {name} to…", str(HOME))
+            if d:
+                go(d)
+
+        def got(data, _err):
+            if not alive(self):
+                return
+            rows = list((data or {}).get('targets') or [])
+            known = {r['path'] for r in rows}
+            rows += [{'path': t, 'free': None} for t in self.prefs.move_targets
+                     if t not in known]
+            items = []
+            for r in rows:
+                if r['path'] == here:
+                    continue
+                free = r.get('free')
+                short = free is not None and size and free < size + (2 << 30)
+                text = r['path'] + (f"   ·   {fmt_bytes(free)} free" if free is not None else '')
+                if short:
+                    text += "  ·  not enough space"
+                items.append((text, G['folder'], (lambda p=r['path']: go(p)) if not short
+                              else (lambda: self.toast("Not enough space there.", 'warn',
+                                                       None, 3000))))
+            items.append(("Choose a folder…", G['folder'], pick))
+            sheet = self.theatre_sheet if self._theatre else self.sheet
+            sheet.choose(f"Move {name}" + (f" ({fmt_bytes(size)})" if size else ""), items,
+                         ("Each game goes into <folder>/<its name>." if also else
+                          "The game goes into <folder>/" + slug + ".")
+                         + " The old copy is kept until you remove it in Storage.")
+            self._update_hints()
+        cli_json(['--move-targets', '--json'], got, 20000)
 
     def _confirmed_action(self, action, game):
         self._confirmed = True
@@ -322,5 +513,5 @@ class ActionsMixin:
 # below is inside a method, so the cycle resolves at call time.
 from .actions import NOT_WHILE_BUSY, NOT_WHILE_PLAYING  # noqa: E402
 from .gameinfo import is_installed, play_enabled  # noqa: E402
-from .jobs import cli_cache_clear, Job  # noqa: E402
+from .jobs import cli_cache_clear, cli_json, Job  # noqa: E402
 from .widgets import notify_desktop  # noqa: E402

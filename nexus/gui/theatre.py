@@ -412,7 +412,7 @@ class TheatreDetails(QWidget):
                     Qt.TransformationMode.SmoothTransformation))
             s = self._scaled[1]
             pt.drawPixmap((self.width() - s.width()) // 2, -(s.height() - self.height()) // 3, s)
-        base = QColor(P['bg'])
+        base = QColor(P['scrim'])
         g = QLinearGradient(0.0, 0.0, r.width(), 0.0)
         c = QColor(base); c.setAlphaF(0.92); g.setColorAt(0.0, c)
         c = QColor(base); c.setAlphaF(0.30); g.setColorAt(0.6, c)

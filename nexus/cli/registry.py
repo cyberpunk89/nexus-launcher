@@ -74,14 +74,15 @@ def save_registry(reg: dict) -> None:
 # doesn't wipe data written elsewhere.
 _CARRIED_KEYS = ('disk_bytes', 'disk_bytes_at', 'last_played', 'launch', 'proton',
                  'playtime_seconds', 'repack_fingerprint', 'repack_version',
-                 'repack_source', 'repack_installed_at', 'umu_gameid')
+                 'repack_source', 'repack_installed_at', 'umu_gameid', 'local',
+                 'import_source', 'launch_via')
 
 
 def register_game(*, slug: str, display_name: str, exe, compatdata, wine_prefix,
                   launcher, source: str, install_base, steam_appid,
                   has_desktop: bool, artwork_dir, heroic_app_name=None,
                   proton: str | None = None, repack: dict | None = None,
-                  umu_gameid: str | None = None) -> None:
+                  umu_gameid: str | None = None, extra: dict | None = None) -> None:
     with registry_lock():
         reg = load_registry()
         existing = reg['games'].get(slug, {})
@@ -112,6 +113,8 @@ def register_game(*, slug: str, display_name: str, exe, compatdata, wine_prefix,
             entry['umu_gameid'] = umu_gameid
         if repack:                   # which repack release this is (update detection)
             entry.update({k: v for k, v in repack.items() if v is not None})
+        if extra:                    # e.g. local=True for a game that isn't a repack
+            entry.update(extra)
         reg['games'][slug] = entry
         save_registry(reg)
 

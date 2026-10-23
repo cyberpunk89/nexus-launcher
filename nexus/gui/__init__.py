@@ -33,7 +33,7 @@ from .theme import (
     build_stylesheet, CHIP_H, CORNERS, FONTS, FS, G, GLOW, GLYPH_H, GLYPHS, GRAD,
     ICON_FALLBACK_STACK, ICON_TTF, LOOK, MONO_STACK, normalize_appearance, P, PAL, pill,
     PILL_H, pill_qss, qss_grad, R, R_BASE, resolve_fonts, SANS_STACK, SP, SRC_HUE, THEMES,
-    TILE_LIFT, TILE_W)  # noqa: F401
+    TILE_LIFT, TILE_W, DARK_STATUS, DAWN_STATUS, is_light, SCALES, scaled, ui_scale)  # noqa: F401
 from .fmt import (
     fmt_ago, fmt_bytes, fmt_elapsed, fmt_eta, fmt_hours, fmt_relative, fmt_size)  # noqa: F401
 from .widgets import (
@@ -77,7 +77,7 @@ from .dashboard import (
     SysTile, UpcomingWidget, UpdatesWidget)  # noqa: F401
 from .details import (
     _hero_art, AchievementRow, DetailsPanel, Disclosure, ElideLabel, HeroBanner, PerfPanel,
-    StatChip, StatTile)  # noqa: F401
+    StatChip, StatTile, BATCH_ACTIONS)  # noqa: F401
 from .storage import (
     _SEG_COLORS, SortItem, StorageBar, StoragePage)  # noqa: F401
 from .protonpage import (
@@ -111,10 +111,13 @@ from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noq
 from .win_library import LibraryMixin  # noqa: F401
 from .win_nav import NavigationMixin  # noqa: F401
 from .win_controller import ControllerMixin  # noqa: F401
-from .win_play import PlayMixin  # noqa: F401
+from .win_play import last_exit_code, PlayMixin  # noqa: F401
 from .win_downloads import DownloadsMixin  # noqa: F401
 from .win_actions import ActionsMixin  # noqa: F401
+from .palette import (action_entries, CommandPalette, Entry, fuzzy_score, game_entries,
+    page_entries, rank)  # noqa: F401
 from .tray import recent_games, Tray, tray_available  # noqa: F401
+from .setup import SetupPage, STEPS  # noqa: F401
 from .window import MainWindow  # noqa: F401
 from .app import (
     ensure_icon, forward_to_running, install_desktop_entry, install_excepthook, INSTANCE,

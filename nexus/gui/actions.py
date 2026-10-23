@@ -35,7 +35,8 @@ ACTION_GLYPHS = {'launch': 'play', 'open-folder': 'folder', 'settings': 'setting
                  'pause-toggle': 'timer', 'benchmark': 'system',
                  'rename-local': 'pencil', 'rename-reset': 'reset',
                  'artwork': 'image', 'hide': 'eye_off', 'uninstall': 'trash',
-                 'steam-uninstall': 'trash', 'col-new': 'plus'}
+                 'steam-uninstall': 'trash', 'col-new': 'plus', 'move': 'arrow_right',
+                 'snapshots': 'history'}
 
 
 def action_glyph(a: 'GameAction') -> str:
@@ -61,9 +62,9 @@ COUCH_SKIP = ('open-folder', 'protongen', 'tool:')
 NOT_WHILE_BUSY = ('install-update', 'discard-incomplete', 'add-steam', 'remove-steam',
                   'add-heroic', 'remove-heroic', 'pg-default', 'restore-saves',
                   'check-integrity', 'tool:winecfg', 'tool:regedit', 'tool:winetricks',
-                  'uninstall')
+                  'uninstall', 'move')
 NOT_WHILE_PLAYING = ('install-update', 'restore-saves', 'uninstall', 'steam-verify',
-                     'steam-uninstall', 'tool:winetricks', 'benchmark')
+                     'steam-uninstall', 'tool:winetricks', 'benchmark', 'move')
 
 
 def _gate_actions(game: dict, out: list['GameAction']) -> list['GameAction']:
@@ -105,6 +106,9 @@ def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
                 A('refetch-art', "Re-fetch artwork", 'tools'),
                 A('restore-saves', "Restore save backup", 'tools'),
                 A('check-integrity', "Check file integrity", 'tools'),
+                *([A('snapshots', "Snapshots (undo an update)…", 'tools', desk=True),
+                   A('move', "Move to another drive…", 'tools', desk=True)]
+                  if game.get('owned_dir') else []),
                 A('benchmark', "Benchmark run (MangoHud log)", 'tools', desk=True),
                 A('tool:winecfg', "winecfg — Wine settings", 'tools', sub="Wine tools"),
                 A('tool:regedit', "regedit — registry editor", 'tools', sub="Wine tools"),

@@ -34,6 +34,10 @@ CATEGORIES = {
     'old-logs':       ("Old logs", "Install and launch logs older than 30 days."),
     'old-save-backups': ("Older save backups", "Beyond the newest 3 backups per game."),
     'stale-data':     ("Leftovers of removed games", "Artwork and integrity data."),
+    'game-snapshot':  ("Older game snapshots",
+                       "btrfs snapshots behind the newest one per game (and all of a removed "
+                       "game's). They share space with the game: each frees only what changed "
+                       "since."),
 }
 
 

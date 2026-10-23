@@ -101,6 +101,7 @@ P = {
     'warning_18':    'rgba(246,193,119,0.18)',
     'scrim_badge':   'rgba(0,0,0,0.45)',
     'tile_scrim':    'rgba(25,23,36,0.84)',
+    'scrim':         PAL['base'],
 }
 
 # Gradient pairs (start, end) — used sparingly: primary actions, the active
@@ -121,6 +122,7 @@ P.update({
     'surface_3': '#2c2942',
     'glass':     'rgba(38,35,58,0.72)',
     'glass_hi':  'rgba(57,53,82,0.82)',
+    'bar':       'rgba(38,35,58,0.72)',
 })
 
 # Radius (§2.6) / spacing (§2.4), in px. Semantic names first: every
@@ -132,9 +134,14 @@ R = {'sm': 6, 'control': 10, 'lg': 10, 'xl': 12, 'tile': 12, 'popover': 12,
 R_BASE = dict(R)
 
 # --- Appearance: base themes, accents, and the function that applies them ---
-# Each theme is the dark ladder the UI is built from (base → surface →
-# overlay → overlay_hi) plus its text tones. Status colours (success,
-# danger, warning…) stay Rosé Pine's in every theme.
+# Each theme is the ladder the UI is built from (base → surface → overlay →
+# overlay_hi) plus its text tones. Dark themes keep Rosé Pine's status
+# colours (success, danger, warning…); a light theme ('kind': 'light')
+# brings its own, darker ones, and cards sit lighter than the page.
+DARK_STATUS = {'iris': '#c4a7e7', 'foam': '#9ccfd8', 'love': '#eb6f92', 'gold': '#f6c177',
+               'rose': '#ebbcba', 'pine': '#31748f'}
+DAWN_STATUS = {'iris': '#907aa9', 'foam': '#56949f', 'love': '#b4637a', 'gold': '#ea9d34',
+               'rose': '#d7827e', 'pine': '#286983'}
 THEMES = {
     'rose-pine': ("Rosé Pine", {'base': '#191724', 'surface': '#1f1d2e', 'overlay': '#26233a',
                                 'overlay_hi': '#393552', 'text': '#e0def4', 'subtle': '#c9c7e0',
@@ -151,14 +158,34 @@ THEMES = {
     'midnight':  ("Midnight", {'base': '#0b0b10', 'surface': '#13131a', 'overlay': '#1c1c26',
                                'overlay_hi': '#2a2a38', 'text': '#ececf1', 'subtle': '#c6c6d2',
                                'muted': '#8b8b9e'}),
+    'dawn':      ("Dawn", {'base': '#faf4ed', 'surface': '#fffaf3', 'overlay': '#f2e9e1',
+                           'overlay_hi': '#dfdad9', 'text': '#575279', 'subtle': '#6e6a86',
+                           'muted': '#857f99', 'kind': 'light', **DAWN_STATUS}),
+    'paper':     ("Paper", {'base': '#f3f3f1', 'surface': '#ffffff', 'overlay': '#e6e5e2',
+                            'overlay_hi': '#d4d2cd', 'text': '#1d1c1a', 'subtle': '#45433f',
+                            'muted': '#6f6c66', 'kind': 'light', **DAWN_STATUS}),
 }
+SCALES = (0.9, 1.0, 1.1, 1.25, 1.5)   # Settings → Appearance → Size
 ACCENTS = {'iris': '#c4a7e7', 'rose': '#ebbcba', 'love': '#eb6f92', 'gold': '#f6c177',
            'foam': '#9ccfd8', 'sky': '#89b4fa', 'mint': '#a6e3a1', 'pine': '#31748f'}
 APPEARANCE_DEFAULT = {'theme': 'rose-pine', 'accent': 'iris', 'partner': 'love',
-                      'glow': 'subtle', 'corners': 'default', 'art_tint': True}
+                      'glow': 'subtle', 'corners': 'default', 'art_tint': True, 'scale': 1.0}
 GLOW = {'off': 0.0, 'subtle': 1.0, 'vivid': 1.9}
 CORNERS = {'sharp': 0.45, 'default': 1.0, 'round': 1.45}
-LOOK = {'glow': 1.0, 'art_tint': True}         # read by the painters
+LOOK = {'glow': 1.0, 'art_tint': True, 'light': False, 'scale': 1.0}   # read by the painters
+
+
+def is_light() -> bool:
+    return LOOK['light']
+
+
+def ui_scale() -> float:
+    """Settings → Appearance → Size, for sizes set in code (not QSS)."""
+    return LOOK['scale']
+
+
+def scaled(px: float) -> int:
+    return int(round(px * LOOK['scale']))
 
 
 def _hex_ok(v) -> bool:
@@ -180,6 +207,8 @@ def normalize_appearance(ap) -> dict:
         out['corners'] = ap['corners']
     if isinstance(ap.get('art_tint'), bool):
         out['art_tint'] = ap['art_tint']
+    if ap.get('scale') in SCALES:
+        out['scale'] = float(ap['scale'])
     return out
 
 
@@ -204,32 +233,67 @@ def apply_appearance(ap: dict) -> dict:
     painter picks it up on its next paint; the caller re-applies the
     stylesheet. Returns the normalised appearance."""
     ap = normalize_appearance(ap)
-    PAL.update(THEMES[ap['theme']][1])
+    theme = THEMES[ap['theme']][1]
+    light_theme = theme.get('kind') == 'light'
+    PAL.update(DARK_STATUS)                    # a light theme overrides these below
+    PAL.update({k: v for k, v in theme.items() if k != 'kind'})
     accent = accent_hex(ap['accent'])
+    if light_theme and QColor(accent).lightnessF() > 0.62:
+        # A pastel accent (the dark themes' defaults) washes out on a light
+        # page: the same hue, deep enough to read as text and as a fill.
+        c = QColor(accent)
+        accent = QColor.fromHslF(c.hslHueF(), min(1.0, c.hslSaturationF() * 0.9 + 0.1),
+                                 0.42).name()
     partner = accent if ap['partner'] == 'none' else accent_hex(ap['partner'])
+    if light_theme and partner != accent and QColor(partner).lightnessF() > 0.62:
+        c = QColor(partner)
+        partner = QColor.fromHslF(c.hslHueF(), min(1.0, c.hslSaturationF() * 0.9 + 0.1),
+                                  0.45).name()
     light = QColor(accent).lightnessF() > 0.55
+    # Raised surfaces: lighter than the page on a dark theme (towards
+    # overlay); on a light one cards are the white `surface` and the page
+    # the tinted base.
+    if light_theme:
+        surf = {'surface': PAL['surface'], 'surface_1': _mix(PAL['surface'], PAL['overlay'], 0.35),
+                'surface_3': _mix(PAL['overlay'], PAL['overlay_hi'], 0.6),
+                'border_card': _mix(PAL['overlay'], PAL['overlay_hi'], 0.5),
+                'tile_scrim': 'rgba(24,22,32,0.78)',    # captions over art stay dark
+                'scrim': '#18161f',                     # what white text over art sits on
+                # Glass sits over art with white text on it: dark in every theme.
+                'glass': 'rgba(24,22,32,0.50)', 'glass_hi': 'rgba(24,22,32,0.66)',
+                'bar': _rgba(PAL['surface'], 0.88)}      # the top bar, over the page
+    else:
+        surf = {'surface': _mix(PAL['base'], PAL['overlay'], 0.35),
+                'surface_1': _mix(PAL['base'], PAL['overlay'], 0.30),
+                'surface_3': _mix(PAL['overlay'], PAL['overlay_hi'], 0.45),
+                'border_card': _mix(PAL['base'], PAL['overlay'], 0.45),
+                'tile_scrim': _rgba(PAL['base'], 0.84), 'scrim': PAL['base'],
+                'glass': _rgba(PAL['overlay'], 0.72), 'glass_hi': _rgba(PAL['overlay_hi'], 0.82),
+                'bar': _rgba(PAL['overlay'], 0.72)}
     P.update({
-        'bg': PAL['base'], 'mantle': PAL['surface'],
-        'surface': _mix(PAL['base'], PAL['overlay'], 0.35),
+        'bg': PAL['base'], 'mantle': PAL['surface'] if not light_theme else PAL['overlay'],
         'surface_solid': PAL['surface'], 'surface_2': PAL['overlay'],
-        'overlay': PAL['overlay_hi'], 'border': PAL['overlay'],
-        'border_card': _mix(PAL['base'], PAL['overlay'], 0.45),
+        'overlay': PAL['overlay_hi'], 'border': PAL['overlay'] if not light_theme
+        else PAL['overlay_hi'],
         'text': PAL['text'], 'subtext': PAL['subtle'], 'muted': PAL['muted'],
-        'accent': accent, 'on_accent': PAL['base'] if light else '#ffffff',
+        'accent': accent, 'on_accent': PAL['base'] if light and not light_theme else '#ffffff',
         'accent_09': _rgba(accent, 0.09), 'accent_16': _rgba(accent, 0.16),
         'accent_22': _rgba(accent, 0.22), 'accent_35': _rgba(accent, 0.35),
-        'tile_scrim': _rgba(PAL['base'], 0.84),
-        'surface_1': _mix(PAL['base'], PAL['overlay'], 0.30),
-        'surface_3': _mix(PAL['overlay'], PAL['overlay_hi'], 0.45),
-        'glass': _rgba(PAL['overlay'], 0.72), 'glass_hi': _rgba(PAL['overlay_hi'], 0.82),
+        'success': PAL['foam'], 'danger': PAL['love'], 'warning': PAL['gold'],
+        'attention': PAL['rose'], 'info': PAL['pine'],
+        'success_18': _rgba(PAL['foam'], 0.18), 'danger_18': _rgba(PAL['love'], 0.18),
+        'warning_18': _rgba(PAL['gold'], 0.18),
+        **surf,
     })
     GRAD['dusk'] = (accent, partner)
     GRAD['aurora'] = (accent, PAL['foam'])
     SRC_HUE['nexus'] = accent
     k = CORNERS[ap['corners']]
     R.update({key: max(2, int(round(v * k))) for key, v in R_BASE.items() if key != 'full'})
-    LOOK['glow'] = GLOW[ap['glow']]
+    LOOK['glow'] = GLOW[ap['glow']] * (0.6 if light_theme else 1.0)
     LOOK['art_tint'] = ap['art_tint']
+    LOOK['light'] = light_theme
+    LOOK['scale'] = ap['scale']
     _ICON_CACHE.clear()
     _TINTS.clear()
     return ap
@@ -266,7 +330,9 @@ SP = {'0_5': 2, '1': 4, '1_5': 6, '2': 8, '2_5': 10, '3': 12, '4': 16,
 
 # Type scale (§2.3). Qt stylesheets take px sizes happily.
 FS = {'2xs': 10, 'xs_plus': 11, 'xs': 12, 'command': 13, 'sm': 14,
-      'base': 16, 'lg': 18, 'display': 20}
+      'base': 16, 'lg': 18, 'display': 20,
+      # Icon glyphs and the few big numbers / headlines.
+      'stat_icon': 17, 'icon': 20, 'headline': 26, 'big': 28}
 
 TILE_W = 200
 TILE_LIFT = 4                    # hover translateY(-4px); reserved, not layout churn
@@ -278,7 +344,9 @@ TILE_LIFT = 4                    # hover translateY(-4px); reserved, not layout 
 
 def build_stylesheet(scale: float = 1.0) -> str:
     """The design system rendered as QSS. Every value comes from a token.
-    `scale` enlarges type and spacing (Theatre mode, read from the couch)."""
+    `scale` enlarges type and spacing (Theatre mode, read from the couch),
+    on top of Settings → Appearance → Size (LOOK['scale'])."""
+    scale = scale * LOOK['scale']
     tpl = Template("""
     QWidget { background: transparent; color: $text; outline: none;
               font-family: "$ui"; font-size: ${fs_sm}px; }
@@ -419,9 +487,9 @@ def build_stylesheet(scale: float = 1.0) -> str:
     /* ---- Progress -------------------------------------------------------- */
 
     /* ---- Shell: sidebar, pages, cards ---------------------------------- */
-    #TopBar { background: $glass; }
+    #TopBar { background: $bar; }
     QToolButton#TopIcon { background: transparent; border: none; color: $subtext;
-                          font-size: 20px; padding: 0; }
+                          font-size: ${fs_icon}px; padding: 0; }
     QToolButton#TopIcon:hover { background: $surface_2; color: $text; }
     QToolButton#TopIcon:checked { background: $accent_16; color: $accent; }
     QLineEdit#TopSearch { background: $surface_1; border: 1px solid $border;
@@ -449,7 +517,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                           border-radius: ${r_control}px; text-align: left; padding: ${sp_2}px ${sp_3}px; }
     QPushButton#ToolRow:hover { background: $surface_2; border-color: $overlay; }
     QToolButton#PlayRound { background: $grad_dusk_diag; color: $on_accent; border: none;
-                            font-size: 20px; padding-left: 4px; }
+                            font-size: ${fs_icon}px; padding-left: 4px; }
     QToolButton#PlayRound:hover { background: $grad_dusk_hi; }
     QToolButton#TileMore { background: $scrim_badge; color: $on_art; border: none;
                            border-radius: ${r_more}px; font-size: ${fs_sm}px; padding: 0; }
@@ -498,7 +566,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                 border-radius: ${r_control}px; }
     QLabel#StatValue { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
     QToolButton#QuickAction { background: $surface_2; color: $subtext; border: none;
-                              font-size: 17px; padding: 0; }
+                              font-size: ${fs_stat_icon}px; padding: 0; }
     QToolButton#QuickAction:hover { background: $accent_22; color: $accent; }
     QToolButton#QuickAction[on="true"] { color: $warning; }
     #DisclosureHead { background: $surface_1; border: 1px solid $border_card;
@@ -510,7 +578,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #DashEditBar { background: $accent_09; border-radius: ${r_control}px; }
     #DashAdd { background: $surface_1; border: 1px dashed $border; border-radius: ${r_card}px; }
     QLabel#DashTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
-    QLabel#DashBig { color: $text; font-size: 28px; font-weight: 600; }
+    QLabel#DashBig { color: $text; font-size: ${fs_big}px; font-weight: 600; }
     #DashRow { background: transparent; border: 1px solid transparent;
                border-radius: ${r_sm}px; }
     #DashRow:hover { background: $accent_09; }
@@ -524,7 +592,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #NewsTile:hover { background: $surface_1; border-color: $accent_35; }
     #NewsTile[reading="true"] { border-color: $accent; }
     QLabel#NewsTitle { color: $text; font-size: ${fs_sm}px; font-weight: 500; }
-    QLabel#NewsHeadline { color: $on_art; font-size: 26px; font-weight: 600; }
+    QLabel#NewsHeadline { color: $on_art; font-size: ${fs_headline}px; font-weight: 600; }
     QLabel#NewsLede { color: $on_art; font-size: ${fs_sm}px; }
     QLabel#NewsReaderTitle { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
     #NewsReader { background: $mantle; border-left: 1px solid $border; }
@@ -551,7 +619,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                                  font-size: ${fs_sm}px; }
 
     /* ---- Theatre search: on-screen keyboard ------------------------------ */
-    QLabel#SearchQuery { color: $on_art; font-size: ${fs_display}px; font-weight: 600; }
+    QLabel#SearchQuery { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     QPushButton#Key { background: $glass; color: $on_art; border: 1px solid $glass_hi;
                       border-radius: ${r_control}px; font-size: ${fs_base}px; font-weight: 500;
                       padding: 0; }
@@ -594,6 +662,23 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QHeaderView::section:last { border-top-right-radius: ${r_card_inner}px; }
     QTableCornerButton::section { background: transparent; border: none; }
     QSplitter::handle:horizontal { width: 1px; background: $border; }
+
+    /* ---- Settings: section list, rows ---------------------------------- */
+    #SettingsNav { background: $mantle; border-right: 1px solid $border; }
+    QPushButton#NavItem { background: transparent; border: none; color: $subtext;
+                          border-radius: ${r_control}px; text-align: left;
+                          padding: ${sp_2}px ${sp_3}px; font-size: ${fs_sm}px; font-weight: 500; }
+    QPushButton#NavItem:hover { background: $surface_2; color: $text; }
+    QPushButton#NavItem:checked { background: $accent_16; color: $accent; }
+    QLineEdit#SettingsSearch { background: $surface_1; border: 1px solid $border;
+                               border-radius: ${r_search}px; padding: 0 ${sp_2}px; }
+    QLineEdit#SettingsSearch:focus { border: 1px solid $accent; background: $surface_2; }
+    QLabel#SavedNote { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#SavedNote[ok="true"] { color: $success; }
+    QLabel#RowTitle { color: $text; font-size: ${fs_sm}px; }
+    QLabel#RowError { color: $danger; font-size: ${fs_xs}px; }
+    #RowRule { background: $border; }
+    QLabel#Banner { color: $text; font-size: ${fs_xs}px; }
 
     /* ---- Misc ---------------------------------------------------------- */
     QLabel#Empty { color: $muted; font-size: ${fs_base}px; }

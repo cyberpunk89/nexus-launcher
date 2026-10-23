@@ -107,7 +107,8 @@ def _heroic_wine_version(proton: Path) -> dict:
 def add_heroic_entry(display_name: str, slug: str, exe: Path | None,
                      wine_prefix: Path | None, proton: Path | None,
                      artwork: dict | None, force_proton: bool = False,
-                     launch: dict | None = None) -> str | None:
+                     launch: dict | None = None,
+                     known_app_name: str | None = None) -> str | None:
     """Add (or update) a Heroic sideloaded-game entry pointing at the game exe.
     Idempotent: an existing entry with the same executable is updated in place
     (its app_name and GamesConfig are kept). When `force_proton` is set and a
@@ -134,9 +135,9 @@ def add_heroic_entry(display_name: str, slug: str, exe: Path | None,
     games = lib.setdefault("games", [])
 
     exe_str = str(exe)
+    known = {_heroic_app_name(slug), known_app_name} - {None}
     existing = next((g for g in games if isinstance(g, dict)
-                     and (_heroic_exe(g) == exe_str
-                          or g.get("app_name") == _heroic_app_name(slug))), None)
+                     and (_heroic_exe(g) == exe_str or g.get("app_name") in known)), None)
     app_name = existing.get("app_name") if existing else _heroic_app_name(slug)
 
     art = ""

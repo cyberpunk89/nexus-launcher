@@ -180,6 +180,39 @@ class Actions(unittest.TestCase):
         self.assertTrue(fav.isChecked())
         m.deleteLater()
 
+    def test_move_and_snapshots_only_for_games_nexus_owns(self):
+        g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a'}
+        self.assertNotIn('move', [a.key for a in nx.game_actions(g)])
+        g['owned_dir'] = True
+        keys = [a.key for a in nx.game_actions(g)]
+        self.assertIn('move', keys)
+        self.assertIn('snapshots', keys)
+        busy = {a.key: a.enabled for a in nx.game_actions({**g, 'playing': True})}
+        self.assertFalse(busy['move'])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Palette(unittest.TestCase):
+    def test_fuzzy_score_orders_sensibly(self):
+        f = nx.fuzzy_score
+        self.assertIsNone(f("xyz", "Hades"))
+        self.assertGreater(f("had", "Hades"), f("had", "Hollow Adventure Drift"))
+        self.assertIsNotNone(f("hk", "Hollow Knight"))         # word starts
+        self.assertIsNone(f("hk", "Shark"))                    # not mid-word scatter
+        self.assertIsNotNone(f("ark", "Shark"))                # but a substring is fine
+        self.assertIsNotNone(f("hdes", "Hades"))
+        self.assertGreater(f("app", "Appearance"), f("app", "Wrapped"))
+
+    def test_rank_two_words_and_recent(self):
+        E = nx.Entry
+        es = [E('command', "Move to another drive…", key='a', keywords="move"),
+              E('game', "Nocturne", key='game:noc'), E('game', "Hades", key='game:hades'),
+              E('command', "Disabled thing", key='x', enabled=False)]
+        self.assertEqual(nx.rank(es, "noc")[0].key, 'game:noc')
+        self.assertEqual([e.key for e in nx.rank(es, "", recent=['game:hades'])][:1],
+                         ['game:hades'])
+        self.assertEqual(nx.rank(es, "zzz"), [])
+
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Window(unittest.TestCase):
@@ -586,11 +619,15 @@ class Window(unittest.TestCase):
                                                        'alerts_proton': True,
                                                        'alerts_sale_min_cut': 30}):
             st.load()
+            self.assertEqual(saved, [])                             # loading saves nothing
             self.assertEqual(st.al_sale.currentData(), 30)          # a hand-set value is kept
-            st.al_proton.setChecked(False)
+            st.al_proton.setChecked(False)                          # saved as it changes
+            self.assertEqual({k: v for k, v in saved[-1].items() if k[0] == 'alerts'},
+                             {('alerts', 'proton'): False})
             st.al_sale.setCurrentIndex(st.al_sale.findData(50))
-            st._save()
-        self.assertEqual({k: v for k, v in saved[0].items() if k[0] == 'alerts'},
+            st.al_sale.activated.emit(st.al_sale.currentIndex())
+        # (load_config is fixed here, so proton still differs from it)
+        self.assertEqual({k: v for k, v in saved[-1].items() if k[0] == 'alerts'},
                          {('alerts', 'proton'): False, ('alerts', 'sale_min_cut'): 50})
 
     def test_agent_switch_asks_before_turning_on(self):
@@ -646,6 +683,156 @@ class Window(unittest.TestCase):
             self.assertFalse(w.isVisible())
             self.assertFalse(w._tray_quit)
             w._apply_controls({'close_to_tray': False})
+
+    def test_shift_click_selects_a_range_and_batch_is_gated(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        w.apply_filter()
+        order = [g['slug'] for g in w._shown_games]
+        self.assertGreaterEqual(len(order), 3)
+        S, N = Qt.KeyboardModifier.ShiftModifier, Qt.KeyboardModifier.NoModifier
+        w._tile_clicked(w.game(order[0]), N)
+        w._tile_clicked(w.game(order[2]), S)
+        self.assertEqual(w.selected, order[:3])
+        # A Steam game in the selection: repack-only batch actions aren't offered.
+        games = [w.game(s) for s in order[:3]]
+        mixed = any(g.get('source') != 'nexus' for g in games)
+        self.assertEqual(w.batch_applies('steam', games), not mixed)
+        self.assertTrue(w.batch_applies('collection', games))
+        repacks = [g for g in w._games if g.get('source', 'nexus') == 'nexus']
+        w._playing = {repacks[0]['slug']}
+        w._mark_states()
+        ran = []
+        with mock.patch.object(w, 'run', lambda args, *a, **k: ran.append(args)):
+            w._batch_action('art', repacks)
+        self.assertEqual(ran, [['--refetch-art', g['slug']] for g in repacks])   # not gated
+        ran.clear()
+        with mock.patch.object(w, 'run', lambda args, *a, **k: ran.append(args)):
+            w._batch_action('uninstall', repacks)
+            self.assertTrue(w.sheet.isVisible())                # asks first
+            yes = next(b for b in w.sheet.findChildren(QPushButton)
+                       if b.text().startswith("Uninstall"))
+            yes.click()
+        self.assertEqual(ran, [['--uninstall', g['slug'], '--yes', '--save-backup']
+                               for g in repacks[1:]])           # the running one is skipped
+        w._playing = set()
+        w._mark_states()
+
+    def test_crash_helper_after_a_quick_exit(self):
+        w = self.win
+        g = w.game('alpha')
+        toasts = []
+        with mock.patch.object(w, 'toast', lambda text, kind, act=None, t=0:
+                               toasts.append((text, [a[0] for a in act or []]))), \
+                patch_gui('last_exit_code', lambda slug: 3):
+            w._after_session(g, 8)
+            w._after_session(g, 300)                            # a real session: nothing
+            w._trying['alpha'] = 'GE-Proton11-9'
+            w._after_session(g, 120)
+        self.assertEqual(toasts[0], ("Alpha closed after 8 s (exit code 3).",
+                                     ["Show log", "Try another Proton…"]))
+        self.assertEqual(len(toasts), 2)
+        self.assertIn("ran with GE-Proton11-9", toasts[1][0])
+        self.assertEqual(toasts[1][1], ["Use it"])
+        steam = w.game('steam-1')
+        with mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a)):
+            w._after_session(steam, 3)                          # not a launcher we own
+        self.assertEqual(len(toasts), 2)
+
+    def test_command_palette_games_actions_and_commands(self):
+        from PyQt6.QtTest import QTest
+        w = self.win
+        w.open_palette()
+        p = w.palette
+        self.assertTrue(p.isVisible())
+        QTest.keyClicks(p.edit, "alph")
+        self.assertEqual(p.current().title, "Alpha")
+        QTest.keyClick(p.edit, Qt.Key.Key_Tab)                 # its actions
+        self.assertIs(p._game['slug'], 'alpha')
+        titles = [p.list.item(i).data(Qt.ItemDataRole.UserRole).title
+                  for i in range(p.list.count())]
+        self.assertIn("Favourite", titles)
+        QTest.keyClick(p.edit, Qt.Key.Key_Escape)              # back to everything
+        self.assertIsNone(p._game)
+        self.assertTrue(p.isVisible())
+        QTest.keyClicks(p.edit, "settings")
+        self.assertTrue(any(p.list.item(i).data(Qt.ItemDataRole.UserRole).kind
+                            in ('setting', 'page') for i in range(p.list.count())))
+        p.edit.clear()
+        QTest.keyClicks(p.edit, "surprise")
+        self.assertEqual(p.current().key, 'cmd:surprise')
+        with mock.patch.object(w, 'surprise') as surprise:
+            p._all = nx.page_entries(w)                         # the entry holds the patched slot
+            p._refill()
+            QTest.keyClick(p.edit, Qt.Key.Key_Return)
+        surprise.assert_called_once()
+        self.assertFalse(p.isVisible())
+        self.assertEqual(w.prefs.palette_recent[0], 'cmd:surprise')
+
+    def test_settings_import_shows_the_plan_then_restarts(self):
+        w = self.win
+        calls = []
+        plan = {'ok': True, 'replace': ['/c/config.toml'], 'keep_secrets': ['gamedb.token'],
+                'games_added': ['a'], 'games_here': [], 'games_missing': [
+                    {'slug': 'g', 'name': 'Gone', 'was': '/x'}], 'sessions_added': 0, 'art': 0}
+
+        def fake(args, cb, *_a):
+            calls.append(args)
+            cb(plan if '--dry-run' in args else {'ok': True}, None)
+        with patch_gui('cli_json', fake), mock.patch.object(w, 'restart') as restart:
+            w._import_settings('/t/s.tar.gz')
+            self.assertEqual(calls, [['--import-settings', '/t/s.tar.gz', '--dry-run', '--json']])
+            self.assertTrue(w.sheet.isVisible())
+            texts = " ".join(l.text() for l in w.sheet.findChildren(QLabel))
+            self.assertIn("Gone", texts)
+            yes = next(b for b in w.sheet.findChildren(QPushButton)
+                       if b.text() == "Import and restart")
+            yes.click()
+            self.assertEqual(calls[-1], ['--import-settings', '/t/s.tar.gz', '--json'])
+            restart.assert_called_once()
+
+    def test_first_run_setup_walks_through_and_saves(self):
+        import os
+        from pathlib import Path
+        w = self.win
+        checks = {'checks': [
+            {'group': 'Requirements', 'status': 'fail', 'title': 'Wine', 'detail': 'not found',
+             'fix': 'Install it', 'actions': []},
+            {'group': 'Requirements', 'status': 'ok', 'title': 'umu-run', 'detail': '/usr/bin',
+             'actions': []},
+            {'group': 'Integrations', 'status': 'ok', 'title': 'Heroic', 'detail': '~/.config',
+             'actions': []}]}
+        answers = {'--doctor': checks, '--list-protons': {'protons': [{'name': 'proton-x'}]},
+                   '--torrent-detect': {'found': {'client': 'transmission',
+                                                  'url': 'http://127.0.0.1:9091'}}}
+        saved = []
+        with patch_gui('cli_json', lambda args, cb, *_a: cb(answers.get(args[0]), None)), \
+                patch_gui('save_config', saved.append), \
+                mock.patch.object(w, 'set_appearance') as look:
+            w.open_setup()
+            self.assertEqual(w.current(), w.SETUP)
+            st = w.setup
+            self.assertIn("1 thing(s) to fix first: Wine", st.lead.text())
+            self.assertFalse(st.get_ge.isHidden())                 # no GE-Proton: offer it
+            for _ in range(5):
+                st._next()
+            self.assertEqual(st.btn_next.text(), "Done")
+            st.base.setText('/g/Games')
+            st.theme.setCurrentIndex(st.theme.findData('dawn'))
+            st._next()                                         # Done
+        self.assertEqual(saved[0][('install', 'base')], '/g/Games')
+        self.assertEqual(saved[0][('torrent', 'client')], 'transmission')
+        self.assertTrue(w.prefs.setup_done)
+        self.assertEqual(w.current(), w.HOME)
+        self.assertEqual(look.call_args[0][0]['theme'], 'dawn')
+        # Shown again only when nothing exists yet and setup wasn't done.
+        w.prefs.setup_done = False
+        with mock.patch.dict(os.environ, {'NEXUS_NO_SETUP': ''}), \
+                mock.patch.object(type(w.prefs), 'PATH', Path('/nonexistent/library.json')), \
+                patch_gui('CONFIG_PATH', Path('/nonexistent/config.toml')):
+            self.assertTrue(w._first_run)
+            w.prefs.setup_done = True
+            self.assertFalse(w._first_run)
 
     def test_remove_with_files_asks_first(self):
         w = self.win

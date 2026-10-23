@@ -272,6 +272,21 @@ class InstallCommand(unittest.TestCase):
         set_gui('cli_json', self._cli)
         self.page.deleteLater()
 
+    def test_another_game_uses_import_without_repack_checks(self):
+        self.page.verify.setChecked(True)
+        self.page.pick_import('/d/setup_hollow_knight_1.5_(64bit)_(4).exe')
+        self.assertEqual(self.page.name.placeholderText(), "Hollow knight")
+        self.assertEqual(self.page.btn_go.text(), "Add game")
+        sent = []
+        self.page.submit.connect(lambda cmd, name, slug: sent.append((cmd, name)))
+        self.page._go()
+        cmd, name = sent[0]
+        self.assertEqual(cmd[1:3], ['--import', '/d/setup_hollow_knight_1.5_(64bit)_(4).exe'])
+        self.assertNotIn('--verify', cmd)
+        self.assertEqual(name, "Hollow knight")
+        self.page._pick('/r/Repack')                          # back to a repack
+        self.assertEqual(self.page.btn_go.text(), "Install")
+
     def test_silent_and_steam_never_waits(self):
         cmd = self.page._command('/r/Game', '')
         self.assertIn('--defer-steam', cmd)

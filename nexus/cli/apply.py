@@ -82,7 +82,8 @@ def sync_heroic(entry: dict, config: dict, proton: Path | None,
     return add_heroic_entry(entry['display_name'], entry['slug'], exe, wine_prefix,
                             proton, artwork,
                             force_proton=_proton_is_explicit(entry, config),
-                            launch=prof if profile_owns_options(prof) else None)
+                            launch=prof if profile_owns_options(prof) else None,
+                            known_app_name=entry.get('heroic_app_name'))
 
 
 def _require_entry(slug: str) -> dict:
@@ -221,6 +222,8 @@ def cmd_set_proton(slug: str, name: str, config: dict) -> None:
                   f"{', '.join(sorted(list_protons())) or 'none'}", file=sys.stderr)
             sys.exit(1)
         prof['proton'] = hit.parent.name
+    if prof.get('proton') != (entry.get('launch') or {}).get('proton'):
+        auto_snapshot(slug, 'proton', resolve_install_base(None))
     update_registry_entry(slug, launch=prof or None)
     cmd_apply(slug, config)
 
@@ -361,3 +364,5 @@ from .runner import (list_protons, proton_by_name, resolve_game_proton, resolve_
     select_runner, write_launch_script)  # noqa: E402
 from .steam import add_steam_shortcut_native  # noqa: E402
 from .sunshine import game_has_steam_shortcut, launch_log_path, steam_shortcut_url  # noqa: E402
+from .snapshots import auto_snapshot  # noqa: E402
+from .config import resolve_install_base  # noqa: E402

@@ -45,7 +45,9 @@ _SLUG_OPTS = {
     'protongen_default': '--protongen-default', 'apply_launch': '--apply-launch',
     'set_exe': '--set-exe', 'rename': '--rename', 'prefix_tool': '--prefix-tool',
     'track_session': '--track-session', 'apply_recipe': '--apply-recipe',
-    'explain_log': '--explain-log',
+    'explain_log': '--explain-log', 'move': '--move', 'snapshots': '--snapshots',
+    'snapshot': '--snapshot', 'rollback': '--rollback', 'delete_snapshot': '--delete-snapshot',
+    'snapshots_enable': '--snapshots-enable',
 }
 
 
@@ -169,6 +171,9 @@ def build_parser() -> argparse.ArgumentParser:
                              '+ desktop menu and exit (use --name to set its title)')
     parser.add_argument('--launch', metavar='SLUG',
                         help='Launch a managed game by slug and exit')
+    parser.add_argument('--try-proton', metavar='BUILD', dest='try_proton',
+                        help='With --launch: this one run with another installed Proton '
+                             '(umu launchers; nothing is saved)')
     parser.add_argument('--pause', metavar='SLUG',
                         help='Freeze a running repack (SIGSTOP everything in its prefix)')
     parser.add_argument('--resume', metavar='SLUG', help='Thaw a paused repack')
@@ -292,6 +297,36 @@ def build_parser() -> argparse.ArgumentParser:
                         dest='track_session', help=argparse.SUPPRESS)
     parser.add_argument('--orphans', action='store_true',
                         help='List stray Steam compatdata prefixes (with --json for the GUI)')
+    gm = parser.add_argument_group('moving, adding and snapshots')
+    gm.add_argument('--move', nargs=2, metavar=('SLUG', 'DIR'),
+                    help="Move an installed game to another folder or drive (DIR is the new "
+                         "base: the game goes to DIR/SLUG); the old copy is kept as .old-*")
+    gm.add_argument('--move-targets', action='store_true', dest='move_targets',
+                    help='Folders a game can be moved to, with free space (--json)')
+    gm.add_argument('--import', metavar='PATH', dest='import_path',
+                    help='Add any Windows game: an offline installer (.exe/.msi; Inno Setup '
+                         'ones run silently) or a folder holding the game (--name sets the title)')
+    gm.add_argument('--snapshots', metavar='SLUG',
+                    help="A game's btrfs snapshots (--json)")
+    gm.add_argument('--snapshot', metavar='SLUG', help='Snapshot a game now')
+    gm.add_argument('--rollback', nargs=2, metavar=('SLUG', 'SNAPSHOT'),
+                    help='Put a game back the way it was in a snapshot')
+    gm.add_argument('--delete-snapshot', nargs=2, metavar=('SLUG', 'SNAPSHOT'),
+                    dest='delete_snapshot', help='Delete one snapshot')
+    gm.add_argument('--snapshots-enable', metavar='SLUG', dest='snapshots_enable',
+                    help='Make an older game snapshot-ready (a reflink copy into its own '
+                         'btrfs subvolume: instant, no extra space)')
+    gb = parser.add_argument_group('settings backup')
+    gb.add_argument('--export-settings', metavar='FILE', dest='export_settings',
+                    help='Save your Nexus settings, library choices, game list, play history '
+                         'and art picks to one file (not saves, not secrets unless --with-secrets)')
+    gb.add_argument('--with-art', action='store_true', dest='with_art',
+                    help='With --export-settings: the picked artwork images too')
+    gb.add_argument('--with-secrets', action='store_true', dest='with_secrets',
+                    help='With --export-settings: keep API keys, tokens and passwords in it')
+    gb.add_argument('--import-settings', metavar='FILE', dest='import_settings',
+                    help='Bring settings saved with --export-settings to this machine '
+                         '(--dry-run shows what would change)')
     g2 = parser.add_argument_group('library')
     g2.add_argument('--library', action='store_true',
                     help='List every game: Nexus installs, Steam and Heroic store games '
@@ -495,6 +530,15 @@ def _cmd_gamedb_lookup(args, install_base):
     sys.exit(0)
 
 
+def _cmd_move_targets(args, install_base):
+    rows = move_targets(install_base)
+    if args.json:
+        print(json.dumps({'targets': rows}))
+        return
+    for r in rows:
+        print(f"  {r['path']}  ({r['free'] / 1e9:.0f} GB free)")
+
+
 def _cmd_notify_test(args, install_base):
     from nexus import notify
     if not notify.configured():
@@ -566,7 +610,17 @@ COMMANDS = (
      lambda a, base: cmd_bench_results(require_slug(a.bench_results, '--bench-results'), a.json)),
     (lambda a: a.sunshine or a.remove_sunshine,
      lambda a, base: cmd_sunshine(a.sunshine or a.remove_sunshine, remove=bool(a.remove_sunshine))),
-    ('launch', lambda a, base: cmd_launch(base, a.launch, force=a.force, wait=a.wait)),
+    ('launch', lambda a, base: cmd_launch(base, a.launch, force=a.force, wait=a.wait,
+                                          try_proton=a.try_proton)),
+    ('move', lambda a, base: sys.exit(cmd_move(base, a.move[0], a.move[1], a.json))),
+    ('move_targets', _cmd_move_targets),
+    ('import_path', lambda a, base: cmd_import(a, base)),
+    ('export_settings', lambda a, base: sys.exit(cmd_export_settings(
+        a.export_settings, a.with_art, a.with_secrets, a.json))),
+    ('import_settings', lambda a, base: sys.exit(cmd_import_settings(
+        a.import_settings, a.dry_run, a.json))),
+    (lambda a: a.snapshots or a.snapshot or a.rollback or a.delete_snapshot
+                or a.snapshots_enable, lambda a, base: sys.exit(cmd_snapshots(base, a))),
     ('steam', lambda a, base: cmd_add_steam(a.steam, load_config())),
     ('remove_steam', lambda a, base: remove_steam_shortcut(a.remove_steam)),
     ('heroic', lambda a, base: cmd_add_heroic(a.heroic, load_config())),
@@ -701,3 +755,7 @@ from .steam import (_report_failed_copies, backup_prefix_saves, cmd_check_integr
 from .sunshine import (cmd_launch, cmd_launch_via, cmd_sunshine, cmd_track_session,
     cmd_uninstall, remove_steam_shortcut)  # noqa: E402
 from .install import cmd_install  # noqa: E402
+from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402
+from .importgame import cmd_import  # noqa: E402
+from .move import cmd_move, move_targets  # noqa: E402
+from .snapshots import cmd_snapshots  # noqa: E402

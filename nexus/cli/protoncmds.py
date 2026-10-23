@@ -282,6 +282,8 @@ def cmd_proton_migrate(old: str, new: str, config: dict) -> None:
     for slug, e in list(load_registry()['games'].items()):
         prof = dict(e.get('launch') or {})
         touched = False
+        if old in (prof.get('proton'), e.get('proton')):
+            auto_snapshot(slug, 'proton', resolve_install_base(None))
         if prof.get('proton') == old:
             prof['proton'] = new
             update_registry_entry(slug, launch=prof)
@@ -345,3 +347,5 @@ from .registry import load_registry, update_registry_entry  # noqa: E402
 from .runner import (damaged_protons, list_protons, proton_by_name, proton_tool_name,
     resolve_game_proton)  # noqa: E402
 from .steam import _read_compat_mapping, set_steam_compat_tool, steam_is_running  # noqa: E402
+from .snapshots import auto_snapshot  # noqa: E402
+from .config import resolve_install_base  # noqa: E402

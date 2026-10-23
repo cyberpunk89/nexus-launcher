@@ -14,6 +14,17 @@ from .fmt import fmt_bytes, fmt_size
 from .theme import P, SP
 
 
+def import_name_guess(path: str) -> str:
+    """What `--import` will probably call it (the CLI decides; this fills
+    the placeholder): GOG's setup_<name>_<version>… tidied, or the folder."""
+    import re
+    p = Path(path)
+    stem = p.stem if p.suffix.lower() in ('.exe', '.msi') else p.name
+    m = re.match(r'^setup_(.+?)(?:_v?\d[\w.]*)?(?:_\(\d+bit\))?(?:_\(\d+\))*$', stem, re.I)
+    stem = re.sub(r'[_.]+', ' ', m.group(1) if m else stem).strip()
+    return stem[:1].upper() + stem[1:]
+
+
 def protongen_has_default() -> bool:
     """Whether protongen has a default profile saved (`global_profile`)."""
     try:
@@ -178,6 +189,22 @@ class InstallPage(QWidget):
         frow.addWidget(self.folder, 1)
         frow.addWidget(browse)
         lay.addLayout(frow)
+        # Not a repack: a GOG-style offline installer or a game folder
+        # (`--import`), with the same options below.
+        orow = QHBoxLayout()
+        orow.addWidget(label("Another game?", "Muted"))
+        b_exe = QPushButton("From an installer…")
+        b_exe.setToolTip("A Windows offline installer (.exe or .msi), e.g. from GOG. Inno "
+                         "Setup installers run without their window, like repacks.")
+        b_exe.clicked.connect(self._browse_installer)
+        b_dir = QPushButton("From a game folder…")
+        b_dir.setToolTip("A folder that already holds the game (portable or extracted). "
+                         "It's copied into the game's own prefix.")
+        b_dir.clicked.connect(self._browse_game_folder)
+        orow.addWidget(b_exe)
+        orow.addWidget(b_dir)
+        orow.addStretch()
+        lay.addLayout(orow)
         lay.addWidget(label("Name", "StatLabel"))
         self.name = QLineEdit()
         self.name.textChanged.connect(lambda _: self._check())
@@ -244,6 +271,8 @@ class InstallPage(QWidget):
         self._detected = {}
 
     def open(self, config):
+        self._import = None
+        self.btn_go.setText("Install")
         self.folder.clear()
         self.name.clear()
         self.name.setPlaceholderText("")
@@ -348,6 +377,8 @@ class InstallPage(QWidget):
             self.dl_list.addWidget(bar)
 
     def _pick(self, path, name=None):
+        self._import = None
+        self.btn_go.setText("Install")
         self.folder.setText(path)
         self._detected = {}
         self.name.clear()
@@ -395,6 +426,32 @@ class InstallPage(QWidget):
         self.safety_ok.setChecked(False)
         self.safety_ok.setVisible(danger)
         self.btn_go.setEnabled(not danger)
+
+    def _browse_installer(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select a game installer", str(HOME / 'Downloads'),
+                                           "Windows installers (*.exe *.msi *.EXE *.MSI)")
+        if f:
+            self.pick_import(f)
+
+    def _browse_game_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Select the game's folder",
+                                             str(HOME / 'Downloads'))
+        if d:
+            self.pick_import(d)
+
+    def pick_import(self, path: str):
+        """Any other game: no repack checks; the CLI names it (editable)."""
+        self.folder.setText(path)
+        self._import = path
+        self._detected = {}
+        self.name.clear()
+        self.name.setPlaceholderText(import_name_guess(path))
+        self.warning.setVisible(False)
+        self.safety.setVisible(False)
+        self.safety_ok.setVisible(False)
+        self.btn_clam.setVisible(False)
+        self.btn_go.setEnabled(True)
+        self.btn_go.setText("Add game")
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select repack folder", str(HOME / 'Downloads'))
@@ -450,6 +507,10 @@ class InstallPage(QWidget):
             self.warning.setVisible(True)
             return
         name = self.name.text().strip()
+        if getattr(self, '_import', None) == folder:
+            cmd = self._command(folder, name, imported=True)
+            self.submit.emit(cmd, name or self.name.placeholderText() or Path(folder).name, '')
+            return
         cmd = self._command(folder, name)
         if self.safety_ok.isVisible() and self.safety_ok.isChecked():
             cmd.append('--ignore-safety')
@@ -460,10 +521,12 @@ class InstallPage(QWidget):
         for c in list(getattr(self, '_fresh', [])):
             self.submit.emit(self._command(c['path'], ''), c['name'], c.get('slug') or '')
 
-    def _command(self, folder: str, name: str) -> list[str]:
+    def _command(self, folder: str, name: str, imported: bool = False) -> list[str]:
         """The install command line for the options on this page. Steam never
-        holds it up: the shortcut is added afterwards, once Steam is closed."""
-        cmd = [CLI_BIN, folder, "--yes", "--log", "--defer-steam"]
+        holds it up: the shortcut is added afterwards, once Steam is closed.
+        `imported`: any other game (--import), which has no repack checks."""
+        cmd = ([CLI_BIN, "--import", folder] if imported else [CLI_BIN, folder]) + \
+            ["--yes", "--log", "--defer-steam"]
         if name:
             cmd += ["--name", name]
         if not self.silent.isChecked():
@@ -475,6 +538,8 @@ class InstallPage(QWidget):
                           (self.skipdisk, "--skip-disk-check"),
                           (self.import_save, "--import-save"),
                           (self.pg_default, "--use-protongen-default")):
+            if imported and flag != "--use-protongen-default":
+                continue
             if box.isChecked():
                 cmd.append(flag)
         for box, flag in ((self.steam, "--no-steam"), (self.heroic, "--no-heroic"),

@@ -16,7 +16,7 @@ from nexus.instance import INSTANCE, INSTANCE_MAX
 
 from .common import (_REPO, APPLICATIONS_DIR, DATA_DIR, DESKTOP_PATH, ICON_PATH,
     LEGACY_DESKTOP, LOGO_SVG)
-from .theme import apply_appearance, build_stylesheet, FONTS, FS, resolve_fonts
+from .theme import apply_appearance, build_stylesheet, FONTS, FS, resolve_fonts, scaled
 
 
 def ensure_icon() -> str:
@@ -227,7 +227,7 @@ def main():
     resolve_fonts()                       # before anything reads FONTS.ui
     apply_appearance(LibraryPrefs().appearance)   # colours before the stylesheet
     base = QFont(FONTS.ui)
-    base.setPixelSize(FS['sm'])
+    base.setPixelSize(scaled(FS['sm']))
     app.setFont(base)
     app.setStyleSheet(build_stylesheet())
     app.popup_rounder = PopupRounder(app)

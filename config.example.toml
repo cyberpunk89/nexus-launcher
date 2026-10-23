@@ -22,6 +22,11 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # scan_dirs = ["~/Games/Install"]        # more folders to look in (and watch)
 # unattended = false                     # show FitGirl's setup window instead of a silent install
 # trash_repack = true                    # move a repack to the Trash once it's installed
+# subvolumes = false                     # on btrfs each game gets its own subvolume so it can
+                                         # be snapshotted (default true); false = plain folders
+
+[snapshots]               # btrfs game snapshots (Undo update)
+# keep = 3                               # per game; older ones are removed automatically
 
 [runner]
 # backend = "auto"        # umu | proton | wine | auto

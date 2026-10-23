@@ -1,19 +1,28 @@
-"""The Settings page."""
+"""The Settings page: sections in one scroll with a section list and a
+search beside it. Everything saves itself — a switch or a menu when it
+changes, a text field when you leave it — so there is no Save button to
+find and nothing is lost by walking away."""
 
 import os
 import re
 
-from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QKeySequence, QLinearGradient,
+from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF,
+    Qt, QTimer, QUrl)
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QLinearGradient,
     QPainter, QPen, QShortcut)
-from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QComboBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
+    QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from nexus import gamedb
 
-from .common import ATTRACT_MINUTES, HOME, INSTALL_BASE_DEFAULT
+from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT
 from .theme import (_hex_ok, _mix, accent_hex, ACCENTS, APPEARANCE_DEFAULT, G,
-    normalize_appearance, P, pill, R, R_BASE, SP, THEMES)
+    normalize_appearance, P, pill, R, R_BASE, SCALES, SP, THEMES)
+
+SGDB_KEY_URL = 'https://www.steamgriddb.com/profile/preferences/api'
+LOCAL_URL_RE = re.compile(r'^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$')
+FIELD_W = (200, 340)           # text fields on the right of a row: they share a narrow one
+MOTION = not os.environ.get('NEXUS_NO_MOTION')
 
 
 class Swatch(QAbstractButton):
@@ -25,6 +34,7 @@ class Swatch(QAbstractButton):
         self.kind, self.value = kind, value
         self.setCheckable(True)
         self.setToolTip(tip)
+        self.setAccessibleName(tip)
         self.setFixedSize(*size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -70,25 +80,202 @@ class Swatch(QAbstractButton):
         pt.end()
 
 
-class AppearanceCard(QFrame):
+class Switch(QCheckBox):
+    """An on/off switch. A QCheckBox underneath (checked, toggled, setChecked
+    all work as before), painted as a track and knob so a row of settings
+    reads at a glance. Its row's title is its accessible name."""
+    W, H = 40, 22
+
+    def __init__(self, name: str = ''):
+        super().__init__()
+        self.setObjectName("Switch")
+        self.setAccessibleName(name)
+        self.setFixedSize(self.W, self.H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, ev):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        on, enabled = self.isChecked(), self.isEnabled()
+        off = _mix(P['overlay'], P['muted'], 0.3)
+        track = QColor(P['accent'] if on else off)
+        if self.underMouse() and enabled and not on:
+            track = QColor(_mix(off, P['accent'], 0.3))
+        if not enabled:
+            track.setAlphaF(0.35)
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(track)
+        pt.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        d = r.height() - 6
+        x = r.right() - 3 - d if on else r.left() + 3
+        knob = QColor(P['on_accent'] if on else P['subtext'])
+        if not enabled:
+            knob.setAlphaF(0.5)
+        pt.setBrush(knob)
+        pt.drawEllipse(QRectF(x, r.top() + 3, d, d))
+        pt.end()
+
+
+class SettingRow(QWidget):
+    """One setting: its name and a line about it on the left, the control on
+    the right (or underneath, `wide`). Clicking the words flips a switch.
+    Search matches the title, the description and any `keywords`."""
+
+    def __init__(self, title: str, desc: str = '', control=None, wide: bool = False,
+                 keywords: str = '', field: bool = False):
+        super().__init__()
+        self.available = True             # False: doesn't apply right now (stays hidden)
+        self._match = True
+        self._keys = f"{title} {desc} {keywords}".lower()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.rule = QFrame()
+        self.rule.setObjectName("RowRule")
+        self.rule.setFixedHeight(1)
+        outer.addWidget(self.rule)
+        lay = QVBoxLayout()
+        lay.setContentsMargins(0, SP['3'], 0, SP['3'])
+        lay.setSpacing(SP['2'])
+        outer.addLayout(lay)
+        top = QHBoxLayout()
+        top.setSpacing(SP['4'])
+        texts = QVBoxLayout()
+        texts.setSpacing(SP['0_5'])
+        self.title = label(title, "RowTitle", wrap=True)
+        texts.addWidget(self.title)
+        self.desc = label(desc, "Muted", wrap=True)
+        texts.addWidget(self.desc)
+        top.addLayout(texts, 1)
+        self.switch = control if isinstance(control, Switch) else None
+        if self.switch is not None and not control.accessibleName():
+            control.setAccessibleName(title)
+        holder = None
+        if control is not None:
+            holder = control if isinstance(control, QWidget) else QWidget()
+            if isinstance(control, QLayout):
+                control.setContentsMargins(0, 0, 0, 0)
+                holder.setLayout(control)
+            if field and not wide:
+                holder.setMinimumWidth(FIELD_W[0])
+                holder.setMaximumWidth(FIELD_W[1])
+        if holder is not None and not wide:
+            top.addWidget(holder, 1 if field else 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(top)
+        if holder is not None and wide:
+            lay.addWidget(holder)
+        self.error = label("", "RowError", wrap=True)
+        lay.addWidget(self.error)
+        # Only now: until `top` joined the row, its labels had no parent, and
+        # showing one then would flash it up as a window of its own.
+        self.desc.setHidden(not desc)
+        self.error.hide()
+
+    def set_description(self, text: str):
+        self.desc.setText(text)
+        self.desc.setVisible(bool(text))
+
+    def set_error(self, text: str | None):
+        self.error.setText(text or "")
+        self.error.setVisible(bool(text))
+
+    def matches(self, q: str) -> bool:
+        return all(w in self._keys for w in q.split())
+
+    def set_match(self, on: bool):
+        self._match = on
+        self.setVisible(self.available and on)
+
+    def set_available(self, on: bool):
+        self.available = on
+        self.setVisible(on and self._match)
+
+    def mouseReleaseEvent(self, ev):
+        sw = self.switch
+        if sw is not None and sw.isEnabled() and ev.button() == Qt.MouseButton.LeftButton:
+            sw.toggle()
+            sw.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().mouseReleaseEvent(ev)
+
+
+class SettingsSection(QWidget):
+    """A heading (icon, title, optional buttons on the right), a line saying
+    what the section is for, and a card of SettingRows with a hairline
+    between each two that are showing."""
+
+    def __init__(self, key: str, title: str, glyph: str, desc: str = ''):
+        super().__init__()
+        self.key, self.title, self.glyph = key, title, glyph
+        self._keys = f"{title} {desc}".lower()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['2'])
+        head = QHBoxLayout()
+        head.setSpacing(SP['2'])
+        head.addWidget(icon_label(G[glyph], 17, P['accent']))
+        head.addWidget(label(title, "ShelfTitle"))
+        head.addStretch()
+        self.actions = head
+        lay.addLayout(head)
+        self.desc = label(desc, "Muted", wrap=True)
+        lay.addWidget(self.desc)
+        self.desc.setHidden(not desc)
+        self.card = QFrame()
+        self.card.setObjectName("Card")
+        self.body = QVBoxLayout(self.card)
+        self.body.setContentsMargins(SP['4'], SP['1'], SP['4'], SP['1'])
+        self.body.setSpacing(0)
+        lay.addWidget(self.card)
+        self.rows: list[SettingRow] = []
+        self.gate: SettingRow | None = None     # the row that makes the others apply
+
+    def add(self, row: SettingRow) -> SettingRow:
+        self.body.addWidget(row)
+        self.rows.append(row)
+        self.relayout()
+        return row
+
+    def relayout(self):
+        first = True
+        for row in self.rows:
+            if row.available and row._match:
+                row.rule.setVisible(not first)
+                first = False
+
+    def filter(self, q: str) -> bool:
+        """Show the rows matching `q` (all of them when the section's own
+        name matches); True if anything is left showing."""
+        whole = not q or all(w in self._keys for w in q.split())
+        for row in self.rows:
+            row.set_match(whole or row.matches(q))
+        if self.gate is not None and any(r._match and not r.available for r in self.rows):
+            self.gate.set_match(True)           # found, but off: show what turns it on
+        shown = any(r.available and r._match for r in self.rows)
+        self.setVisible(shown)
+        self.relayout()
+        return shown
+
+
+class AppearanceCard(SettingsSection):
     """Theme, accent, gradient, glow, corners — applied as you click, saved
-    straight away (no Save needed)."""
+    straight away like everything else here."""
     changed = pyqtSignal(dict)
 
     def __init__(self):
-        super().__init__()
-        self.setObjectName("Card")
-        self.setMaximumWidth(720)
+        super().__init__('appearance', "Appearance", 'palette',
+                         "How Nexus looks. Changes show at once.")
         self.ap = dict(APPEARANCE_DEFAULT)
-        lay = QFormLayout(self)
-        lay.setContentsMargins(SP['4'], SP['4'], SP['4'], SP['4'])
-        lay.setHorizontalSpacing(SP['3'])
-        lay.setVerticalSpacing(SP['3'])
-
-        def lab(t):
-            w = label(t)
-            w.setFixedWidth(SettingsPage.LABEL_W)
-            return w
+        reset = QPushButton("Reset")
+        reset.setObjectName("Ghost")
+        reset.setToolTip("Back to the default look")
+        set_glyph_icon(reset, G['reset'], 14)
+        reset.clicked.connect(lambda: self.load(dict(APPEARANCE_DEFAULT), emit=True))
+        self.actions.addWidget(reset)
 
         self.groups: dict[str, list[Swatch]] = {}
         row = QHBoxLayout()
@@ -99,9 +286,8 @@ class AppearanceCard(QFrame):
             row.addWidget(sw)
             self.groups.setdefault('theme', []).append(sw)
         row.addStretch()
-        lay.addRow(lab("Theme"), row)
-        self.theme_name = label("", "Muted")
-        lay.addRow(lab(""), self.theme_name)
+        self.theme_row = self.add(SettingRow("Theme", "", row, wide=True,
+                                             keywords="dark light colours palette"))
 
         row = QHBoxLayout()
         row.setSpacing(SP['1_5'])
@@ -119,39 +305,40 @@ class AppearanceCard(QFrame):
         row.addSpacing(SP['2'])
         row.addWidget(self.custom)
         row.addStretch()
-        lay.addRow(lab("Accent colour"), row)
+        self.add(SettingRow("Accent colour", "Buttons, highlights and the focus ring.", row,
+                            wide=True, keywords="color hex"))
 
         row = QHBoxLayout()
         row.setSpacing(SP['1_5'])
         self.partner_row = row
-        lay.addRow(lab("Gradient"), row)
+        self.add(SettingRow("Gradient", "A second colour the accent blends into.", row,
+                            wide=True, keywords="color"))
 
         self.glow = SegmentedControl('pill', 32)
         for k, t in (('off', "Off"), ('subtle', "Subtle"), ('vivid', "Vivid")):
             self.glow.add(k, t)
         self.glow.changed.connect(lambda k: self._set('glow', k))
-        g = QHBoxLayout()
-        g.addWidget(self.glow)
-        self.art_tint = QCheckBox("Tint it with the featured game's art")
+        self.add(SettingRow("Background glow", "Soft colour behind the pages.", self.glow))
+        self.art_tint = Switch()
         self.art_tint.toggled.connect(lambda on: self._set('art_tint', on))
-        g.addSpacing(SP['3'])
-        g.addWidget(self.art_tint)
-        g.addStretch()
-        lay.addRow(lab("Background glow"), g)
+        self.add(SettingRow("Tint the glow with game art",
+                            "Takes its colour from the featured game. Needs the glow on.",
+                            self.art_tint))
+
+        self.size = SegmentedControl('pill', 32)
+        for v in SCALES:
+            self.size.add(str(v), f"{int(round(v * 100))}%")
+        self.size.changed.connect(lambda k: self._set('scale', float(k)))
+        self.add(SettingRow("Size", "Text and spacing everywhere — larger for a TV or a "
+                            "high-resolution screen.", self.size,
+                            keywords="scale zoom font bigger smaller dpi"))
 
         self.corners = SegmentedControl('pill', 32)
         for k, t in (('sharp', "Sharp"), ('default', "Soft"), ('round', "Round")):
             self.corners.add(k, t)
         self.corners.changed.connect(lambda k: self._set('corners', k))
-        c = QHBoxLayout()
-        c.addWidget(self.corners)
-        c.addStretch()
-        reset = QPushButton("Reset appearance")
-        reset.setObjectName("Ghost")
-        set_glyph_icon(reset, G['reset'], 15)
-        reset.clicked.connect(lambda: self.load(dict(APPEARANCE_DEFAULT), emit=True))
-        c.addWidget(reset)
-        lay.addRow(lab("Corners"), c)
+        self.add(SettingRow("Corners", "How round cards, buttons and fields are.", self.corners,
+                            keywords="radius"))
 
     def _partners(self):
         clear_layout(self.partner_row)
@@ -187,9 +374,10 @@ class AppearanceCard(QFrame):
         for sw in self.groups['partner']:
             sw.setChecked(sw.key == self.ap['partner'])
         self.custom.setText(self.ap['accent'] if _hex_ok(self.ap['accent']) else "")
-        self.theme_name.setText(THEMES[self.ap['theme']][0])
+        self.theme_row.set_description(THEMES[self.ap['theme']][0])
         self.glow.set_current(self.ap['glow'], animate=False)
         self.corners.set_current(self.ap['corners'], animate=False)
+        self.size.set_current(str(self.ap['scale']), animate=False)
         self.art_tint.blockSignals(True)
         self.art_tint.setChecked(self.ap['art_tint'])
         self.art_tint.blockSignals(False)
@@ -217,259 +405,575 @@ class AppearanceCard(QFrame):
             self._set('accent', v.lower())
 
 
+def _combo(items, min_w: int = 260) -> 'NoWheelCombo':
+    box = NoWheelCombo()
+    for text, val in items:
+        box.addItem(text, val)
+    box.setMinimumWidth(min_w)
+    return box
+
+
 class SettingsPage(QWidget):
     """Edits the config.toml keys the GUI owns; everything else in the file
-    (comments, unknown keys) is preserved by save_config()."""
+    (comments, unknown keys) is preserved by save_config(). Library
+    preferences (controls, show-owned, appearance) go to library.json through
+    the window, as signals."""
     request = pyqtSignal(list, str, bool, str)
     saved = pyqtSignal(bool)            # proton_changed
     controls_changed = pyqtSignal(dict)  # a library preference, applied at once
     background_changed = pyqtSignal(str, bool)   # ('agent' | 'tray', on)
+    import_wanted = pyqtSignal(str)              # a settings file to look at, then import
+    setup_wanted = pyqtSignal()                  # "Run setup again"
+
+    NAV_W, RAIL_W = 228, 60
+    COMPACT_BELOW = 960            # narrower: the list becomes an icon rail
 
     def __init__(self):
         super().__init__()
-        # Scrolls: three sections don't fit a half-height tiled window.
-        page = QVBoxLayout(self)
+        self._compact = False
+        page = QHBoxLayout(self)
         page.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page.setSpacing(0)
+        page.addWidget(self._build_nav())
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = QWidget()
-        scroll.setWidget(host)
-        page.addWidget(scroll)
-        outer = QVBoxLayout(host)
-        outer.setContentsMargins(SP['5'], SP['4'], SP['5'], SP['4'])
-        outer.setSpacing(SP['3'])
-        outer.addWidget(label("Settings", "PageTitle"))
-        self.error = label("", "Muted", wrap=True)
-        outer.addWidget(self.error)
-        head = label("Appearance", "ShelfTitle")
-        head.setMaximumWidth(720)
-        outer.addWidget(head)
+        self.scroll.setWidget(host)
+        page.addWidget(self.scroll, 1)
+        center = QHBoxLayout(host)
+        center.setContentsMargins(SP['6'], SP['4'], SP['6'], 0)
+        center.addStretch(1)
+        col = QWidget()
+        col.setMaximumWidth(780)
+        col.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        center.addWidget(col, 6)
+        center.addStretch(1)
+        self.content = QVBoxLayout(col)
+        self.content.setContentsMargins(0, 0, 0, 0)
+        self.content.setSpacing(SP['6'])
+        self.error = label("", "Banner", wrap=True)
+        self.error.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
+        self.error.setVisible(False)
+        self.content.addWidget(self.error)
+        self.no_match = label("", "Empty", wrap=True)
+        self.no_match.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.no_match.setVisible(False)
+        self.content.addWidget(self.no_match)
+
+        self.sections: dict[str, SettingsSection] = {}
+        self.row_of: dict[QWidget, SettingRow] = {}
         self.appearance = AppearanceCard()
-        outer.addWidget(self.appearance)
-        form = self._section(outer, "General")
-        key_row = QHBoxLayout()
-        self.key = QLineEdit()
-        self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        show = QCheckBox("Show")
-        show.toggled.connect(lambda on: self.key.setEchoMode(
-            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
-        key_row.addWidget(self.key)
-        key_row.addWidget(show)
-        fill = QPushButton("Fetch extra artwork")
-        fill.setToolTip("Download missing hero, logo and banner images from SteamGridDB for "
-                        "every game (Steam and Heroic too). Your own picks are kept.")
-        fill.clicked.connect(lambda: self.request.emit(
-            ['--fill-art'], "Fetching extra artwork from SteamGridDB", False, 'task'))
-        key_row.addWidget(fill)
-        self._add(form, "SteamGridDB API key", key_row)
+        self._add_section(self.appearance)
+        self._build_library()
+        self._build_controls()
+        self._build_installing()
+        self._build_running()
+        self._build_artwork()
+        self._build_gamedb()
+        self._build_torrent()
+        self._build_alerts()
+        self._build_background()
+        self._build_backup()
+        self.tail = QWidget()                   # lets the last section scroll to the top
+        self.content.addWidget(self.tail)
+        self.content.addStretch()
+
+        bar = self.scroll.verticalScrollBar()
+        bar.valueChanged.connect(self._spy)
+        self._anim = QPropertyAnimation(bar, b"value", self)
+        self._anim.setDuration(240)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.scroll.viewport().installEventFilter(self)
+        self._flash = QTimer(self)
+        self._flash.setSingleShot(True)
+        self._flash.setInterval(2500)
+        self._flash.timeout.connect(self._saved_note_idle)
+        for keys, slot in (("Ctrl+S", self.commit), ("Ctrl+F", self._focus_search)):
+            sc = QShortcut(QKeySequence(keys), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+
+        self.cfg = {}
+        self._scroll_key = ''
+        self._proton_current = None
+        self._loading = False
+        self._loaded = False                    # nothing saves before the first load()
+        self._pending = False                   # a text field edited, not yet saved
+        self._invalid: dict[QWidget, str] = {}  # fields whose text can't be saved
+        self.gamedb_changed = False
+        self._agent_state = None
+        self._wire()
+        self._show_nav(next(iter(self.sections)))
+
+    # ---- building ----
+    def _build_nav(self) -> QWidget:
+        nav = self.nav = QWidget()
+        nav.setObjectName("SettingsNav")
+        nav.setFixedWidth(self.NAV_W)
+        lay = QVBoxLayout(nav)
+        lay.setContentsMargins(SP['5'], SP['4'], SP['3'], SP['4'])
+        lay.setSpacing(SP['1'])
+        # Title, save note and search: atop the list, or atop the content
+        # when the window is narrow (see _set_compact).
+        self.head = QWidget()
+        head = QVBoxLayout(self.head)
+        head.setContentsMargins(0, 0, 0, SP['2'])
+        head.setSpacing(SP['1'])
+        head.addWidget(label("Settings", "PageTitle"))
+        self.saved_note = label("", "SavedNote", wrap=True)
+        head.addWidget(self.saved_note)
+        self._saved_note_idle()
+        head.addSpacing(SP['2'])
+        lay.addWidget(self.head)
+        self.search = QLineEdit()
+        self.search.setObjectName("SettingsSearch")
+        self.search.setPlaceholderText("Search settings")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedHeight(36)            # r_search is a pill at 36
+        self.search.addAction(QIcon(glyph_pixmap(G['search'], P['muted'], 14)),
+                              QLineEdit.ActionPosition.LeadingPosition)
+        self.search.textChanged.connect(self._filter)
+        head.addWidget(self.search)
+        self.nav_lay = lay
+        self.nav_btns: dict[str, QPushButton] = {}
+        self._nav_end = lay.count()
+        lay.addStretch()
+        cfg = self.cfg_btn = QPushButton("Open config.toml")
+        cfg.setObjectName("Ghost")
+        self._cfg_tip = (f"{CONFIG_PATH}\nPhone pushes ([notify]) and a few rarer options "
+                         "live only here")
+        cfg.setAccessibleName("Open config.toml")
+        cfg.setToolTip(self._cfg_tip)
+        set_glyph_icon(cfg, G['external'], 14)
+        cfg.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_PATH))))
+        lay.addWidget(cfg, 0, Qt.AlignmentFlag.AlignLeft)
+        return nav
+
+    def _add_section(self, sec: SettingsSection) -> SettingsSection:
+        self.sections[sec.key] = sec
+        self.content.addWidget(sec)
+        b = QPushButton(sec.title)
+        b.setObjectName("NavItem")
+        b.setAccessibleName(sec.title)
+        b.setCheckable(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_glyph_icon(b, G[sec.glyph], 16, 'muted', on_role='accent')
+        b.clicked.connect(lambda _=False, k=sec.key: self.show_section(k))
+        self.nav_lay.insertWidget(self._nav_end, b)
+        self._nav_end += 1
+        self.nav_btns[sec.key] = b
+        return sec
+
+    def _row(self, sec, title, desc, control, **kw) -> SettingRow:
+        row = sec.add(SettingRow(title, desc, control, **kw))
+        widget = control if isinstance(control, QWidget) else None
+        if widget is not None:
+            self.row_of[widget] = row
+        return row
+
+    def _field_row(self, sec, title, desc, edit, browse=False, extra=(), **kw) -> SettingRow:
+        """A text field (plus a folder button or other buttons) on the right."""
+        lay = QHBoxLayout()
+        lay.setSpacing(SP['1_5'])
+        lay.addWidget(edit, 1)
+        if browse:
+            b = QPushButton()
+            b.setToolTip("Choose a folder")
+            b.setFixedWidth(36)
+            set_glyph_icon(b, G['folder'], 15)
+            b.clicked.connect(lambda: self._browse(edit))
+            lay.addWidget(b)
+        for w in extra:
+            lay.addWidget(w)
+        row = sec.add(SettingRow(title, desc, lay, field=True, **kw))
+        self.row_of[edit] = row
+        return row
+
+    @staticmethod
+    def _secret(edit: QLineEdit) -> QLineEdit:
+        """A password-style field with an eye at its end to show it."""
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        eye = edit.addAction(QIcon(glyph_pixmap(G['eye'], P['muted'], 15)),
+                             QLineEdit.ActionPosition.TrailingPosition)
+        eye.setToolTip("Show")
+
+        def flip():
+            hidden = edit.echoMode() == QLineEdit.EchoMode.Password
+            edit.setEchoMode(QLineEdit.EchoMode.Normal if hidden else
+                             QLineEdit.EchoMode.Password)
+            eye.setIcon(QIcon(glyph_pixmap(G['eye_off' if hidden else 'eye'], P['muted'], 15)))
+            eye.setToolTip("Hide" if hidden else "Show")
+        eye.triggered.connect(flip)
+        return edit
+
+    def _build_library(self):
+        sec = self._add_section(SettingsSection('library', "Library", 'library'))
+        self.show_owned = Switch()
+        self._row(sec, "Show games you own but haven't installed",
+                  "Steam games through Game-db, Epic and GOG through Heroic.", self.show_owned,
+                  keywords="owned uninstalled epic gog")
+        self.ctl_dedupe = _combo((("Show it once (repack, then Steam, then Heroic)", True),
+                                  ("Show every copy", False)))
+        self._row(sec, "A game in several stores", "Which copies the library shows.",
+                  self.ctl_dedupe, keywords="duplicate dedupe")
+        self.news = Switch()
+        self._row(sec, "News page", "FitGirl's latest posts and news for your games. "
+                  "Experimental.", self.news, keywords="feed")
+
+    def _build_controls(self):
+        sec = self._add_section(SettingsSection(
+            'controls', "Controls", 'gamepad',
+            "What clicks, keys and the controller do on a game. A game that's running, busy "
+            "or not installed always opens its page."))
+        self.ctl_double = _combo((("Play the game", 'play'), ("Open its page", 'details')))
+        self._row(sec, "Double-click a game", "", self.ctl_double, keywords="mouse")
+        self.ctl_a = _combo((("Open its page (press again to play)", 'details'),
+                             ("Play the game", 'play')))
+        self._row(sec, "Enter or controller A", "", self.ctl_a,
+                  keywords="keyboard gamepad button")
+        self.ctl_attract = _combo([("Never" if not m else f"After {m} minutes idle", m)
+                                   for m in ATTRACT_MINUTES])
+        self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
+                  "untouched.", self.ctl_attract, keywords="attract idle tv")
+
+    def _build_installing(self):
+        sec = self._add_section(SettingsSection('installing', "Installing games", 'download'))
         self.base = QLineEdit()
         self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
-        self._add(form, "Install games to", self._with_browse(self.base))
+        self._field_row(sec, "Install games to", "Each game gets its own folder here.",
+                        self.base, browse=True, keywords="folder path location")
         self.scan_dir = QLineEdit()
         self.scan_dir.setPlaceholderText(str(HOME / 'Downloads'))
-        self._add(form, "Look for repacks in", self._with_browse(self.scan_dir))
+        self._field_row(sec, "Look for repacks in", "Nexus says when a download here is "
+                        "ready to install.", self.scan_dir, browse=True,
+                        keywords="downloads folder scan")
         self.scan_more = QLineEdit()
-        self.scan_more.setPlaceholderText("more folders, separated by ;  (e.g. ~/Games/Install)")
-        self.scan_more.setToolTip("Nexus watches these too and tells you when a download there "
-                                  "is ready to install")
-        self._add(form, "Also look in", self.scan_more)
-        self.runner = NoWheelCombo()
-        for text, val in (("Automatic", 'auto'), ("umu-run + Proton", 'umu'),
-                          ("Proton (direct)", 'proton'), ("System Wine", 'wine')):
-            self.runner.addItem(text, val)
-        self._add(form, "Runner", self.runner)
-        self.proton = NoWheelCombo()
-        self.proton.setToolTip("The Proton games are played with — in launch.sh, Steam and "
-                               "Heroic. A game can override it on its Launch tab.")
-        self._add(form, "Play with Proton", self.proton)
+        self.scan_more.setPlaceholderText("e.g. ~/Games/Install")
+        self._field_row(sec, "Also look in", "More folders to watch, separated by ;",
+                        self.scan_more, keywords="folders scan")
+        self.unattended = Switch()
+        self._row(sec, "Install without the setup window", "Runs FitGirl's installer "
+                  "silently; follow it in Activity.", self.unattended,
+                  keywords="silent unattended")
+        self.trash_repack = Switch()
+        self._row(sec, "Move the repack to the Trash afterwards", "Frees the space once the "
+                  "game is installed. You can still restore it from the Trash.",
+                  self.trash_repack, keywords="delete cleanup")
+        self.steam = Switch()
+        self._row(sec, "Add new games to Steam", "As a non-Steam game, with its artwork.",
+                  self.steam, keywords="shortcut")
+        self.heroic = Switch()
+        self._row(sec, "Add new games to Heroic", "", self.heroic)
+        self.desktop = Switch()
+        self._row(sec, "Add new games to the app menu", "A launcher entry for each game.",
+                  self.desktop, keywords="desktop entry")
+
+    def _build_running(self):
+        sec = self._add_section(SettingsSection('running', "Running games", 'proton'))
+        self.runner = _combo((("Automatic", 'auto'), ("umu-run + Proton", 'umu'),
+                              ("Proton (direct)", 'proton'), ("System Wine", 'wine')))
+        self._row(sec, "Runner", "How Windows games start. Automatic uses umu-run with "
+                  "Proton when it's installed, then Proton, then Wine.", self.runner,
+                  keywords="umu wine backend")
+        self.proton = _combo(())
+        self.proton.setToolTip("A game can override it on its page, under Launch")
+        self._row(sec, "Proton version", "Used in launch.sh, Steam and Heroic. A game can "
+                  "override it on its page.", self.proton, keywords="ge-proton compatibility")
         self.account = QLineEdit()
-        self.account.setPlaceholderText("auto-detect (last signed in)")
-        self._add(form, "Steam account", self.account)
-        self.steam = QCheckBox("Add new games to Steam")
-        self.desktop = QCheckBox("Create app-menu entries for new games")
-        self.heroic = QCheckBox("Add new games to Heroic")
-        self.news = QCheckBox("Show the News page (experimental)")
-        self.unattended = QCheckBox("Install repacks without the setup window")
-        self.trash_repack = QCheckBox("Move a repack to the Trash once it's installed")
-        iform = self._section(outer, "New games and pages")
-        # A library preference (library.json), applied at once — not config.toml.
-        self.show_owned = QCheckBox("Show games you own but haven't installed "
-                                    "(Steam through Game-db, Epic and GOG through Heroic)")
-        for c in (self.unattended, self.trash_repack, self.steam, self.desktop, self.heroic,
-                  self.news, self.show_owned):
-            self._add(iform, "", c)
-        # Controls: what a double click and A / Enter do on a game. Library
-        # preferences (library.json), applied at once like "show games you own".
-        cform = self._section(outer, "Controls")
-        self.ctl_double = NoWheelCombo()
-        self.ctl_double.addItem("Play the game", 'play')
-        self.ctl_double.addItem("Open its page", 'details')
-        self._add(cform, "Double-click a game", self.ctl_double)
-        self.ctl_a = NoWheelCombo()
-        self.ctl_a.addItem("Open its page (press again to play)", 'details')
-        self.ctl_a.addItem("Play the game", 'play')
-        self._add(cform, "Enter / controller A", self.ctl_a)
-        self.ctl_dedupe = NoWheelCombo()
-        self.ctl_dedupe.addItem("Show it once (repack, then Steam, then Heroic)", True)
-        self.ctl_dedupe.addItem("Show every copy", False)
-        self._add(cform, "A game in several stores", self.ctl_dedupe)
-        self.ctl_dedupe.activated.connect(lambda _i: self.controls_changed.emit(
-            {'dedupe': self.ctl_dedupe.currentData()}))
-        self.ctl_attract = NoWheelCombo()
-        for m in ATTRACT_MINUTES:
-            self.ctl_attract.addItem("Never" if not m else f"After {m} minutes idle", m)
-        self._add(cform, "Theatre screensaver", self.ctl_attract)
-        self.ctl_attract.activated.connect(lambda _i: self.controls_changed.emit(
-            {'attract': self.ctl_attract.currentData()}))
-        self._add(cform, "", label("Applied right away, in Theatre too. A game that's running, "
-                                   "busy or not installed always opens its page.", "Muted",
-                                   wrap=True))
-        self.ctl_double.activated.connect(lambda _i: self.controls_changed.emit(
-            {'double_click': self.ctl_double.currentData()}))
-        self.ctl_a.activated.connect(lambda _i: self.controls_changed.emit(
-            {'pad_a': self.ctl_a.currentData()}))
-        # Game-db: wishlist deals, upcoming releases, backlog picks.
-        gform = self._section(outer, "Game-db")
-        self.gdb_enabled = QCheckBox("Show the Deals page (wishlist deals, releases, backlog)")
-        self._add(gform, "", self.gdb_enabled)
+        self.account.setPlaceholderText("last signed in")
+        self._field_row(sec, "Steam account", "Whose Steam gets the shortcuts. Leave empty for "
+                        "the last one signed in.", self.account, keywords="profile user")
+
+    def _build_artwork(self):
+        sec = self._add_section(SettingsSection('artwork', "Artwork", 'image',
+                                                "Covers, heroes and logos from SteamGridDB."))
+        self.key = self._secret(QLineEdit())
+        self.key.setPlaceholderText("not set")
+        get = QPushButton("Get a key")
+        get.setToolTip("Opens SteamGridDB's API page (free, needs an account)")
+        get.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SGDB_KEY_URL)))
+        self._field_row(sec, "SteamGridDB API key", "Free from your SteamGridDB preferences.",
+                        self.key, extra=(get,), keywords="sgdb token")
+        fill = QPushButton("Fetch now")
+        set_glyph_icon(fill, G['download'], 14)
+        fill.clicked.connect(lambda: self.request.emit(
+            ['--fill-art'], "Fetching extra artwork from SteamGridDB", False, 'task'))
+        self.fill_art = fill
+        self._row(sec, "Fetch missing artwork", "For every game, Steam and Heroic too. "
+                  "Art you picked yourself is kept.", fill, keywords="images download")
+
+    def _build_gamedb(self):
+        sec = self._add_section(SettingsSection(
+            'gamedb', "Game-db", 'deals',
+            "Wishlist deals, upcoming releases and your backlog, from your Game-db account."))
+        self.gdb_enabled = Switch()
+        self._row(sec, "Deals page", "Show it in the top bar.", self.gdb_enabled,
+                  keywords="wishlist releases backlog")
         self.gdb_url = QLineEdit()
         self.gdb_url.setPlaceholderText(gamedb.DEFAULT_URL)
-        self._add(gform, "Game-db address", self.gdb_url)
-        tok_row = QHBoxLayout()
-        self.gdb_token = QLineEdit()
-        self.gdb_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._field_row(sec, "Address", "", self.gdb_url, keywords="url server")
+        self.gdb_token = self._secret(QLineEdit())
         self.gdb_token.setPlaceholderText("gdb_…")
-        tshow = QCheckBox("Show")
-        tshow.toggled.connect(lambda on: self.gdb_token.setEchoMode(
-            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
-        get = QPushButton("Create a token…")
+        get = QPushButton("Create one")
         get.setToolTip("Opens your Game-db account page in the browser")
         get.clicked.connect(self._open_gamedb_account)
-        tok_row.addWidget(self.gdb_token, 1)
-        tok_row.addWidget(tshow)
-        tok_row.addWidget(get)
-        self._add(gform, "Desktop app token", tok_row)
-        self.gdb_note = label("", "Muted", wrap=True)
-        self._add(gform, "", self.gdb_note)
-        # Torrent client: the Downloads page and "Grab" on Deals.
-        tform = self._section(outer, "Torrent client")
-        self.tor_client = QComboBox()
-        for text, key in (("Off", None), ("Transmission", 'transmission'),
-                          ("qBittorrent", 'qbittorrent')):
-            self.tor_client.addItem(text, key)
-        self._add(tform, "Client", self.tor_client)
+        self.gdb_token_row = self._field_row(
+            sec, "Desktop app token", "Read-only. Kept in config.toml, readable only by you; "
+            "data is cached 45 minutes.", self.gdb_token, extra=(get,), keywords="key")
+
+    def _build_torrent(self):
+        sec = self._add_section(SettingsSection(
+            'torrent', "Torrent client", 'magnet',
+            "For the Downloads page and Grab on Deals. The client must run on this machine "
+            "with remote control on: Transmission, Edit → Preferences → Remote; qBittorrent, "
+            "Tools → Options → Web UI."))
+        self.tor_client = _combo((("Off", None), ("Transmission", 'transmission'),
+                                  ("qBittorrent", 'qbittorrent')))
+        sec.gate = self._row(sec, "Client", "", self.tor_client,
+                             keywords="transmission qbittorrent")
         self.tor_url = QLineEdit()
         self.tor_url.setPlaceholderText("http://127.0.0.1:9091")
-        self._add(tform, "Remote address", self.tor_url)
+        self.tor_rows = [self._field_row(sec, "Remote address", "", self.tor_url,
+                                         keywords="url port rpc")]
         self.tor_user = QLineEdit()
         self.tor_user.setPlaceholderText("only if the client asks for one")
-        self._add(tform, "Username", self.tor_user)
-        prow = QHBoxLayout()
-        self.tor_pass = QLineEdit()
-        self.tor_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        pshow = QCheckBox("Show")
-        pshow.toggled.connect(lambda on: self.tor_pass.setEchoMode(
-            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
-        prow.addWidget(self.tor_pass, 1)
-        prow.addWidget(pshow)
-        self._add(tform, "Password", prow)
+        self.tor_rows.append(self._field_row(sec, "Username", "", self.tor_user))
+        self.tor_pass = self._secret(QLineEdit())
+        self.tor_rows.append(self._field_row(sec, "Password", "", self.tor_pass))
         self.tor_dir = QLineEdit()
-        self.tor_dir.setPlaceholderText("the client's own download folder")
-        self._add(tform, "Download to", self._with_browse(self.tor_dir))
+        self.tor_dir.setPlaceholderText("the client's own folder")
+        self.tor_rows.append(self._field_row(sec, "Download to", "", self.tor_dir, browse=True,
+                                             keywords="folder"))
         self.tor_ratio = QLineEdit()
-        self.tor_ratio.setPlaceholderText("keep seeding (the client's setting)")
-        self._add(tform, "Stop seeding at ratio", self.tor_ratio)
-        trow = QHBoxLayout()
+        self.tor_ratio.setPlaceholderText("the client's setting")
+        self.tor_rows.append(self._field_row(sec, "Stop seeding at ratio",
+                                             "A number like 1.5. Empty keeps seeding as the "
+                                             "client says.", self.tor_ratio,
+                                             keywords="seed share"))
         self.tor_test = QPushButton("Test connection")
-        self.tor_test.setToolTip("Asks the client for its version (save first)")
+        self.tor_test.setToolTip("Asks the client for its version")
         self.tor_test.clicked.connect(self._test_torrent)
-        self.tor_result = label("", "Muted", wrap=True)
-        trow.addWidget(self.tor_test)
-        trow.addWidget(self.tor_result, 1)
-        self._add(tform, "", trow)
-        self._add(tform, "", label(
-            "On this machine only. In Transmission turn on Edit → Preferences → Remote → "
-            "Allow remote access; in qBittorrent, Tools → Options → Web UI.", "Muted",
-            wrap=True))
-        # Alerts (config.toml [alerts]): pushed to the phone ([notify]) and,
-        # with no window open, shown on the desktop by the background agent.
-        aform = self._section(outer, "Alerts")
-        self.al_atl = QCheckBox("A wishlist game hits its all-time low")
-        self.al_fitgirl = QCheckBox("A wishlist game appears on FitGirl")
-        self.al_updates = QCheckBox("FitGirl posts an update of a game you installed")
-        self.al_proton = QCheckBox("A new GE-Proton is out")
-        for c in (self.al_atl, self.al_fitgirl, self.al_updates, self.al_proton):
-            self._add(aform, "", c)
-        self.al_sale = NoWheelCombo()
-        for text, cut in (("Off", 0), ("25% off or more", 25), ("50% off or more", 50),
-                          ("75% off or more", 75)):
-            self.al_sale.addItem(text, cut)
-        self._add(aform, "Any wishlist sale", self.al_sale)
-        arow = QHBoxLayout()
+        self.tor_test_row = self._row(sec, "Check it works", "", self.tor_test)
+        self.tor_result = self.tor_test_row.desc
+        self.tor_rows.append(self.tor_test_row)
+
+    def _build_alerts(self):
+        sec = self._add_section(SettingsSection(
+            'alerts', "Alerts", 'bell',
+            "Each alert comes once, on the desktop and to your phone (the ntfy topic or KDE "
+            "Connect devices in config.toml [notify])."))
+        self.al_atl = Switch()
+        self._row(sec, "A wishlist game hits its all-time low", "", self.al_atl,
+                  keywords="price deal atl")
+        self.al_sale = _combo((("Off", 0), ("25% off or more", 25), ("50% off or more", 50),
+                               ("75% off or more", 75)), 180)
+        self._row(sec, "Any wishlist sale", "", self.al_sale, keywords="discount price deal")
+        self.al_fitgirl = Switch()
+        self._row(sec, "A wishlist game appears on FitGirl", "", self.al_fitgirl,
+                  keywords="repack")
+        self.al_updates = Switch()
+        self._row(sec, "An installed game gets a repack update", "", self.al_updates,
+                  keywords="fitgirl")
+        self.al_proton = Switch()
+        self._row(sec, "A new GE-Proton is out", "", self.al_proton)
         test = QPushButton("Send a test")
-        test.setToolTip("Pushes a test message to the phone targets in config.toml [notify]")
+        set_glyph_icon(test, G['bell'], 14)
         test.clicked.connect(lambda: self.request.emit(
             ['--notify-test'], "Sending a test notification", False, 'task'))
-        arow.addWidget(test)
-        arow.addWidget(label("Each alert comes once. Phone pushes go to the ntfy topic or "
-                             "KDE Connect devices in config.toml [notify].", "Muted",
-                             wrap=True), 1)
-        self._add(aform, "", arow)
-        # Background: the agent (a systemd user service) and the tray. Applied
-        # at once, like the library preferences above — not with Save.
-        bform = self._section(outer, "Background")
-        self.agent = QCheckBox("Keep watching downloads and sending alerts while Nexus is closed")
+        self._row(sec, "Try it", "Pushes a test message to your phone.", test,
+                  keywords="notify ntfy kde connect")
+
+    def _build_background(self):
+        sec = self._add_section(SettingsSection('background', "Background", 'power'))
+        self.agent = Switch()
         self.agent.setToolTip("Runs `nexus-cli --agent` as a systemd user service: finished "
                               "torrents install, ready repacks and alerts are announced, the "
                               "FitGirl feed stays fresh")
         self.agent.toggled.connect(self._agent_toggled)
-        self._add(bform, "", self.agent)
-        self.agent_note = label("", "Muted", wrap=True)
-        self._add(bform, "", self.agent_note)
-        self.tray = QCheckBox("Keep Nexus in the tray when its window is closed")
+        self.agent_row = self._row(sec, "Keep working while Nexus is closed", "", self.agent,
+                                   keywords="agent systemd service alerts downloads")
+        self.agent_note = self.agent_row.desc
+        self.tray = Switch()
         self.tray.toggled.connect(lambda on: self.controls_changed.emit({'close_to_tray': on}))
-        self._add(bform, "", self.tray)
-        self.tray_note = label("", "Muted", wrap=True)
-        self._add(bform, "", self.tray_note)
+        self.tray_row = self._row(sec, "Close to the tray", "", self.tray,
+                                  keywords="system tray minimise hidden")
+        self.tray_note = self.tray_row.desc
+
+    def _build_backup(self):
+        sec = self._add_section(SettingsSection(
+            'backup', "Back up & move", 'save',
+            "Your settings in one file, for a new PC or a reinstall. Saves aren't in it — "
+            "each game has its own save backups."))
+        self.bk_art = Switch()
+        self._row(sec, "Include artwork images", "The covers and heroes you picked, not just "
+                  "which ones (bigger file).", self.bk_art, keywords="backup export")
+        self.bk_secrets = Switch()
+        self._row(sec, "Include keys and passwords",
+                  "SteamGridDB key, Game-db token, torrent password. Off: the file is safe to "
+                  "share; this machine's own are kept on import.", self.bk_secrets,
+                  keywords="backup export secrets token")
         row = QHBoxLayout()
-        self.dirty_note = label("Unsaved changes", "Muted")
-        self.dirty_note.setVisible(False)
-        row.addWidget(self.dirty_note)
-        row.addStretch()
-        revert = QPushButton("Revert")
-        revert.clicked.connect(self.load)
-        self.btn_save = QPushButton("Save")
-        self.btn_save.setObjectName("Primary")
-        self.btn_save.setToolTip("Save (Ctrl+S)")
-        self.btn_save.clicked.connect(self._save)
-        save_sc = QShortcut(QKeySequence("Ctrl+S"), self)
-        save_sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        save_sc.activated.connect(self._save)
-        row.addWidget(revert)
-        row.addWidget(self.btn_save)
-        w = QWidget()
-        w.setMaximumWidth(720)
-        w.setLayout(row)
-        outer.addWidget(w)
-        outer.addStretch()
-        self.cfg = {}
-        self._proton_current = None
-        self.dirty = self._loading = False
-        # Anything edited marks the page dirty: leaving keeps the edits (and
-        # says so) instead of quietly reloading over them.
+        exp = QPushButton("Export…")
+        set_glyph_icon(exp, G['download'], 14)
+        exp.clicked.connect(self._export)
+        imp = QPushButton("Import…")
+        set_glyph_icon(imp, G['update'], 14)
+        imp.clicked.connect(self._import)
+        row.addWidget(exp)
+        row.addWidget(imp)
+        self._row(sec, "Settings file", "Settings, favourites, collections, notes, the "
+                  "dashboard, the look, your game list and play history.", row,
+                  keywords="backup export import move new pc restore")
+        again = QPushButton("Run setup again")
+        again.clicked.connect(self.setup_wanted)
+        self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
+                  again, keywords="welcome wizard onboarding first run")
+
+    def _export(self):
+        import datetime
+        default = str(HOME / f"nexus-settings-{datetime.date.today():%Y-%m-%d}.tar.gz")
+        path, _ = QFileDialog.getSaveFileName(self, "Save your Nexus settings", default,
+                                              "Nexus settings (*.tar.gz)")
+        if not path:
+            return
+        args = ['--export-settings', path]
+        if self.bk_art.isChecked():
+            args.append('--with-art')
+        if self.bk_secrets.isChecked():
+            args.append('--with-secrets')
+        self.request.emit(args, "Saving your settings", False, 'task')
+
+    def _import(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import Nexus settings", str(HOME),
+                                              "Nexus settings (*.tar.gz *.tgz)")
+        if path:
+            self.import_wanted.emit(path)
+
+    def _wire(self):
+        """Switches and menus save when they change; text fields when you
+        leave them (or press Enter). Library preferences go out as signals."""
         for e in (self.key, self.base, self.scan_dir, self.scan_more, self.account,
                   self.gdb_url, self.gdb_token, self.tor_url, self.tor_user, self.tor_pass,
                   self.tor_dir, self.tor_ratio):
-            e.textChanged.connect(self._mark_dirty)
+            e.textChanged.connect(self._edited)
+            e.editingFinished.connect(self.commit)
         for c in (self.steam, self.desktop, self.heroic, self.news, self.unattended,
                   self.trash_repack, self.gdb_enabled, self.al_atl, self.al_fitgirl,
                   self.al_updates, self.al_proton):
-            c.toggled.connect(self._mark_dirty)
-        for cb in (self.runner, self.proton, self.tor_client, self.al_sale):
-            cb.activated.connect(self._mark_dirty)
-        self._agent_state = None
+            c.toggled.connect(self.commit)
+        for cb in (self.runner, self.proton, self.al_sale):
+            cb.activated.connect(self.commit)
+        self.tor_client.activated.connect(self._torrent_client_changed)
+        for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
+                         (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract')):
+            box.activated.connect(lambda _i, box=box, key=key: self.controls_changed.emit(
+                {key: box.currentData()}))
 
+    # ---- navigation and search ----
+    def show_section(self, key: str):
+        """Scroll to a section (Deals, Downloads and the art picker link here)."""
+        sec = self.sections.get(key)
+        if sec is None:
+            return
+        if self.search.text() and not sec.isVisible():
+            self.search.clear()
+        self._show_nav(key)
+        self._scroll_key = key
+        if self.isVisible():
+            self._scroll_to_section()
+        # Again once the layout has settled: a page just shown may not have
+        # its final geometry yet.
+        QTimer.singleShot(0, self._scroll_to_section)
+
+    def _scroll_to_section(self, animate: bool = True):
+        sec = self.sections.get(self._scroll_key)
+        if sec is None:
+            return
+        self._update_tail()
+        bar = self.scroll.verticalScrollBar()
+        target = min(bar.maximum(), max(0, self._top_of(sec) - SP['4']))
+        self._anim.stop()
+        if MOTION and animate and self.isVisible() and abs(bar.value() - target) > 2:
+            self._anim.setStartValue(bar.value())
+            self._anim.setEndValue(target)
+            self._anim.start()
+        else:
+            bar.setValue(target)
+        self._show_nav(sec.key)
+
+    def current_section(self) -> str:
+        return next((k for k, b in self.nav_btns.items() if b.isChecked()), '')
+
+    def _top_of(self, w: QWidget) -> int:
+        return w.mapTo(self.scroll.widget(), w.rect().topLeft()).y()
+
+    def _show_nav(self, key: str):
+        for k, b in self.nav_btns.items():
+            b.setChecked(k == key)
+
+    def _spy(self, value: int):
+        """The section at the top of the view is the one lit in the list."""
+        if self._anim.state() == QPropertyAnimation.State.Running:
+            return
+        shown = [s for s in self.sections.values() if s.isVisible()]
+        if not shown:
+            return
+        cur = shown[0]
+        for sec in shown:
+            if self._top_of(sec) - SP['6'] <= value:
+                cur = sec
+        self._show_nav(cur.key)
+
+    def _update_tail(self):
+        """Room under the last section, so that one too can reach the top."""
+        shown = [s for s in self.sections.values() if s.isVisible()]
+        h = self.scroll.viewport().height()
+        last = shown[-1].height() if shown else 0
+        self.tail.setFixedHeight(max(SP['6'], h - last - SP['8']))
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._set_compact(self.width() < self.COMPACT_BELOW)
+
+    def _set_compact(self, on: bool):
+        if on == self._compact:
+            return
+        self._compact = on
+        self.nav.setFixedWidth(self.RAIL_W if on else self.NAV_W)
+        m = (SP['2'], SP['4'], SP['2'], SP['4']) if on else (SP['5'], SP['4'], SP['3'], SP['4'])
+        self.nav_lay.setContentsMargins(*m)
+        for b in [*self.nav_btns.values(), self.cfg_btn]:
+            name = b.accessibleName() or "Open config.toml"
+            b.setText("" if on else name)
+            b.setToolTip(name if on else ("" if b is not self.cfg_btn else self._cfg_tip))
+        if on:
+            self.content.insertWidget(0, self.head)
+        else:
+            self.nav_lay.insertWidget(0, self.head)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Resize:
+            self._update_tail()
+        return super().eventFilter(obj, ev)
+
+    def _focus_search(self):
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def _filter(self, text: str):
+        q = text.strip().lower()
+        found = [k for k, sec in self.sections.items() if sec.filter(q)]
+        for k, b in self.nav_btns.items():
+            b.setVisible(k in found)
+        self.no_match.setText(f"No settings match “{text.strip()}”." if not found else "")
+        self.no_match.setVisible(not found)
+        self._update_tail()
+        self.scroll.verticalScrollBar().setValue(0)
+        if found:
+            self._show_nav(found[0])
+
+    # ---- the background agent and the tray ----
     def _agent_toggled(self, on: bool):
         if self._agent_state is not None and on != self._agent_state.get('enabled'):
             self.background_changed.emit('agent', on)
@@ -488,6 +992,7 @@ class SettingsPage(QWidget):
         self.agent.blockSignals(True)
         self.agent.setChecked(bool(s.get('enabled')))
         self.agent.blockSignals(False)
+        self.agent.update()
         self.agent.setEnabled(s.get('systemd', True) is not False)
         if s.get('systemd') is False:
             note = "Needs systemd (systemctl --user), which this system doesn't have."
@@ -499,9 +1004,9 @@ class SettingsPage(QWidget):
         elif s.get('enabled'):
             note = "On, but not running right now — it starts again within a minute."
         else:
-            note = ("Off: downloads are watched and alerts sent only while this window is "
-                    "open.")
-        self.agent_note.setText(note)
+            note = ("Installs finished downloads and sends your alerts. Off now: that happens "
+                    "only while this window is open.")
+        self.agent_row.set_description(note)
 
     def set_controls(self, controls: dict):
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
@@ -512,53 +1017,79 @@ class SettingsPage(QWidget):
         self.tray.setChecked(bool(controls.get('close_to_tray')) and has_tray)
         self.tray.blockSignals(False)
         self.tray.setEnabled(has_tray)
-        self.tray_note.setText(
-            "The tray menu has your recent games, downloads and Quit. To start in the tray, "
-            "run nexus --hidden." if has_tray else
+        self.tray_row.set_description(
+            "Closing the window keeps Nexus in the tray, with your recent games, downloads "
+            "and Quit. Start there with nexus\u00a0-\u2060-\u2060hidden." if has_tray else
             "No system tray here — on niri, a bar with a tray (waybar's \"tray\" module) "
             "provides one.")
 
-    def _mark_dirty(self, *_):
-        if not self._loading and not self.dirty:
-            self.dirty = True
-            self.dirty_note.setVisible(True)
+    # ---- saving ----
+    @property
+    def dirty(self) -> bool:
+        """An edit that isn't in config.toml yet: typed and not left, or
+        left but not valid."""
+        return self._pending or bool(self._invalid)
 
-    LABEL_W = 160
+    def unsaved_reason(self) -> str:
+        for w, msg in self._invalid.items():
+            row = self.row_of.get(w)
+            return f"{row.title.text()}: {msg}" if row else msg
+        return ""
 
-    def _section(self, outer, title):
-        """Heading + card, with every form sharing one label column width."""
-        head = label(title, "ShelfTitle")
-        head.setMaximumWidth(720)
-        outer.addWidget(head)
-        card = QFrame()
-        card.setObjectName("Card")
-        card.setMaximumWidth(720)
-        form = QFormLayout(card)
-        form.setContentsMargins(SP['4'], SP['4'], SP['4'], SP['4'])
-        form.setHorizontalSpacing(SP['3'])
-        form.setVerticalSpacing(SP['2_5'])
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        outer.addWidget(card)
-        return form
+    def _edited(self, *_):
+        if not self._loading:
+            self._pending = True
 
-    def _add(self, form, text, field):
-        lab = label(text)
-        lab.setFixedWidth(self.LABEL_W)
-        form.addRow(lab, field)
+    def _torrent_client_changed(self, *_):
+        self._sync_torrent_rows()
+        self.commit()
+
+    def _sync_torrent_rows(self):
+        on = self.tor_client.currentData() is not None
+        for row in self.tor_rows:
+            row.set_available(on)
+        self.sections['torrent'].relayout()
+        self._update_tail()
+
+    def _saved_note_idle(self):
+        self.saved_note.setProperty('ok', False)
+        self.saved_note.setText("Changes save as you make them.")
+        self._repolish(self.saved_note)
+
+    def _saved_note_flash(self):
+        self.saved_note.setProperty('ok', True)
+        self.saved_note.setText("✓ Saved")
+        self._repolish(self.saved_note)
+        self._flash.start()
+
+    @staticmethod
+    def _repolish(w):
+        w.style().unpolish(w)
+        w.style().polish(w)
+
+    def commit(self, *_):
+        """Save whatever differs from config.toml now (a no-op when nothing
+        does). Ctrl+S, leaving a field and leaving the page all end here."""
+        if self._loaded and not self._loading:
+            self._save()
 
     def _open_gamedb_account(self):
         try:
             base = gamedb.check_url(self.gdb_url.text() or gamedb.DEFAULT_URL)
         except gamedb.GameDbError as e:
-            self.error.setText(str(e))
-            self.error.setVisible(True)
+            self.row_of[self.gdb_url].set_error(str(e))
             return
         QDesktopServices.openUrl(QUrl(base + '/account'))
 
     def _test_torrent(self):
-        """Ask the saved client for its version (unsaved edits aren't used)."""
+        """Save what's typed, then ask the client for its version."""
+        self.commit()
+        bad = [w for w in (self.tor_url, self.tor_ratio) if w in self._invalid]
+        if bad:
+            self.tor_test_row.set_description("✗ Fix the fields above first.")
+            return
         self.tor_test.setEnabled(False)
-        self.tor_result.setText("Asking…")
+        self.tor_test_row.set_description("Asking…")
 
         def done(data, err):
             try:
@@ -567,21 +1098,19 @@ class SettingsPage(QWidget):
                 return
             if data and data.get('ok'):
                 where = f" — downloads to {data['download_dir']}" if data.get('download_dir') else ''
-                self.tor_result.setText(f"✓ {data.get('client')} {data.get('version')}{where}")
+                self.tor_test_row.set_description(
+                    f"✓ {data.get('client')} {data.get('version')}{where}")
             else:
                 msg = ((data or {}).get('error') or {}).get('message') or err or "no answer"
-                self.tor_result.setText(f"✗ {msg}")
+                self.tor_test_row.set_description(f"✗ {msg}")
         cli_json(['--torrent-test', '--json'], done, 15000)
 
-    def _with_browse(self, edit):
-        row = QHBoxLayout()
-        row.addWidget(edit)
-        b = QPushButton("…")
-        b.setFixedWidth(36)
-        b.clicked.connect(lambda: (d := QFileDialog.getExistingDirectory(
-            self, "Choose folder", edit.text() or edit.placeholderText())) and edit.setText(d))
-        row.addWidget(b)
-        return row
+    def _browse(self, edit: QLineEdit):
+        d = QFileDialog.getExistingDirectory(self, "Choose folder",
+                                             edit.text() or edit.placeholderText())
+        if d:
+            edit.setText(d)
+            self.commit()
 
     def load(self):
         self._loading = True
@@ -589,15 +1118,23 @@ class SettingsPage(QWidget):
             self._load()
         finally:
             self._loading = False
-        self.dirty = False
-        self.dirty_note.setVisible(False)
+        self._loaded = True
+        self._pending = False
+        self._invalid.clear()
+        for row in self.row_of.values():
+            row.set_error(None)
 
     def _load(self):
         c = self.cfg = load_config()
-        self.error.setText(f"config.toml can't be read, so it can't be saved from here until "
-                           f"it's fixed: {c['error']}" if c.get('error') else "")
-        self.error.setVisible(bool(c.get('error')))
-        self.btn_save.setEnabled(not c.get('error'))
+        broken = bool(c.get('error'))
+        self.error.setText(f"config.toml can't be read, so nothing here can be saved until "
+                           f"it's fixed: {c['error']}" if broken else "")
+        self.error.setVisible(broken)
+        for sec in self.sections.values():
+            if sec is not self.appearance and sec.key not in ('library', 'controls',
+                                                              'background'):
+                sec.card.setEnabled(not broken)
+        self.news.setEnabled(not broken)
         self.key.setText(c.get('api_key') or "")
         self.base.setText(c.get('install_base') or "")
         self.scan_dir.setText(c.get('scan_dir') or "")
@@ -616,17 +1153,15 @@ class SettingsPage(QWidget):
         self.gdb_token.setText("" if env_token else (c.get('gamedb_token') or ""))
         self.gdb_token.setEnabled(not env_token)
         self.gdb_token.setPlaceholderText("set by NEXUS_GAMEDB_TOKEN" if env_token else "gdb_…")
-        self.gdb_note.setText(
-            "Read-only. Make a token on your Game-db account page (Desktop app tokens). "
-            "It's kept in config.toml (readable only by you); data is cached 45 minutes.")
         self.tor_client.setCurrentIndex(max(0, self.tor_client.findData(c.get('torrent_client'))))
+        self._sync_torrent_rows()
         self.tor_url.setText(c.get('torrent_url') or "")
         self.tor_user.setText(c.get('torrent_username') or "")
         self.tor_pass.setText(c.get('torrent_password') or "")
         self.tor_dir.setText(c.get('torrent_download_dir') or "")
         r = c.get('torrent_seed_ratio')
         self.tor_ratio.setText("" if r is None else f"{r:g}")
-        self.tor_result.setText("")
+        self.tor_test_row.set_description("")
         for box, k in ((self.al_atl, 'atl'), (self.al_fitgirl, 'fitgirl'),
                        (self.al_updates, 'repack_updates'), (self.al_proton, 'proton')):
             box.setChecked(c.get(f'alerts_{k}', True))
@@ -656,8 +1191,23 @@ class SettingsPage(QWidget):
                 pass
         cli_json(['--list-protons', '--json'], done)
 
+    def _check(self, widget, ok: bool, msg: str) -> bool:
+        """Show or clear `widget`'s error; False keeps its value out of the save."""
+        row = self.row_of.get(widget)
+        if ok:
+            self._invalid.pop(widget, None)
+            if row:
+                row.set_error(None)
+        else:
+            self._invalid[widget] = msg
+            if row:
+                row.set_error(msg)
+        return ok
+
     def _save(self):
         c = self.cfg
+        if c.get('error'):
+            return
         u = {}
 
         def put(section, key, new, old):
@@ -668,51 +1218,42 @@ class SettingsPage(QWidget):
         put('integrations', 'desktop', self.desktop.isChecked(), c.get('desktop', True))
         put('integrations', 'heroic', self.heroic.isChecked(), c.get('heroic', True))
         put('news', 'enabled', self.news.isChecked(), c.get('news', True))
+        gamedb_changed = False
         gurl = self.gdb_url.text().strip() or None
+        msg = ""
         if gurl:
             try:
                 gurl = gamedb.check_url(gurl)
             except gamedb.GameDbError as e:
-                self.error.setText(f"Settings not saved: {e}")
-                self.error.setVisible(True)
-                return
+                msg = str(e)
+        if self._check(self.gdb_url, not msg, msg):
+            gamedb_changed = gurl != c.get('gamedb_url')
+            put('gamedb', 'url', gurl, c.get('gamedb_url'))
         gtok = self.gdb_token.text().strip() or None
-        if gtok and not gamedb.TOKEN_RE.match(gtok):
-            self.error.setText("Settings not saved: a Game-db token looks like gdb_ followed "
-                               "by 43 letters, digits, - or _")
-            self.error.setVisible(True)
-            return
-        gamedb_changed = (gurl != c.get('gamedb_url') or
-                          (self.gdb_token.isEnabled() and gtok != c.get('gamedb_token')))
-        put('gamedb', 'enabled', self.gdb_enabled.isChecked(), c.get('gamedb_cfg_enabled'))
-        put('gamedb', 'url', gurl, c.get('gamedb_url'))
-        if self.gdb_token.isEnabled():
+        if self.gdb_token.isEnabled() and self._check(
+                self.gdb_token, not gtok or bool(gamedb.TOKEN_RE.match(gtok)),
+                "A Game-db token is gdb_ followed by 43 letters, digits, - or _."):
+            gamedb_changed = gamedb_changed or gtok != c.get('gamedb_token')
             put('gamedb', 'token', gtok, c.get('gamedb_token'))
+        put('gamedb', 'enabled', self.gdb_enabled.isChecked(), c.get('gamedb_cfg_enabled'))
         turl = self.tor_url.text().strip().rstrip('/') or None
-        if turl and not re.match(r'^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$', turl):
-            self.error.setText("Settings not saved: the torrent client must be on this machine "
-                               "(http://127.0.0.1:<port>)")
-            self.error.setVisible(True)
-            return
+        if self._check(self.tor_url, not turl or bool(LOCAL_URL_RE.match(turl)),
+                       "The client must be on this machine, like http://127.0.0.1:9091."):
+            put('torrent', 'url', turl, c.get('torrent_url'))
         ratio = self.tor_ratio.text().strip().replace(',', '.') or None
-        if ratio is not None:
-            try:
-                if float(ratio) < 0:
-                    raise ValueError
-            except ValueError:
-                self.error.setText("Settings not saved: the seeding ratio is a number, like 1.5")
-                self.error.setVisible(True)
-                return
+        try:
+            ok = ratio is None or float(ratio) >= 0
+        except ValueError:
+            ok = False
+        if self._check(self.tor_ratio, ok, "A number, like 1.5 — or empty to keep seeding."):
+            if (float(ratio) if ratio is not None else None) != c.get('torrent_seed_ratio'):
+                u[('torrent', 'seed_ratio')] = ratio
         put('torrent', 'client', self.tor_client.currentData(), c.get('torrent_client'))
-        put('torrent', 'url', turl, c.get('torrent_url'))
         put('torrent', 'username', self.tor_user.text().strip() or None,
             c.get('torrent_username'))
         put('torrent', 'password', self.tor_pass.text() or None, c.get('torrent_password'))
         put('torrent', 'download_dir', self.tor_dir.text().strip() or None,
             c.get('torrent_download_dir'))
-        old_ratio = c.get('torrent_seed_ratio')
-        if (float(ratio) if ratio is not None else None) != old_ratio:
-            u[('torrent', 'seed_ratio')] = ratio
         put('integrations', 'steam_account', self.account.text().strip() or None,
             c.get('steam_account'))
         put('install', 'base', self.base.text().strip() or None, c.get('install_base'))
@@ -732,17 +1273,23 @@ class SettingsPage(QWidget):
         if changed:
             u[('runner', 'proton')] = proton
             u[('heroic', 'proton')] = None     # legacy key; [runner] proton replaces it
-        if u:
-            try:
-                save_config(u)
-            except (ConfigError, OSError) as e:
-                self.error.setText(f"Settings not saved: {e}")
-                self.error.setVisible(True)
-                return
+        self._pending = False
+        if not u:
+            return
+        try:
+            save_config(u)
+        except (ConfigError, OSError) as e:
+            self.error.setText(f"Couldn't save: {e}")
+            self.error.setVisible(True)
+            self._pending = True
+            return
+        self.error.setVisible(False)
         if gamedb_changed:
             gamedb.clear_cache()               # old account's data off the disk too
         self.gamedb_changed = gamedb_changed
-        self.load()
+        self._proton_current = proton
+        self.cfg = load_config()
+        self._saved_note_flash()
         self.saved.emit(changed)
 
 
@@ -751,4 +1298,5 @@ class SettingsPage(QWidget):
 from .config import ConfigError, load_config, save_config  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .tray import tray_available  # noqa: E402
-from .widgets import (clear_layout, label, NoWheelCombo, SegmentedControl, set_glyph_icon)  # noqa: E402
+from .widgets import (clear_layout, glyph_pixmap, icon_label, label, NoWheelCombo,  # noqa: E402
+    SegmentedControl, set_glyph_icon)

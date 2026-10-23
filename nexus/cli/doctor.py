@@ -277,10 +277,34 @@ def cleanup_candidates(install_base: Path, config: dict) -> list[dict]:
             out.append(C.candidate('installed-repack', c['path'], title=c['name'],
                                    reason=f"installed as '{c['slug']}'", preselect=False,
                                    size=c.get('size_bytes')))
-    out += C.force_leftovers(install_base, find_prefix_savedata)
+    bases = {install_base} | {Path(e['install_base']) for e in reg.values()
+                              if e.get('install_base')}
+    for b in sorted(bases):                     # a moved game's old copy sits in its old base
+        out += C.force_leftovers(b, find_prefix_savedata)
+    out += snapshot_candidates(bases, reg)
     out += C.old_logs(LOG_DIR)
     out += C.old_save_backups(SAVES_DIR)
     out += C.stale_data(set(reg), ARTWORK_DIR, INTEGRITY_DIR)
+    return out
+
+
+def snapshot_candidates(bases, reg: dict) -> list[dict]:
+    """Game snapshots worth offering: all but the newest per game, every one
+    of a game that's gone."""
+    from nexus import cleanup as C
+    out = []
+    for b in sorted(bases):
+        root = Path(b) / SNAP_DIR
+        if not root.is_dir():
+            continue
+        for game in sorted(d for d in root.iterdir() if d.is_dir()):
+            snaps = [s for s in list_snapshots({'install_base': str(b)}, game.name)]
+            gone = game.name not in reg
+            for s in (snaps if gone else snaps[1:]):
+                out.append(C.candidate(
+                    'game-snapshot', s['path'], title=f"{game.name} · {s['label']} "
+                    f"({s['created'][:10]})", action='delete', preselect=gone, size=0,
+                    reason="the game was removed" if gone else "a newer snapshot exists"))
     return out
 
 
@@ -561,6 +585,8 @@ def doctor_checks(install_base: Path) -> list[dict]:
                else ''),
             actions=[{'label': 'Quarantine', 'steam': False,
                       'args': ['--clean-orphan-compatdata', o['path'].name, '--yes']}])
+    for row in snapshot_doctor(install_base):
+        add(S, *row)
     return out
 
 
@@ -685,3 +711,4 @@ from .steam import (_read_compat_mapping, _shortcut_uid, find_prefix_savedata, I
     resolve_steam_account, savedata_owners, steam_account_label, steam_accounts,
     steam_is_running)  # noqa: E402
 from .sunshine import game_has_steam_shortcut, remove_steam_shortcut  # noqa: E402
+from .snapshots import list_snapshots, SNAP_DIR, snapshot_doctor  # noqa: E402

@@ -37,6 +37,20 @@ class NavigationMixin:
             sc([f"Ctrl+{i}"], lambda p=page: not self.nav[p].isHidden() and self.go(p))
         sc(["Ctrl+5"], lambda: self.go(self.ACTIVITY))
         sc(["Ctrl+,"], lambda: self.go(self.SETTINGS))
+        sc(["Ctrl+K"], self.open_palette)
+
+    def open_palette(self, game=None):
+        """Ctrl+K: search everything (gui/palette.py); with a game, its actions."""
+        if self._theatre:
+            return
+        sheet = self._open_sheet()
+        if sheet is not None:
+            sheet.close_sheet()
+        self.palette.open(game)
+
+    def _palette_picked(self, key: str):
+        self.prefs.palette_recent = list(self.palette.recent)
+        self.prefs.save()
 
     # ---- navigation ----
     HISTORY = 30
@@ -51,9 +65,12 @@ class NavigationMixin:
             self._back.append(cur)
             del self._back[:-self.HISTORY]
             self._forward.clear()
-        if self.current() == self.SETTINGS and page != self.SETTINGS and self.settings.dirty:
-            self.toast("Your settings changes aren't saved yet.", 'warn',
-                       [("Save", self.settings._save), ("Discard", self.settings.load)], 10000)
+        if self.current() == self.SETTINGS and page != self.SETTINGS:
+            self.settings.commit()               # a field still being typed in
+            if self.settings.dirty:
+                self.toast(f"Not saved — {self.settings.unsaved_reason()}", 'warn',
+                           [("Fix it", lambda: self.go(self.SETTINGS)),
+                            ("Discard", self.settings.load)], 10000)
         self.stack.setCurrentWidget(self.pages[page])
         self.tabs.set_current(page if page in self.TABS else None)
         for p, b in self.icons.items():
@@ -150,6 +167,9 @@ class NavigationMixin:
         """Back, one step at a time: leave the details panel (focus returns
         to the game), then close it; leave the search; leave full screen;
         from other pages, go back to the library."""
+        if self.palette.isVisible():
+            self.palette.escape()
+            return
         sheet = self._open_sheet()
         if sheet is not None:
             sheet.close_sheet()

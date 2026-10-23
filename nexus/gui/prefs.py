@@ -79,6 +79,16 @@ class LibraryPrefs:
         # The Deals page as it was left: section, filter, sort, hide owned.
         ds = self._data.get('deals_state')
         self.deals_state = ds if isinstance(ds, dict) else {}
+        # Folders games were moved to (newest first), offered again by Move to….
+        mt = self._data.get('move_targets')
+        self.move_targets = [str(t) for t in mt if isinstance(t, str)][:5] \
+            if isinstance(mt, list) else []
+        # First-run setup (gui/setup.py): done once, or skipped.
+        self.setup_done = self._data.get('setup_done') is True
+        # The command palette's recent picks (Ctrl+K), newest first.
+        pr = self._data.get('palette_recent')
+        self.palette_recent = [str(k) for k in pr if isinstance(k, str)][:8] \
+            if isinstance(pr, list) else []
 
     def save(self):
         # Keys this version doesn't know about are kept, not dropped.
@@ -89,7 +99,8 @@ class LibraryPrefs:
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view, 'controls': self.controls,
                     'library_state': self.library_state, 'collections': self.collections,
-                    'deals_state': self.deals_state,
+                    'deals_state': self.deals_state, 'move_targets': self.move_targets,
+                    'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
                     'overrides': self.overrides, 'notes': self.notes})
         if self.seen_repacks is not None:
             out['seen_repacks'] = list(self.seen_repacks)[-300:]

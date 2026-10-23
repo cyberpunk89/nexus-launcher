@@ -265,6 +265,20 @@ class StatTile(QFrame):
         self.setToolTip(tip)
 
 
+# The batch panel's buttons (several games selected): key, text, tooltip.
+BATCH_ACTIONS = (
+    ('apply', "Re-apply settings", "Rewrite launch.sh, Steam and Heroic from each game's settings"),
+    ('proton', "Set Proton…", "Play them all with one Proton build"),
+    ('collection', "Add to a collection…", "Put them all in one collection"),
+    ('steam', "Add to Steam", "Add a Steam shortcut for each"),
+    ('heroic', "Add to Heroic", "Add each to Heroic"),
+    ('pg-default', "Use protongen defaults", "Apply protongen's default profile to each"),
+    ('art', "Re-fetch artwork", "Download art again"),
+    ('snapshot', "Snapshot now", "A btrfs snapshot of each (undo an update)"),
+    ('move', "Move to another drive…", "Move them all to one folder"),
+    ('uninstall', "Uninstall…", "Uninstall them all (saves are backed up first)"),
+)
+
 class Disclosure(QWidget):
     """A section that opens and closes under a one-line header, so the
     panel stays compact. Each section remembers whether it was open."""
@@ -635,6 +649,32 @@ class DetailsPanel(QFrame):
         self.sections.setSpacing(SP['2'])
         self.sections.addWidget(self.sec_launch)
         self.sections.addWidget(self.sec_files)
+        # Snapshots (btrfs): undo an update, a Proton change, winetricks.
+        self.snap_body = QFrame()
+        snl = QVBoxLayout(self.snap_body)
+        snl.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
+        snl.setSpacing(SP['1_5'])
+        self.snap_note = label("", "Muted", wrap=True)
+        snl.addWidget(self.snap_note)
+        self.snap_rows = QVBoxLayout()
+        self.snap_rows.setSpacing(SP['1'])
+        snl.addLayout(self.snap_rows)
+        sbr = QHBoxLayout()
+        self.snap_take = QPushButton("Snapshot now")
+        self.snap_take.clicked.connect(lambda: self._act('snapshot-now'))
+        self.snap_enable = QPushButton("Enable snapshots")
+        self.snap_enable.setToolTip("Moves the game into its own btrfs subvolume — instant, "
+                                    "and it takes no extra space")
+        self.snap_enable.clicked.connect(lambda: self._act('snapshots-enable'))
+        sbr.addWidget(self.snap_take)
+        sbr.addWidget(self.snap_enable)
+        sbr.addStretch()
+        snl.addLayout(sbr)
+        self.sec_snap = Disclosure('snapshots', "Snapshots", G['history'], self.snap_body)
+        self.sec_snap.toggled.connect(lambda on: on and self._load_snapshots(force=True))
+        self.sec_snap.setVisible(False)
+        self.sections.addWidget(self.sec_snap)
+        self._snap_at = (None, 0.0)
         lay.addLayout(self.sections)
 
         # Tuning: ProtonDB, protongen's saved options (for Steam/Heroic games,
@@ -742,16 +782,18 @@ class DetailsPanel(QFrame):
         bl.addLayout(bhead)
         self.batch_names = label("", "Muted", wrap=True)
         bl.addWidget(self.batch_names)
-        for text, args, steam, tip in (
-                ("Re-apply settings", ['--apply-launch'], True,
-                 "Rewrite launch.sh, Steam and Heroic from each game's settings"),
-                ("Add to Steam", ['--steam'], True, "Add a Steam shortcut for each"),
-                ("Add to Heroic", ['--heroic'], False, "Add each to Heroic"),
-                ("Re-fetch artwork", ['--refetch-art'], False, "Download art again")):
+        # What can be done to all of them; the window gates each game (busy,
+        # running) and offers only what applies to the whole selection.
+        self.batch_btns: dict[str, QPushButton] = {}
+        for key, text, tip in BATCH_ACTIONS:
             b = QPushButton(text)
             b.setToolTip(tip)
-            b.clicked.connect(lambda _=False, a=args, s=steam, t=text: self._batch(a, t, s))
+            b.clicked.connect(lambda _=False, k=key: self.request.emit(
+                ['__batch__', k], '', False, 'action'))
+            if key == 'uninstall':
+                b.setObjectName("Danger")
             bl.addWidget(b)
+            self.batch_btns[key] = b
         bl.addStretch()
         self.stack.addWidget(batch)
 
@@ -966,6 +1008,9 @@ class DetailsPanel(QFrame):
             self.batch_title.setText(f"{len(games)} games selected")
             self.batch_names.setText(", ".join(g.get('display_name', g['slug'])
                                                for g in games))
+            win = self.window()
+            for key, b in self.batch_btns.items():
+                b.setVisible(not hasattr(win, 'batch_applies') or win.batch_applies(key, games))
             self.stack.setCurrentIndex(1)
             return
         self.stack.setCurrentIndex(0)
@@ -988,6 +1033,62 @@ class DetailsPanel(QFrame):
         self._refresh_info()
         if not same:
             self._load_tips()
+        self.sec_snap.setVisible(self.game.get('source', 'nexus') == 'nexus'
+                                 and bool(self.game.get('owned_dir')))
+        if self.sec_snap.is_open and self.sec_snap.isVisibleTo(self):
+            self._load_snapshots(force=not same)
+
+    def _load_snapshots(self, force: bool = False):
+        """The game's snapshots, asked from the CLI (when the section is open;
+        again after a job, at most every few seconds)."""
+        slug = self.slug
+        if not slug:
+            return
+        if not force and self._snap_at[0] == slug and time.monotonic() - self._snap_at[1] < 3:
+            return
+        self._snap_at = (slug, time.monotonic())
+
+        def done(data, err, slug=slug):
+            if slug != self.slug:
+                return
+            try:
+                self._fill_snapshots(data or {'available': False, 'why': err or "no answer",
+                                              'snapshots': []})
+            except RuntimeError:
+                pass
+        cli_json(['--snapshots', slug, '--json'], done, 30000)
+
+    def _fill_snapshots(self, s: dict):
+        clear_layout(self.snap_rows)
+        snaps = s.get('snapshots') or []
+        self.snap_take.setVisible(bool(s.get('available')))
+        self.snap_enable.setVisible(bool(s.get('convertible')))
+        if not s.get('available'):
+            self.snap_note.setText(f"Not available: {s.get('why')}." if s.get('why') else "")
+        elif not snaps:
+            self.snap_note.setText("None yet. One is taken before every update, Proton change "
+                                   "and winetricks run.")
+        else:
+            self.snap_note.setText("Roll back puts the game and its prefix (settings, saves) "
+                                   "back the way they were. What's there now is kept as a "
+                                   "snapshot too.")
+        self.sec_snap.set_summary(f"{len(snaps)}" if snaps else "")
+        for x in snaps:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            when = x['created'].replace('T', ' ')[:16]
+            text = label(f"{x['label']}\n{when}", None, wrap=True)
+            text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            row.addWidget(text, 1)
+            back = QPushButton("Roll back")
+            back.clicked.connect(lambda _=False, n=x['name']: self._act(f"rollback:{n}"))
+            row.addWidget(back)
+            rm = icon_button(G['trash'], "Delete this snapshot", 28, "Ghost")
+            rm.clicked.connect(lambda _=False, n=x['name']: self._act(f"snapshot-delete:{n}"))
+            row.addWidget(rm)
+            w = QWidget()
+            w.setLayout(row)
+            self.snap_rows.addWidget(w)
 
     def _load_tips(self):
         self.sec_tune.setVisible(False)
@@ -1397,7 +1498,7 @@ class DetailsPanel(QFrame):
         sec = {'launch': self.sec_launch, 'files': self.sec_files, 'tune': self.sec_tune,
                'log': self.sec_log, 'achievements': self.sec_ach,
                'compat': self.sec_compat, 'about': self.sec_about,
-               'notes': self.sec_notes}.get(key)
+               'notes': self.sec_notes, 'snapshots': self.sec_snap}.get(key)
         if sec is None or sec.isHidden():
             return
         sec.set_open(True)
@@ -1623,11 +1724,6 @@ class DetailsPanel(QFrame):
             args.append('--save-backup')
         self._emit(args, "Uninstalling", bool(self.game.get('steam')))
 
-    def _batch(self, flag, title, steam):
-        for g in self.games:
-            self.request.emit([*flag, g['slug']], f"{title} — {g.get('display_name', g['slug'])}",
-                              steam and (flag[0] != '--apply-launch' or bool(g.get('steam'))),
-                              'task')
 
 
 # Siblings, imported last: they import this module too, and every use

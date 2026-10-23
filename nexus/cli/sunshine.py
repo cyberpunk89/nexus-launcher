@@ -459,7 +459,11 @@ def _launch_through_steam(slug: str, entry: dict, wait: bool) -> None:
             time.sleep(5)
 
 
-def cmd_launch(install_base: Path, slug: str, force: bool = False, wait: bool = False) -> None:
+def cmd_launch(install_base: Path, slug: str, force: bool = False, wait: bool = False,
+               try_proton: str | None = None) -> None:
+    """Start a game through its launch tracker. `try_proton`: this one run
+    with another installed Proton (umu launchers read PROTONPATH from the
+    environment), nothing saved — the crash helper's "Try another Proton"."""
     entry = registry_get(slug) or {}
     if not force:
         from nexus import steamlib
@@ -478,13 +482,30 @@ def cmd_launch(install_base: Path, slug: str, force: bool = False, wait: bool = 
     if not launcher or not Path(launcher).exists():
         print(f"No launcher found for '{slug}'", file=sys.stderr)
         sys.exit(1)
+    env = None
+    if try_proton:
+        hit = proton_by_name(try_proton)
+        if not hit:
+            print(f"Proton '{try_proton}' isn't installed (see --list-protons)", file=sys.stderr)
+            sys.exit(1)
+        try:
+            umu = 'DEFAULT_PROTONPATH=' in Path(launcher).read_text(errors='replace')
+        except OSError:
+            umu = False
+        if not umu:
+            print("Trying another Proton for one run needs a umu launcher (runner umu); "
+                  f"set it for good with --proton {slug} {hit.parent.name} instead.",
+                  file=sys.stderr)
+            sys.exit(1)
+        env = {**os.environ, 'PROTONPATH': str(hit.parent)}
+        print(f"This run only: {hit.parent.name}.")
     # A detached tracker runs the game and times the session (play time), and
     # keeps its output where the GUI's log viewer finds it.
     out = launch_log_path(slug)
     tracker = subprocess.Popen(
         [sys.executable, str(CLI_BIN), '--track-session', slug, launcher],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True)
+        start_new_session=True, env=env)
     try:
         rc = tracker.wait(timeout=3)
     except subprocess.TimeoutExpired:
@@ -619,3 +640,4 @@ from .registry import (load_registry, registry_get, registry_lock, save_registry
 from .steam import (_report_failed_copies, _shortcut_uid, _wait_for_steam_closed,
     _write_compat_mapping, backup_prefix_saves, find_prefix_savedata, load_shortcuts,
     save_shortcuts, split_game_shortcuts, steam_is_running)  # noqa: E402
+from .runner import proton_by_name  # noqa: E402

@@ -293,6 +293,44 @@ class Appearance(unittest.TestCase):
         self.assertTrue(all(c.name() == '#9ccfd8' for c in inked()))   # repainted, not cached
         self.assertIsNone(nx.Wordmark("Other")._svg)    # other text keeps the font
 
+    def test_every_theme_has_readable_text(self):
+        def lum(h):
+            c = QColor(h)
+            ch = [x / 255 for x in (c.red(), c.green(), c.blue())]
+            ch = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in ch]
+            return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+        def contrast(a, b):
+            la, lb = sorted((lum(a), lum(b)), reverse=True)
+            return (la + 0.05) / (lb + 0.05)
+        for key in nx.THEMES:
+            for accent in ('iris', 'gold', 'foam'):
+                nx.apply_appearance({'theme': key, 'accent': accent})
+                for bg in ('bg', 'surface', 'surface_solid'):
+                    self.assertGreaterEqual(contrast(nx.P['text'], nx.P[bg]), 4.5, (key, bg))
+                self.assertGreaterEqual(contrast(nx.P['muted'], nx.P['surface']), 3.0, key)
+                # The accent as a button fill with its label on it.
+                self.assertGreaterEqual(contrast(nx.P['on_accent'], nx.P['accent']), 3.0,
+                                        (key, accent))
+        nx.apply_appearance({'theme': 'dawn'})
+        self.assertTrue(nx.is_light())
+        self.assertNotEqual(nx.P['danger'], nx.DARK_STATUS['love'])     # its own status hues
+        nx.apply_appearance({'theme': 'rose-pine'})
+        self.assertEqual(nx.P['danger'], nx.DARK_STATUS['love'])        # and back
+
+    def test_size_scales_type_and_spacing(self):
+        nx.apply_appearance({'scale': 1.25})
+        css = nx.build_stylesheet()
+        self.assertIn(f"font-size: {round(nx.FS['sm'] * 1.25)}px", css)
+        self.assertEqual(nx.scaled(20), 25)
+        nx.apply_appearance({'scale': 3})                     # not one of SCALES: default
+        self.assertEqual(nx.ui_scale(), 1.0)
+
+    def test_stylesheet_has_no_literal_font_sizes(self):
+        import inspect
+        src = inspect.getsource(nx.build_stylesheet)
+        self.assertEqual(re.findall(r'font-size:\s*\d+px', src), [])
+
     def test_default_round_trip_matches_original(self):
         nx.apply_appearance(nx.APPEARANCE_DEFAULT)
         self.assertEqual(nx.P['bg'], '#191724')

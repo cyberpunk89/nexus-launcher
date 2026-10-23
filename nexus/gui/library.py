@@ -679,7 +679,7 @@ class HeroCarousel(QWidget):
         elif prev is None:
             pt.drawPixmap(0, 0, placeholder_pixmap(self.game.get('display_name', ''),
                                                    self.width(), self.height()))
-        base = QColor(P['bg'])
+        base = QColor(P['scrim'])       # the page on dark themes; dark under text on light
         # Left scrim for the text, bottom scrim melting into the page.
         g = QLinearGradient(0.0, 0.0, r.width(), 0.0)
         c = QColor(base); c.setAlphaF(0.86); g.setColorAt(0.0, c)

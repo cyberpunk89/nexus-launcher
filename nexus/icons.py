@@ -54,6 +54,7 @@ ICONS = {
     'close':          '\ue1b2',  # x
     'clock':          '\ue087',  # clock
     'spinner':        '\ue10a',  # loader-circle
+    'eye':            '\ue0ba',  # eye
     'eye_off':        '\ue0bb',  # eye-off
     'chevron_left':   '\ue06e',  # chevron-left
     'chevron_right':  '\ue06f',  # chevron-right
@@ -84,5 +85,8 @@ ICONS = {
     'battery_medium': '\ue057',  # battery-medium
     'battery_full':   '\ue055',  # battery-full
     'battery_charging': '\ue054',  # battery-charging
+    'bell':           '\ue059',  # bell
+    'magnet':         '\ue2b5',  # magnet
+    'power':          '\ue140',  # power
 }
 

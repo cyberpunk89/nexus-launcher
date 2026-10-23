@@ -203,8 +203,15 @@ def cmd_install(args, install_base: Path) -> None:
     # Created only now, after every "Proceed?" — aborting earlier leaves nothing
     # behind. Proton/umu's file-lock code expects the dir to exist, and +C
     # (no CoW/compression) only takes effect while it is still empty.
-    game_dir.mkdir(parents=True, exist_ok=True)
-    if disable_cow(game_dir):
+    if game_dir.exists():
+        # Over an installed game (an update, a resume): a snapshot first,
+        # where the game has them, so "Roll back" can undo it.
+        if registry_get(slug):
+            auto_snapshot(slug, 'update', install_base)
+    elif make_game_dir(game_dir):
+        log.print(f"  Filesystem: a btrfs subvolume (snapshots can undo updates), "
+                  f"CoW + compression off")
+    else:
         log.print(f"  Filesystem: CoW + compression disabled for {game_dir}")
     # Until the game is registered, the folder is an unfinished install that
     # the library can resume (same arguments, minus --force: resuming reuses
@@ -411,6 +418,61 @@ def cmd_install(args, install_base: Path) -> None:
         log.close()
         sys.exit(1)
 
+    done = _finish_install(args, slug=slug, display_name=display_name, game_dir=game_dir,
+                           wine_prefix=wine_prefix, game_exe=game_exe,
+                           install_base=install_base, runner=runner, proton=proton,
+                           repack={'repack_fingerprint': repack_fingerprint(repack_dir),
+                                   'repack_version': info['version'],
+                                   'repack_source': str(repack_dir),
+                                   'repack_installed_at':
+                                       datetime.now().isoformat(timespec='seconds')})
+    config, launch = done['config'], done['launch']
+    desktop_path, steam_appid_val = done['desktop_path'], done['steam_appid']
+    steam_pending, heroic_app_name = done['steam_pending'], done['heroic_app_name']
+    trashed = False
+    if args.trash_repack or config.get('trash_repack'):
+        from nexus import cleanup as C
+        try:
+            C.trash(repack_dir)
+            trashed = True
+            log.print(f"\nMoved the repack folder to the Trash: {repack_dir}")
+        except OSError as e:
+            log.print(f"\n  [!] Could not move the repack to the Trash ({e}).")
+    if args.from_torrent:
+        _torrent_mark(args.from_torrent, installed=True, slug=slug)
+    emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(repack_dir),
+                             'repack_trashed': trashed, 'steam_pending': steam_pending})
+
+    log.section("Done!")
+    log.print(f"  Wine prefix:   {wine_prefix}")
+    log.print(f"  Launch script: {launch}")
+    if desktop_path:
+        log.print(f"  Desktop entry: {desktop_path}")
+    if steam_appid_val:
+        log.print(f"  Steam:         added to library (restart Steam to see it)")
+    elif steam_pending:
+        log.print(f"  Steam:         waiting for Steam to close (nexus-cli --steam {slug})")
+    if heroic_app_name:
+        log.print(f"  Heroic:        added as a sideloaded game (restart Heroic to see it)")
+    if log.log_path:
+        log.print(f"  Log file:      {log.log_path}")
+    if game_exe:
+        log.print(f"\n  To play:")
+        log.print(f"    bash \"{launch}\"")
+    else:
+        log.print(f"\n  Edit {launch} to set the game .exe, then:")
+        log.print(f"    bash \"{launch}\"")
+    log.print()
+
+    log.close()
+
+
+def _finish_install(args, *, slug: str, display_name: str, game_dir: Path, wine_prefix: Path,
+                    game_exe: Path, install_base: Path, runner: str, proton: Path | None,
+                    repack: dict | None = None, extra: dict | None = None) -> dict:
+    """The end of every install, once the game's files are in its prefix:
+    launch.sh, artwork, Steam, the app menu, Heroic, then the registry entry.
+    Shared by FitGirl installs (cmd_install) and any other game (cmd_import)."""
     # The Proton the game is *played* with (may differ from the installer's:
     # see resolve_game_proton). A reinstall keeps an existing launch profile.
     config = load_config()
@@ -482,49 +544,13 @@ def cmd_install(args, install_base: Path) -> None:
         has_desktop=bool(desktop_path), artwork_dir=ARTWORK_DIR / slug,
         heroic_app_name=heroic_app_name,
         proton=play_proton.parent.name if play_proton else None,
-        umu_gameid=umu_gameid,
-        repack={'repack_fingerprint': repack_fingerprint(repack_dir),
-                'repack_version': info['version'], 'repack_source': str(repack_dir),
-                'repack_installed_at': datetime.now().isoformat(timespec='seconds')})
+        umu_gameid=umu_gameid, repack=repack, extra=extra)
     clear_incomplete_marker(game_dir)
     if pg_default:
         _save_profile(slug, pg_default, "protongen default profile")
-    trashed = False
-    if args.trash_repack or config.get('trash_repack'):
-        from nexus import cleanup as C
-        try:
-            C.trash(repack_dir)
-            trashed = True
-            log.print(f"\nMoved the repack folder to the Trash: {repack_dir}")
-        except OSError as e:
-            log.print(f"\n  [!] Could not move the repack to the Trash ({e}).")
-    if args.from_torrent:
-        _torrent_mark(args.from_torrent, installed=True, slug=slug)
-    emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(repack_dir),
-                             'repack_trashed': trashed, 'steam_pending': steam_pending})
-
-    log.section("Done!")
-    log.print(f"  Wine prefix:   {wine_prefix}")
-    log.print(f"  Launch script: {launch}")
-    if desktop_path:
-        log.print(f"  Desktop entry: {desktop_path}")
-    if steam_appid_val:
-        log.print(f"  Steam:         added to library (restart Steam to see it)")
-    elif steam_pending:
-        log.print(f"  Steam:         waiting for Steam to close (nexus-cli --steam {slug})")
-    if heroic_app_name:
-        log.print(f"  Heroic:        added as a sideloaded game (restart Heroic to see it)")
-    if log.log_path:
-        log.print(f"  Log file:      {log.log_path}")
-    if game_exe:
-        log.print(f"\n  To play:")
-        log.print(f"    bash \"{launch}\"")
-    else:
-        log.print(f"\n  Edit {launch} to set the game .exe, then:")
-        log.print(f"    bash \"{launch}\"")
-    log.print()
-
-    log.close()
+    return {'config': config, 'launch': launch, 'desktop_path': desktop_path,
+            'steam_appid': steam_appid_val, 'steam_pending': steam_pending,
+            'heroic_app_name': heroic_app_name}
 
 
 # Siblings, imported last: they import this module too, and every use
@@ -545,5 +571,6 @@ from .runner import (_umu_env, damaged_protons, find_proton, init_prefix, instal
     proton_repair_tag, resolve_game_proton, resolve_umu_gameid, select_runner,
     write_launch_script)  # noqa: E402
 from .sgdb import fetch_artwork  # noqa: E402
+from .snapshots import auto_snapshot, make_game_dir  # noqa: E402
 from .steam import (add_steam_shortcut_native, latest_save_backup, restore_prefix_saves,
     steam_is_running)  # noqa: E402

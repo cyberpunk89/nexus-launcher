@@ -165,7 +165,7 @@ flowchart TB
     direction TB
     c1["Base: common (paths, logger, atomic writes, run)"] --> c2["Core: repack, runner, config, registry, sgdb, launchprofile"]
     c2 --> c3["Launchers: steam, heroic, desktop, sunshine"]
-    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install, agent"]
+    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install, importgame, move, snapshots, agent"]
     c4 --> c5["entry: build_parser(), the COMMANDS table, main()"]
   end
 ```
@@ -183,6 +183,7 @@ Where to look:
 | log from the CLI | `log.print(...)`; swap the target with `use_logger()`, never rebind `log` |
 | do something while no window is open | a `task_*` method of `Agent` in `nexus/cli/agent.py`; hand results to a window with `nexus.instance.forward` |
 | alert once | `nexus/alerts.py`: an item with a stable `key`, then `fresh()` and `deliver()` |
+| create or delete a game's folder | `make_game_dir` / `remove_game_dir` in `nexus/cli/snapshots.py` (a subvolume on btrfs) |
 
 The look follows protongen's design system (Rosé Pine dark): token-driven colour/space/type,
 portrait tiles with a caption gradient and pill badges, one accent colour.
@@ -303,7 +304,9 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   match is cleared. Steam's own files are never touched. Missing heroes, logos
   and banners are filled in quietly once a day (or *Fetch extra artwork* in Settings).
   Needs a SteamGridDB API key.
-- **Appearance** (Settings) — five dark themes (Rosé Pine, Moon, Mocha, Slate, Midnight),
+- **Appearance** (Settings) — five dark themes (Rosé Pine, Moon, Mocha, Slate, Midnight) and
+  two light ones (Dawn, Paper — the accent deepens to stay readable, text over art stays on a
+  dark scrim), a **Size** (90–150 %: type and spacing everywhere, Theatre on top of its own),
   an accent colour (presets or any hex), the gradient partner for buttons and highlights (or
   solid), background glow (off / subtle / vivid, optionally tinted by the featured game's
   art) and corner roundness. Applied live and saved with the rest of `library.json`.
@@ -399,7 +402,8 @@ first; hidden ones stay hidden until unlocked), a
 "how far through" bar when Game-db knows the time to beat, and collapsed sections for
 launch settings, library & files, tuning and the log. Wine tools and the rest live in ⋮.
 
-Shortcuts: `/` search · Esc back · Ctrl+N install · Ctrl+R refresh (also retries art that
+Shortcuts: **Ctrl+K command palette** (games, pages, Settings sections and commands, fuzzy —
+"hk", "move noc"; Tab on a game lists its actions) · `/` search · Esc back · Ctrl+N install · Ctrl+R refresh (also retries art that
 failed to download) · Ctrl+D surprise me · F11 Theatre mode ·
 Ctrl+1–4 tabs · Ctrl+5 System (Activity) · Ctrl+, Settings · Ctrl+` debug log.
 `NEXUS_NO_MOTION=1` turns animations off.
@@ -738,6 +742,52 @@ already ships the VC++ runtimes, `d3dcompiler_47` and DXVK (proton-cachyos ships
 low-latency DXVK build), so the old winetricks pass cost minutes per install and, in DXVK's
 case, pinned DLL overrides that stopped Proton managing it. Use `--deps vcrun2019,<verb>` for
 the rare game that needs one. `--doctor` flags any prefix still carrying a winetricks DXVK.
+
+## Managing installed games
+
+- **Move to another drive** (game menu → *Move to another drive…*, or several at once from the
+  selection panel; `nexus-cli --move <slug> <folder>`). The game goes to `<folder>/<slug>`:
+  renamed in place when it can be, otherwise copied (a reflink copy — instant — on the same btrfs
+  volume) and checked file by file. Then everything that named the old place follows: the
+  registry, `launch.sh`, the app-menu entry, the Steam shortcut and its `compatdata` link, Heroic's
+  entry and prefix. The old copy stays as `<slug>.old-<time>` until you remove it in Storage →
+  Clean up. It refuses while the game runs (and while Steam runs, for a game in Steam).
+- **Any Windows game** (Install page → *From an installer…* / *From a game folder…*;
+  `nexus-cli --import <path> [--name …]`). A GOG-style offline installer runs in the game's own
+  prefix — silently when it's an Inno Setup one, like repacks — or a folder that already holds
+  the game is copied in. It gets the same launch.sh / Steam / Heroic / app-menu treatment as a
+  repack and can be uninstalled; the FitGirl-only steps (MD5 check, repack safety look, update
+  feed) leave it alone.
+- **Snapshots — undo an update** (btrfs only; game page → *Snapshots*). New installs on a btrfs
+  drive get their own subvolume; one is snapshotted in an instant before every repack update,
+  Proton change and winetricks run, and by hand with *Snapshot now*. **Roll back** puts the
+  game and its prefix (settings and saves too) back the way they were — and snapshots what's
+  there first, so a roll back can itself be undone. The newest 3 per game are kept (`[snapshots]
+  keep`); older ones are in Storage → Clean up. Games installed before this are made
+  snapshot-ready with *Enable snapshots* (`--snapshots-enable <slug>`: a reflink copy into a new
+  subvolume, instant, no extra space). No root needed: everything runs as you.
+  `--snapshots <slug>`, `--snapshot`, `--rollback <slug> <name>`, `--delete-snapshot`.
+- **Crash helper.** A repack that closes within 20 seconds of starting gets a toast with its exit
+  code, **Show log** and **Try another Proton…**: pick an installed build and the game runs with
+  it once (`nexus-cli --launch <slug> --try-proton <build>`; umu launchers), nothing saved. If it
+  then plays for a minute, Nexus offers to keep that Proton.
+- **Several games at once.** Ctrl+click adds games to the selection, Shift+click a range (in
+  the Library). The panel offers what applies to all of them — re-apply settings, set Proton,
+  add to a collection, Steam / Heroic, protongen defaults, artwork, snapshot, move, uninstall (saves
+  backed up first). Games that are running or busy are skipped, and the toast says how many.
+
+- **First-run setup.** The very first time Nexus starts (no settings yet), a welcome page walks
+  through six skippable steps: the checks (with fix buttons), your Steam account and Heroic,
+  where games install and repacks download, the Proton to play with (and GE-Proton if there's
+  none), a SteamGridDB key and a torrent client found on the machine, then the theme, size, the
+  background agent and the tray. Settings → Back up & move → *Run setup again*.
+- **Back up & move** (Settings): *Export…* saves your settings, favourites, collections,
+  notes, dashboard, the look, the game list, play history and art picks to one `.tar.gz`
+  (images with *Include artwork images*; keys and passwords only with *Include keys and
+  passwords*). *Import…* on the new PC first says what it will change, keeps that PC's own keys,
+  adds only the games whose folders are there (and names the rest), keeps a `.bak` of
+  everything it replaces, then restarts Nexus. Saves are never in it. CLI:
+  `--export-settings FILE [--with-art] [--with-secrets]`, `--import-settings FILE [--dry-run]`.
 
 ## Working in the background
 

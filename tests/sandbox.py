@@ -17,6 +17,8 @@ if not os.environ.get('NEXUS_TEST_HOME'):
     atexit.register(shutil.rmtree, _home, True)
     os.environ['NEXUS_TEST_HOME'] = _home
 os.environ['HOME'] = HOME = os.environ['NEXUS_TEST_HOME']
+# The first-run setup page would replace Home in every window test.
+os.environ.setdefault('NEXUS_NO_SETUP', '1')
 # Unset, not pointed at HOME: then every path follows HOME, including in the
 # subprocess tests that give the CLI a HOME of their own (a real
 # XDG_CACHE_HOME would otherwise leak the user's cache into every test).

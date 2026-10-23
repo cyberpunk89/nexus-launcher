@@ -15,7 +15,8 @@ def load_config() -> dict:
            'desktop': True, 'heroic': True, 'proton': None,
            'heroic_proton': None, 'install_base': None, 'scan_dir': None, 'scan_dirs': [],
            'unattended': True, 'trash_repack': False, 'runner': 'auto',
-           'discord_client_id': None, 'keep_awake': True}
+           'discord_client_id': None, 'keep_awake': True, 'subvolumes': True,
+           'snapshots_keep': 1}
 
     def as_bool(v, default=True):
         # `steam = "no"` is a truthy string; only real TOML booleans count.
@@ -65,6 +66,13 @@ def load_config() -> dict:
         cid = str(data.get('discord', {}).get('client_id') or '').strip()
         cfg['discord_client_id'] = cid if cid.isdigit() else None
         cfg['keep_awake'] = as_bool(integ.get('keep_awake', True))
+        # On btrfs each game gets its own subvolume, so it can be snapshotted.
+        cfg['subvolumes'] = as_bool(data.get('install', {}).get('subvolumes', True))
+        try:
+            cfg['snapshots_keep'] = max(1, min(20, int(
+                data.get('snapshots', {}).get('keep', 1))))
+        except (TypeError, ValueError):
+            pass
     except OSError:
         pass
     except ValueError as e:

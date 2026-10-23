@@ -216,6 +216,7 @@ def managed_entries(install_base: Path, compute_sizes: bool = False,
             'playtime_minutes': minutes,
             'exe': exe,
             'origin': g.get('source'),
+            'owned_dir': bool(owned_dir(g)),      # Nexus's own folder: can move / snapshot
             'kind': 'nexus',
         })
     return enriched

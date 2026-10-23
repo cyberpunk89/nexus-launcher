@@ -255,11 +255,20 @@ class LibraryMixin:
         slug = game.get('slug')
         if not slug:
             return
-        if mods & Qt.KeyboardModifier.ControlModifier and game.get('source', 'nexus') == 'nexus':
+        order = [g['slug'] for g in self._shown_games] if self._showing(self.LIBRARY) else []
+        anchor = getattr(self, '_sel_anchor', None)
+        if mods & Qt.KeyboardModifier.ShiftModifier and anchor in order and slug in order:
+            a, b = sorted((order.index(anchor), order.index(slug)))
+            rng = order[a:b + 1]                       # the games in between, as shown
+            keep = self.selected if mods & Qt.KeyboardModifier.ControlModifier else []
+            self.selected = [*[s for s in keep if s not in rng], *rng]
+        elif mods & Qt.KeyboardModifier.ControlModifier:
             self.selected = [s for s in self.selected if s != slug] if slug in self.selected \
                 else [*self.selected, slug]
+            self._sel_anchor = slug
         else:
             self.selected = [slug]
+            self._sel_anchor = slug
         self._sync_selection()
 
     def _sync_selection(self):

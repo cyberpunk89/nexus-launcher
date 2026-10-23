@@ -58,6 +58,8 @@ class PlayMixin:
             if t0 and g and (g.get('source', 'nexus') != 'nexus'
                              or g.get('launch_via') == 'steam'):
                 history.record(slug, g['source'], t0, now, g.get('display_name'))
+            if t0 and g:
+                self._after_session(g, (now - t0).total_seconds())
         if not self._launching:
             self._fast_timer.stop()
         changed = playing != self._playing or started
@@ -75,6 +77,58 @@ class PlayMixin:
             except RuntimeError:
                 pass
 
+    CRASH_SECONDS = 20          # a repack that closes this soon most likely crashed
+    KEEP_SECONDS = 60           # a tried Proton that runs this long is worth keeping
+
+    def _after_session(self, g: dict, secs: float):
+        """The crash helper: a repack that closed within seconds gets a toast
+        with its log and "Try another Proton…" (one run, nothing saved); a
+        tried Proton that held up is offered for good."""
+        slug, name = g['slug'], g.get('display_name', g['slug'])
+        if g.get('source', 'nexus') != 'nexus' or g.get('launch_via') == 'steam':
+            return
+        tried = self._trying.pop(slug, None)
+        if secs >= self.CRASH_SECONDS:
+            if tried and secs >= self.KEEP_SECONDS:
+                self.toast(f"{name} ran with {tried}. Play it with {tried} from now on?",
+                           'success', [("Use it", lambda: self.run(
+                               ['--proton', slug, tried], f"Switching {name} to {tried}", slug,
+                               'task', bool(g.get('steam'))))], 15000)
+            return
+        rc = last_exit_code(slug)
+        how = f"closed after {int(secs)} s" + (f" (exit code {rc})" if rc not in (None, 0)
+                                                else "")
+        self.toast(f"{name} {how}" + (f" with {tried}." if tried else "."), 'warn', [
+            ("Show log", lambda: self.on_game_action('view-log', g)),
+            ("Try another Proton…", lambda: self.try_other_proton(g))], 0)
+
+    def try_other_proton(self, g: dict):
+        """Pick an installed Proton and launch the game with it this once."""
+        slug, name = g['slug'], g.get('display_name', g['slug'])
+        current = g.get('proton')
+
+        def got(data, _err):
+            if not alive(self):
+                return
+            names = [p['name'] for p in (data or {}).get('protons') or []
+                     if p['name'] != current]
+            if not names:
+                self.toast("No other Proton is installed — get one on the Proton page.",
+                           'info', [("Proton", lambda: self.go(self.PROTON))], 6000)
+                return
+
+            def launch(p):
+                self._trying[slug] = p
+                self._begin_launch(g)
+                self.run(['--launch', slug, '--try-proton', p], f"Launching {name} with {p}",
+                         slug, 'launch')
+            sheet = self.theatre_sheet if self._theatre else self.sheet
+            sheet.choose(f"Try {name} with…", [(p, G['proton'], lambda p=p: launch(p))
+                                              for p in names],
+                         "This run only — the game keeps its Proton unless it works better.")
+            self._update_hints()
+        cli_json(['--list-protons', '--json'], got, 20000)
+
     def _launch_expired(self, slugs):
         for slug in slugs:
             self._launching.pop(slug, None)
@@ -82,9 +136,13 @@ class PlayMixin:
             if g is None:
                 continue
             name = g.get('display_name', slug)
-            action = ("Show log", lambda g=g: self.on_game_action('view-log', g)) \
-                if g.get('source', 'nexus') == 'nexus' else None
-            self.toast(f"{name} doesn't seem to have started.", 'warn', action, 10000)
+            repack = g.get('source', 'nexus') == 'nexus' and g.get('launch_via') != 'steam'
+            tried = self._trying.pop(slug, None) if repack else None
+            action = [("Show log", lambda g=g: self.on_game_action('view-log', g)),
+                      ("Try another Proton…", lambda g=g: self.try_other_proton(g))] \
+                if repack else None
+            self.toast(f"{name} doesn't seem to have started"
+                       + (f" with {tried}." if tried else "."), 'warn', action, 10000)
         if not self._launching:
             self._fast_timer.stop()
         self._mark_states()
@@ -180,9 +238,27 @@ class PlayMixin:
         QTimer.singleShot(400, lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
 
+def last_exit_code(slug: str) -> int | None:
+    """The game's exit code, from the `# exited <rc> after …` line its launch
+    tracker writes at the end of <slug>-last-launch.log (None if not there yet)."""
+    import re
+    from nexus.paths import LOG_DIR
+    try:
+        with open(LOG_DIR / f"{slug}-last-launch.log", 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4096))
+            tail = f.read().decode('utf-8', 'replace')
+    except OSError:
+        return None
+    m = re.findall(r'^# exited (-?\d+) after', tail, re.M)
+    return int(m[-1]) if m else None
+
+
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .jobs import in_thread, match_running  # noqa: E402
+from .jobs import cli_json, in_thread, match_running  # noqa: E402
+from .theme import G  # noqa: E402
 from .tiles import GameTile  # noqa: E402
+
