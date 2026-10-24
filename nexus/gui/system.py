@@ -149,13 +149,13 @@ class HealthPage(QWidget):
                 url = a['args'][1] if len(a['args']) == 2 else ''
                 if not platform.fix_page(url):
                     continue
-                b = QPushButton(a['label'])
+                b = QPushButton(amp(a['label']))
                 b.setToolTip(url)
                 b.setProperty('url', url)
                 b.clicked.connect(self._open_page)
                 lay.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
                 continue
-            b = QPushButton(a['label'])
+            b = QPushButton(amp(a['label']))
             b.clicked.connect(lambda _=False, a=a, b=b: (
                 b.setEnabled(False),
                 self.request.emit(a['args'], f"{a['label']} — {c['title'].split(':')[0]}",
@@ -318,7 +318,7 @@ class PlayHistoryPage(QWidget):
         most = max((t['minutes'] for t in y.get('top') or []), default=1) or 1
         for t in y.get('top') or []:
             row = QHBoxLayout()
-            b = QPushButton(t['name'])
+            b = QPushButton(amp(t['name']))
             b.setObjectName("Ghost")
             b.setStyleSheet("text-align: left;")
             b.clicked.connect(lambda _=False, sl=t['slug']: self.reveal.emit(sl))
@@ -387,5 +387,5 @@ class SystemPage(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .details import StatTile  # noqa: E402
 from .jobs import cli_json, CliQuery  # noqa: E402
-from .widgets import (clear_layout, EmptyState, icon_label, label, plain_label,
+from .widgets import (amp, clear_layout, EmptyState, icon_label, label, plain_label,
     SegmentedControl, soft_wrap)  # noqa: E402

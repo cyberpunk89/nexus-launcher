@@ -996,14 +996,19 @@ def watch_cancel(name: str, on_cancel) -> bool:
     return True
 
 
-# DwmSetWindowAttribute ids: dark caption buttons (Windows 10 2004+), then the
-# border, caption and title text colours (Windows 11 only; Windows 10 refuses
-# them and keeps its own bar, which is fine).
+# DwmSetWindowAttribute ids: a dark title bar (20 since Windows 10 2004; 19
+# on 1809-1909, which refuse 20), then the border, caption and title text
+# colours (Windows 11 only; Windows 10 refuses them and keeps its own dark or
+# light bar, which is fine).
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
 _DWMWA_BORDER_COLOR, _DWMWA_CAPTION_COLOR, _DWMWA_TEXT_COLOR = 34, 35, 36
 
 
 TITLE_BAR_COLORS = True
+# Qt gives popup windows the CS_DROPSHADOW class style: a square shadow that
+# shows around the rounded corners of a translucent menu.
+SQUARE_POPUP_SHADOW = True
 
 
 def style_title_bar(hwnd: int, caption: str, text: str, border: str, dark: bool) -> bool:
@@ -1023,7 +1028,8 @@ def style_title_bar(hwnd: int, caption: str, text: str, border: str, dark: bool)
     def colorref(hexcolor: str) -> int:     # COLORREF is 0x00bbggrr
         r, g, b = (int(hexcolor.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
         return r | g << 8 | b << 16
-    put(_DWMWA_USE_IMMERSIVE_DARK_MODE, int(dark))
+    if not put(_DWMWA_USE_IMMERSIVE_DARK_MODE, int(dark)):
+        put(_DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, int(dark))
     return all([put(_DWMWA_CAPTION_COLOR, colorref(caption)),
                 put(_DWMWA_TEXT_COLOR, colorref(text)),
                 put(_DWMWA_BORDER_COLOR, colorref(border))])

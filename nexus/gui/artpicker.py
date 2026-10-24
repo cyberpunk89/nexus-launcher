@@ -270,7 +270,7 @@ class ArtPickerPage(QWidget):
                 return
             for it in items[:8]:
                 text = it['name'] + (f" ({it['year']})" if it.get('year') else "")
-                b = QPushButton(text)
+                b = QPushButton(amp(text))
                 b.setObjectName("Ghost")
                 b.setStyleSheet("text-align: left;")
                 b.clicked.connect(lambda _=False, it=it: self._match_pick(it))
@@ -388,5 +388,5 @@ class ArtPickerPage(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART, cover_pixmap  # noqa: E402
 from .jobs import cli_json  # noqa: E402
-from .widgets import (clear_layout, EmptyState, FlowLayout, label, SegmentedControl,
+from .widgets import (amp, clear_layout, EmptyState, FlowLayout, label, SegmentedControl,
     set_glyph_icon)  # noqa: E402

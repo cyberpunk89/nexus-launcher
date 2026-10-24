@@ -464,7 +464,7 @@ class SetupPage(QWidget):
                 text.addWidget(label(c['fix'], "ChoiceNote", wrap=True))
             row.addLayout(text, 1)
             for a in c.get('actions') or []:
-                b = QPushButton(a['label'])
+                b = QPushButton(amp(a['label']))
                 b.clicked.connect(lambda _=False, a=a, t=c['title']: self.request.emit(
                     a['args'], t, bool(a.get('steam')), 'task'))
                 row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -589,5 +589,5 @@ from .jobs import cli_json  # noqa: E402
 from .settings import Swatch, Switch  # noqa: E402
 from .topbar import Wordmark  # noqa: E402
 from .tray import tray_available  # noqa: E402
-from .widgets import (clear_layout, FlowLayout, icon_label, label, NoWheelCombo,  # noqa: E402
+from .widgets import (amp, clear_layout, FlowLayout, icon_label, label, NoWheelCombo,  # noqa: E402
     plain_label, set_glyph_icon)

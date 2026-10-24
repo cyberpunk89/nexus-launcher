@@ -277,5 +277,10 @@ CANCEL_EVENT_ENV = 'NEXUS_CANCEL_EVENT'
 #                                           False on Linux
 #   TITLE_BAR_COLORS                        whether style_title_bar does
 #                                           anything (ask before winId())
+#   SQUARE_POPUP_SHADOW                     popups get a rectangular system
+#                                           shadow (Windows' CS_DROPSHADOW),
+#                                           wrong under rounded menus: turn it
+#                                           off with NoDropShadowWindowHint
 style_title_bar = _impl.style_title_bar
 TITLE_BAR_COLORS = _impl.TITLE_BAR_COLORS
+SQUARE_POPUP_SHADOW = _impl.SQUARE_POPUP_SHADOW

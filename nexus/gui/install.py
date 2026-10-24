@@ -350,7 +350,7 @@ class InstallPage(QWidget):
                 text += "  ·  already installed"
             if not c.get('complete', True):
                 text += "  ·  still downloading"
-            b = QPushButton(text)
+            b = QPushButton(amp(text))
             b.setObjectName("ToolRow")
             b.setStyleSheet("text-align: left;")
             b.clicked.connect(lambda _=False, c=c: self._pick(c['path'], c['name']))
@@ -585,4 +585,4 @@ class InstallPage(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .jobs import cli_json  # noqa: E402
-from .widgets import clear_layout, label, plain_label  # noqa: E402
+from .widgets import amp, clear_layout, label, plain_label  # noqa: E402

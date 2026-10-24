@@ -151,6 +151,34 @@ class WindowsOnly(unittest.TestCase):
                              Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'))
                              / 'Steam')
 
+    def test_title_bar_colours_through_dwm(self):
+        """style_title_bar against a fake dwmapi (nobody is signed in to the
+        test VM's desktop, so the real bar can't be looked at): dark mode
+        on or off, then caption/text/border as COLORREF 0x00bbggrr; a
+        Windows 10 before 2004 refuses attribute 20 and gets 19; one that
+        refuses the colours (any Windows 10) says so."""
+        win = platform._impl
+        calls, refuse = [], set()
+
+        class Dwm:
+            def DwmSetWindowAttribute(self, hwnd, attr, ref, size):
+                calls.append((hwnd.value, attr, ref._obj.value, size))
+                return -2147024809 if attr in refuse else 0        # E_INVALIDARG
+
+        with mock.patch.object(win.ctypes, 'WinDLL', lambda name: Dwm()):
+            self.assertTrue(win.style_title_bar(1234, '#191724', '#e0def4', '#26233a', True))
+            self.assertEqual(calls, [(1234, 20, 1, 4), (1234, 35, 0x241719, 4),
+                                     (1234, 36, 0xf4dee0, 4), (1234, 34, 0x3a2326, 4)])
+            calls.clear()
+            self.assertTrue(win.style_title_bar(1234, '#faf4ed', '#575279', '#f2e9e1', False))
+            self.assertEqual(calls[0][1:3], (20, 0))                 # a light bar
+            calls.clear()
+            refuse.update({20, 34, 35, 36})
+            self.assertFalse(win.style_title_bar(1234, '#191724', '#e0def4', '#26233a', True))
+            self.assertEqual([c[1:3] for c in calls[:2]], [(20, 1), (19, 1)])
+        with mock.patch.object(win.ctypes, 'WinDLL', side_effect=OSError):
+            self.assertFalse(win.style_title_bar(1234, '#191724', '#e0def4', '#26233a', True))
+
     def test_trash_goes_to_the_recycle_bin(self):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / 'nexus-trash-test.txt'

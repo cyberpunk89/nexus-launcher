@@ -1147,6 +1147,69 @@ class Window(unittest.TestCase):
             self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT))
         self.assertEqual(nx.P['accent'], nx.ACCENTS['iris'])
 
+    def test_title_bar_follows_the_theme(self):
+        """Light themes get a light title bar, dark ones a dark one, again on
+        every change (Windows; nexus.platform does the DWM part)."""
+        from nexus import platform
+        calls = []
+        try:
+            with mock.patch.object(platform, 'TITLE_BAR_COLORS', True), \
+                    mock.patch.object(platform, 'style_title_bar',
+                                      lambda *a: calls.append(a) or True):
+                self.win.set_appearance({**nx.APPEARANCE_DEFAULT, 'theme': 'dawn'})
+                self.win.set_appearance({**nx.APPEARANCE_DEFAULT, 'theme': 'midnight'})
+        finally:
+            self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT))
+        self.assertEqual([(c[1], c[4]) for c in calls],
+                         [(nx.THEMES['dawn'][1]['base'], False),
+                          (nx.THEMES['midnight'][1]['base'], True)])
+        self.assertEqual(calls[0][0], int(self.win.winId()))
+
+    def test_toasts_stack_without_squashing(self):
+        w = self.win
+        w.toast("Elden Ring is installed and ready to play.", 'success', None, 0)
+        w.toast("Couldn't install Ratchet & Clank — setup exited with code 2", 'error',
+                [("Verify & retry", lambda: None)])
+        QApplication.processEvents()
+        host = w.toasts
+        toasts = [host.lay.itemAt(i).widget() for i in range(host.lay.count())]
+        self.assertEqual(len(toasts), 2)
+        for t in toasts:            # each as tall as it wants, not squeezed into one slot
+            self.assertGreaterEqual(t.height(), t.minimumSizeHint().height())
+        self.assertGreaterEqual(host.height(), sum(t.height() for t in toasts))
+        buttons = [b.text() for b in toasts[1].findChildren(QPushButton)]
+        self.assertIn("Verify && retry", buttons)       # "&&" draws one "&"
+
+    def test_ampersands_show_as_ampersands(self):
+        w = self.win
+        nav = w.settings.nav_btns['backup']
+        self.assertEqual(nav.text(), "Back up && move")
+        w.settings._set_compact(True)
+        w.settings._set_compact(False)              # the rail gives the names back
+        self.assertEqual(nav.text(), "Back up && move")
+        w._create_collection('Fast & Loud', 'alpha')
+        self.assertEqual(w.chips['col:Fast & Loud'].text(), "Fast && Loud")
+        w.prefs.collections = {}
+        w._collections_changed()
+
+    def test_owned_switch_drops_under_the_chips_when_narrow(self):
+        """Installed / Not installed / Everything used to be squeezed until
+        its labels were cut off (a 1366x768 laptop at 125-150 %, the game
+        panel open); now it moves under the chips."""
+        w = self.win
+        w.go(w.LIBRARY)
+        w.own_seg.setVisible(True)
+        w._tile_activated(w._games[0])                  # the panel takes its share
+        row = w.own_seg.parentWidget()
+        for width, stacked in ((1900, False), (760, True), (1900, False)):
+            w.resize(width, 850)
+            QApplication.processEvents()
+            self.assertEqual(row.stacked(), stacked, width)
+            m = row.layout().contentsMargins()
+            room = row.width() - m.left() - m.right()       # all of it, when stacked
+            self.assertGreaterEqual(w.own_seg.width(), min(w.own_seg.sizeHint().width(), room),
+                                    width)
+
     def test_launch_state_and_handoff(self):
         from unittest import mock
         w = self.win

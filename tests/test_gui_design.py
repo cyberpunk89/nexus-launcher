@@ -42,6 +42,33 @@ class Stylesheet(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Popups(unittest.TestCase):
+    def test_rounded_popups_drop_a_square_system_shadow(self):
+        """Menus go translucent for their rounded corners; where the system
+        draws a square shadow around popups (Windows), that is turned off."""
+        from unittest import mock
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtWidgets import QMenu
+        from nexus import platform
+        from nexus.gui.widgets import PopupRounder
+        rounder = PopupRounder()
+        for square in (False, True):
+            m = QMenu()
+            self.addCleanup(m.deleteLater)
+            with mock.patch.object(platform, 'SQUARE_POPUP_SHADOW', square):
+                rounder.eventFilter(m, QEvent(QEvent.Type.Polish))
+            self.assertTrue(m.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
+            self.assertEqual(bool(m.windowFlags() & Qt.WindowType.NoDropShadowWindowHint),
+                             square)
+
+    def test_monospace_has_a_windows_face(self):
+        """Windows has none of the Linux monospace faces, and 'monospace'
+        resolves to Tahoma there."""
+        self.assertIn('Cascadia Mono', nx.MONO_STACK)
+        self.assertIn('Consolas', nx.MONO_STACK)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class RoundedImages(unittest.TestCase):
     def test_corners_transparent(self):
         src = QPixmap(40, 60)

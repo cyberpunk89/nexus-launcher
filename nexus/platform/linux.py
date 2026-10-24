@@ -364,6 +364,8 @@ def watch_cancel(name: str, on_cancel) -> bool:
 
 
 TITLE_BAR_COLORS = False
+# The compositor shadows popups (or not) by their shape.
+SQUARE_POPUP_SHADOW = False
 
 
 def style_title_bar(hwnd: int, caption: str, text: str, border: str, dark: bool) -> bool:

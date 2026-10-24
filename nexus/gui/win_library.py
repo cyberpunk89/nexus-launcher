@@ -108,9 +108,9 @@ class LibraryMixin:
             bl.addWidget(w)
         lay.addWidget(bar)
 
-        chips = QWidget()
-        cl = QHBoxLayout(chips)
-        cl.setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
+        chips = WrapRow(SP['1_5'])              # own_seg drops under the chips if narrow
+        chips.layout().setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
+        cl = chips.left
         cl.setSpacing(SP['1_5'])
         self.chips = {}
         # One chip per store. Heroic is Linux-only; a store source's chip
@@ -140,7 +140,7 @@ class LibraryMixin:
             self.own_seg.add(key, text)
         self.own_seg.set_current(self.prefs.owned_view, animate=False)
         self.own_seg.changed.connect(self._set_owned_view)
-        cl.addWidget(self.own_seg)
+        chips.set_right(self.own_seg)
         self.own_seg.setVisible(self.prefs.show_owned)
         lay.addWidget(chips)
         self._restore_library_state()
@@ -758,5 +758,5 @@ from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView
     surprise_pick)  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import icon_button, label, SegmentedControl  # noqa: E402
+from .widgets import icon_button, label, SegmentedControl, WrapRow  # noqa: E402
 from .topbar import CollectionChip  # noqa: E402

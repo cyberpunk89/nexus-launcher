@@ -14,7 +14,7 @@ from nexus import gamedb, hypervisor
 from nexus.features import has
 
 from .fmt import fmt_ago
-from .theme import FONTS, FS, G, GRAD, P, PAL, PILL_H, pill_qss, R, SP
+from .theme import FONTS, FS, G, GRAD, P, PILL_H, pill_qss, R, SP
 
 
 def _pill(text: str, role: str) -> QLabel:
@@ -194,7 +194,7 @@ class DealArt(QWidget):
         h = 20
         r = QRectF(x - w if right else x, y - h if up else y, w, h)
         if role == 'glass':
-            bg = QColor(PAL['base']); bg.setAlphaF(0.78)
+            bg = QColor(P['scrim']); bg.setAlphaF(0.78)
             fg = QColor(P['on_art'])
         else:
             bg, fg = QColor(P.get(role, P['accent'])), QColor(P['on_accent'])
@@ -713,7 +713,7 @@ class DealSpotlight(QFrame):
             g.setColorAt(1.0, b)
             pt.fillRect(r, QBrush(g))
         s = QLinearGradient(r.topLeft(), r.topRight())
-        base = QColor(PAL['base'])
+        base = QColor(P['scrim'])       # dark under the white text on a light theme too
         for at, alpha in ((0.0, 0.94), (0.45, 0.75), (0.8, 0.15), (1.0, 0.05)):
             c = QColor(base); c.setAlphaF(alpha)
             s.setColorAt(at, c)

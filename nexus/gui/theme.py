@@ -20,8 +20,10 @@ from .common import _REPO, DATA_DIR
 # bundled Lucide font (nexus/icons.py), so it must never fall back to the UI face.
 SANS_STACK = ['Lexend', 'Inter', 'Inter Display', 'Cantarell', 'Noto Sans',
               'DejaVu Sans']
+# Cascadia Mono and Consolas: Windows has none of the others, and its
+# 'monospace' resolves to Tahoma, which isn't one.
 MONO_STACK = ['JetBrainsMono Nerd Font', 'JetBrains Mono', 'Fira Code',
-              'Noto Sans Mono', 'DejaVu Sans Mono']
+              'Noto Sans Mono', 'DejaVu Sans Mono', 'Cascadia Mono', 'Consolas']
 FONT_DIR = _REPO / 'assets' / 'fonts'
 ICON_TTF = FONT_DIR / 'lucide.ttf'
 # Bundled so a machine without them (Windows) looks the same: Lexend (OFL)

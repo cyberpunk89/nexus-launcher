@@ -572,7 +572,7 @@ class SettingsPage(QWidget):
     def _add_section(self, sec: SettingsSection) -> SettingsSection:
         self.sections[sec.key] = sec
         self.content.addWidget(sec)
-        b = QPushButton(sec.title)
+        b = QPushButton(amp(sec.title))
         b.setObjectName("NavItem")
         b.setAccessibleName(sec.title)
         b.setCheckable(True)
@@ -673,7 +673,7 @@ class SettingsPage(QWidget):
                         "ready to install.", self.scan_dir, browse=True,
                         keywords="downloads folder scan")
         self.scan_more = QLineEdit()
-        self.scan_more.setPlaceholderText("e.g. ~/Games/Install")
+        self.scan_more.setPlaceholderText(f"e.g. {os.path.join('~', 'Games', 'Install')}")
         self._field_row(sec, "Also look in", "More folders to watch, separated by ;",
                         self.scan_more, keywords="folders scan")
         self.unattended = Switch()
@@ -1033,7 +1033,7 @@ class SettingsPage(QWidget):
         self.nav_lay.setContentsMargins(*m)
         for b in [*self.nav_btns.values(), self.cfg_btn]:
             name = b.accessibleName() or "Open config.toml"
-            b.setText("" if on else name)
+            b.setText("" if on else amp(name))
             b.setToolTip(name if on else ("" if b is not self.cfg_btn else self._cfg_tip))
         if on:
             self.content.insertWidget(0, self.head)
@@ -1404,5 +1404,5 @@ class SettingsPage(QWidget):
 from .config import ConfigError, load_config, save_config  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
-from .widgets import (clear_layout, glyph_pixmap, icon_label, label, NoWheelCombo,  # noqa: E402
-    SegmentedControl, set_glyph_icon)
+from .widgets import (amp, clear_layout, glyph_pixmap, icon_label, label,  # noqa: E402
+    NoWheelCombo, SegmentedControl, set_glyph_icon)

@@ -10,7 +10,7 @@ from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QObject, QPoint, QPr
     QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPen,
     QPixmap, QRadialGradient)
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame,
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QComboBox, QFrame,
     QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget)
 
@@ -24,7 +24,8 @@ class PopupRounder(QObject):
     """Menus and combo drop-downs are top-level windows; their QSS
     radius only shows if the window itself is translucent (otherwise the
     square window background paints the corners). Set that as each one is
-    polished, before its native surface exists."""
+    polished, before its native surface exists; on Windows also drop the
+    system's square shadow, which would frame the rounded corners."""
     # Not tooltips: a translucent QTipLabel can come up as its own black window
     # under niri/Wayland instead of a popup.
     POPUPS = ('QComboBoxPrivateContainer',)
@@ -36,6 +37,8 @@ class PopupRounder(QObject):
                 and (isinstance(obj, QMenu) or obj.metaObject().className() in self.POPUPS) \
                 and not obj.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
             obj.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if platform.SQUARE_POPUP_SHADOW:
+                obj.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         return False
 
 
@@ -137,6 +140,68 @@ class GradientBackground(QWidget):
 # --------------------------------------------------------------------------
 # FlowLayout (reflowing grid) — adapted from the Qt example
 # --------------------------------------------------------------------------
+
+class WrapRow(QWidget):
+    """Items on the left (`left`, a QHBoxLayout) and one control on the right
+    (set_right). When the two don't fit side by side (a narrow window, or
+    150 % display scaling), the control moves under them, still on the right,
+    instead of being squeezed until its labels are cut off."""
+
+    def __init__(self, spacing: int = 0):
+        super().__init__()
+        self._box = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._box.setSpacing(spacing)
+        # The sizes asked for below don't depend on the arrangement: if they
+        # did, each would get the room that keeps it (wide stays wide, stacked
+        # stays stacked once the game panel takes the difference).
+        self._box.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.left = QHBoxLayout()
+        self.left.setContentsMargins(0, 0, 0, 0)
+        self._box.addLayout(self.left, 1)
+        self.right: QWidget | None = None
+
+    def set_right(self, w: QWidget):
+        self.right = w
+        self._box.addWidget(w, 0, Qt.AlignmentFlag.AlignRight)
+        w.installEventFilter(self)                  # shown or hidden later
+        self._fit()
+
+    def stacked(self) -> bool:
+        return self._box.direction() == QBoxLayout.Direction.TopToBottom
+
+    def _shown(self) -> bool:
+        return self.right is not None and not self.right.isHidden()
+
+    def _side_by_side(self) -> int:
+        """The width both need on one line."""
+        m = self._box.contentsMargins()
+        right = self._box.spacing() + self.right.sizeHint().width() if self._shown() else 0
+        return self.left.minimumSize().width() + right + m.left() + m.right()
+
+    def sizeHint(self):
+        return QSize(self._side_by_side(), super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        m = self._box.contentsMargins()
+        right = self.right.minimumSizeHint().width() if self._shown() else 0
+        return QSize(max(self.left.minimumSize().width(), right) + m.left() + m.right(),
+                     super().minimumSizeHint().height())
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.right and ev.type() in (QEvent.Type.Show, QEvent.Type.Hide):
+            self._fit()
+        return False
+
+    def _fit(self):
+        d = (QBoxLayout.Direction.TopToBottom if self._shown()
+             and self.width() < self._side_by_side() else QBoxLayout.Direction.LeftToRight)
+        if self._box.direction() != d:
+            self._box.setDirection(d)
+
 
 class FlowLayout(QLayout):
     """Wrapping row layout. With `justify`, full rows spread their leftover
@@ -318,6 +383,13 @@ def label(text: str = '', name: str | None = None, wrap: bool = False) -> QLabel
         lab.setObjectName(name)
     lab.setWordWrap(wrap)
     return lab
+
+
+def amp(text: str) -> str:
+    """Button and menu text shown as is: Qt reads a lone & as a shortcut
+    marker, so "Back up & move" drew "Back up _move" and a game called
+    "Ratchet & Clank" lost its ampersand."""
+    return text.replace('&', '&&')
 
 
 def plain_label(text: str = '', name: str | None = None, wrap: bool = False) -> QLabel:
@@ -714,7 +786,7 @@ class Toast(QFrame):
         lay.addWidget(msg, 1)
         self._buttons = []
         for text, fn in (action if isinstance(action, list) else [action] if action else []):
-            b = QPushButton(text)
+            b = QPushButton(amp(text))
             b.clicked.connect(lambda _=False, fn=fn: self._act(fn))
             lay.addWidget(b)
             self._buttons.append(b)
@@ -792,6 +864,9 @@ class ToastHost(QWidget):
         self.lay.addWidget(t)
         if self.lay.count() > 4:                  # at most a few at once: drop the oldest
             self.lay.itemAt(0).widget().dismiss()
+        # Shown now, not when the layout gets round to it: a hidden toast has
+        # no size, so the host stayed one toast tall and squashed the rest.
+        t.show()
         self.show()
         self.raise_()
         self._place()

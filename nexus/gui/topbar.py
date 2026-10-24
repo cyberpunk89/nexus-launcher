@@ -270,7 +270,7 @@ class CollectionChip(QPushButton):
     manage = pyqtSignal(str)
 
     def __init__(self, name: str):
-        super().__init__(name)
+        super().__init__(amp(name))
         self.name = name
         self.setObjectName("Chip")
         self.setCheckable(True)
@@ -288,4 +288,4 @@ class CollectionChip(QPushButton):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
-from .widgets import icon_label, label, SegmentedControl, set_glyph_icon  # noqa: E402
+from .widgets import amp, icon_label, label, SegmentedControl, set_glyph_icon  # noqa: E402

@@ -180,7 +180,7 @@ def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:
         if prev is not None and prev != a.section:
             target.addSeparator()
         last[id(target)] = a.section
-        qa = target.addAction(a.label)
+        qa = target.addAction(amp(a.label))
         qa.setEnabled(a.enabled)
         if a.checked is not None:
             qa.setCheckable(True)
@@ -254,7 +254,7 @@ class ActionSheet(QFrame):
             text = a.label
             if a.desk and theatre:
                 text += "  ·  leaves Theatre"
-            b = QPushButton(text)
+            b = QPushButton(amp(text))
             b.setObjectName("SheetRow")
             b.setProperty('danger', a.danger)
             set_glyph_icon(b, action_glyph(a), px,
@@ -285,7 +285,7 @@ class ActionSheet(QFrame):
         self.rows.addWidget(label(text, "Muted", wrap=True))
         self.rows.addSpacing(int(SP['3'] * self.scale))
         px = int(18 * self.scale)
-        ok = QPushButton(yes)
+        ok = QPushButton(amp(yes))
         ok.setObjectName("SheetRow")
         ok.setProperty('danger', danger)
         set_glyph_icon(ok, G['check'], px, 'danger' if danger else 'accent', hover_role=None)
@@ -322,7 +322,7 @@ class ActionSheet(QFrame):
         px = int(18 * self.scale)
         first = None
         for text, glyph, fn, *rest in items:
-            b = QPushButton(text)
+            b = QPushButton(amp(text))
             b.setObjectName("SheetRow")
             set_glyph_icon(b, glyph, px, 'accent' if rest and rest[0] else 'subtext',
                            hover_role=None)
@@ -567,4 +567,5 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> s
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .widgets import clear_layout, icon_button, label, plain_label, set_glyph_icon  # noqa: E402
+from .widgets import (amp, clear_layout, icon_button, label, plain_label,  # noqa: E402
+    set_glyph_icon)
