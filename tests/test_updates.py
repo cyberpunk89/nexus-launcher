@@ -172,7 +172,8 @@ class Window(unittest.TestCase):
 
     def test_settings_row_shows_version_and_result(self):
         from nexus import __version__
-        page = self.page({'state': 'available', 'version': '9.1.0', 'url': SETUP})
+        with mock.patch.object(updates, 'last_checked', return_value=None):   # no check yet
+            page = self.page({'state': 'available', 'version': '9.1.0', 'url': SETUP})
         self.assertIn(f"Nexus {__version__}", page.version_row.desc.text())
         self.assertIn("last checked never", page.version_row.desc.text())
         with mock.patch.object(updates, 'check', return_value={
