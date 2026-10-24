@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
-from nexus import alerts, instance, net, paths as NX, steamlib, torrent
+from nexus import alerts, hypervisor, instance, net, paths as NX, steamlib, torrent
 from nexus.features import has
 
 from .common import alive, CLI, cli_args, DATA_DIR
@@ -236,6 +236,9 @@ class DownloadsMixin:
         sub = " · ".join(bits)
         if need and free is not None and free < need:
             sub += " — not enough space"
+        hv = page.get('hv') or match.get('hv')
+        if hv:
+            sub += "\n" + hypervisor.note(hv)
         sheet = self.theatre_sheet if self._theatre else self.sheet
         items = []
         if not page.get('client'):

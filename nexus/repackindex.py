@@ -8,7 +8,8 @@ requests, slowly); later syncs ask only for posts modified since the last
 one. The catalogue is rebuilt from scratch monthly so deleted posts drop out.
 
 Stored in DATA_DIR/repack-index.json: slug, title and dates — titles
-only, like repackfeed. A repack's magnet link is read from its page
+only, like repackfeed — plus 'hv' on the posts in the "Hypervisor Bypass"
+category (nexus/hypervisor.py), re-read on every sync. A repack's magnet link is read from its page
 when you ask for it (fetch_page) and handed straight to the torrent client;
 it is never written down. Every link is pinned to fitgirl-repacks.site
 (clone domains serve malware)."""
@@ -22,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from . import net
+from . import hypervisor, net
 from .paths import DATA_DIR
 from .repackfeed import SITE, base_title, page_slug
 
@@ -206,9 +207,45 @@ def sync(force: bool = False, full: bool = False, progress=None) -> dict:
     else:
         data['posts'].update(fresh)
     _bump(data, fresh)
+    _mark_hv(data)
     data['synced_at'] = _now()
     save(data)
     return data
+
+
+def _hv_posts() -> dict[str, str] | None:
+    """{slug: 'hv'|'both'} for every post in the Hypervisor Bypass category
+    (a hundred or so: one or two requests), None when it can't be read."""
+    out, page = {}, 1
+    while True:
+        q = {'categories': hypervisor.CATEGORY, 'per_page': PER_PAGE, 'page': page,
+             '_fields': 'slug,link,title'}
+        try:
+            rows = json.loads(net.get(API + 'posts?' + urlencode(q), timeout=30, limit=4 << 20))
+        except net.NetError as e:
+            if e.status == 400 and page > 1:      # past the last page
+                break
+            return None
+        except ValueError:
+            return None
+        for p in parse_posts(rows):
+            out[p['slug']] = hypervisor.kind(p['title'])
+        if not isinstance(rows, list) or len(rows) < PER_PAGE:
+            break
+        page += 1
+    return out
+
+
+def _mark_hv(data: dict) -> None:
+    """Set or clear 'hv' on the stored posts. Offline, the old marks stay."""
+    hv = _hv_posts()
+    if hv is None:
+        return
+    for slug, post in data['posts'].items():
+        if slug in hv:
+            post['hv'] = hv[slug]
+        else:
+            post.pop('hv', None)
 
 
 def _bump(data: dict, posts: dict) -> None:
@@ -269,7 +306,7 @@ class Matcher:
 def entry(post: dict, confidence: str) -> dict:
     return {'slug': post['slug'], 'title': post['title'], 'url': SITE + post['slug'] + '/',
             'date': post.get('date'), 'modified': post.get('modified'),
-            'confidence': confidence}
+            'confidence': confidence, 'hv': post.get('hv')}
 
 
 def wishlist_matches(wishlist, data: dict | None = None) -> dict[str, dict]:
@@ -314,12 +351,13 @@ def new_matches(matches: dict, data: dict) -> tuple[list[str], bool]:
 # ── one repack page, on demand ────────────────────────────────────────────
 
 def fetch_page(slug: str) -> dict:
-    """{url, title, magnets [{hash, uri}], repack_size, original_size} for
-    one repack, read from the site now. Nothing here is stored."""
+    """{url, title, magnets [{hash, uri}], repack_size, original_size, hv}
+    for one repack, read from the site now ('hv': None, 'hv' or 'both').
+    Nothing here is stored."""
     from .torrent import infohash
     if not _SLUG_RE.match(slug or ''):
         raise net.NetError(f"not a repack page: {slug!r}")
-    q = urlencode({'slug': slug, '_fields': 'link,title,content'})
+    q = urlencode({'slug': slug, '_fields': 'link,title,content,categories'})
     try:
         rows = json.loads(net.get(API + 'posts?' + q, timeout=30, limit=8 << 20))
     except ValueError:
@@ -341,4 +379,7 @@ def fetch_page(slug: str) -> dict:
     for k, rx in _SIZE_RE.items():
         m = rx.search(content)
         out[k] = html.unescape(m.group(1)).strip() if m else None
+    cats = post.get('categories')
+    out['hv'] = (hypervisor.kind(out['title'])
+                 if isinstance(cats, list) and hypervisor.CATEGORY in cats else None)
     return out

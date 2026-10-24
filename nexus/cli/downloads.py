@@ -73,7 +73,8 @@ def cmd_repack_index(refresh: bool, as_json: bool, desktop: bool = False) -> Non
     print(f"{len(matches)} of {len(wishlist)} wishlist games have a repack:")
     for a, m in sorted(matches.items(), key=lambda kv: (titles.get(kv[0]) or '').lower()):
         likely = '' if m['confidence'] == 'exact' else '  (likely)'
-        print(f"  {titles.get(a) or a}: {m['title']}{likely}\n    {m['url']}")
+        hv = f"  [{m['hv'].replace('both', 'HV + non-HV').upper()}]" if m.get('hv') else ''
+        print(f"  {titles.get(a) or a}: {m['title']}{likely}{hv}\n    {m['url']}")
 
 
 def _size_bytes(text: str | None) -> int | None:
@@ -114,12 +115,16 @@ def cmd_repack_page(slug: str, as_json: bool) -> None:
     out = {'slug': slug, 'title': page['title'], 'url': page['url'],
            'repack_size': page['repack_size'], 'original_size': page['original_size'],
            'size_bytes': _size_bytes(page['repack_size']), 'magnets': len(page['magnets']),
+           'hv': page.get('hv'),
            'client': s['client'], 'dest': dest, 'free_bytes': free}
     if as_json:
         print(json.dumps(out))
         return
     print(f"{page['title']}\n  {page['url']}\n  repack {page['repack_size'] or '?'}, "
           f"installed {page['original_size'] or '?'}; {len(page['magnets'])} magnet link(s)")
+    if page.get('hv'):
+        from nexus import hypervisor
+        print(f"  {hypervisor.note(page['hv'])}")
     if dest:
         print(f"  downloads to {dest}" + (f" ({free / (1 << 30):.1f} GB free)" if free else ''))
 

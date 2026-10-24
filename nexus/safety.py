@@ -6,7 +6,9 @@ disguised file name, a setup.exe that isn't an Inno installer, or an
 installer told to fetch and run something from the internet.
 
 check() returns {verdict: 'ok'|'warn'|'danger', findings: [{level ('info',
-'warn' or 'danger'), file, why}], clamav}. With ClamAV installed it can also scan the small files
+'warn' or 'danger'), file, why}], clamav, hypervisor}. A hypervisor-bypass
+repack (nexus/hypervisor.py) is a finding of its own: 'warn' on Linux, where
+it can't run, 'info' on Windows; it's marked 'hv' so it's always shown. With ClamAV installed it can also scan the small files
 (never the multi-GB .bin parts, which are compressed archives anyway).
 Nothing here is proof either way: it catches the common tricks."""
 
@@ -14,6 +16,9 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+
+from . import hypervisor
+from .features import has
 
 EXEC_EXT = {'.exe', '.scr', '.com', '.pif', '.bat', '.cmd', '.vbs', '.vbe', '.js', '.jse',
             '.wsf', '.wsh', '.ps1', '.psm1', '.lnk', '.msi', '.msp', '.dll', '.hta', '.jar',
@@ -60,6 +65,8 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
         except OSError:
             continue
     names = {p.relative_to(repack_dir).as_posix().lower() for p in files}
+    hv = hypervisor.in_folder(repack_dir)
+    allowed = ALLOWED | ({'vbs.cmd'} if hv else set())   # an HV repack's own VBS script
     if 'setup.exe' not in names:
         add('warn', 'setup.exe', "missing — this doesn't look like a FitGirl repack")
     if not any(BIN_RE.match(p.name) for p in files):
@@ -74,7 +81,7 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
         if len(parts) > 2 and '.' + parts[-1] in EXEC_EXT and '.' + parts[-2] in DOC_EXT:
             add('danger', p, f"a program dressed up as a .{parts[-2]} file")
             continue
-        if rel in ALLOWED or BIN_RE.match(name) or rel.startswith('md5/') and rel.endswith('.md5'):
+        if rel in allowed or BIN_RE.match(name) or rel.startswith('md5/') and rel.endswith('.md5'):
             continue
         ext = p.suffix.lower()
         if ext in EXEC_EXT:
@@ -106,7 +113,11 @@ def check(repack_dir: Path, header_reader=None, clamav: bool = False) -> dict:
                           if not URL_OK.match(u)})
             if bad:                   # credits and project pages: worth a look, no more
                 add('info', setup, "the installer links to: " + ', '.join(bad[:4]))
+    if hv:
+        findings.append({'level': 'warn' if has('proton') else 'info', 'file': repack_dir.name,
+                         'why': hypervisor.note(), 'hv': True})
     result = {'verdict': _level(findings), 'findings': findings, 'clamav': None,
+              'hypervisor': hv,
               'clamav_available': bool(shutil.which('clamdscan') or shutil.which('clamscan'))}
     if clamav:
         result['clamav'] = clamscan([p for p in files if not BIN_RE.match(p.name)])

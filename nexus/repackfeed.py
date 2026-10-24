@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-from . import net
+from . import hypervisor, net
 from .paths import DATA_DIR
 
 SITE = "https://fitgirl-repacks.site/"
@@ -58,7 +58,8 @@ def page_slug(url: str | None) -> str | None:
 
 def parse_feed(xml_text: str) -> list[dict]:
     """[{slug, title, kind ('repack'|'update'), date (ISO), url}] from one
-    feed page. Digest posts yield one entry per listed game."""
+    feed page, with 'hv' on Hypervisor Bypass repacks. Digest posts yield
+    one entry per listed game."""
     out = []
     root = ET.fromstring(xml_text)
     for item in root.iter('item'):
@@ -78,8 +79,11 @@ def parse_feed(xml_text: str) -> list[dict]:
         elif 'Lossless Repack' in cats:
             slug = page_slug(item.findtext('link'))
             if slug:
-                out.append({'slug': slug, 'title': html.unescape(title), 'kind': 'repack',
-                            'date': date, 'url': SITE + slug + '/'})
+                it = {'slug': slug, 'title': html.unescape(title), 'kind': 'repack',
+                      'date': date, 'url': SITE + slug + '/'}
+                if hypervisor.CATEGORY_NAME in cats:
+                    it['hv'] = hypervisor.kind(it['title'])
+                out.append(it)
     return out
 
 

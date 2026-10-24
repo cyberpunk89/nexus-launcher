@@ -440,7 +440,8 @@ class InstallPage(QWidget):
                 'danger': "This repack looks tampered with. Don't install it unless you're "
                           "sure:"}[v]
         items = "".join(f"<br>• <b>{html.escape(f['file'])}</b>: {html.escape(f['why'])}"
-                        for f in r.get('findings') or [] if f['level'] != 'info' or v == 'ok')
+                        for f in r.get('findings') or []
+                        if f['level'] != 'info' or v == 'ok' or f.get('hv'))
         clam = r.get('clamav') or {}
         if clam.get('available') and not clam.get('infected') and not clam.get('error'):
             items += "<br>ClamAV found nothing."
@@ -448,7 +449,13 @@ class InstallPage(QWidget):
         self.safety.setVisible(True)
         self.safety.setStyleSheet(f"color: {P[{'ok': 'success', 'warn': 'warning', 'danger': 'danger'}[v]]};")
         self.btn_clam.setVisible(bool(r.get('clamav_available')) and not clam.get('available'))
-        danger = v == 'danger'
+        # A hypervisor-bypass repack can't run under Proton: installing it
+        # takes the same tick as a tampered one (both pass --ignore-safety).
+        hv_here = bool(r.get('hypervisor')) and has('proton')
+        danger = v == 'danger' or hv_here
+        self.safety_ok.setText("I know it won't run under Proton — install anyway"
+                               if hv_here and v != 'danger' else
+                               "I've looked at it — install anyway")
         self.safety_ok.setChecked(False)
         self.safety_ok.setVisible(danger)
         self.btn_go.setEnabled(not danger)

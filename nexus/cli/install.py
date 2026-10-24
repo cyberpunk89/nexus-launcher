@@ -26,10 +26,28 @@ def _best_effort(what: str, fn, *a, **kw):
 
 def safety_gate(args, repack_dir: Path) -> None:
     """Stop (exit 1) before anything happens when the repack looks tampered
-    with, unless --ignore-safety. Shared by the Linux and Windows installs."""
+    with, or on Linux is a hypervisor-bypass one (it can't run under Proton;
+    without --yes it asks), unless --ignore-safety. Shared by the Linux and
+    Windows installs."""
+    from nexus import hypervisor, safety
+    from nexus.features import has
+    hv = hypervisor.in_folder(repack_dir)
+    if hv and not has('proton'):
+        print(f"  [i] {hypervisor.note()}\n      Steps: {hypervisor.GUIDE}")
     if args.ignore_safety:
         return
-    from nexus import safety
+    if hv and has('proton'):
+        print(f"  [!] {hypervisor.note()}\n      {hypervisor.GUIDE}", file=sys.stderr)
+        if args.yes:
+            print("      Not installing it. To install it anyway, pass --ignore-safety.",
+                  file=sys.stderr)
+            sys.exit(1)
+        try:
+            ans = input("  Install it anyway? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            sys.exit(1)
+        if ans not in ('y', 'yes'):
+            sys.exit(1)
     verdict = safety.check(repack_dir)
     if verdict['verdict'] == 'danger':
         print("  [!] This repack looks tampered with:", file=sys.stderr)

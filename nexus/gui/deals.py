@@ -10,7 +10,8 @@ from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import gamedb
+from nexus import gamedb, hypervisor
+from nexus.features import has
 
 from .fmt import fmt_ago
 from .theme import FONTS, FS, G, GRAD, P, PAL, PILL_H, pill_qss, R, SP
@@ -270,6 +271,11 @@ class DealCard(QFrame):
             exact = self.repack.get('confidence') == 'exact'
             self.art.top_right.append(("FitGirl" if exact else "FitGirl?",
                                        'success' if exact else 'warning'))
+            hv = hypervisor.badge(self.repack.get('hv'))
+            if hv:
+                # Red only where it can't run at all: Linux, with no non-HV build.
+                self.art.top_right.append(
+                    (hv, 'danger' if has('proton') and self.repack['hv'] == 'hv' else 'warning'))
         if owned and kind != 'tonight':
             self.art.top_right.append(("Owned", 'glass'))
         if kind == 'upcoming':
@@ -325,7 +331,10 @@ class DealCard(QFrame):
             self.grab.setObjectName("Chip")
             self.grab.setFocusPolicy(Qt.FocusPolicy.NoFocus)     # the card's menu has it too
             set_glyph_icon(self.grab, G['download'], 14, 'accent')
-            self.grab.setToolTip(f"Download {self.repack.get('title')} with your torrent client")
+            tip = f"Download {self.repack.get('title')} with your torrent client"
+            if self.repack.get('hv'):
+                tip += "\n" + hypervisor.note(self.repack['hv'])
+            self.grab.setToolTip(tip)
             self.grab.clicked.connect(self._grab)
             row.addWidget(self.grab)
         body.addLayout(row)
@@ -610,7 +619,11 @@ class DealSpotlight(QFrame):
             meta.insert(1 if meta and g.get('protonTier') else 0, (rv['steamDesc'], None))
         self.meta.setText(meta_html(meta))
         self.btn_open.setVisible(bool(self.primary))
-        self.btn_grab.setVisible(str(g.get('appid')) in self.repacks)
+        m = self.repacks.get(str(g.get('appid')))
+        self.btn_grab.setVisible(m is not None)
+        hv = hypervisor.badge((m or {}).get('hv'))
+        self.btn_grab.setText(f"Grab from FitGirl ({hv})" if hv else "Grab from FitGirl")
+        self.btn_grab.setToolTip(hypervisor.note(m['hv']) if hv else '')
         self.btn_steam.setVisible(bool(gamedb.safe_url(g.get('steamUrl'))))
         many = len(self.items) > 1
         for w in (self.btn_prev, self.btn_next, self.counter):
