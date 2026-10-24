@@ -18,6 +18,8 @@ if nx is not None:
     from nexus.gui import (dashboard, details, install, library, setup, storage, system, topbar,
         win_actions)
     from nexus.gui.theme import G
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
 
 WINDOWS = features.WINDOWS
 
@@ -366,6 +368,35 @@ class InstallPages(unittest.TestCase):
             page = setup.SetupPage()
         self.addCleanup(page.deleteLater)
         self.assertEqual(len(page.steps), len(setup.STEPS))
+
+    def test_setup_cards_answer_like_the_menus(self):
+        """Theme and size are cards now, the switches sit on cards: the same
+        answers come out, and a click on a card is a click on its choice."""
+        with windows():
+            page = setup.SetupPage()
+            self.addCleanup(page.deleteLater)
+            page.open({}, {'theme': 'dawn', 'scale': 1.25})
+            self.assertEqual(page._look(), {'theme': 'dawn', 'scale': 1.25})
+            looks = []
+            page.preview.connect(looks.append)
+            page.theme.group.button(page.theme.findData('moon')).click()
+            page.size.group.button(page.size.findData(1.5)).click()
+            self.assertEqual(looks[-1], {'theme': 'moon', 'scale': 1.5})
+            card = page.agent.parentWidget()
+            self.assertIsInstance(card, setup.ToggleCard)
+            QTest.mouseClick(card, Qt.MouseButton.LeftButton)
+            self.assertTrue(page.agent.isChecked())
+            self.assertEqual(card.property('on'), 'true')
+            QTest.mouseClick(page.use_torrent.parentWidget(), Qt.MouseButton.LeftButton)
+            self.assertFalse(page.use_torrent.isChecked())     # disabled: no client found
+            _, opts = page.answers_now()
+            self.assertEqual(opts['appearance'], {'theme': 'moon', 'scale': 1.5})
+            self.assertTrue(opts['agent'])
+            page.show_step(4)
+            self.assertEqual((page.track.current, len(page.track.names)), (4, 5))
+            # The stack is as tall as the step shown, not the tallest step.
+            self.assertEqual(page.stack.minimumSizeHint(),
+                             page.stack.currentWidget().minimumSizeHint())
 
     def test_antivirus_text(self):
         title, text = win_actions.antivirus_text({'detections': [

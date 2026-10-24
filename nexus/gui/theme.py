@@ -688,6 +688,22 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #RowRule { background: $border; }
     QLabel#Banner { color: $text; font-size: ${fs_xs}px; }
 
+    /* ---- First-run setup: step title, choice cards, check rows ---------- */
+    QLabel#SetupTitle { color: $text; font-size: ${fs_display}px; font-weight: 600; }
+    QPushButton#ChoiceCard { background: $surface_1; border: 1px solid $border;
+                             border-radius: ${r_xl}px; padding: 0; text-align: left; }
+    QPushButton#ChoiceCard:hover { background: $surface_2; border-color: $overlay; }
+    QPushButton#ChoiceCard:focus { border-color: $accent_35; }
+    QPushButton#ChoiceCard:checked { background: $accent_09; border: 1px solid $accent; }
+    #ToggleCard { background: $surface_1; border: 1px solid $border;
+                  border-radius: ${r_xl}px; }
+    #ToggleCard:hover { background: $surface_2; border-color: $overlay; }
+    #ToggleCard[on="true"] { background: $accent_09; border-color: $accent_35; }
+    #SetupRow { background: $surface_1; border: 1px solid $border_card;
+                border-radius: ${r_control}px; }
+    QLabel#ChoiceTitle { color: $text; font-size: ${fs_sm}px; font-weight: 500; }
+    QLabel#ChoiceNote { color: $muted; font-size: ${fs_xs}px; }
+
     /* ---- Misc ---------------------------------------------------------- */
     QLabel#Empty { color: $muted; font-size: ${fs_base}px; }
     QLabel#EmptyTitle { color: $text; font-size: ${fs_base}px; font-weight: 500; }
