@@ -220,6 +220,26 @@ class FlowLayout(QLayout):
         self._items.append(item)
         self._hfw = {}
 
+    def add_widgets(self, widgets):
+        """addWidget() for many at once. Qt shows each widget added to a shown
+        layout on a later event-loop pass, one at a time, and each of those
+        shows re-ran the whole layout: a few hundred tiles took a second or
+        more. Shown here with the layout off instead, then laid out once."""
+        host = self.parentWidget()
+        self.setEnabled(False)
+        try:
+            for w in widgets:
+                self.addWidget(w)
+            if host is not None and host.isVisible():
+                for w in widgets:
+                    # What Qt's queued show would do: not one hidden on purpose.
+                    if w.isHidden() and not w.testAttribute(
+                            Qt.WidgetAttribute.WA_WState_ExplicitShowHide):
+                        w.show()
+        finally:
+            self.setEnabled(True)
+        self.invalidate()
+
     def count(self):
         return len(self._items)
 

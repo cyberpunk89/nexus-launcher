@@ -75,12 +75,13 @@ class LibraryView(QScrollArea, _TileSignals):
                 w.hide()                       # gone now, not at the next event loop
                 w.deleteLater()
         self.tiles = {}
+        order = []
         for job in pending_jobs:
             t = GameTile({'slug': f'__pending_{id(job)}', 'display_name': job.name},
                          pending=True, width=self.tile_width)
             t.set_job(job)
             t.selected.connect(lambda _g, _m, j=job: self.pending_clicked.emit(j))
-            self.flow.addWidget(t)
+            order.append(t)
         for g in games:
             pool = spare.get(g['slug'])
             if pool:
@@ -89,8 +90,9 @@ class LibraryView(QScrollArea, _TileSignals):
             else:
                 tile = GameTile(g, width=self.tile_width)
                 self._wire(tile)
-            self.flow.addWidget(tile)
+            order.append(tile)
             self.tiles.setdefault(g['slug'], []).append(tile)
+        self.flow.add_widgets(order)
         for pool in spare.values():
             for w in pool:
                 w.hide()
