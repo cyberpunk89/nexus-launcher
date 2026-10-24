@@ -219,6 +219,37 @@ class Regressions(unittest.TestCase):
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
         jm.changed.emit()                                  # nothing listens now
 
+    def test_a_widget_waiting_for_deletion_keeps_its_lambda_slots(self):
+        # deleteLater() let sip drop the wrapper; a collection then cleared
+        # the lambda's closure while the timer still ran, and its next tick
+        # crashed natively (the Windows runner's access violation). Without
+        # the keep-alive in common.py this test takes the whole run down.
+        import gc
+        from PyQt6.QtCore import QEvent, QTimer
+        ticks = []
+
+        class Ticking(QWidget):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self.timer = QTimer(self)
+                self.timer.setInterval(1)
+                self.timer.timeout.connect(lambda: ticks.append(self.isHidden()))
+                self.timer.start()
+
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        w = Ticking(host)
+        key = id(w)
+        w.deleteLater()
+        del w
+        gc.collect()
+        time.sleep(0.02)
+        QApplication.processEvents()                       # the overdue tick, before the delete
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        self.assertTrue(ticks)
+        self.assertEqual(host.findChildren(Ticking), [])
+        self.assertNotIn(key, nx.common._DOOMED)          # let go once Qt deleted it
+
     def test_achievements_error_clears_on_an_empty_success(self):
         w = nx.AchievementsWidget()
         self.addCleanup(w.deleteLater)

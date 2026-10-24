@@ -1,8 +1,10 @@
-"""Shared base of the GUI: paths, the CLI it drives, alive()."""
+"""Shared base of the GUI: paths, the CLI it drives, alive(), a safe deleteLater()."""
 
+from functools import partial
 from pathlib import Path
 
 from PyQt6 import sip
+from PyQt6.QtCore import QObject
 
 from nexus import paths as NX, platform
 
@@ -24,6 +26,28 @@ def alive(*objs) -> bool:
     lambda slot) can outlive the widget it touches, and an exception in a
     slot aborts the whole app under PyQt6."""
     return all(o is not None and not sip.isdeleted(o) for o in objs)
+
+
+# deleteLater() from Python hands the object to Qt, and sip lets go of its
+# wrapper. A lambda slot holding `self` then makes a cycle the garbage
+# collector may clear (the lambda loses its closure) while Qt still delivers
+# timers and signals to the object until the deferred delete runs: calling
+# that lambda is a native crash (the Windows CI's access violation, a test
+# or two after the widget's own). So every deleteLater() keeps the wrapper
+# here until Qt has destroyed the object.
+_DOOMED: dict[int, QObject] = {}
+_qt_delete_later = QObject.deleteLater
+
+
+def _delete_later(self):
+    key = id(self)
+    if key not in _DOOMED:
+        _DOOMED[key] = self
+        self.destroyed.connect(partial(_DOOMED.pop, key, None))
+    _qt_delete_later(self)
+
+
+QObject.deleteLater = _delete_later
 
 
 CLI_BIN = str(_REPO / 'bin' / 'nexus-cli')      # the Linux script itself (autostart, desktop files)
