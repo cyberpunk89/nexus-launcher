@@ -66,30 +66,48 @@ class GameTile(QFrame):
         self._spinner.timeout.connect(self._advance_spin)
 
         self._pb = 56 if min(self.tw, self.th) >= 170 else 44
-        self.btn_play = QToolButton(self)
-        self.btn_play.setObjectName("PlayRound")
-        self.btn_play.setText(G['play'])
-        self.btn_play.setToolTip("Play")
-        self.btn_play.setFixedSize(self._pb, self._pb)
-        self.btn_play.setStyleSheet(f"border-radius: {pill(self._pb)}px;")
-        self.btn_play.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_play.clicked.connect(lambda: self.play.emit(self.game))
-        self.btn_more = QToolButton(self)
-        self.btn_more.setObjectName("TileMore")
-        self.btn_more.setText(G['more'])
-        self.btn_more.setToolTip("More actions")
-        self.btn_more.setFixedSize(28, 28)
-        self.btn_more.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_more.clicked.connect(lambda: self.menu.emit(
-            self.game, self.btn_more.mapToGlobal(QPoint(0, self.btn_more.height()))))
+        self._buttons: tuple[QToolButton, QToolButton] | None = None   # see _make_buttons
+        self.setToolTip(self._tooltip())
+
+    @property
+    def btn_play(self) -> QToolButton:
+        return self._make_buttons()[0]
+
+    @property
+    def btn_more(self) -> QToolButton:
+        return self._make_buttons()[1]
+
+    def _make_buttons(self) -> tuple[QToolButton, QToolButton]:
+        """The hover buttons, made the first time they're wanted: most tiles
+        of a big library are never pointed at, and building the two buttons
+        (and styling them) was a good part of building a tile."""
+        if self._buttons is not None:
+            return self._buttons
+        play = QToolButton(self)
+        play.setObjectName("PlayRound")
+        play.setText(G['play'])
+        play.setToolTip("Play")
+        play.setFixedSize(self._pb, self._pb)
+        play.setStyleSheet(f"border-radius: {pill(self._pb)}px;")
+        play.setCursor(Qt.CursorShape.PointingHandCursor)
+        play.clicked.connect(lambda: self.play.emit(self.game))
+        more = QToolButton(self)
+        more.setObjectName("TileMore")
+        more.setText(G['more'])
+        more.setToolTip("More actions")
+        more.setFixedSize(28, 28)
+        more.setCursor(Qt.CursorShape.PointingHandCursor)
+        more.clicked.connect(lambda: self.menu.emit(
+            self.game, more.mapToGlobal(QPoint(0, more.height()))))
         # Mouse affordances only: keyboard/controller use Enter (details) and
         # the Menu key / X (menu), so these never steal focus from the tile.
-        self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_more.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_play.hide()
-        self.btn_more.hide()
+        play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        more.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        play.hide()
+        more.hide()
+        self._buttons = (play, more)
         self._place_buttons()
-        self.setToolTip(self._tooltip())
+        return self._buttons
 
     def _set_art(self, art_path):
         # Not installed: the art in grey, so the library reads at a glance.
@@ -225,6 +243,8 @@ class GameTile(QFrame):
     hoverT = pyqtProperty(float, _get_hover, _set_hover)
 
     def _place_buttons(self):
+        if self._buttons is None:
+            return
         top = TILE_LIFT - TILE_LIFT * self._hover
         cy = self.th * (0.42 if self.kind == 'cover' else 0.40)
         self.btn_play.move((self.tw - self._pb) // 2, int(top + cy - self._pb / 2))
@@ -236,9 +256,12 @@ class GameTile(QFrame):
         # buttons would just cover the art.
         # A click (or A) opens the game's page, where Play is; the card itself
         # only offers ⋮ on mouse hover.
+        more = self.underMouse() and not self.pending and not self.theatre \
+            and input_mode() == 'mouse'
+        if self._buttons is None and not more:
+            return                         # not made yet, so already hidden
         self.btn_play.setVisible(False)
-        self.btn_more.setVisible(self.underMouse() and not self.pending and not self.theatre
-                                 and input_mode() == 'mouse')
+        self.btn_more.setVisible(more)
 
     def _animate(self, to: float):
         self._anim.stop()
