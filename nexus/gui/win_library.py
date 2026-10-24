@@ -536,6 +536,12 @@ class LibraryMixin:
                 g['notes'] = self.prefs.notes.get(g['slug'], '')
                 g['hidden'] = g['slug'] in self.prefs.hidden
                 g['collections'] = self.prefs.collections_of(g['slug'])
+                # ProtonDB tiers already known (_load_protondb), here rather
+                # than after the views are filled: Home compares the tiers to
+                # decide whether to rebuild, and rebuilt on every refresh.
+                tier = self._protondb.get(str(g.get('appid')))
+                if tier:
+                    g['protondb'] = tier
                 # Repacks record when Nexus installed them; Steam games when
                 # their manifest was written — one "added" date for both.
                 g['added_at'] = g.get('added_at') or g.get('installed_at')
