@@ -953,6 +953,12 @@ class ListView(QTableWidget):
         self._cur_timer.setInterval(150)
         self._cur_timer.timeout.connect(self._emit_current)
         self.currentCellChanged.connect(self._current_changed)
+        # Covers decoded in the background, set a batch at a time (_set_icons).
+        self._icons: dict[str, QPixmap] = {}
+        self._icon_timer = QTimer(self)
+        self._icon_timer.setSingleShot(True)
+        self._icon_timer.setInterval(50)
+        self._icon_timer.timeout.connect(self._set_icons)
 
     def _current_changed(self, row, _col, prev, _pcol):
         if self._syncing or row < 0 or row == prev \
@@ -1051,14 +1057,28 @@ class ListView(QTableWidget):
         self._syncing = False
 
     def _cover(self, slug, pm):
-        # By slug through the row's own item (it moves with sorting): a
-        # covers-arriving burst used to scan every row for each one.
-        it = self._rows.get(slug) if pm is not None else None
-        if it is not None:
-            try:
-                it.setIcon(QIcon(rounded_pixmap(pm, R['sm'] / 1.5)))
-            except RuntimeError:                   # the table was refilled since
-                pass
+        if pm is not None:
+            self._icons[slug] = pm
+            if not self._icon_timer.isActive():
+                self._icon_timer.start()
+
+    def _set_icons(self):
+        # Each icon set while the icon column sizes itself to its contents
+        # re-measured the whole column (~4 ms a cover, seconds for a big
+        # library): the batch goes in with it fixed, measured once after.
+        icons, self._icons = self._icons, {}
+        hh = self.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        for slug, pm in icons.items():
+            # By slug through the row's own item (it moves with sorting): a
+            # covers-arriving burst used to scan every row for each one.
+            it = self._rows.get(slug)
+            if it is not None:
+                try:
+                    it.setIcon(QIcon(rounded_pixmap(pm, R['sm'] / 1.5)))
+                except RuntimeError:               # the table was refilled since
+                    pass
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
 
     def mark_selected(self, slugs):
         self._syncing = True
