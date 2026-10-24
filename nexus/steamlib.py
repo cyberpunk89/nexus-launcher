@@ -125,7 +125,7 @@ def _parse_play_stats(files) -> dict[int, dict]:
     return out
 
 
-_libc = None
+_libc = None                # None: not loaded yet; False: no statx here (looked once)
 
 
 def birth_time(path) -> float | None:
@@ -134,11 +134,21 @@ def birth_time(path) -> float | None:
     can't say. A game folder's birth time is its real install date; the
     appmanifest's mtime moves with every update."""
     global _libc
+    if _libc is False:
+        return None
     import ctypes
     import ctypes.util
     try:
         if _libc is None:
-            _libc = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6', use_errno=True)
+            # Asked once: where there's no libc with statx (Windows), trying
+            # again for every game cost a scan of 500 games ~40 ms.
+            try:
+                lib = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6', use_errno=True)
+                lib.statx                           # noqa: B018 — AttributeError if missing
+            except (OSError, AttributeError):
+                _libc = False
+                return None
+            _libc = lib
         buf = ctypes.create_string_buffer(256)       # struct statx
         AT_FDCWD, STATX_BTIME = -100, 0x800
         if _libc.statx(AT_FDCWD, str(path).encode(), 0, STATX_BTIME, buf) != 0:
