@@ -53,6 +53,11 @@ class InputMode(QObject):
         super().__init__(parent)
         self.mode = 'mouse'
         self._pos = None
+
+    def listen(self):
+        """Start watching input (an app-wide filter). The window calls it once
+        it's built: no input arrives before, and building it is ~100k events
+        a filter would see for nothing."""
         QApplication.instance().installEventFilter(self)
 
     def set(self, mode: str):

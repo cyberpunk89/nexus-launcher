@@ -258,8 +258,7 @@ def main():
     base.setPixelSize(scaled(FS['sm']))
     app.setFont(base)
     app.setStyleSheet(build_stylesheet())
-    app.popup_rounder = PopupRounder(app)
-    app.installEventFilter(app.popup_rounder)
+    app.popup_rounder = PopupRounder(app)         # installed once the window is built
 
     icon = ensure_icon()
     app.setWindowIcon(QIcon(icon))
@@ -270,6 +269,7 @@ def main():
         return
 
     win = MainWindow()
+    app.popup_rounder.install(app)
     install_excepthook(win)
     win.setWindowIcon(QIcon(icon))
     if "--hidden" not in argv or win.tray is None:    # --hidden: start in the tray

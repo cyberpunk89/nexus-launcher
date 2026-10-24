@@ -124,6 +124,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         details panel, the activity strip, overlays and the hint bar."""
         central = GradientBackground()
         self.background = central
+        # In the window from the start: set last, moving the finished tree of
+        # ~2000 widgets in re-styled every one of them (~0.1 s at start-up).
+        self.setCentralWidget(central)
         outer_root = QVBoxLayout(central)
         outer_root.setContentsMargins(0, 0, 0, 0)
         outer_root.setSpacing(0)
@@ -329,9 +332,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         """Which tabs show, toasts, shortcuts, and keyboard/controller input."""
         self.nav[self.NEWS].setVisible(self.config.get('news', True))
         self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
-        self.setCentralWidget(self.background)
         self.toasts = ToastHost(self.background)
         self._shortcuts()
+        self.input.listen()        # before SpatialNav, which so still sees keys first
         # Arrow keys (and the controller) move focus spatially everywhere.
         self.spatial = SpatialNav(self)
         QApplication.instance().installEventFilter(self.spatial)

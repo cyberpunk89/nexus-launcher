@@ -33,13 +33,26 @@ class PopupRounder(QObject):
     def eventFilter(self, obj, ev):
         if ev.type() != QEvent.Type.Polish:     # every event in the app passes here
             return False
+        self._round(obj)
+        return False
+
+    def _round(self, obj):
         if isinstance(obj, QWidget) and obj.isWindow() \
                 and (isinstance(obj, QMenu) or obj.metaObject().className() in self.POPUPS) \
                 and not obj.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
             obj.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if platform.SQUARE_POPUP_SHADOW:
                 obj.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
-        return False
+
+    def install(self, app: QApplication):
+        """Start filtering, catching up on popups already polished (none is
+        on screen yet). Installed once the main window is built: every event
+        passes an app-wide filter, and building the window is ~100k of them."""
+        for w in app.topLevelWidgets():
+            if w.testAttribute(Qt.WidgetAttribute.WA_WState_Polished) \
+                    and not w.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+                self._round(w)
+        app.installEventFilter(self)
 
 
 class GradientBackground(QWidget):
