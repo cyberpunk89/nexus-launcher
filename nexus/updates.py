@@ -6,19 +6,24 @@ for the public nexus-launcher repo's latest release:
     github_token = "ghp_..."    # optional: sent if set (higher rate limit)
 
 The answer is cached for a day (net.cached_json), so the window start-up
-check is one request a day at most. Nothing is downloaded: the notice links
-to the release page and people install the new build themselves."""
+check is one request a day at most; Settings' "Check for updates" skips the
+cache (force=True). Nothing is downloaded: the notice links to the release
+page (Windows: straight to the installer) and people install the new build
+themselves."""
 
 import json
+import re
 import tomllib
 
 from . import __version__, net
+from .features import has
 from .paths import CACHE_DIR, CONFIG_PATH
 
 REPO = 'cyberpunk89/nexus-launcher'
 API = f'https://api.github.com/repos/{REPO}/releases/latest'
 CACHE = CACHE_DIR / 'update-check.json'
 MAX_AGE = 24 * 3600
+INSTALLER = re.compile(r'-Setup-[0-9][^/]*\.exe$')    # what build-windows.yml uploads
 
 
 def _settings() -> dict:
@@ -51,25 +56,60 @@ def parse(version: str) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _https(url) -> bool:
+    return isinstance(url, str) and url.startswith('https://')
+
+
 def _latest(tok: str) -> dict:
-    """The latest release as {'tag', 'url'} (the token is never cached)."""
+    """The latest release as {'tag', 'url', 'installer'} (the token is never
+    cached). 'installer' is the Windows setup asset's download link ('' if
+    the release has none)."""
     headers = {'Authorization': f'Bearer {tok}'} if tok else {}
     data = json.loads(net.get(API, timeout=10, headers=headers))
-    return {'tag': str(data['tag_name']), 'url': str(data['html_url'])}
+    setup = next((str(a.get('browser_download_url')) for a in data.get('assets') or []
+                  if isinstance(a, dict) and INSTALLER.search(str(a.get('name')))
+                  and _https(a.get('browser_download_url'))), '')
+    return {'tag': str(data['tag_name']), 'url': str(data['html_url']), 'installer': setup}
 
 
-def available(current: str = __version__) -> dict | None:
-    """{'version', 'url'} when a newer release exists, else None. With
-    [updates] check = false: None, with no request."""
+def last_checked() -> float | None:
+    """When the answer was last fetched (epoch seconds), None if never."""
+    try:
+        return CACHE.stat().st_mtime
+    except OSError:
+        return None
+
+
+def check(current: str = __version__, force: bool = False) -> dict:
+    """{'state', 'version', 'url'}: state is 'off' ([updates] check = false,
+    no request), 'failed' (no answer), 'current' or 'available'. force=True
+    skips the daily cache, and a failed forced check isn't covered by an old
+    answer. 'url' is the Windows installer when the release has one, else
+    the release page."""
     if not enabled():
-        return None
+        return {'state': 'off'}
     tok = token()
-    rel = net.cached_json(CACHE, MAX_AGE, lambda: _latest(tok))
-    if not isinstance(rel, dict):
-        return None
+    fetched = []
+
+    def fetch():
+        fetched.append(_latest(tok))
+        return fetched[0]
+    rel = net.cached_json(CACHE, MAX_AGE, fetch, refresh=force)
+    if (force and not fetched) or not isinstance(rel, dict):
+        return {'state': 'failed'}
     new, cur = parse(rel.get('tag', '')), parse(current)
     url = rel.get('url')
-    if not new or not cur or new <= cur or not isinstance(url, str) \
-            or not url.startswith('https://'):
-        return None
-    return {'version': '.'.join(map(str, new)), 'url': url}
+    if not new or not cur or not _https(url):
+        return {'state': 'failed'}
+    if new <= cur:
+        return {'state': 'current', 'version': '.'.join(map(str, cur))}
+    if not has('proton') and _https(rel.get('installer')):      # the Windows edition
+        url = rel['installer']
+    return {'state': 'available', 'version': '.'.join(map(str, new)), 'url': url}
+
+
+def available(current: str = __version__, force: bool = False) -> dict | None:
+    """{'version', 'url'} when a newer release exists, else None. With
+    [updates] check = false: None, with no request."""
+    r = check(current, force)
+    return {'version': r['version'], 'url': r['url']} if r['state'] == 'available' else None

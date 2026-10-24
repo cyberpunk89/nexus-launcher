@@ -11,11 +11,16 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import net, updates  # noqa: E402
+from nexus import features, net, updates  # noqa: E402
+from tests.patching import patch_gui  # noqa: E402
 
-RELEASE = json.dumps({'tag_name': 'v9.1.0',
-                      'html_url': 'https://github.com/cyberpunk89/nexus-launcher/releases/tag/v9.1.0'
-                      }).encode()
+PAGE = 'https://github.com/cyberpunk89/nexus-launcher/releases/tag/v9.1.0'
+SETUP = 'https://github.com/cyberpunk89/nexus-launcher/releases/download/v9.1.0/nexus-launcher-Setup-9.1.0.exe'
+RELEASE = json.dumps({'tag_name': 'v9.1.0', 'html_url': PAGE}).encode()
+WITH_ASSETS = json.dumps({'tag_name': 'v9.1.0', 'html_url': PAGE, 'assets': [
+    {'name': 'nexus-launcher-9.1.0-portable.zip',
+     'browser_download_url': SETUP.replace('Setup-9.1.0.exe', '9.1.0-portable.zip')},
+    {'name': 'nexus-launcher-Setup-9.1.0.exe', 'browser_download_url': SETUP}]}).encode()
 
 
 class Updates(unittest.TestCase):
@@ -91,6 +96,49 @@ class Updates(unittest.TestCase):
         with mock.patch.object(net, 'get', return_value=bad):
             self.assertIsNone(updates.available('0.3.0'))
 
+    def test_force_skips_the_daily_cache(self):
+        with mock.patch.object(net, 'get', return_value=RELEASE) as get:
+            updates.available('0.3.0')
+            updates.available('0.3.0')
+            self.assertEqual(get.call_count, 1)
+            self.assertEqual(updates.available('0.3.0', force=True)['version'], '9.1.0')
+        self.assertEqual(get.call_count, 2)
+
+    def test_forced_check_that_fails_says_so(self):
+        """An old cached answer must not pass for a fresh one."""
+        with mock.patch.object(net, 'get', return_value=RELEASE):
+            self.assertEqual(updates.check('0.3.0')['state'], 'available')
+        with mock.patch.object(net, 'get', side_effect=net.NetError('offline')):
+            self.assertEqual(updates.check('0.3.0', force=True), {'state': 'failed'})
+            self.assertEqual(updates.check('0.3.0')['state'], 'available')   # cache still serves
+
+    def test_states_and_last_checked(self):
+        self.assertIsNone(updates.last_checked())
+        with mock.patch.object(net, 'get', return_value=RELEASE):
+            self.assertEqual(updates.check('9.1.0'), {'state': 'current', 'version': '9.1.0'})
+        self.assertIsNotNone(updates.last_checked())
+        self.conf.write_text('[updates]\ncheck = false\n')
+        self.assertEqual(updates.check('0.3.0', force=True), {'state': 'off'})
+
+    def test_windows_links_the_installer_linux_the_release_page(self):
+        with mock.patch.object(net, 'get', return_value=WITH_ASSETS):
+            with mock.patch.object(features, 'FEATURES', features.WINDOWS):
+                self.assertEqual(updates.available('0.3.0')['url'], SETUP)
+            with mock.patch.object(features, 'FEATURES', features.ALL):
+                self.assertEqual(updates.available('0.3.0')['url'], PAGE)
+
+    def test_windows_without_an_installer_asset_falls_back_to_the_page(self):
+        with mock.patch.object(net, 'get', return_value=RELEASE), \
+                mock.patch.object(features, 'FEATURES', features.WINDOWS):
+            self.assertEqual(updates.available('0.3.0')['url'], PAGE)
+
+    def test_non_https_installer_ignored(self):
+        bad = json.dumps({'tag_name': 'v9.1.0', 'html_url': PAGE, 'assets': [
+            {'name': 'x-Setup-9.1.0.exe', 'browser_download_url': 'http://x.test/a.exe'}]}).encode()
+        with mock.patch.object(net, 'get', return_value=bad), \
+                mock.patch.object(features, 'FEATURES', features.WINDOWS):
+            self.assertEqual(updates.available('0.3.0')['url'], PAGE)
+
 
 @unittest.skipUnless(os.environ.get('QT_QPA_PLATFORM') == 'offscreen',
                      "GUI test: needs QT_QPA_PLATFORM=offscreen")
@@ -108,6 +156,51 @@ class Window(unittest.TestCase):
         win.toast.reset_mock()
         window.MainWindow._update_checked(win, None, None)
         win.toast.assert_not_called()
+
+    def page(self, result, calls=None):
+        """A SettingsPage whose background work runs at once with `result`
+        (or is only recorded in `calls`)."""
+        import tests.test_gui_layout  # noqa: F401  (makes the QApplication)
+        from nexus.gui import settings
+        p = patch_gui('in_thread', (lambda fn, cb: calls.append((fn, cb))) if calls is not None
+                      else (lambda fn, cb: cb(result, None)))
+        p.start()
+        self.addCleanup(p.stop)
+        page = settings.SettingsPage()
+        self.addCleanup(page.deleteLater)
+        return page
+
+    def test_settings_row_shows_version_and_result(self):
+        from nexus import __version__
+        page = self.page({'state': 'available', 'version': '9.1.0', 'url': SETUP})
+        self.assertIn(f"Nexus {__version__}", page.version_row.desc.text())
+        self.assertIn("last checked never", page.version_row.desc.text())
+        with mock.patch.object(updates, 'check', return_value={
+                'state': 'available', 'version': '9.1.0', 'url': SETUP}) as check:
+            page.upd_btn.click()
+        check.assert_not_called()                       # runs inside the (faked) thread
+        self.assertTrue(page.upd_btn.isEnabled())
+        text = page.upd_result.text()
+        self.assertIn("Nexus 9.1.0 is available", text)
+        self.assertIn(f'href="{SETUP}"', text)
+
+    def test_settings_row_other_results(self):
+        for state, want in (('current', "up to date"), ('failed', "Couldn't check"),
+                            ('off', "check = false")):
+            page = self.page({'state': state, 'version': '0.3.1'})
+            page.upd_btn.click()
+            self.assertIn(want, page.upd_result.text())
+
+    def test_settings_check_forces_and_shows_checking(self):
+        from nexus.gui import settings
+        calls = []
+        page = self.page(None, calls)
+        page.upd_btn.click()
+        self.assertEqual(page.upd_result.text(), "Checking…")
+        self.assertFalse(page.upd_btn.isEnabled())
+        with mock.patch.object(settings.updates, 'check', return_value={'state': 'off'}) as check:
+            calls[0][0]()
+        check.assert_called_once_with(force=True)
 
 
 if __name__ == '__main__':

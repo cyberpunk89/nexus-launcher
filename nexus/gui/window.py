@@ -457,8 +457,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         """A newer Nexus release (updates.available): a toast linking its page."""
         if not rel:
             return
+        name = "Installer" if rel['url'].endswith('.exe') else "Release page"   # Windows: setup
         self.toast(f"Version {rel['version']} is available.", 'info', [
-            ("Release page", lambda: QDesktopServices.openUrl(QUrl(rel['url'])))], 12000)
+            (name, lambda: QDesktopServices.openUrl(QUrl(rel['url'])))], 12000)
 
     def _on_activity(self):
         if getattr(self, '_theatre', False) and self.prefs.controls['attract']:

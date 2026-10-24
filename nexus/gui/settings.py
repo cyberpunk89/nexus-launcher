@@ -3,8 +3,10 @@ search beside it. Everything saves itself — a switch or a menu when it
 changes, a text field when you leave it — so there is no Save button to
 find and nothing is lost by walking away."""
 
+import html
 import os
 import re
+import time
 from pathlib import Path
 
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF,
@@ -14,7 +16,7 @@ from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, 
 from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
     QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import gamedb, platform
+from nexus import __version__, gamedb, platform, updates
 from nexus.features import has
 
 from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT
@@ -485,6 +487,7 @@ class SettingsPage(QWidget):
         self._build_alerts()
         self._build_background()
         self._build_backup()
+        self._build_about()
         for control, feature in ((self.heroic, 'heroic'), (self.runner, 'proton'),
                                  (self.proton, 'proton'), (self.al_proton, 'proton')):
             if not has(feature):                # a Linux-only setting
@@ -865,6 +868,49 @@ class SettingsPage(QWidget):
         again.clicked.connect(self.setup_wanted)
         self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
                   again, keywords="welcome wizard onboarding first run")
+
+    def _build_about(self):
+        sec = self._add_section(SettingsSection('about', "About", 'info'))
+        self.version_row = self._row(sec, "Nexus version", "", None, keywords="about release")
+        self.upd_btn = QPushButton("Check for updates")
+        set_glyph_icon(self.upd_btn, G['refresh'], 14)
+        self.upd_btn.clicked.connect(self._check_updates)
+        self.upd_row = self._row(sec, "Check for updates", "", self.upd_btn,
+                                 keywords="new release upgrade version")
+        self.upd_result = self.upd_row.desc
+        self.upd_result.setTextFormat(Qt.TextFormat.RichText)
+        self.upd_result.setOpenExternalLinks(True)
+        self._show_version()
+
+    def _show_version(self):
+        """The version row: this build, and when the update answer was fetched."""
+        t = updates.last_checked()
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "never"
+        self.version_row.set_description(f"Nexus {__version__} · last checked {when}")
+
+    def _check_updates(self):
+        """Ask GitHub (skipping the daily cache) off the GUI thread, then say what it found."""
+        self.upd_btn.setEnabled(False)
+        self.upd_result.setText("Checking…")
+        in_thread(lambda: updates.check(force=True), self._updates_checked)
+
+    def _updates_checked(self, r, err):
+        self.upd_btn.setEnabled(True)
+        r = r or {'state': 'failed'}
+        state = r.get('state')
+        if state == 'available':
+            text = (f"Nexus {html.escape(r['version'])} is available: "
+                    f"<a href=\"{html.escape(r['url'], quote=True)}\">"
+                    f"{'Download the installer' if r['url'].endswith('.exe') else 'Release page'}"
+                    f"</a>")
+        elif state == 'current':
+            text = f"Nexus is up to date ({html.escape(r['version'])})."
+        elif state == 'off':
+            text = "Update checks are off ([updates] check = false in config.toml)."
+        else:
+            text = "Couldn't check for updates. Are you online?"
+        self.upd_result.setText(text)
+        self._show_version()
 
     def _export(self):
         import datetime
@@ -1356,7 +1402,7 @@ class SettingsPage(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .config import ConfigError, load_config, save_config  # noqa: E402
-from .jobs import cli_json  # noqa: E402
+from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (clear_layout, glyph_pixmap, icon_label, label, NoWheelCombo,  # noqa: E402
     SegmentedControl, set_glyph_icon)
