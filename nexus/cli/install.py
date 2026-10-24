@@ -285,9 +285,10 @@ def cmd_install(args, install_base: Path) -> None:
                   if already_installed else None) or silent_target(wine_prefix, slug)
     setup_extra = inno_args(win_path(target, wine_prefix)) if target else []
     # Silent installs also skip the VC++/DirectX redists and the installer's
-    # music; every install keeps setup from opening FitGirl's site at the end
-    # (browser_muted). The user's own WINEDLLOVERRIDES (from the environment)
-    # is kept.
+    # music, and show no console window for its fake-site redirect script
+    # (CONSOLE_HOST); every install keeps setup from opening FitGirl's site at
+    # the end (browser_muted). The user's own WINEDLLOVERRIDES (from the
+    # environment) is kept.
     skipped = setup_redists(setup_exe) if target else set()
     overrides = silent_setup_overrides(setup_exe, skipped) if target else None
     setup_env = {**base_env, 'WINEDLLOVERRIDES': ';'.join(

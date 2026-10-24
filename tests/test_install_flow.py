@@ -22,10 +22,11 @@ from nexus.cli import runner  # noqa: E402
 
 FAKE_WINE = r'''#!/bin/sh
 # wineboot: make a prefix. reg: log it, in order with setup. setup.exe: log
-# argv, then "install" a game.
+# argv (and its WINEDLLOVERRIDES, to FAKE_LOG.dll), then "install" a game.
 if [ "$1" = wineboot ]; then mkdir -p "$WINEPREFIX/drive_c/windows"; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_LOG"
 [ "$1" = reg ] && exit 0
+printf '%s\n' "$WINEDLLOVERRIDES" >> "$FAKE_LOG.dll"
 [ "$FAKE_MODE" = fail ] && exit 5
 dir=""
 for a in "$@"; do case "$a" in /DIR=*) dir="${a#/DIR=}";; esac; done
@@ -156,6 +157,8 @@ class InnoHeader(unittest.TestCase):
             ov = fi.silent_setup_overrides(p)
             self.assertIn('vc_redist.x64.exe=d', ov.split(';'))
             self.assertIn('winepulse.drv=d', ov.split(';'))
+            self.assertIn('conhost.exe=d', ov.split(';'))          # no host.cmd window
+            self.assertNotIn('cmd.exe=d', ov.split(';'))            # {cmd} unpacks with it
             self.assertNotIn('winebrowser.exe=d', ov.split(';'))    # see browser_muted
             self.assertNotIn('setup.exe=d', ov.split(';'))
 
@@ -271,9 +274,17 @@ class InstallFlow(unittest.TestCase):
         self.assertIn('setup.exe', calls[1])
         self.assertTrue(calls[2].startswith('reg delete '), calls)
 
+    def test_silent_setup_opens_no_console_window(self):
+        # FitGirl's last [Run] step runs host.cmd through cmd.exe; with no
+        # console host, it runs without a window popping up.
+        self.install()
+        dlls = Path(f'{self.log}.dll').read_text().split(';')
+        self.assertIn(f'{fi.CONSOLE_HOST}=d', [d.strip() for d in dlls])
+
     def test_interactive_shows_the_setup_window(self):
         self.install('--interactive')
         self.assertNotIn('/VERYSILENT', self.log.read_text())
+        self.assertNotIn(fi.CONSOLE_HOST, Path(f'{self.log}.dll').read_text())
         self.assertIn('/Interactive/Test Game/bin/TestGame.exe', self.registry()['test-game']['exe'])
 
     def test_config_can_turn_silent_off(self):

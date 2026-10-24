@@ -208,6 +208,15 @@ _SKIPPABLE_REDIST = re.compile(
 # The installer's background music needs one of these; without them Wine has
 # no audio device, the music never starts and setup carries on regardless.
 AUDIO_DRIVERS = ('winealsa.drv', 'wineoss.drv', 'winepulse.drv')
+# Wine's console window. A FitGirl setup's last [Run] step is `cmd.exe /c
+# host.cmd` ("Redirect fake FitGirl sites to the real one"), started from the
+# installer's GUI, so Wine opens a console window for it and a silent install
+# ends with "Applying redirection rules for fake FitGirl sites..." on screen.
+# With conhost.exe disabled a console program runs without a console: the
+# script and everything it starts still run (the prefix's hosts file is still
+# written), just nowhere to be seen. cmd.exe itself can't be the one disabled:
+# FitGirl's unpacking runs {cmd} lines too.
+CONSOLE_HOST = 'conhost.exe'
 
 
 # A name that can go into WINEDLLOVERRIDES as is: no ; = , or spaces.
@@ -231,9 +240,11 @@ def setup_redists(setup_exe: Path) -> set[str]:
 def silent_setup_overrides(setup_exe: Path, skip: set[str] | None = None) -> str:
     """WINEDLLOVERRIDES for a silent install. Wine won't start an exe whose
     override is "disabled", so setup's [Run] step skips straight past the
-    redists; the disabled audio drivers mute its music. Only setup.exe (and
-    what it spawns) gets these; the game itself is untouched."""
-    names = sorted(setup_redists(setup_exe) if skip is None else skip) + list(AUDIO_DRIVERS)
+    redists; the disabled audio drivers mute its music, the disabled console
+    host its console windows (CONSOLE_HOST). Only setup.exe (and what it
+    spawns) gets these; the game itself is untouched."""
+    names = (sorted(setup_redists(setup_exe) if skip is None else skip)
+             + list(AUDIO_DRIVERS) + [CONSOLE_HOST])
     return ';'.join(f'{n}=d' for n in names)
 
 
