@@ -16,7 +16,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from tests.oskind import windows_only  # noqa: E402
+from tests.oskind import linux_only, windows_only  # noqa: E402
 from nexus import features, platform, saves  # noqa: E402
 from nexus import cli as fi  # noqa: E402
 from nexus.cli import entry  # noqa: E402
@@ -81,7 +81,7 @@ class Harness(unittest.TestCase):
         (self.repack / 'MD5').mkdir(parents=True)
         (self.repack / 'setup.exe').write_bytes(b'MZ' + b'\0' * 100)
         (self.repack / 'fg-01.bin').write_bytes(b'x' * 10)
-        self.calls, self.lnks = [], []
+        self.calls, self.lnks, self.quiet = [], [], []
         self.setup_kw = {}
         for p in (mock.patch.object(features, 'FEATURES', features.WINDOWS),
                   mock.patch.object(platform, 'run_elevated', self.fake_elevated),
@@ -93,8 +93,9 @@ class Harness(unittest.TestCase):
             self.addCleanup(p.stop)
         self.addCleanup(self.forget, 'test-game')
 
-    def fake_elevated(self, exe, args, cwd=None):
+    def fake_elevated(self, exe, args, cwd=None, quiet=False):
         self.calls.append((Path(exe), list(args), cwd))
+        self.quiet.append(quiet)
         return FakeSetup(exe, args, cwd, **self.setup_kw)
 
     def fake_lnk(self, path, target, args='', workdir=None, icon=None):
@@ -161,6 +162,19 @@ class WindowsInstall(Harness):
         args = self.calls[0][1]
         self.assertNotIn('/VERYSILENT', args)
         self.assertIn(f"/DIR={self.base / 'test-game'}", args)
+        # Its window has a music button and a "visit the site" tick box:
+        # the user's call, so it runs as it is.
+        self.assertEqual(self.quiet, [False])
+
+    def test_a_silent_setup_runs_quiet(self):
+        # /VERYSILENT leaves FitGirl's music, closing site and hosts-file
+        # console to the installer; quiet_setup is what keeps them away.
+        code, out = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.quiet, [True])
+        self.assertNotIn('may play music', out)
+        self.assertIn('music is muted', out)
+        self.assertIn('web links open nothing', out)
 
     def test_declined_prompt_leaves_nothing(self):
         def declined(*a, **kw):
@@ -625,6 +639,7 @@ class WindowsImport(Harness):
         self.assertEqual(exe, setup)
         self.assertEqual(args[:4], fi.INNO_SILENT)
         self.assertIn(f"/DIR={self.base / 'some-game'}", args)
+        self.assertEqual(self.quiet, [True])
         e = fi.registry_get('some-game')
         self.assertEqual(e['uninstaller'], str(self.base / 'some-game' / 'unins000.exe'))
 
@@ -640,6 +655,28 @@ class WindowsImport(Harness):
         self.assertEqual(self.events(out, 'install-cancelled'), [{'slug': 'some-game',
                                                                   'why': 'uac'}])
         self.assertIsNone(fi.registry_get('some-game'))
+
+class QuietSetupEntry(unittest.TestCase):
+    """nexus-cli --quiet-setup is the elevated half of a silent install: it
+    goes straight to platform.quiet_setup, before any option parsing."""
+
+    def test_hands_over_to_quiet_setup_with_its_exit_code(self):
+        argv = ['nexus-cli', platform.QUIET_SETUP_ARG, r'C:\Repack', r'C:\Repack\setup.exe',
+                '/VERYSILENT', '/DIR=C:\\Games\\x']
+        with mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(platform, 'quiet_setup', return_value=7) as qs, \
+                mock.patch.object(entry, 'build_parser') as parser, \
+                self.assertRaises(SystemExit) as done:
+            entry.main()
+        self.assertEqual(done.exception.code, 7)
+        qs.assert_called_once_with(argv[2:])
+        parser.assert_not_called()
+
+    @linux_only
+    def test_linux_has_none(self):
+        with self.assertRaises(NotImplementedError):
+            platform.quiet_setup(['.', 'setup.exe'])
+
 
 class WindowsDoctor(unittest.TestCase):
     def test_windows_set_and_no_linux_checks(self):

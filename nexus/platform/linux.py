@@ -232,9 +232,15 @@ def cli_command(repo: Path, same_python: bool) -> list[str]:
     return [sys.executable, script] if same_python else [script]
 
 
-def run_elevated(exe, args, cwd=None):
+def run_elevated(exe, args, cwd=None, quiet=False):
     """Not used on Linux: setup.exe runs under Wine as the user."""
     raise NotImplementedError("run_elevated is Windows-only")
+
+
+def quiet_setup(argv):
+    """Windows only: a Wine prefix is kept quiet by the install itself
+    (WINEDLLOVERRIDES for the music, runner.browser_muted for the site)."""
+    raise NotImplementedError("quiet_setup is Windows-only")
 
 
 def create_shortcut(path, target, args='', workdir=None, icon=None):

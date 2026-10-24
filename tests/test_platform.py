@@ -226,6 +226,178 @@ class WindowsOnly(unittest.TestCase):
                          ('ghost', '', [], {}))
 
 
+@windows_only
+class QuietSetup(unittest.TestCase):
+    """run_elevated(quiet=True) and quiet_setup: the job, the registry
+    overrides and their undoing, the audio mute. Test keys only, but for
+    test_quiet_elevated_runs_through_nexus_cli."""
+
+    KEY = r'Software\Classes\NexusTest.Quiet'
+    CMD = KEY + r'\shell\open\command'
+
+    def setUp(self):
+        self.win = platform._impl
+        self.addCleanup(self.delete_tree, self.KEY)
+        self.addCleanup(self.delete_tree, r'Software\Classes\nexus-quiet-test')
+
+    def delete_tree(self, path):
+        winreg = self.win.winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+                subs = [winreg.EnumKey(k, i) for i in range(winreg.QueryInfoKey(k)[0])]
+        except OSError:
+            return
+        for s in subs:
+            self.delete_tree(path + '\\' + s)
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+
+    def values(self, path):
+        winreg = self.win.winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+                return dict(winreg.EnumValue(k, i)[:2] for i in range(winreg.QueryInfoKey(k)[1]))
+        except OSError:
+            return None
+
+    def put(self, path, values):
+        winreg = self.win.winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as k:
+            for name, data in values.items():
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, data)
+
+    NO_BROWSER = property(lambda self: {'': self.win._NO_OP, 'DelegateExecute': None})
+
+    def test_an_override_is_put_back_exactly(self):
+        orig = {'': '"C:\\Browser\\b.exe" %1', 'DelegateExecute': '{0000-1}'}
+        self.put(self.CMD, orig)
+        with self.win._overridden([(self.CMD, self.NO_BROWSER)]):
+            now = self.values(self.CMD)
+            self.assertEqual(now[''], self.win._NO_OP)
+            self.assertNotIn('DelegateExecute', now)
+        self.assertEqual(self.values(self.CMD), orig)
+
+    def test_keys_it_made_go_again(self):
+        with self.win._overridden([(self.CMD, self.NO_BROWSER)]):
+            self.assertEqual(self.values(self.CMD)[''], self.win._NO_OP)
+        self.assertIsNone(self.values(self.KEY))
+
+    def test_a_run_that_died_is_undone_by_the_next(self):
+        self.put(self.CMD, {'': 'orig %1'})
+        self.win._override(self.CMD, self.NO_BROWSER)          # never restored
+        with self.win._overridden([(self.CMD, self.NO_BROWSER)]):
+            pass
+        self.assertEqual(self.values(self.CMD), {'': 'orig %1'})
+
+    def test_a_value_changed_meanwhile_is_kept(self):
+        self.put(self.CMD, {'': 'orig %1'})
+        with self.win._overridden([(self.CMD, self.NO_BROWSER)]):
+            self.put(self.CMD, {'': 'updated %1'})              # a browser update, say
+        self.assertEqual(self.values(self.CMD), {'': 'updated %1'})
+
+    def test_a_link_opened_meanwhile_goes_nowhere(self):
+        # A URL scheme of our own whose handler writes a file: through
+        # ShellExecute as setup's shellexec entry goes, nothing runs while the
+        # override is on, and the handler works again afterwards.
+        with tempfile.TemporaryDirectory() as d:
+            script, out = Path(d) / 'handler.py', Path(d) / 'opened.txt'
+            script.write_text('import sys\nopen(sys.argv[2], "a").write(sys.argv[1] + "\\n")\n',
+                              encoding='utf-8')
+            scheme = r'Software\Classes\nexus-quiet-test'
+            self.put(scheme, {'URL Protocol': ''})
+            self.put(scheme + r'\shell\open\command',
+                     {'': f'"{sys.executable}" "{script}" "%1" "{out}"'})
+            with self.win._overridden([(scheme + r'\shell\open\command', self.NO_BROWSER)]):
+                os.startfile('nexus-quiet-test:inside')
+                time.sleep(3)
+            os.startfile('nexus-quiet-test:after')
+            for _ in range(150):
+                if out.exists():
+                    break
+                time.sleep(0.1)
+            time.sleep(0.5)
+            opened = out.read_text(encoding='utf-8')
+            self.assertIn('after', opened)
+            self.assertNotIn('inside', opened)
+
+    def test_setup_runs_in_a_job_with_its_exit_code(self):
+        # IsProcessInJob from inside: the child is in quiet_setup's job.
+        code = ('import ctypes, sys; k = ctypes.windll.kernel32; b = ctypes.c_int();'
+                'k.IsProcessInJob(ctypes.c_void_p(k.GetCurrentProcess()), None, ctypes.byref(b));'
+                'sys.exit(5 if b.value else 6)')
+        with mock.patch.object(self.win, '_quiet_overrides', return_value=[]), \
+                tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.win.quiet_setup([d, sys.executable, '-c', code]), 5)
+
+    def test_a_missing_setup_is_exit_code_1(self):
+        with mock.patch.object(self.win, '_quiet_overrides', return_value=[]):
+            self.assertEqual(self.win.quiet_setup(['', r'C:\nope\setup.exe']), 1)
+
+    def test_quiet_elevated_runs_through_nexus_cli(self):
+        # The elevated nexus-cli (hidden) starts it in its cwd with its args
+        # and hands back its exit code. CI and the VM are elevated already.
+        # The one test that runs the real overrides (in that nexus-cli): the
+        # browser and terminal settings are back once it has exited.
+        before = [self.values(p) for p, _ in self.win._quiet_overrides()]
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / 'out.txt'
+            code = 'import os,sys; open(sys.argv[1],"w").write(os.getcwd()+"|"+sys.argv[2]); sys.exit(7)'
+            p = platform.run_elevated(sys.executable, ['-c', code, str(out), 'a "q" b'],
+                                      cwd=d, quiet=True)
+            self.assertEqual(p.wait(120), 7)
+            self.assertEqual(out.read_text(), f'{d}|a "q" b')
+        self.assertEqual([self.values(p) for p, _ in self.win._quiet_overrides()], before)
+
+    def test_its_sound_is_muted(self):
+        # A child that plays a looping sound: its session is muted while
+        # quiet_setup runs. Skipped where there is no audio device.
+        import threading
+        import wave
+        with tempfile.TemporaryDirectory() as d:
+            wav, pidfile = Path(d) / 'tone.wav', Path(d) / 'pid'
+            with wave.open(str(wav), 'wb') as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(8000)
+                w.writeframes(b'\x00\x10\x00\xf0' * 8000)
+            code = ('import os, sys, time, winsound;'
+                    'open(sys.argv[2], "w").write(str(os.getpid()));'
+                    'winsound.PlaySound(sys.argv[1], winsound.SND_FILENAME | winsound.SND_ASYNC'
+                    ' | winsound.SND_LOOP); time.sleep(8)')
+            got = {}
+            runner = threading.Thread(target=lambda: got.setdefault('rc', self.win.quiet_setup(
+                [d, sys.executable, '-c', code, str(wav), str(pidfile)])))
+            with mock.patch.object(self.win, '_quiet_overrides', return_value=[]):
+                runner.start()
+                try:
+                    self.win._ole32.CoInitializeEx(None, 0)
+                    com = True
+                except OSError:                 # this thread has COM already
+                    com = False
+                muted = None
+                try:
+                    for _ in range(60):
+                        time.sleep(0.1)
+                        if not pidfile.exists() or not pidfile.read_text():
+                            continue
+                        pid = int(pidfile.read_text())
+                        sessions = self.win._audio_sessions()
+                        for spid, control, volume in sessions:
+                            if spid == pid:
+                                muted = self.win._is_muted(volume)
+                            self.win._release(control)
+                            self.win._release(volume)
+                        if muted:
+                            break
+                finally:
+                    if com:
+                        self.win._ole32.CoUninitialize()
+                runner.join(30)
+        self.assertEqual(got.get('rc'), 0)
+        if muted is None:
+            self.skipTest("no audio session (no audio device here)")
+        self.assertTrue(muted)
+
+
 class Memory(unittest.TestCase):
     def test_meminfo_has_what_the_memory_check_reads(self):
         m = platform.meminfo()

@@ -1,13 +1,17 @@
 """Windows side of nexus.platform."""
 
+import contextlib
 import ctypes
 import functools
+import json
 import msvcrt
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import uuid
 import winreg
 from ctypes import wintypes
 from pathlib import Path
@@ -475,6 +479,7 @@ def cli_command(repo: Path, same_python: bool) -> list[str]:
 _SEE_MASK_NOCLOSEPROCESS = 0x40
 _SEE_MASK_NOASYNC = 0x100
 _SEE_MASK_FLAG_NO_UI = 0x400
+_SW_HIDE = 0
 _SW_SHOWNORMAL = 1
 _ERROR_CANCELLED = 1223
 _WAIT_TIMEOUT = 0x102
@@ -507,10 +512,13 @@ _k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 class Elevated:
     """An elevated child, Popen-shaped where it can be: pid, poll(),
     wait(timeout), returncode. terminate() returns False when we may not
-    (a non-elevated Nexus can't stop an elevated process)."""
+    (a non-elevated Nexus can't stop an elevated process), and always for a
+    quiet one: stopping that nexus-cli would leave setup running, and the
+    browser setting it holds back with nobody left to put it back."""
 
-    def __init__(self, handle):
+    def __init__(self, handle, quiet=False):
         self._h = handle
+        self._quiet = quiet
         self.pid = _k32.GetProcessId(handle)
         self.returncode = None
 
@@ -538,6 +546,8 @@ class Elevated:
     def terminate(self) -> bool:
         if self.poll() is not None:
             return True
+        if self._quiet:
+            return False
         h = _k32.OpenProcess(_PROCESS_TERMINATE, False, self.pid)
         if not h:
             return False
@@ -551,16 +561,24 @@ class Elevated:
             _k32.CloseHandle(self._h)
 
 
-def run_elevated(exe, args, cwd=None) -> Elevated:
+def run_elevated(exe, args, cwd=None, quiet=False) -> Elevated:
     """Start `exe args` as administrator: the UAC prompt (none when we're
     elevated already). Raises ElevationCancelled when the user says no,
-    OSError for anything else (missing exe, ...)."""
-    from nexus.platform import ElevationCancelled
+    OSError for anything else (missing exe, ...). quiet: for a silent
+    installer, what's elevated is nexus-cli, hidden, which runs `exe` with
+    its music, console windows and closing web page kept away (quiet_setup);
+    the handle is then nexus-cli's, and its exit code the installer's."""
+    from nexus.platform import ElevationCancelled, QUIET_SETUP_ARG
+    show = _SW_SHOWNORMAL
+    if quiet:
+        cli = cli_command(Path(__file__).resolve().parents[2], True)
+        exe, args, show = cli[0], [*cli[1:], QUIET_SETUP_ARG, str(cwd or ''), str(exe),
+                                   *args], _SW_HIDE
     info = _ShellExecuteInfo(
         cbSize=ctypes.sizeof(_ShellExecuteInfo),
         fMask=_SEE_MASK_NOCLOSEPROCESS | _SEE_MASK_NOASYNC | _SEE_MASK_FLAG_NO_UI,
         lpVerb='runas', lpFile=str(exe), lpParameters=subprocess.list2cmdline(args),
-        lpDirectory=str(cwd) if cwd else None, nShow=_SW_SHOWNORMAL)
+        lpDirectory=str(cwd) if cwd else None, nShow=show)
     if not _shell32.ShellExecuteExW(ctypes.byref(info)):
         err = ctypes.get_last_error()
         if err == _ERROR_CANCELLED:
@@ -568,7 +586,7 @@ def run_elevated(exe, args, cwd=None) -> Elevated:
         raise ctypes.WinError(err)
     if not info.hProcess:            # handed to an already-running app: nothing to follow
         raise OSError(f"{exe} didn't start a process we can follow")
-    return Elevated(info.hProcess)
+    return Elevated(info.hProcess, quiet)
 
 
 # Shortcuts (.lnk) through WScript.Shell in one PowerShell call. The paths go
@@ -1009,3 +1027,460 @@ def style_title_bar(hwnd: int, caption: str, text: str, border: str, dark: bool)
     return all([put(_DWMWA_CAPTION_COLOR, colorref(caption)),
                 put(_DWMWA_TEXT_COLOR, colorref(text)),
                 put(_DWMWA_BORDER_COLOR, colorref(border))])
+
+
+# A silent install, kept quiet. FitGirl's setup plays music from its [Code]
+# (BASS.dll, /VERYSILENT or not), and its [Run] section ends in postinstall
+# entries that /VERYSILENT runs too, as no switch turns them off: a shellexec
+# of her site, and `cmd.exe /c host.cmd` (hosts-file entries for the fake
+# sites) in a console window for a few seconds. run_elevated(quiet=True)
+# therefore elevates nexus-cli, hidden, and its quiet_setup() runs setup.exe
+# at the same integrity level (a non-elevated Nexus may not touch an elevated
+# setup's windows). There it:
+#   - starts setup in a job object: "setup's processes" is then the job's own
+#     list, whatever starts what
+#   - mutes their audio sessions (the volume mixer's per-app ones), and only
+#     theirs: Windows' volume and other apps are left alone
+#   - hides their console windows as they appear; the commands still run
+#   - points this user's http/https handler at a no-op until setup exits, and
+#     makes new console windows conhost ones, not Windows Terminal tabs (those
+#     belong to WindowsTerminal.exe, not to the job)
+# The registry values are put back afterwards (_override); a run that died
+# midway is undone by the next one.
+_CREATE_SUSPENDED = 0x4
+_JobObjectBasicProcessIdList = 3
+_k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+_k32.CreateJobObjectW.restype = wintypes.HANDLE
+_k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+_k32.AssignProcessToJobObject.restype = wintypes.BOOL
+_k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+_k32.QueryInformationJobObject.restype = wintypes.BOOL
+_ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+_ntdll.NtResumeProcess.restype = wintypes.LONG
+
+
+class _JobPids(ctypes.Structure):
+    _fields_ = [('assigned', wintypes.DWORD), ('listed', wintypes.DWORD),
+                ('pids', ctypes.c_size_t * 1024)]
+
+
+def _job_pids(job) -> set[int]:
+    info = _JobPids()
+    if not _k32.QueryInformationJobObject(job, _JobObjectBasicProcessIdList, ctypes.byref(info),
+                                          ctypes.sizeof(info), None):
+        return set()
+    return set(info.pids[:info.listed])
+
+
+# The no-op that http/https links run while setup does: rundll32 with no
+# arguments does nothing and shows nothing (a command without %1 isn't given
+# the URL). Conhost's class id, for the default-terminal setting.
+_NO_OP = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'rundll32.exe')
+_CONHOST = '{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}'
+_URL_ASSOC = r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations'
+_SAVED = 'NexusSaved'          # beside what an override changed: what was there before
+
+
+def _url_progids() -> list[str]:
+    """The ProgIds this user's http and https links open with: the default
+    browser's (UserChoice; UserChoiceLatest on newer Windows 11), else the
+    scheme's own key."""
+    out = []
+    for scheme in ('http', 'https'):
+        found = []
+        for sub in ('UserChoiceLatest', r'UserChoiceLatest\ProgId', 'UserChoice'):
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    rf'{_URL_ASSOC}\{scheme}\{sub}') as key:
+                    found.append(str(winreg.QueryValueEx(key, 'ProgId')[0]))
+            except OSError:
+                pass
+        for progid in found or [scheme]:
+            if progid and '\\' not in progid and progid not in out:
+                out.append(progid)
+    return out
+
+
+def _quiet_overrides() -> list[tuple[str, dict]]:
+    """(HKCU key, {value: data, or None to remove}) for a quiet setup."""
+    return [(r'Console\%%Startup', {'DelegationConsole': _CONHOST, 'DelegationTerminal': _CONHOST}),
+            *((rf'Software\Classes\{p}\shell\open\command', {'': _NO_OP, 'DelegateExecute': None})
+              for p in _url_progids())]
+
+
+def _to_json(data):
+    return list(data) if isinstance(data, bytes) else data
+
+
+def _from_json(data, kind):
+    return bytes(data) if isinstance(data, list) and kind != winreg.REG_MULTI_SZ else data
+
+
+def _override(path: str, values: dict) -> None:
+    """Set `values` in HKCU\\path, first writing down beside them (as
+    NexusSaved) what they replace and which keys had to be made."""
+    _restore(path)                          # one left by a run that died first
+    hkcu = winreg.HKEY_CURRENT_USER
+    parts = path.split('\\')
+    created = []
+    for i in range(1, len(parts) + 1):
+        sub = '\\'.join(parts[:i])
+        try:
+            winreg.OpenKey(hkcu, sub).Close()
+        except OSError:
+            created.append(sub)
+    with winreg.CreateKeyEx(hkcu, path, 0, winreg.KEY_ALL_ACCESS) as key:
+        before = {}
+        for name in values:
+            try:
+                data, kind = winreg.QueryValueEx(key, name)
+                before[name] = [_to_json(data), kind]
+            except OSError:
+                before[name] = None
+        winreg.SetValueEx(key, _SAVED, 0, winreg.REG_SZ, json.dumps(
+            {'before': before, 'set': values, 'created': created}))
+        for name, data in values.items():
+            if data is not None:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, data)
+            elif before[name] is not None:
+                winreg.DeleteValue(key, name)
+
+
+def _restore(path: str) -> None:
+    """Undo _override(path): each value it set goes back to what it was,
+    unless something else has changed it since; the keys it made go when
+    they're empty again. Nothing to do without a NexusSaved there."""
+    hkcu = winreg.HKEY_CURRENT_USER
+    try:
+        key = winreg.OpenKey(hkcu, path, 0, winreg.KEY_ALL_ACCESS)
+    except OSError:
+        return
+    with key:
+        try:
+            saved = json.loads(winreg.QueryValueEx(key, _SAVED)[0])
+        except (OSError, ValueError, TypeError):
+            return
+        for name, ours in (saved.get('set') or {}).items():
+            try:
+                now = winreg.QueryValueEx(key, name)[0]
+            except OSError:
+                now = None
+            if now != ours:
+                continue                    # changed since (a browser update): theirs stays
+            old = (saved.get('before') or {}).get(name)
+            if old is not None:
+                winreg.SetValueEx(key, name, 0, old[1], _from_json(*old))
+            elif now is not None:
+                winreg.DeleteValue(key, name)
+        winreg.DeleteValue(key, _SAVED)
+    for sub in reversed(saved.get('created') or []):
+        if not path.startswith(sub):
+            break
+        try:
+            with winreg.OpenKey(hkcu, sub) as key:
+                subkeys, nvalues, _ = winreg.QueryInfoKey(key)
+            if subkeys or nvalues:
+                break
+            winreg.DeleteKey(hkcu, sub)
+        except OSError:
+            break
+
+
+@contextlib.contextmanager
+def _overridden(overrides: list[tuple[str, dict]]):
+    """The overrides for the block, each put back afterwards. One that can't
+    be made is skipped: the install goes ahead regardless."""
+    done = []
+    try:
+        for path, values in overrides:
+            try:
+                _override(path, values)
+                done.append(path)
+            except OSError:
+                pass
+        yield done
+    finally:
+        for path in reversed(done):
+            try:
+                _restore(path)
+            except OSError:
+                pass
+
+
+# Core Audio through its COM interfaces by vtable slot (no comtypes): the
+# device enumerator, each active output device's session manager, and per
+# session its process id, state and mute.
+_ole32 = ctypes.WinDLL('ole32')
+_GUID = ctypes.c_ubyte * 16
+_PP = ctypes.POINTER(ctypes.c_void_p)
+_ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+_ole32.CoInitializeEx.restype = ctypes.HRESULT
+_ole32.CoUninitialize.argtypes = []
+_ole32.CoCreateInstance.argtypes = [ctypes.POINTER(_GUID), ctypes.c_void_p, wintypes.DWORD,
+                                    ctypes.POINTER(_GUID), _PP]
+_ole32.CoCreateInstance.restype = ctypes.HRESULT
+_COINIT_APARTMENTTHREADED = 0x2
+_CLSCTX_ALL = 0x17
+_E_RENDER = 0
+_DEVICE_STATE_ACTIVE = 0x1
+_SESSION_EXPIRED = 2
+
+
+def _guid(text: str):
+    return _GUID.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+_CLSID_MMDEVICE_ENUMERATOR = _guid('BCDE0395-E52F-467C-8E3D-C4579291692E')
+_IID_IMMDEVICE_ENUMERATOR = _guid('A95664D2-9614-4F35-A746-DE8DB63617E6')
+_IID_IAUDIO_SESSION_MANAGER2 = _guid('77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F')
+_IID_IAUDIO_SESSION_CONTROL2 = _guid('BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D')
+_IID_ISIMPLE_AUDIO_VOLUME = _guid('87CE5498-68D6-44E5-9215-6DA47EF883D8')
+
+
+def _method(obj, slot: int, *argtypes, restype=ctypes.HRESULT):
+    """Method number `slot` of COM object `obj`: a callable taking obj first.
+    An HRESULT failure raises OSError."""
+    vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtable[slot])
+
+
+def _out(obj, slot: int, argtypes=(), args=()):
+    """Call a method whose last parameter receives an interface; return it."""
+    got = ctypes.c_void_p()
+    _method(obj, slot, *argtypes, _PP)(obj, *args, ctypes.byref(got))
+    return got
+
+
+def _release(obj) -> None:
+    if obj and obj.value:
+        _method(obj, 2, restype=wintypes.ULONG)(obj)
+
+
+def _audio_sessions() -> list[tuple[int, ctypes.c_void_p, ctypes.c_void_p]]:
+    """(pid, IAudioSessionControl2, ISimpleAudioVolume) for every session on
+    every active output device. The caller releases both interfaces."""
+    found, held = [], []
+    try:
+        enum = ctypes.c_void_p()
+        _ole32.CoCreateInstance(ctypes.byref(_CLSID_MMDEVICE_ENUMERATOR), None, _CLSCTX_ALL,
+                                ctypes.byref(_IID_IMMDEVICE_ENUMERATOR), ctypes.byref(enum))
+        held.append(enum)
+        devices = _out(enum, 3, (ctypes.c_int, wintypes.DWORD), (_E_RENDER, _DEVICE_STATE_ACTIVE))
+        held.append(devices)
+        count = wintypes.UINT()
+        _method(devices, 3, ctypes.POINTER(wintypes.UINT))(devices, ctypes.byref(count))
+        for i in range(count.value):
+            try:
+                device = _out(devices, 4, (wintypes.UINT,), (i,))
+                held.append(device)
+                manager = _out(device, 3, (ctypes.POINTER(_GUID), wintypes.DWORD, ctypes.c_void_p),
+                               (ctypes.byref(_IID_IAUDIO_SESSION_MANAGER2), _CLSCTX_ALL, None))
+                held.append(manager)
+                sessions = _out(manager, 5)
+                held.append(sessions)
+                n = ctypes.c_int()
+                _method(sessions, 3, ctypes.POINTER(ctypes.c_int))(sessions, ctypes.byref(n))
+            except OSError:
+                continue
+            for j in range(n.value):
+                control = control2 = volume = None
+                try:
+                    control = _out(sessions, 4, (ctypes.c_int,), (j,))
+                    control2 = _out(control, 0, (ctypes.POINTER(_GUID),),
+                                    (ctypes.byref(_IID_IAUDIO_SESSION_CONTROL2),))
+                    pid = wintypes.DWORD()
+                    # S_OK, or AUDCLNT_S_NO_SINGLE_PROCESS (a success code) for
+                    # a session several processes share: pid 0 then
+                    _method(control2, 14, ctypes.POINTER(wintypes.DWORD))(control2,
+                                                                          ctypes.byref(pid))
+                    volume = _out(control, 0, (ctypes.POINTER(_GUID),),
+                                  (ctypes.byref(_IID_ISIMPLE_AUDIO_VOLUME),))
+                    found.append((pid.value, control2, volume))
+                    control2 = volume = None
+                except OSError:
+                    pass
+                finally:
+                    for obj in (control, control2, volume):
+                        _release(obj)
+    except OSError:
+        pass
+    finally:
+        for obj in reversed(held):
+            _release(obj)
+    return found
+
+
+def _is_muted(volume) -> bool:
+    muted = wintypes.BOOL()
+    _method(volume, 6, ctypes.POINTER(wintypes.BOOL))(volume, ctypes.byref(muted))
+    return bool(muted.value)
+
+
+def _set_mute(volume, mute: bool) -> None:
+    _method(volume, 5, wintypes.BOOL, ctypes.c_void_p)(volume, mute, None)
+
+
+def _session_state(control) -> int:
+    state = ctypes.c_int()
+    _method(control, 3, ctypes.POINTER(ctypes.c_int))(control, ctypes.byref(state))
+    return state.value
+
+
+# Console windows of the job, hidden as they're shown: an out-of-context
+# WinEvent hook (no DLL in anyone's process) on a thread with a message loop.
+_WINEVENTPROC = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                                   wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+_user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE,
+                                    _WINEVENTPROC, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+_user32.SetWinEventHook.restype = wintypes.HANDLE
+_user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+_user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+_user32.SetTimer.restype = ctypes.c_size_t
+_user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+_user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT,
+                                wintypes.UINT]
+_user32.GetMessageW.restype = wintypes.BOOL
+_user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM,
+                                       wintypes.LPARAM]
+_user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.IsWindow.argtypes = [wintypes.HWND]
+_EVENT_OBJECT_SHOW = 0x8002
+_WINEVENT_SKIPOWNPROCESS = 0x2
+_OBJID_WINDOW = 0
+_WM_QUIT = 0x12
+_WM_TIMER = 0x113
+_SW_SHOWNOACTIVATE = 4
+_TICK_MS = 100
+_FAST_TICKS = 600           # the first minute every tick (the music starts early), then every 5th
+_STUCK_AFTER = 120          # a console hidden this long may be waiting for a key: shown again
+
+
+class _Quiet:
+    """Mutes and hides what the processes in `job` play and show, on its
+    own thread, until stop(). Sessions it muted that still play then (a
+    browser setup started, say) get their sound back."""
+
+    def __init__(self, job):
+        self._job = job
+        self._muted = []                    # (IAudioSessionControl2, ISimpleAudioVolume)
+        self._hidden = {}                   # console hwnd -> when hidden
+        self._tid = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='nexus-quiet', daemon=True)
+        self._thread.start()
+        self._ready.wait(5)
+
+    def _run(self):
+        try:
+            _ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+            com = True
+        except OSError:
+            com = False
+        on_show = _WINEVENTPROC(self._on_show)          # referenced until unhooked
+        hook = _user32.SetWinEventHook(_EVENT_OBJECT_SHOW, _EVENT_OBJECT_SHOW, None, on_show,
+                                       0, 0, _WINEVENT_SKIPOWNPROCESS)
+        timer = _user32.SetTimer(None, 0, _TICK_MS, None)
+        self._tid = _k32.GetCurrentThreadId()
+        self._ready.set()
+        msg, ticks = wintypes.MSG(), 0
+        try:
+            while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message != _WM_TIMER:
+                    continue
+                ticks += 1
+                if ticks <= _FAST_TICKS or ticks % 5 == 0:
+                    self._mute()
+                self._show_stuck()
+        finally:
+            if hook:
+                _user32.UnhookWinEvent(hook)
+            if timer:
+                _user32.KillTimer(None, timer)
+            self._unmute()
+            if com:
+                _ole32.CoUninitialize()
+
+    def _mute(self):
+        pids = _job_pids(self._job)
+        for pid, control, volume in _audio_sessions():
+            kept = False
+            try:
+                if pid and pid in pids and not _is_muted(volume):
+                    _set_mute(volume, True)
+                    self._muted.append((control, volume))
+                    kept = True
+            except OSError:
+                pass
+            if not kept:
+                _release(control)
+                _release(volume)
+
+    def _unmute(self):
+        for control, volume in self._muted:
+            try:
+                if _session_state(control) != _SESSION_EXPIRED:
+                    _set_mute(volume, False)
+            except OSError:
+                pass
+            _release(control)
+            _release(volume)
+        self._muted = []
+
+    def _on_show(self, _hook, _event, hwnd, id_object, id_child, _thread, _time):
+        try:
+            if not hwnd or id_object != _OBJID_WINDOW or id_child != 0:
+                return
+            name = ctypes.create_unicode_buffer(64)
+            _user32.GetClassNameW(hwnd, name, 64)
+            if name.value != 'ConsoleWindowClass':
+                return
+            pid = wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in _job_pids(self._job):
+                _user32.ShowWindow(hwnd, _SW_HIDE)
+                self._hidden[hwnd] = time.monotonic()
+        except Exception:                   # noqa: BLE001 — never into ctypes' callback
+            pass
+
+    def _show_stuck(self):
+        now = time.monotonic()
+        for hwnd, since in list(self._hidden.items()):
+            if not _user32.IsWindow(hwnd):
+                del self._hidden[hwnd]
+            elif now - since > _STUCK_AFTER:
+                _user32.ShowWindow(hwnd, _SW_SHOWNOACTIVATE)
+                del self._hidden[hwnd]
+
+    def stop(self):
+        if self._tid:
+            _user32.PostThreadMessageW(self._tid, _WM_QUIT, 0, 0)
+        self._thread.join(5)
+
+
+def quiet_setup(argv: list[str]) -> int:
+    """The elevated half of run_elevated(quiet=True), in nexus-cli: argv is
+    [cwd, exe, *args]. Runs exe in a job object with the overrides above
+    and _Quiet watching, and returns its exit code (1 when it couldn't be
+    started). Whatever part of the quieting fails, the setup still runs."""
+    cwd, exe, *args = argv
+    with _overridden(_quiet_overrides()):
+        job = _k32.CreateJobObjectW(None, None)
+        try:
+            proc = subprocess.Popen([exe, *args], cwd=cwd or None,
+                                    creationflags=_CREATE_SUSPENDED)
+        except OSError:
+            if job:
+                _k32.CloseHandle(job)
+            return 1
+        quiet = None
+        if job and _k32.AssignProcessToJobObject(job, int(proc._handle)):
+            quiet = _Quiet(job)
+        _ntdll.NtResumeProcess(int(proc._handle))
+        try:
+            return proc.wait()
+        finally:
+            if quiet:
+                quiet.stop()
+            if job:
+                _k32.CloseHandle(job)

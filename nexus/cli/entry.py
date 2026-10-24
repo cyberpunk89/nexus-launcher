@@ -7,7 +7,7 @@ import signal
 import sys
 from pathlib import Path
 
-from nexus import features, paths as NX
+from nexus import features, paths as NX, platform
 
 from .common import (_handle_sigterm, INSTALL_BASE, Logger, require_slug, use_logger,
     watch_gui_cancel)
@@ -775,6 +775,8 @@ COMMANDS = (
 
 
 def _main() -> None:
+    if sys.argv[1:2] == [platform.QUIET_SETUP_ARG]:    # a silent install's elevated half
+        sys.exit(platform.quiet_setup(sys.argv[2:]))
     parser = build_parser()
     args = parser.parse_args()
     _refuse_unavailable(parser, args)

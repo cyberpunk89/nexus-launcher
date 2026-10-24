@@ -327,7 +327,7 @@ def cmd_import_win(args, install_base: Path) -> None:
                   + (" silently (Inno Setup)..." if silent else
                      f" — install it into {game_dir} so Nexus finds it..."))
         try:
-            rc = platform.run_elevated(exe, switches, cwd=src.parent).wait()
+            rc = platform.run_elevated(exe, switches, cwd=src.parent, quiet=silent).wait()
         except platform.ElevationCancelled:
             log.print("  Cancelled at the admin prompt. Nothing was added.")
             emit_event('install-cancelled', {'slug': slug, 'why': 'uac'})
@@ -390,7 +390,10 @@ def _case_free_slug(slug: str, install_base: Path) -> str:
 def _run_setup(setup_exe: Path, game_dir: Path, setup_log: Path, unattended: bool) -> int | None:
     """setup.exe through the UAC prompt, into game_dir, while the folder's
     size is reported as `progress` events. The exit code, or None when the
-    prompt was declined. Inno keeps its own log at setup_log."""
+    prompt was declined. Inno keeps its own log at setup_log. A silent one
+    runs quiet (platform.quiet_setup): FitGirl's plays music, opens her site
+    and shows a console window for its hosts-file step otherwise, since
+    /VERYSILENT doesn't stop any of those."""
     setup_log.parent.mkdir(parents=True, exist_ok=True)
     setup_log.unlink(missing_ok=True)       # an older attempt's errors aren't this one's
     switches = [*INNO_SILENT] if unattended else []
@@ -398,15 +401,16 @@ def _run_setup(setup_exe: Path, game_dir: Path, setup_log: Path, unattended: boo
     if unattended:
         log.print(f"  Installing silently into {game_dir} — no setup window "
                   f"(--interactive shows it).")
-        log.print("  Its VC++/DirectX redists run too: Windows needs them. FitGirl's setup")
-        log.print("  may play music and open her site when it's done; that's the installer.")
+        log.print("  Its VC++/DirectX redists run too: Windows needs them. Its music is muted,")
+        log.print("  its console windows hidden, and web links open nothing until it's done.")
     else:
         log.print(f"  The installer window will open. Keep the folder it suggests ({game_dir}),")
         log.print("  or Nexus won't find the game afterwards.")
     log.print("  It runs as administrator, so Nexus can't stop it once it has started:")
     log.print("  cancel from its own window.\n")
     try:
-        proc = platform.run_elevated(setup_exe, switches, cwd=setup_exe.parent)
+        proc = platform.run_elevated(setup_exe, switches, cwd=setup_exe.parent,
+                                     quiet=unattended)
     except platform.ElevationCancelled:
         return None
     except OSError as e:

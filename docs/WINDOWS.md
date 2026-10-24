@@ -89,6 +89,12 @@ Most game installers (`setup.exe`) ask for administrator rights, so Windows show
 prompt each time Nexus starts an install. Nexus itself doesn't run as administrator. If you click **No**, the
 install is cancelled and the empty folder is cleaned up.
 
+For a silent install the prompt names Nexus's command-line tool (`nexus-cli`, or Python when
+run from source): it runs the installer as administrator and keeps it quiet. The installer's
+music is muted, console windows it opens for its own steps are hidden, and web links open
+nothing until it finishes, so it can't open a website at the end. Your default browser and
+terminal settings are put back as soon as the installer exits.
+
 ## Which stores are read
 
 Steam and Epic only. Steam games come from your Steam library folders. Epic games come from

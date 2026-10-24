@@ -53,12 +53,22 @@ running our own CLI
                                             nexus/cli/__main__.py, on Windows
 
 elevation (Windows: FitGirl's setup.exe needs admin)
-    run_elevated(exe, args, cwd=None)       start it through the UAC prompt;
+    run_elevated(exe, args, cwd=None, quiet=False)
+                                            start it through the UAC prompt;
                                             returns a Popen-like handle (pid,
                                             poll, wait, returncode, terminate
                                             -> bool), no pipes. Raises
                                             ElevationCancelled when the user
-                                            declines. Linux: NotImplementedError
+                                            declines. quiet (a silent install):
+                                            nexus-cli is what's elevated,
+                                            hidden, and runs it through
+                                            quiet_setup. Linux:
+                                            NotImplementedError
+    quiet_setup(argv) -> exit code          that elevated nexus-cli
+                                            (QUIET_SETUP_ARG cwd exe args...):
+                                            runs exe with its music muted, its
+                                            console windows hidden and web
+                                            links going nowhere until it exits
 
 antivirus and limits (Windows)
     defender_status() -> {realtime} | None  Windows Defender's state; None on
@@ -150,6 +160,10 @@ class ElevationCancelled(OSError):
     """The user said no at the UAC prompt."""
 
 
+# nexus-cli's first argument when it is the elevated half of a quiet install.
+QUIET_SETUP_ARG = '--quiet-setup'
+
+
 if sys.platform == 'win32':
     from . import windows as _impl
 else:
@@ -173,6 +187,7 @@ open_url = _impl.open_url
 cli_command = _impl.cli_command
 console_encoding = _impl.console_encoding
 run_elevated = _impl.run_elevated
+quiet_setup = _impl.quiet_setup
 create_shortcut = _impl.create_shortcut
 defender_detections = _impl.defender_detections
 defender_status = _impl.defender_status
