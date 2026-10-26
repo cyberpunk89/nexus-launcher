@@ -662,6 +662,12 @@ class SettingsPage(QWidget):
 
     def _build_installing(self):
         sec = self._add_section(SettingsSection('installing', "Installing games", 'download'))
+        self.repacks = Switch()
+        self._row(sec, "Repack features", "Installing repacks, watching download folders, "
+                  "FitGirl matches on Deals, repack update alerts and the torrent client. Off: "
+                  "Nexus is a launcher for your other games.", self.repacks,
+                  keywords="fitgirl repack torrent downloads")
+        self._repack_rows = []
         self.base = QLineEdit()
         self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
         self._field_row(sec, "Install games to", "Each game gets its own folder here.",
@@ -670,21 +676,23 @@ class SettingsPage(QWidget):
         self._check_base()
         self.scan_dir = QLineEdit()
         self.scan_dir.setPlaceholderText(str(HOME / 'Downloads'))
-        self._field_row(sec, "Look for repacks in", "Nexus says when a download here is "
-                        "ready to install.", self.scan_dir, browse=True,
-                        keywords="downloads folder scan")
+        self._repack_rows.append(self._field_row(
+            sec, "Look for repacks in", "Nexus says when a download here is ready to install.",
+            self.scan_dir, browse=True, keywords="downloads folder scan"))
         self.scan_more = QLineEdit()
         self.scan_more.setPlaceholderText(f"e.g. {os.path.join('~', 'Games', 'Install')}")
-        self._field_row(sec, "Also look in", "More folders to watch, separated by ;",
-                        self.scan_more, keywords="folders scan")
+        self._repack_rows.append(self._field_row(
+            sec, "Also look in", "More folders to watch, separated by ;", self.scan_more,
+            keywords="folders scan"))
         self.unattended = Switch()
-        self._row(sec, "Install without the setup window", "Runs FitGirl's installer "
-                  "silently; follow it in Activity.", self.unattended,
-                  keywords="silent unattended")
+        self._repack_rows.append(self._row(
+            sec, "Install without the setup window", "Runs FitGirl's installer silently; "
+            "follow it in Activity.", self.unattended, keywords="silent unattended"))
         self.trash_repack = Switch()
-        self._row(sec, "Move the repack to the Trash afterwards", "Frees the space once the "
-                  "game is installed. You can still restore it from the Trash.",
-                  self.trash_repack, keywords="delete cleanup")
+        self._repack_rows.append(self._row(
+            sec, "Move the repack to the Trash afterwards", "Frees the space once the game is "
+            "installed. You can still restore it from the Trash.", self.trash_repack,
+            keywords="delete cleanup"))
         self.steam = Switch()
         self._row(sec, "Add new games to Steam", "As a non-Steam game, with its artwork.",
                   self.steam, keywords="shortcut")
@@ -800,11 +808,11 @@ class SettingsPage(QWidget):
                                ("75% off or more", 75)), 180)
         self._row(sec, "Any wishlist sale", "", self.al_sale, keywords="discount price deal")
         self.al_fitgirl = Switch()
-        self._row(sec, "A wishlist game appears on FitGirl", "", self.al_fitgirl,
-                  keywords="repack")
+        self._repack_rows.append(self._row(sec, "A wishlist game appears on FitGirl", "",
+                                           self.al_fitgirl, keywords="repack"))
         self.al_updates = Switch()
-        self._row(sec, "An installed game gets a repack update", "", self.al_updates,
-                  keywords="fitgirl")
+        self._repack_rows.append(self._row(sec, "An installed game gets a repack update", "",
+                                           self.al_updates, keywords="fitgirl"))
         self.al_proton = Switch()
         self._row(sec, "A new GE-Proton is out", "", self.al_proton)
         test = QPushButton("Send a test")
@@ -850,7 +858,8 @@ class SettingsPage(QWidget):
                   "which ones (bigger file).", self.bk_art, keywords="backup export")
         self.bk_secrets = Switch()
         self._row(sec, "Include keys and passwords",
-                  "SteamGridDB key, Game-db token, torrent password. Off: the file is safe to "
+                  "SteamGridDB key, Game-db token, torrent password, ntfy token. Off: the file "
+                  "is safe to "
                   "share; this machine's own are kept on import.", self.bk_secrets,
                   keywords="backup export secrets token")
         row = QHBoxLayout()
@@ -952,7 +961,8 @@ class SettingsPage(QWidget):
                   self.tor_dir, self.tor_ratio):
             e.textChanged.connect(self._edited)
             e.editingFinished.connect(self.commit)
-        for c in (self.steam, self.desktop, self.heroic, self.news, self.unattended,
+        self.repacks.toggled.connect(self._show_repacks)
+        for c in (self.repacks, self.steam, self.desktop, self.heroic, self.news, self.unattended,
                   self.trash_repack, self.gdb_enabled, self.al_atl, self.al_fitgirl,
                   self.al_updates, self.al_proton):
             c.toggled.connect(self.commit)
@@ -965,6 +975,14 @@ class SettingsPage(QWidget):
                 {key: box.currentData()}))
 
     # ---- navigation and search ----
+    def _show_repacks(self, on: bool):
+        """Repack features off: their rows and the torrent client go away."""
+        for row in (*self._repack_rows, *self.sections['torrent'].rows):
+            row.set_available(on)
+        if on:
+            self._sync_torrent_rows()           # its address rows only with a client
+        self._filter(self.search.text())
+
     def show_section(self, key: str):
         """Scroll to a section (Deals, Downloads and the art picker link here)."""
         sec = self.sections.get(key)
@@ -1153,7 +1171,7 @@ class SettingsPage(QWidget):
         self.commit()
 
     def _sync_torrent_rows(self):
-        on = self.tor_client.currentData() is not None
+        on = self.tor_client.currentData() is not None and self.repacks.isChecked()
         for row in self.tor_rows:
             row.set_available(on)
         self.sections['torrent'].relayout()
@@ -1257,6 +1275,10 @@ class SettingsPage(QWidget):
         self.desktop.setChecked(c.get('desktop', True))
         self.heroic.setChecked(c.get('heroic', True))
         self.news.setChecked(c.get('news', True))
+        self.repacks.blockSignals(True)
+        self.repacks.setChecked(c.get('repacks', True))
+        self.repacks.blockSignals(False)
+        self._show_repacks(self.repacks.isChecked())
         self.gdb_enabled.setChecked(c.get('gamedb_cfg_enabled', False))
         self.gdb_url.setText(c.get('gamedb_url') or "")
         env_token = bool(os.environ.get('NEXUS_GAMEDB_TOKEN'))
@@ -1330,6 +1352,7 @@ class SettingsPage(QWidget):
         put('integrations', 'desktop', self.desktop.isChecked(), c.get('desktop', True))
         put('integrations', 'heroic', self.heroic.isChecked(), c.get('heroic', True))
         put('news', 'enabled', self.news.isChecked(), c.get('news', True))
+        put('repacks', 'enabled', self.repacks.isChecked(), c.get('repacks', True))
         gamedb_changed = False
         gurl = self.gdb_url.text().strip() or None
         msg = ""

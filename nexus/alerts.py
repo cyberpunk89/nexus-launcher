@@ -35,15 +35,20 @@ GROUP = 3                           # more new alerts of a kind than this: one s
 
 def settings() -> dict:
     try:
-        data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig')).get('alerts') or {}
+        whole = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError):
-        data = {}
+        whole = {}
+    data = whole.get('alerts') or {}
+    rp = whole.get('repacks')
+    repacks = not isinstance(rp, dict) or rp.get('enabled', True) is not False
     try:
         cut = max(0, min(100, int(data.get('sale_min_cut', 0))))
     except (TypeError, ValueError):
         cut = 0
     out = {k: data.get(k, True) is not False for k in ('atl', 'fitgirl', 'repack_updates',
                                                         'proton')}
+    if not repacks:                       # Settings > Repack features off
+        out['fitgirl'] = out['repack_updates'] = False
     out['sale'] = cut > 0
     out['sale_min_cut'] = cut
     return out

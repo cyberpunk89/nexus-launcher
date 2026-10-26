@@ -31,7 +31,7 @@ def load_config() -> dict:
            'desktop': True, 'heroic': True, 'proton': None, 'news': True,
            'heroic_proton': None, 'install_base': None,
            'scan_dir': None, 'scan_dirs': [], 'unattended': True, 'trash_repack': False,
-           'runner': 'auto', 'error': None}
+           'runner': 'auto', 'repacks': True, 'error': None}
     try:
         data = _read_config_toml()
     except ConfigError as e:
@@ -53,6 +53,8 @@ def load_config() -> dict:
     cfg['runner'] = (data.get('runner', {}).get('backend') or 'auto').lower()
     cfg['proton'] = data.get('runner', {}).get('proton') or None
     cfg['news'] = data.get('news', {}).get('enabled', True) is not False
+    rp = data.get('repacks')
+    cfg['repacks'] = not isinstance(rp, dict) or rp.get('enabled', True) is not False
     gd = data.get('gamedb', {}) if isinstance(data.get('gamedb'), dict) else {}
     cfg['gamedb_url'] = gd.get('url') or None
     cfg['gamedb_token'] = gd.get('token') or None

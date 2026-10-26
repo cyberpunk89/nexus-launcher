@@ -35,7 +35,10 @@ class LibraryPrefs:
                 self.collections[name] = list(dict.fromkeys(
                     s for s in slugs if isinstance(s, str)))
         self.view = self._data.get('view', 'home')
-        self.tile = int(self._data.get('tile', TILE_W))
+        try:                                 # a hand-edited bad value mustn't stop start-up
+            self.tile = max(140, min(260, int(self._data.get('tile', TILE_W))))
+        except (TypeError, ValueError):
+            self.tile = TILE_W
         dash = self._data.get('dashboard') or {}
         self.dashboard = dash_normalize(dash.get('items') if isinstance(dash, dict) else None)
         self.appearance = normalize_appearance(self._data.get('appearance'))

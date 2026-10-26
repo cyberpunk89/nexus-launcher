@@ -218,6 +218,8 @@ class Agent:
 
     def task_feed(self) -> float:
         from nexus import alerts as A, net, repackfeed
+        if not load_config().get('repacks', True):
+            return EVERY['feed']
         try:
             data = repackfeed.refresh()
         except net.NetError as e:
@@ -230,7 +232,7 @@ class Agent:
 
     def task_index(self) -> float:
         from nexus import gamedb
-        if not gamedb.configured():
+        if not gamedb.configured() or not load_config().get('repacks', True):
             return EVERY['index']
         if playing():
             return 600                      # a full rebuild is a few minutes of requests

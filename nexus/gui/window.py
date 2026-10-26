@@ -321,7 +321,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.setup = SetupPage()
         self.setup.request.connect(self._on_request)
         self.setup.preview.connect(lambda look: self.set_appearance(
-            {**self.prefs.appearance, **look}))
+            {**self.prefs.appearance, **look}, save=False))
         self.setup.finished.connect(self._setup_finished)
         self._add_page(self.SETUP, self.setup)
         self.settings.setup_wanted.connect(self.open_setup)
@@ -333,6 +333,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         """Which tabs show, toasts, shortcuts, and keyboard/controller input."""
         self.nav[self.NEWS].setVisible(self.config.get('news', True))
         self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
+        self._apply_repacks()
         self.toasts = ToastHost(self.background)
         self._shortcuts()
         self.input.listen()        # before SpatialNav, which so still sees keys first
@@ -546,11 +547,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             finally:
                 QApplication.restoreOverrideCursor()
 
-    def set_appearance(self, ap: dict):
+    def set_appearance(self, ap: dict, save: bool = True):
         """Apply a new appearance live: palette, stylesheet, icons, painted
-        widgets, then rebuild the game views so inline-styled bits follow."""
+        widgets, then rebuild the game views so inline-styled bits follow.
+        save=False: a first-run setup preview, which mustn't write library.json
+        (Nexus would then not count the next start as a first run)."""
         self.prefs.appearance = apply_appearance(ap)
-        self.prefs.save()
+        if save:
+            self.prefs.save()
         app = QApplication.instance()
         f = app.font()
         f.setPixelSize(scaled(FS['sm']))           # Size: the type QSS doesn't set
@@ -602,6 +606,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.config = load_config()
         self.nav[self.NEWS].setVisible(self.config.get('news', True))
         self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
+        self._apply_repacks()
         if getattr(self.settings, 'gamedb_changed', False) or not self.config.get(
                 'gamedb_enabled'):
             self.dealspage.res, self.dealspage._loaded = {}, False
@@ -624,6 +629,20 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             return False
         return not self.prefs.PATH.exists() and not CONFIG_PATH.exists()
 
+    def repacks_on(self) -> bool:
+        """Settings > Repack features (config [repacks] enabled)."""
+        return self.config.get('repacks', True)
+
+    def _apply_repacks(self):
+        """Show or hide what's only for repacks: Downloads, the repack tab,
+        FitGirl on Deals. The background checks ask repacks_on() themselves."""
+        on = self.repacks_on()
+        self.icons[self.DOWNLOADS].setVisible(on)
+        self.topbar.install.setToolTip("Install a repack or add a game (Ctrl+N)" if on else
+                                       "Add a game (Ctrl+N)")
+        self.install.set_repacks(on)
+        self.dealspage.set_repacks(on)
+
     def _note_version(self, used_before: bool):
         """Remember this version; on the first start of a newer one, show its
         "What's new" once Home is up. Not during first-run setup, nor in tests
@@ -634,7 +653,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         show = updates.show_whats_new(seen, __version__, used_before) \
             and not self._first_run and not os.environ.get('NEXUS_NO_SETUP')
         self.prefs.last_seen_version = __version__
-        self.prefs.save()
+        if not self._first_run:                 # setup saves it when it's done (w-15)
+            self.prefs.save()
         if show and updates.whats_new():
             QTimer.singleShot(1200, lambda: alive(self) and self.show_whats_new())
 
@@ -665,6 +685,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.prefs.save()
         self.config = load_config()
         self.settings.load()
+        self._apply_repacks()
         self.set_appearance({**self.prefs.appearance, **opts['appearance']})
         if opts.get('tray'):
             self._apply_controls({'close_to_tray': True})

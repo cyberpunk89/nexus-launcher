@@ -1023,6 +1023,8 @@ class DealsPage(QWidget):
         clear_layout(self.sub)
         if self._section == 'deals':
             for key, text in self.DEAL_FILTERS:
+                if key == 'fitgirl' and not self._repacks_on:
+                    continue
                 count = len(self._filtered(key)) if has else 0
                 self._chip(self.sub, f"{text}  {count}" if count else text,
                            key == self._filter,
@@ -1343,9 +1345,21 @@ class DealsPage(QWidget):
                 pass
         return super().eventFilter(obj, ev)
 
+    _repacks_on = True                  # Settings > Repack features
+
+    def set_repacks(self, on: bool):
+        """Off: no FitGirl matches, badges or filter."""
+        if on == self._repacks_on:
+            return
+        self._repacks_on = on
+        if not on and self._filter == 'fitgirl':
+            self._filter = 'sale'
+        if self.res:
+            self._render()
+
     def repacks(self) -> dict:
-        """{appid (str): FitGirl match} for the wishlist."""
-        return self.res.get('repacks') or {}
+        """{appid (str): FitGirl match} for the wishlist ({} with repack features off)."""
+        return (self.res.get('repacks') or {}) if self._repacks_on else {}
 
     def forget_repack(self, appid: str):
         """A match was wrong: drop it here too (the CLI remembers)."""

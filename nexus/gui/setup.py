@@ -277,7 +277,7 @@ class SetupPage(QWidget):
         nav.setSpacing(SP['2'])
         self.btn_skip_all = QPushButton("Skip setup")
         self.btn_skip_all.setObjectName("Ghost")
-        self.btn_skip_all.clicked.connect(self._finish)
+        self.btn_skip_all.clicked.connect(self._skip)
         nav.addWidget(self.btn_skip_all)
         nav.addStretch()
         self.btn_back = QPushButton("Back")
@@ -308,7 +308,18 @@ class SetupPage(QWidget):
     def _build(self):
         self.req_rows = self._page()                   # 1 checks
         self.req_rows.addWidget(label("Looking at this machine…", "Muted"))
-        self.int_rows = self._page()                   # 2 launchers
+        lay = self._page()                             # 2 launchers
+        # Asked early: off skips the repack parts of the steps that follow.
+        self.repacks = Switch()
+        self.repacks.setChecked(True)
+        lay.addWidget(ToggleCard(self.repacks, "I install repacks",
+                                 "Repack installs, watching a download folder, a torrent "
+                                 "client and FitGirl matches. Off: Nexus leaves them out, "
+                                 "here and in the app (Settings can turn them on later)."))
+        lay.addSpacing(SP['3'])
+        self.int_rows = QVBoxLayout()
+        self.int_rows.setSpacing(SP['2'])
+        lay.addLayout(self.int_rows)
         lay = self._page()                             # 3 folders
         lay.addWidget(label("Install games to", "StatLabel"))
         self.base = QLineEdit()
@@ -324,13 +335,17 @@ class SetupPage(QWidget):
         lay.addWidget(label("Each game gets its own folder" + (
             " (and, on btrfs, its own subvolume so updates can be undone)." if has('btrfs')
             else "."), "Muted", wrap=True))
-        lay.addSpacing(SP['4'])
-        lay.addWidget(label("Repacks download to", "StatLabel"))
+        self.scan_box = QWidget()              # repack-only
+        sl = QVBoxLayout(self.scan_box)
+        sl.setContentsMargins(0, SP['4'], 0, 0)
+        sl.setSpacing(SP['2'])
+        sl.addWidget(label("Repacks download to", "StatLabel"))
         self.scan = QLineEdit()
         self.scan.setPlaceholderText(str(HOME / 'Downloads'))
-        lay.addLayout(self._browse_row(self.scan))
-        lay.addWidget(label("Nexus watches this folder and says when a download is ready to "
-                            "install.", "Muted", wrap=True))
+        sl.addLayout(self._browse_row(self.scan))
+        sl.addWidget(label("Nexus watches this folder and says when a download is ready to "
+                           "install.", "Muted", wrap=True))
+        lay.addWidget(self.scan_box)
         lay.addStretch()
         lay = self._page()                             # 4 proton
         lay.addWidget(label("Play games with", "StatLabel"))
@@ -352,15 +367,20 @@ class SetupPage(QWidget):
         lay.addWidget(self.key)
         lay.addWidget(label("Covers, heroes and logos for every game. Without one, games get "
                             "a plain placeholder.", "Muted", wrap=True))
-        lay.addSpacing(SP['4'])
-        lay.addWidget(label("Torrent client", "StatLabel"))
+        self.torrent_box = QWidget()           # repack-only
+        tl = QVBoxLayout(self.torrent_box)
+        tl.setContentsMargins(0, SP['4'], 0, 0)
+        tl.setSpacing(SP['2'])
+        tl.addWidget(label("Torrent client", "StatLabel"))
         self.torrent_note = label("Looking for Transmission or qBittorrent…", None, wrap=True)
         self.use_torrent = Switch()
-        lay.addWidget(ToggleCard(self.use_torrent, "Use it for repack downloads",
-                                 self.torrent_note))
+        tl.addWidget(ToggleCard(self.use_torrent, "Use it for repack downloads",
+                                self.torrent_note))
         self.use_torrent.setEnabled(False)
         self._torrent = None
+        lay.addWidget(self.torrent_box)
         lay.addStretch()
+        self.repacks.toggled.connect(self._show_repack_parts)
         lay = self._page()                             # 6 look & background
         lay.addWidget(label("Theme", "StatLabel"))
         self.theme = CardChoice()
@@ -420,6 +440,10 @@ class SetupPage(QWidget):
         row.addWidget(b)
         return row
 
+    def _show_repack_parts(self, on: bool):
+        self.scan_box.setVisible(on)
+        self.torrent_box.setVisible(on)
+
     def _check_base(self, _text=None):
         warns = platform.install_base_warnings(
             Path(self.base.text().strip() or INSTALL_BASE_DEFAULT))
@@ -429,6 +453,10 @@ class SetupPage(QWidget):
 
     # ---- data from the CLI ----
     def open(self, config: dict, appearance: dict):
+        self._repacks_was = config.get('repacks', True)
+        self._appearance_was = dict(appearance)
+        self.repacks.setChecked(self._repacks_was)
+        self._show_repack_parts(self._repacks_was)
         self.base.setText(config.get('install_base') or '')
         self._check_base()
         self.scan.setText(config.get('scan_dir') or '')
@@ -566,13 +594,16 @@ class SetupPage(QWidget):
         u = {}
         if self.base.text().strip():
             u[('install', 'base')] = self.base.text().strip()
-        if self.scan.text().strip():
+        repacks = self.repacks.isChecked()
+        if repacks != getattr(self, '_repacks_was', True):
+            u[('repacks', 'enabled')] = repacks
+        if repacks and self.scan.text().strip():
             u[('install', 'scan_dir')] = self.scan.text().strip()
         if self.key.text().strip():
             u[('steamgriddb', 'api_key')] = self.key.text().strip()
         if self.proton.currentData() and has('proton'):
             u[('runner', 'proton')] = self.proton.currentData()
-        if self._torrent and self.use_torrent.isChecked():
+        if repacks and self._torrent and self.use_torrent.isChecked():
             u[('torrent', 'client')] = self._torrent['client']
             u[('torrent', 'url')] = self._torrent['url']
         return u, {'appearance': self._look(), 'agent': self.agent.isChecked(),
@@ -581,6 +612,12 @@ class SetupPage(QWidget):
     def _finish(self):
         u, opts = self.answers_now()
         self.finished.emit(u, opts)
+
+    def _skip(self):
+        """Skip setup: nothing that was typed or picked is kept, and the look
+        goes back to how it was (w-15)."""
+        self.finished.emit({}, {'appearance': dict(getattr(self, '_appearance_was', {})),
+                                'agent': False, 'tray': False})
 
 
 # Siblings, imported last: they import this module too, and every use

@@ -42,6 +42,8 @@ class DownloadsMixin:
         return cmd
 
     def _repack_ready(self, c: dict):
+        if not self.repacks_on():                 # Settings > Repack features off
+            return
         name, path = c['name'], c['path']
         if c.get('update_for'):
             text, verb = f"A new release of {name} has finished downloading.", "Update"
@@ -75,7 +77,7 @@ class DownloadsMixin:
         finished one that asked for it. Every 2 s while Downloads is on
         screen, 10 s while something downloads, a minute otherwise; stops
         when no client is set up."""
-        if self._torrent_polling:
+        if self._torrent_polling or not self.repacks_on():
             return
         self._torrent_polling = True
 
@@ -281,7 +283,7 @@ class DownloadsMixin:
         standin = not agent and not has('systemd_agent')
         self._feed_timer.start(STANDIN_MS if standin else 6 * 3600 * 1000)
         self._feed_checks += 1
-        if self.config.get('gamedb_enabled'):
+        if self.config.get('gamedb_enabled') and self.repacks_on():
             self._sync_repack_index()
         if not agent:                             # else the agent checks, more often
             cli_json(['--check-alerts', '--json'], self._alerts_checked, 120000)
@@ -290,7 +292,8 @@ class DownloadsMixin:
             # The first fill ran when the library loaded; the CLI stamps it
             # and skips it when it already ran today.
             cli_json(['--fill-art', '--if-stale', '--json'], self._art_fill_done, 600000)
-        if not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
+        if not self.repacks_on() or \
+                not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
             return
 
         def done(data, _err):
@@ -358,6 +361,8 @@ class DownloadsMixin:
         self.dealspage._fill()
 
     def _repack_scanned(self, cands: list[dict]):
+        if not self.repacks_on():
+            cands = []
         updates = {c['update_for']: c['path'] for c in cands
                    if c.get('update_for') and c.get('complete', True)}
         if updates == self._repack_updates:
