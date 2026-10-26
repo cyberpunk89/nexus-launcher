@@ -80,6 +80,36 @@ NOT_WHILE_PLAYING = ('install-update', 'restore-saves', 'uninstall', 'steam-veri
                      'steam-uninstall', 'tool:winetricks', 'benchmark', 'move')
 
 
+# The menu's shape (w-27): the everyday actions at the top level, the rest in
+# a few named submenus (the controller sheet shows them as headed groups).
+ADD_TO = "Add to"
+MAINTENANCE = "Maintenance"
+_ADD_TO = {'add-steam', 'remove-steam', 'add-heroic', 'remove-heroic', 'add-sunshine',
+           'remove-sunshine'}
+_MAINTENANCE = {'pg-default', 'refetch-art', 'restore-saves', 'check-integrity', 'snapshots',
+                'move', 'benchmark', 'view-log', 'steam-props', 'steam-verify', 'protongen',
+                'rename-local', 'rename-reset', 'artwork'}
+# Top-level group order: play, favourite/hidden, the submenus, uninstall last.
+_ORDER = {'play': 0, 'prefs': 1, "Collections": 2, ADD_TO: 3, MAINTENANCE: 4,
+          "Wine tools": 5, 'danger': 6}
+
+
+def _grouped(out: list['GameAction']) -> list['GameAction']:
+    """Put each action in its submenu, then order the groups (stable)."""
+    res = []
+    for a in out:
+        if not a.sub and a.key in _ADD_TO:
+            a = a._replace(sub=ADD_TO)
+        elif not a.sub and a.key in _MAINTENANCE:
+            a = a._replace(sub=MAINTENANCE)
+        elif a.key == 'steam-page':
+            a = a._replace(section='play')      # opening it in Steam is everyday
+        res.append(a)
+    n = {g: sum(a.sub == g for a in res) for g in (ADD_TO, MAINTENANCE)}
+    res = [a._replace(sub='') if n.get(a.sub) == 1 else a for a in res]   # no 1-item menus
+    return sorted(res, key=lambda a: _ORDER.get(a.sub or a.section, 4))
+
+
 def _gate_actions(game: dict, out: list['GameAction']) -> list['GameAction']:
     playing = game.get('playing') or game.get('launching')
     busy = game.get('busy')
@@ -160,7 +190,7 @@ def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
                                             'hide', 'col-new') or a.key.startswith('col:')]
     if theatre:
         out = [a for a in out if not a.key.startswith(COUCH_SKIP)]
-    return _gate_actions(game, [a for a in out if _supported(a.key)])
+    return _gate_actions(game, _grouped([a for a in out if _supported(a.key)]))
 
 
 def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:

@@ -660,3 +660,50 @@ class CliErrorBodies(unittest.TestCase):
         self.assertEqual(self.finish(2, b'', b'--x isn\'t available'),
                          (None, "--x isn't available"))
         self.assertEqual(self.finish(1, b'{"error": "x"}', error_body=False), (None, "exit 1"))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class MenuShape(unittest.TestCase):
+    """The game menu: everyday actions at the top, the rest in a few named
+    submenus, never a submenu of one (w-27)."""
+
+    def top(self, g):
+        self.host = QWidget()                               # the menu's parent lives on
+        m = nx.build_game_menu(self.host, g, lambda *a: None)
+        return [a.menu().title() + ' >' if a.menu() else a.text()
+                for a in m.actions() if not a.isSeparator()]
+
+    @linux_features
+    def test_repack(self):
+        g = {'slug': 'x', 'display_name': 'X', 'source': 'nexus', 'launcher': '/x',
+             'installed': True, 'steam': True, 'owned_dir': '/g/x', 'collections': []}
+        self.assertEqual(self.top(g), [
+            "Play", "Open game folder", "Game settings…", "Favourite", "Hidden from library",
+            "Collections >", "Add to >", "Maintenance >", "Wine tools >", "Uninstall…"])
+        sub = {a.sub for a in nx.game_actions(g) if a.key in ('add-steam', 'remove-steam',
+                                                               'check-integrity', 'artwork')}
+        self.assertEqual(sub, {"Add to", "Maintenance"})
+
+    def test_steam_game(self):
+        g = {'slug': 's', 'display_name': 'S', 'source': 'steam', 'launcher': 'steam',
+             'installed': True, 'appid': 10, 'collections': []}
+        top = self.top(g)
+        self.assertEqual(top[:3], ["Play", "Open game folder", "Open in Steam"])
+        self.assertIn("Maintenance >", top)
+        self.assertEqual(top[-1], "Uninstall in Steam…")
+
+    def test_not_installed_has_no_one_item_submenu(self):
+        g = {'slug': 'o', 'display_name': 'O', 'source': 'steam', 'launcher': 'steam',
+             'installed': False, 'appid': 11, 'collections': []}
+        top = self.top(g)
+        self.assertIn("Change artwork…", top)
+        self.assertNotIn("Maintenance >", top)
+
+    def test_theatre_sheet_keeps_the_groups_as_headings(self):
+        g = {'slug': 'x', 'display_name': 'X', 'source': 'nexus', 'launcher': '/x',
+             'installed': True, 'collections': []}
+        subs = [a.sub for a in nx.game_actions(g, theatre=True)]
+        self.assertNotIn("Wine tools", subs)               # desktop-only, not from the couch
+        self.assertIn("Maintenance", subs)
+        first = [s for i, s in enumerate(subs) if s and s not in subs[:i]]
+        self.assertEqual(len(first), len(set(first)))      # each group in one block
