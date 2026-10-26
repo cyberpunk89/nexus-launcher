@@ -1,1 +1,10 @@
-{}
+{
+  "0.4.1": [
+    "Add a game from any other launcher: pick its .exe and it stays where it is.",
+    "The Install page has two clear tabs and shows each step of an install.",
+    "A shorter game menu: everyday actions on top, the rest in a few groups.",
+    "Game art now blends into the game page.",
+    "A Settings switch hides the download and torrent features if you don't use them.",
+    "Fixed: Start with Windows works again, and Deals uses the full width when it opens."
+  ]
+}
