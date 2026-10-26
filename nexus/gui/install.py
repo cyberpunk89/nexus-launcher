@@ -107,7 +107,21 @@ class RepackWatcher(QObject):
         self._skip: set[str] = set()                  # folders Nexus installs itself
         self._sizes: dict[str, int] = {}
         self._busy = False
+        self.enabled = True                           # Settings > Repack features
         watch.migrate(prefs.seen_repacks)             # once: it used to live in library.json
+
+    def set_enabled(self, on: bool):
+        """Off: no scans and no folders watched; on again: a scan soon."""
+        if on == self.enabled:
+            return
+        self.enabled = on
+        if on:
+            self.start(3000)
+            return
+        self.debounce.stop()
+        self.poll.stop()
+        if self.fs.directories():
+            self.fs.removePaths(self.fs.directories())
 
     def start(self, delay_ms: int = 8000):
         """First scan a little after startup (a child timer: it dies with us)."""
@@ -117,7 +131,7 @@ class RepackWatcher(QObject):
         self.debounce.start(3000)
 
     def scan(self):
-        if self._busy:
+        if self._busy or not self.enabled:
             return
         self._busy = True
         cli_json(['--scan', '--json'], self._done, 120000)

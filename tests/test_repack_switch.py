@@ -175,6 +175,10 @@ class Window(unittest.TestCase):
         self.assertNotIn('--repack-feed', asked)
         self.assertNotIn('--repack-index', asked)
         self.assertNotIn('--torrents', asked)
+        self.assertFalse(w.repacks.enabled)
+        with patch_gui('cli_json', lambda args, cb, *_a, **_k: asked.append(args[0])):
+            w.repacks.scan()
+        self.assertNotIn('--scan', asked)
         w.config = {**w.config, 'repacks': True}
         w._apply_repacks()
         self.assertTrue(w.icons[w.DOWNLOADS].isVisibleTo(w))

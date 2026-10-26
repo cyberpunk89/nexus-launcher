@@ -373,6 +373,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.repacks = RepackWatcher(self.prefs, self)
         self.repacks.ready.connect(self._repack_ready)
         self.repacks.scanned.connect(self._repack_scanned)
+        self.repacks.enabled = self.repacks_on()
         self.repacks.start()
         QTimer.singleShot(4000, self.protonpage.refresh)  # GE update badge (6 h cache)
         QTimer.singleShot(6000, self._check_update)        # new Nexus release (daily, [updates] check)
@@ -642,6 +643,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                                        "Add a game (Ctrl+N)")
         self.install.set_repacks(on)
         self.dealspage.set_repacks(on)
+        if hasattr(self, 'repacks'):            # the folder watcher (made in _start)
+            self.repacks.set_enabled(on)
 
     def _note_version(self, used_before: bool):
         """Remember this version; on the first start of a newer one, show its

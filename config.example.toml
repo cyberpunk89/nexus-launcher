@@ -43,6 +43,10 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 [news]
 # enabled = true          # show the News page
 
+[repacks]
+# enabled = true          # false: no repack installs, download-folder watching, torrent
+#                         # client, FitGirl matches or repack alerts (Settings > Repack features)
+
 [gamedb]                  # optional, self-hosted (wishlist deals, releases, backlog)
 # enabled = false
 # url = "https://gamedb.example.com"   # your Game-db server; there is no default
