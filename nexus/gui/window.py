@@ -13,7 +13,7 @@ from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
-from nexus import paths as NX, platform
+from nexus import __version__, paths as NX, platform
 from nexus.features import has
 
 from .. import updates
@@ -325,6 +325,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.setup.finished.connect(self._setup_finished)
         self._add_page(self.SETUP, self.setup)
         self.settings.setup_wanted.connect(self.open_setup)
+        self.settings.whats_new_wanted.connect(self.show_whats_new)
         self._art_from = self.HOME
         self._deals_warmed = False
 
@@ -353,11 +354,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def _start(self):
         """First page, first library load, and the background timers. Runs last:
         everything the library handler touches exists by now."""
+        used_before = self.prefs.PATH.exists()
         if self._first_run:
             self.open_setup()
         else:
             self.go(self.HOME)
         self.reload_library()
+        self._note_version(used_before)
         QTimer.singleShot(0, lambda: alive(self) and (t := self.default_focus()) and t.setFocus())
         QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
         # Repack downloads: "ready to install" toasts and repack updates.
@@ -620,6 +623,32 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if self.prefs.setup_done or os.environ.get('NEXUS_NO_SETUP'):
             return False
         return not self.prefs.PATH.exists() and not CONFIG_PATH.exists()
+
+    def _note_version(self, used_before: bool):
+        """Remember this version; on the first start of a newer one, show its
+        "What's new" once Home is up. Not during first-run setup, nor in tests
+        (NEXUS_NO_SETUP)."""
+        seen = self.prefs.last_seen_version
+        if seen == __version__:
+            return
+        show = updates.show_whats_new(seen, __version__, used_before) \
+            and not self._first_run and not os.environ.get('NEXUS_NO_SETUP')
+        self.prefs.last_seen_version = __version__
+        self.prefs.save()
+        if show and updates.whats_new():
+            QTimer.singleShot(1200, lambda: alive(self) and self.show_whats_new())
+
+    def show_whats_new(self):
+        """This version's short notes in the sheet, with the full release notes
+        a click away."""
+        notes = updates.whats_new()
+        text = "\n".join(f"•  {n}" for n in notes) if notes else \
+            "No notes for this version here. The release page has them all."
+        url = updates.release_url()
+        self.sheet.choose(f"What's new in Nexus {__version__}", [
+            ("Got it", G['check'], lambda: None),
+            ("Full release notes", G['external'],
+             lambda: QDesktopServices.openUrl(QUrl(url)))], text=text)
 
     def open_setup(self):
         self.setup.open(load_config(), self.prefs.appearance)

@@ -9,11 +9,16 @@ The answer is cached for a day (net.cached_json), so the window start-up
 check is one request a day at most; Settings' "Check for updates" skips the
 cache (force=True). Nothing is downloaded: the notice links to the release
 page (Windows: straight to the installer) and people install the new build
-themselves."""
+themselves.
+
+After an update, the window shows that version's "What's new" once: a few
+short lines bundled in nexus/data/whats_new.json (the release writes them),
+so it needs no request and works offline."""
 
 import json
 import re
 import tomllib
+from pathlib import Path
 
 from . import __version__, net
 from .features import has
@@ -24,6 +29,8 @@ API = f'https://api.github.com/repos/{REPO}/releases/latest'
 CACHE = CACHE_DIR / 'update-check.json'
 MAX_AGE = 24 * 3600
 INSTALLER = re.compile(r'-Setup-[0-9][^/]*\.exe$')    # what build-windows.yml uploads
+NOTES = Path(__file__).parent / 'data' / 'whats_new.json'
+NOTES_MAX, NOTE_LEN = 6, 140
 
 
 def _settings() -> dict:
@@ -113,3 +120,32 @@ def available(current: str = __version__, force: bool = False) -> dict | None:
     [updates] check = false: None, with no request."""
     r = check(current, force)
     return {'version': r['version'], 'url': r['url']} if r['state'] == 'available' else None
+
+
+def whats_new(version: str = __version__) -> list[str]:
+    """The short "What's new" lines bundled for `version` ([] when none):
+    at most NOTES_MAX, each one plain line of at most NOTE_LEN characters."""
+    try:
+        notes = json.loads(NOTES.read_text(encoding='utf-8')).get(version)
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = []
+    for line in notes if isinstance(notes, list) else []:
+        line = ' '.join(str(line).split()) if isinstance(line, str) else ''
+        if line:
+            out.append(line if len(line) <= NOTE_LEN else line[:NOTE_LEN - 1].rstrip() + '…')
+    return out[:NOTES_MAX]
+
+
+def release_url(version: str = __version__) -> str:
+    return f'https://github.com/{REPO}/releases/tag/v{version}'
+
+
+def show_whats_new(last_seen: str | None, current: str, used_before: bool) -> bool:
+    """Whether this start is the first one of a newer version. last_seen is
+    None for people who updated from a build before this existed
+    (used_before: they have a library.json) and for fresh installs (no)."""
+    if last_seen is None:
+        return used_before
+    seen, cur = parse(last_seen), parse(current)
+    return bool(seen and cur and cur > seen)

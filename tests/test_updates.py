@@ -204,5 +204,81 @@ class Window(unittest.TestCase):
         check.assert_called_once_with(force=True)
 
 
+class WhatsNew(unittest.TestCase):
+    """The short notes shown once after an update (w-28)."""
+
+    def notes(self, data):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        f = Path(d.name) / 'whats_new.json'
+        f.write_text(data if isinstance(data, str) else json.dumps(data))
+        p = mock.patch.object(updates, 'NOTES', f)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_bundled_file_is_valid(self):
+        data = json.loads(updates.NOTES.read_text(encoding='utf-8'))
+        self.assertIsInstance(data, dict)
+        for ver, lines in data.items():
+            self.assertTrue(updates.parse(ver), ver)
+            self.assertTrue(lines and all(isinstance(x, str) for x in lines), ver)
+
+    def test_lines_are_short_plain_and_capped(self):
+        self.notes({'1.2.0': ["  Faster   start ", "", 7, "x" * 300, *[f"n{i}" for i in range(9)]]})
+        got = updates.whats_new('1.2.0')
+        self.assertEqual(got[0], "Faster start")
+        self.assertEqual(len(got[1]), updates.NOTE_LEN)
+        self.assertTrue(got[1].endswith('…'))
+        self.assertEqual(len(got), updates.NOTES_MAX)
+        self.assertEqual(updates.whats_new('9.9.9'), [])
+
+    def test_missing_or_broken_file_means_no_notes(self):
+        for bad in ('not json', '[1, 2]'):
+            self.notes(bad)
+            self.assertEqual(updates.whats_new('1.2.0'), [])
+
+    def test_shown_on_the_first_start_of_a_newer_version_only(self):
+        S = updates.show_whats_new
+        self.assertTrue(S('0.4.0', '0.4.1', True))
+        self.assertFalse(S('0.4.1', '0.4.1', True))
+        self.assertFalse(S('0.5.0', '0.4.1', True))          # went back a version
+        self.assertTrue(S(None, '0.4.1', True))              # updated from before this
+        self.assertFalse(S(None, '0.4.1', False))            # a fresh install
+        self.assertFalse(S('junk', '0.4.1', True))
+
+    def test_window_remembers_the_version_and_shows_the_sheet_once(self):
+        from nexus.gui import window
+        win = mock.Mock(_first_run=False)
+        win.prefs.last_seen_version = '0.0.1'
+        shots = []
+        with mock.patch.object(window.updates, 'whats_new', return_value=["A"]), \
+                mock.patch.dict(os.environ, {'NEXUS_NO_SETUP': ''}), \
+                mock.patch.object(window.QTimer, 'singleShot', lambda _ms, fn: shots.append(fn)):
+            window.MainWindow._note_version(win, True)
+            self.assertEqual(win.prefs.last_seen_version, window.__version__)
+            win.prefs.save.assert_called_once()
+            self.assertEqual(len(shots), 1)
+            window.MainWindow._note_version(win, True)        # same version again: nothing
+            self.assertEqual(len(shots), 1)
+            win.prefs.last_seen_version = None                # fresh install
+            window.MainWindow._note_version(win, False)
+            self.assertEqual(len(shots), 1)
+
+    def test_sheet_lists_the_notes_and_links_the_release(self):
+        from nexus.gui import window
+        win = mock.Mock()
+        opened = []
+        with mock.patch.object(window.updates, 'whats_new', return_value=["One", "Two"]), \
+                mock.patch.object(window.QDesktopServices, 'openUrl', opened.append):
+            window.MainWindow.show_whats_new(win)
+            title, items = win.sheet.choose.call_args.args
+            text = win.sheet.choose.call_args.kwargs['text']
+            self.assertIn(window.__version__, title)
+            self.assertEqual(text, "•  One\n•  Two")
+            self.assertEqual([i[0] for i in items], ["Got it", "Full release notes"])
+            items[1][2]()
+        self.assertTrue(opened[0].toString().endswith(f"/releases/tag/v{window.__version__}"))
+
+
 if __name__ == '__main__':
     unittest.main()

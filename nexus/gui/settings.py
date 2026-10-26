@@ -436,6 +436,7 @@ class SettingsPage(QWidget):
     background_changed = pyqtSignal(str, bool)   # ('agent' | 'tray', on)
     import_wanted = pyqtSignal(str)              # a settings file to look at, then import
     setup_wanted = pyqtSignal()                  # "Run setup again"
+    whats_new_wanted = pyqtSignal()              # About: "What's new"
 
     NAV_W, RAIL_W = 228, 60
     COMPACT_BELOW = 960            # narrower: the list becomes an icon rail
@@ -880,6 +881,11 @@ class SettingsPage(QWidget):
         self.upd_result = self.upd_row.desc
         self.upd_result.setTextFormat(Qt.TextFormat.RichText)
         self.upd_result.setOpenExternalLinks(True)
+        news = QPushButton("What's new")
+        set_glyph_icon(news, G['news'], 14)
+        news.clicked.connect(self.whats_new_wanted)
+        self._row(sec, "What's new", "The short notes for this version.", news,
+                  keywords="release notes changelog changes")
         self._show_version()
 
     def _show_version(self):
