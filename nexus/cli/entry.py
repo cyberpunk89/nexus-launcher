@@ -309,6 +309,12 @@ def build_parser() -> argparse.ArgumentParser:
     gm.add_argument('--import', metavar='PATH', dest='import_path',
                     help='Add any Windows game: an offline installer (.exe/.msi; Inno Setup '
                          'ones run silently) or a folder holding the game (--name sets the title)')
+    gm.add_argument('--add-exe', metavar='EXE', dest='add_exe',
+                    help="Add a game that's already installed (e.g. by a launcher Nexus "
+                         "doesn't support) by its .exe, where it is; --name sets the title")
+    gm.add_argument('--in-prefix', action='store_true', dest='in_prefix',
+                    help="With --add-exe on Linux: run it in the Wine prefix it's in "
+                         "instead of a new one")
     gm.add_argument('--snapshots', metavar='SLUG',
                     help="A game's btrfs snapshots (--json)")
     gm.add_argument('--snapshot', metavar='SLUG', help='Snapshot a game now')
@@ -692,6 +698,7 @@ COMMANDS = (
     ('move', lambda a, base: sys.exit(cmd_move(base, a.move[0], a.move[1], a.json))),
     ('move_targets', _cmd_move_targets),
     ('import_path', lambda a, base: cmd_import(a, base)),
+    ('add_exe', lambda a, base: cmd_add_exe(a, base)),
     ('export_settings', lambda a, base: sys.exit(cmd_export_settings(
         a.export_settings, a.with_art, a.with_secrets, a.json))),
     ('import_settings', lambda a, base: sys.exit(cmd_import_settings(
@@ -850,6 +857,6 @@ from .sunshine import (cmd_launch, cmd_launch_via, cmd_sunshine, cmd_track_sessi
 from .install import cmd_install  # noqa: E402
 from .install_win import cmd_install_win  # noqa: E402
 from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402
-from .importgame import cmd_import  # noqa: E402
+from .importgame import cmd_add_exe, cmd_import  # noqa: E402
 from .move import cmd_move, move_targets  # noqa: E402
 from .snapshots import cmd_snapshots  # noqa: E402

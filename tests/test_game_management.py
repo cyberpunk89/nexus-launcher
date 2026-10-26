@@ -73,6 +73,50 @@ class MoveCli(T.Sandbox):
         again = self.cli('--import', str(src), '--yes', check=False)
         self.assertEqual(again.returncode, 1)                   # never over an existing one
 
+    def _games(self):
+        return json.loads((tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games']
+
+    def test_add_exe_keeps_the_game_where_it_is(self):
+        # A game another launcher installed: added by its .exe, nothing copied,
+        # and uninstalling it from Nexus leaves the game alone (w-22).
+        exe = self.home / 'Other Launcher' / 'Far Game' / 'FarGame.exe'
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b'MZ' + b'\0' * 1000)
+        self.cli('--add-exe', str(exe), '--name', 'Far Game', '--yes', '--no-steam',
+                 '--no-heroic', '--no-artwork', '--no-desktop')
+        e = self._games()['far-game']
+        self.assertEqual(e['exe'], str(exe))
+        self.assertTrue(e['local'] and e['added_exe'])
+        self.assertIn(str(exe), Path(e['launcher']).read_text())
+        self.assertFalse(Path(e['wine_prefix']).is_symlink())     # a prefix of its own
+        self.cli('--uninstall', 'far-game', '--yes')
+        self.assertTrue(exe.is_file())
+        self.assertNotIn('far-game', self._games())
+
+    def test_add_exe_in_its_own_prefix_links_it_and_never_deletes_it(self):
+        theirs = self.home / 'Games' / 'lutris-thing'
+        exe = theirs / 'drive_c' / 'Program Files' / 'Thing' / 'Thing.exe'
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b'MZ' + b'\0' * 1000)
+        self.cli('--add-exe', str(exe), '--name', 'Thing', '--in-prefix', '--yes', '--no-steam',
+                 '--no-heroic', '--no-artwork', '--no-desktop')
+        e = self._games()['thing']
+        pfx = Path(e['wine_prefix'])
+        self.assertTrue(pfx.is_symlink())
+        self.assertEqual(pfx.resolve(), theirs.resolve())
+        self.cli('--uninstall', 'thing', '--yes')
+        self.assertTrue(exe.is_file() and (theirs / 'drive_c').is_dir())
+
+    def test_add_exe_refuses_what_it_cannot_add(self):
+        loose = self.home / 'Loose' / 'x.exe'
+        loose.parent.mkdir(parents=True)
+        loose.write_bytes(b'MZ')
+        r = self.cli('--add-exe', str(loose), '--in-prefix', '--yes', check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('Wine prefix', r.stderr)
+        r = self.cli('--add-exe', str(self.home / 'nope.txt'), '--yes', check=False)
+        self.assertEqual(r.returncode, 1)
+
 
 # Only these tests: not every Sandbox test once more.
 for _name in dir(T.Sandbox):

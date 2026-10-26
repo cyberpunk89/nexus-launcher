@@ -173,13 +173,85 @@ def cmd_import(args, install_base: Path) -> None:
     log.close()
 
 
+def wine_prefix_of(exe: Path) -> Path | None:
+    """The Wine prefix an .exe sits in (the folder holding its drive_c), if any."""
+    return next((d.parent for d in exe.parents if d.name == 'drive_c'), None)
+
+
+def _exe_arg(raw: str) -> Path:
+    exe = Path(raw).expanduser()
+    try:
+        exe = exe.resolve()
+    except OSError:
+        pass
+    if not (exe.is_file() and exe.suffix.lower() == '.exe'):
+        print(f"Error: {exe} isn't a Windows .exe", file=sys.stderr)
+        sys.exit(1)
+    return exe
+
+
+def cmd_add_exe(args, install_base: Path) -> None:
+    """--add-exe EXE: a game that's already installed (by a launcher Nexus
+    doesn't support), added where it is: nothing is installed or copied, and
+    uninstalling it from Nexus never touches its files. On Linux it gets a
+    prefix of its own, or with --in-prefix runs in the Wine prefix it's in
+    (another launcher's; Proton may update that prefix)."""
+    exe = _exe_arg(args.add_exe)
+    if not features.has('proton'):          # Windows: no prefix at all
+        return cmd_add_exe_win(args, exe, install_base)
+    display_name = args.name or guess_name(exe)
+    slug = make_slug(display_name)
+    game_dir = install_base / slug
+    if game_dir.exists() or game_dir.is_symlink() or registry_get(slug):
+        print(f"Error: '{slug}' already exists ({game_dir}). Pick another name with --name.",
+              file=sys.stderr)
+        sys.exit(1)
+    theirs = wine_prefix_of(exe) if args.in_prefix else None
+    if args.in_prefix and theirs is None:
+        print(f"Error: {exe} isn't inside a Wine prefix (no drive_c above it); add it "
+              f"without --in-prefix.", file=sys.stderr)
+        sys.exit(1)
+    proton = find_proton()
+    runner = select_runner(load_config().get('runner', 'auto'), proton)
+    wine_prefix = game_dir / 'pfx'
+    use_logger(Logger(LOG_DIR / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}.log"
+                      if args.log or args.debug else None))
+    log.section("Adding a game")
+    log.print(f"  Game:        {display_name}")
+    log.print(f"  Slug:        {slug}")
+    log.print(f"  Exe:         {exe} (left where it is)")
+    make_game_dir(game_dir)
+    if theirs is not None:
+        # Nexus's own pfx is a link to it, so launch.sh, Steam and Heroic
+        # all use that prefix; uninstall removes the link, never the prefix.
+        wine_prefix.symlink_to(theirs, target_is_directory=True)
+        log.print(f"  Prefix:      {theirs} (the one it's in; Proton may update it)")
+    else:
+        log.print(f"  Prefix:      {wine_prefix} (a new one)")
+        write_incomplete_marker(game_dir, {'name': display_name, 'slug': slug,
+                                           'import': str(exe),
+                                           'started': datetime.now().isoformat(timespec='seconds')})
+        log.print("\n[1/1] Setting up the prefix...")
+        init_prefix(game_dir, _runner_env(game_dir, wine_prefix, runner, args.debug), proton,
+                    runner, wine_prefix)
+    done = _finish_install(args, slug=slug, display_name=display_name, game_dir=game_dir,
+                           wine_prefix=wine_prefix, game_exe=exe, install_base=install_base,
+                           runner=runner, proton=proton,
+                           extra={'local': True, 'import_source': str(exe), 'added_exe': True})
+    emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(exe),
+                             'repack_trashed': False, 'steam_pending': done['steam_pending']})
+    log.section("Done!")
+    log.print(f"  {display_name} is in your library. Launch script: {done['launch']}")
+    log.close()
+
+
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from nexus.inno import inno_header  # noqa: E402
 from .common import emit_event  # noqa: E402
 from .config import load_config  # noqa: E402
 from .install import _finish_install  # noqa: E402
-from .install_win import cmd_import_win  # noqa: E402
+from .install_win import cmd_add_exe_win, cmd_import_win  # noqa: E402
 from .registry import registry_get  # noqa: E402
 from .repack import (clean_repack_name, exe_candidates, inno_args, setup_product_name,
     silent_target, write_incomplete_marker)  # noqa: E402

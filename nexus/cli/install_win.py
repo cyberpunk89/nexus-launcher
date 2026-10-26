@@ -362,6 +362,37 @@ def cmd_import_win(args, install_base: Path) -> None:
     log.close()
 
 
+def cmd_add_exe_win(args, exe: Path, install_base: Path) -> None:
+    """--add-exe on Windows: the game is remembered where it is. Its folder
+    is never Nexus's, so removing it from Nexus deletes nothing."""
+    display_name = args.name or guess_name(exe)
+    slug = _case_free_slug(make_slug(display_name), install_base)
+    owned = install_base / slug                  # what uninstall would delete
+    try:
+        clash = owned.exists() or exe.parent.resolve() == owned.resolve()
+    except OSError:
+        clash = True
+    if registry_get(slug) or clash:
+        print(f"Error: '{slug}' already exists. Pick another name with --name.",
+              file=sys.stderr)
+        sys.exit(1)
+    use_logger(Logger(LOG_DIR / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}.log"
+                      if args.log or args.debug else None))
+    log.section("Adding a game")
+    log.print(f"  Game:        {display_name}")
+    log.print(f"  Slug:        {slug}")
+    log.print(f"  Exe:         {exe} (left where it is)")
+    done = _finish_install_win(args, slug=slug, display_name=display_name, game_dir=exe.parent,
+                               game_exe=exe, install_base=install_base,
+                               extra={'local': True, 'import_source': str(exe),
+                                      'added_exe': True, 'uninstaller': None})
+    emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(exe),
+                             'repack_trashed': False, 'steam_pending': done['steam_pending']})
+    log.section("Done!")
+    log.print(f"  {display_name} is in your library.  Play: nexus-cli --launch {slug}")
+    log.close()
+
+
 def packaged_app(exe: Path) -> str | None:
     """The AppUserModelID when `exe` is a Store app that's registered (FitGirl's
     setup registers UWP repacks), else None: then the exe runs by itself."""

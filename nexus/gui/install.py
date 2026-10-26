@@ -1,10 +1,16 @@
-"""The Install page and the watcher that offers finished downloads."""
+"""The Install page and the watcher that offers finished downloads.
+
+Two tabs: "Install a repack" (repacks found in the download folders as
+cards, a torrent box, a folder picker, then the safety look and options,
+with a step strip saying where you are) and "Add a game" (an installer, a
+game folder, or the .exe of a game another launcher installed). With
+Settings > Repack features off only "Add a game" is there."""
 
 import html
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QFileSystemWatcher, QObject, QTimer
-from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
+from PyQt6.QtCore import pyqtSignal, QFileSystemWatcher, QObject, Qt, QTimer
+from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from nexus import paths as NX, platform, watch
@@ -12,7 +18,45 @@ from nexus.features import has
 
 from .common import CLI, HOME, INSTALL_BASE_DEFAULT
 from .fmt import fmt_bytes, fmt_size
-from .theme import P, SP
+from .theme import FS, G, P, SP
+
+REPACK_STEPS = ("Pick a repack", "Safety check", "Options", "Install")
+
+
+def wine_prefix_of(path: str) -> str | None:
+    """The Wine prefix an .exe sits in (the folder above its drive_c), if any."""
+    p = Path(path)
+    return next((str(d.parent) for d in p.parents if d.name == 'drive_c'), None)
+
+
+class StepStrip(QWidget):
+    """Numbered steps in a row: done ones ticked, the current one in the
+    accent, the rest muted. Plain labels, coloured from the palette."""
+
+    def __init__(self, names):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['3'])
+        self.labels = []
+        for _n in names:
+            lb = QLabel()
+            lb.setTextFormat(Qt.TextFormat.RichText)
+            lay.addWidget(lb)
+            self.labels.append(lb)
+        lay.addStretch()
+        self.names = list(names)
+        self.current = -1
+        self.set_current(0)
+
+    def set_current(self, i: int):
+        self.current = i
+        for k, (lb, name) in enumerate(zip(self.labels, self.names)):
+            mark = "✓" if k < i else str(k + 1)
+            role = 'success' if k < i else 'accent' if k == i else 'muted'
+            weight = 600 if k == i else 400
+            lb.setText(f'<span style="color:{P[role]}; font-weight:{weight}">'
+                       f'{mark}&nbsp;&nbsp;{html.escape(name)}</span>')
 
 
 def import_name_guess(path: str) -> str:
@@ -132,20 +176,37 @@ class InstallPage(QWidget):
         b.setObjectName("Ghost")
         b.clicked.connect(self.back)
         head.addWidget(b)
-        head.addWidget(label("Install a repack", "PageTitle"))
+        self.title = label("Install a repack", "PageTitle")
+        head.addWidget(self.title)
         head.addStretch()
         found = QPushButton("Already installed? Add existing games")
         found.setToolTip("Adds games that are in the install folder but missing from the "
                          "library (e.g. after moving machines)")
         found.clicked.connect(self.reindex)
+        self.found_btn = found
         head.addWidget(found)
         outer.addLayout(head)
+        self.tabs = SegmentedControl('pill', 36)
+        self.tabs.add('repack', "Install a repack", G['download'])
+        self.tabs.add('game', "Add a game", G['plus'])
+        self.tabs.changed.connect(self.set_mode)
+        outer.addWidget(self.tabs)
+        self.steps = StepStrip(REPACK_STEPS)
+        outer.addWidget(self.steps)
+        self._mode = 'repack'
+        self._repacks = True
+        self._kind = None                  # 'exe' | 'import' for "Add a game", else None
 
         card = QFrame()
         card.setObjectName("Card")
         card.setMaximumWidth(720)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(SP['4'], SP['4'], SP['4'], SP['4'])
+        lay.setSpacing(SP['2'])
+        # Everything repack-only, hidden with Settings > Repack features off.
+        self.repack_box = QWidget()
+        outer_lay, lay = lay, QVBoxLayout(self.repack_box)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['2'])
         srow = QHBoxLayout()
         self.scan_label = label("Found in your repack folders", "StatLabel")
@@ -160,6 +221,9 @@ class InstallPage(QWidget):
         self.scan_list = QVBoxLayout()
         self.scan_list.setSpacing(SP['1'])
         lay.addLayout(self.scan_list)
+        self.scan_cards = QWidget()            # what was found, as game cards
+        self.scan_flow = FlowLayout(self.scan_cards, 0, SP['2'])
+        lay.addWidget(self.scan_cards)
         # Downloads handed to the torrent client from here.
         lay.addWidget(label("Download with your torrent client", "StatLabel"))
         trow = QHBoxLayout()
@@ -190,23 +254,45 @@ class InstallPage(QWidget):
         frow.addWidget(self.folder, 1)
         frow.addWidget(browse)
         lay.addLayout(frow)
-        # Not a repack: a GOG-style offline installer or a game folder
-        # (`--import`), with the same options below.
-        orow = QHBoxLayout()
-        orow.addWidget(label("Another game?", "Muted"))
-        b_exe = QPushButton("From an installer…")
-        b_exe.setToolTip("A Windows offline installer (.exe or .msi), e.g. from GOG. Inno "
-                         "Setup installers run without their window, like repacks.")
-        b_exe.clicked.connect(self._browse_installer)
-        b_dir = QPushButton("From a game folder…")
-        b_dir.setToolTip("A folder that already holds the game (portable or extracted). "
-                         + ("It's copied into the game's own prefix." if has('proton') else
-                            "It's added where it is; nothing is copied."))
-        b_dir.clicked.connect(self._browse_game_folder)
-        orow.addWidget(b_exe)
-        orow.addWidget(b_dir)
-        orow.addStretch()
-        lay.addLayout(orow)
+        outer_lay.addWidget(self.repack_box)
+        lay = outer_lay
+        # "Add a game": anything that isn't a repack.
+        self.add_box = QWidget()
+        al = QVBoxLayout(self.add_box)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(SP['2'])
+        cards = QWidget()
+        cf = FlowLayout(cards, 0, SP['2'])
+        self.add_cards = {}
+        for key, title, note, fn in (
+                ('exe', "Already installed", "A game from a launcher Nexus doesn't support: "
+                 "pick its .exe. It stays where it is.", self._browse_exe),
+                ('installer', "From an installer", "An offline installer (.exe or .msi), e.g. "
+                 "from GOG. Inno Setup ones run without their window.", self._browse_installer),
+                ('folder', "From a game folder", "A folder that already holds the game. "
+                 + ("It's copied into the game's own prefix." if has('proton') else
+                    "It's added where it is; nothing is copied."), self._browse_game_folder)):
+            c = ChoiceCard(title)
+            c.setCheckable(False)
+            c.setFixedWidth(212)
+            c.add(label(title, "ChoiceTitle"))
+            lb = label(note, "ChoiceNote", wrap=True)
+            lb.setFixedWidth(212 - 2 * SP['2_5'])   # a wrapped label needs its width to size
+            lb.setFixedHeight(lb.heightForWidth(lb.width()))
+            c.add(lb)
+            c.clicked.connect(fn)
+            cf.addWidget(c)
+            self.add_cards[key] = c
+        al.addWidget(cards)
+        self.picked = label("", "Muted", wrap=True)
+        self.picked.setVisible(False)
+        al.addWidget(self.picked)
+        self.in_prefix = QCheckBox("Run it in the Wine prefix it's in")
+        self.in_prefix.setToolTip("Use the other launcher's prefix (needed when the game "
+                                  "wants that launcher running). Proton may update the prefix.")
+        self.in_prefix.setVisible(False)
+        al.addWidget(self.in_prefix)
+        lay.addWidget(self.add_box)
         lay.addWidget(label("Name", "StatLabel"))
         self.name = QLineEdit()
         self.name.textChanged.connect(lambda _: self._check())
@@ -277,6 +363,8 @@ class InstallPage(QWidget):
         outer.addWidget(w)
         outer.addStretch()
         self._detected = {}
+        self._repack_only = (self.silent, self.verify, self.import_save, self.skipmem,
+                             self.skipdisk)
         # Windows: setup.exe runs as itself, no prefix, no Proton, no Heroic
         # (hide only: these were never shown, and a parentless show() is a window).
         if not has('protongen'):
@@ -287,18 +375,60 @@ class InstallPage(QWidget):
             self.heroic.setVisible(False)
         if not has('desktop_entry'):
             self.desktop.setText("Start Menu shortcut")
+        self.set_mode('repack')
 
-    def open(self, config):
-        self._import = None
-        self.btn_go.setText("Install")
+    def set_repacks(self, on: bool):
+        """Settings > Repack features: off leaves only "Add a game"."""
+        self._repacks = on
+        self.tabs.setVisible(on)
+        if not on:
+            self.set_mode('game')
+        elif self._mode != 'repack' and self._kind is None:
+            self.set_mode('repack')
+
+    def set_mode(self, mode: str):
+        """Switch tabs: what's shown, the title and the button."""
+        if mode == 'repack' and not self._repacks:
+            mode = 'game'
+        self._mode = mode
+        if self.tabs.current() != mode:
+            self.tabs.set_current(mode)
+        repack = mode == 'repack'
+        self.title.setText("Install a repack" if repack else "Add a game")
+        self.repack_box.setVisible(repack)
+        self.steps.setVisible(repack)
+        self.found_btn.setVisible(repack)
+        self.add_box.setVisible(not repack)
+        for c in self._repack_only:
+            c.setVisible(repack)
+        self._clear_pick()
+
+    def _clear_pick(self):
+        self._import, self._kind = None, None
         self.folder.clear()
         self.name.clear()
         self.name.setPlaceholderText("")
-        self.warning.setVisible(False)
-        self.safety.setVisible(False)
-        self.safety_ok.setVisible(False)
-        self.btn_clam.setVisible(False)
+        for w in (self.warning, self.safety, self.safety_ok, self.btn_clam, self.picked,
+                  self.in_prefix):
+            w.setVisible(False)
+        self.in_prefix.setChecked(False)
         self.btn_go.setEnabled(True)
+        self.btn_go.setText("Install" if self._mode == 'repack' else "Add game")
+        self._sync_steps()
+
+    def _sync_steps(self):
+        """Where the repack install stands: picking, being checked, options."""
+        if not self.folder.text().strip():
+            i = 0
+        elif self.safety.isVisible() and self.safety.text().startswith(("Looking", "Scanning")):
+            i = 1
+        else:
+            i = 2
+        self.steps.set_current(i)
+
+    def open(self, config, mode: str | None = None):
+        self.set_repacks(config.get('repacks', True))
+        self.set_mode(mode or ('repack' if self._repacks else 'game'))
         self.steam.setChecked(config.get('steam', True))
         self.heroic.setChecked(config.get('heroic', True) and has('heroic'))
         self.desktop.setChecked(config.get('desktop', True))
@@ -311,7 +441,10 @@ class InstallPage(QWidget):
             "tuned from its first launch" if has_pg else
             "No default profile in protongen yet (Settings → Save as default profile)")
         self.show_base_warnings(config.get('install_base') or INSTALL_BASE_DEFAULT)
+        if not self._repacks:
+            return
         clear_layout(self.scan_list)
+        clear_layout(self.scan_flow)
         self.scan_list.addWidget(label("Scanning…", "Muted"))
         self.scan_label.setVisible(True)
         cli_json(['--scan', '--json'], self._scanned, 120000)
@@ -342,19 +475,31 @@ class InstallPage(QWidget):
                        and (not c.get('installed') or c.get('update_for'))]
         self.btn_all.setText(f"Install all {len(self._fresh)}")
         self.btn_all.setVisible(len(self._fresh) > 1)
+        clear_layout(self.scan_flow)
         for c in cands:
-            text = f"{c['name']}  ·  {fmt_size(c.get('size_bytes')) or '?'}"
-            if c.get('update_for'):
-                text += "  ·  new release of an installed game"
-            elif c.get('installed'):
-                text += "  ·  already installed"
-            if not c.get('complete', True):
-                text += "  ·  still downloading"
-            b = QPushButton(amp(text))
-            b.setObjectName("ToolRow")
-            b.setStyleSheet("text-align: left;")
-            b.clicked.connect(lambda _=False, c=c: self._pick(c['path'], c['name']))
-            self.scan_list.addWidget(b)
+            self.scan_flow.addWidget(self._repack_card(c))
+        if not cands:
+            self.scan_list.addWidget(label("No repacks in your download folders yet. "
+                                           "Pick one with Browse, or download one below.",
+                                           "Muted", wrap=True))
+
+    def _repack_card(self, c: dict) -> QPushButton:
+        """A found repack as a small game card: stand-in art, name, size and
+        what it is (new, an update, installed, still downloading)."""
+        state = ("Update for an installed game" if c.get('update_for') else
+                 "Already installed" if c.get('installed') else
+                 "Still downloading" if not c.get('complete', True) else "Ready to install")
+        card = ChoiceCard(c['name'])
+        card.setCheckable(False)
+        card.setFixedWidth(200)
+        art = QLabel()
+        art.setPixmap(placeholder_pixmap(c['name'], 176, 82))
+        card.add(art)
+        card.add(ElideLabel(c['name'], "ChoiceTitle"))
+        card.add(label(f"{fmt_size(c.get('size_bytes')) or '?'}  ·  {state}", "ChoiceNote"))
+        card.setToolTip(c['path'])
+        card.clicked.connect(lambda _=False, c=c: self._pick(c['path'], c['name']))
+        return card
 
     def _pick_torrent(self):
         f, _ = QFileDialog.getOpenFileName(self, "Pick a .torrent file", str(HOME / 'Downloads'),
@@ -403,7 +548,11 @@ class InstallPage(QWidget):
             self.dl_list.addWidget(bar)
 
     def _pick(self, path, name=None):
-        self._import = None
+        if not self._repacks:                  # a dropped folder: just a game folder then
+            return self.pick_import(path)
+        if self._mode != 'repack':
+            self.set_mode('repack')
+        self._import, self._kind = None, None
         self.btn_go.setText("Install")
         self.folder.setText(path)
         self._detected = {}
@@ -422,6 +571,7 @@ class InstallPage(QWidget):
         self.safety.setText("Scanning with ClamAV…" if clamav else "Looking the repack over…")
         self.safety.setStyleSheet(f"color: {P['muted']};")
         self.safety.setVisible(True)
+        self._sync_steps()
         cli_json(['--check-repack', folder, '--json'] + (['--clamav'] if clamav else []),
                  lambda r, _e, f=folder: self._safety_done(f, r or {}), 900000)
 
@@ -434,6 +584,7 @@ class InstallPage(QWidget):
         v = r.get('verdict')
         if not v:
             self.safety.setVisible(False)
+            self._sync_steps()
             return
         head = {'ok': "Looks like a normal FitGirl repack.",
                 'warn': "Some things look unusual — check them before installing:",
@@ -459,6 +610,7 @@ class InstallPage(QWidget):
         self.safety_ok.setChecked(False)
         self.safety_ok.setVisible(danger)
         self.btn_go.setEnabled(not danger)
+        self._sync_steps()
 
     def _browse_installer(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select a game installer", str(HOME / 'Downloads'),
@@ -472,10 +624,33 @@ class InstallPage(QWidget):
         if d:
             self.pick_import(d)
 
+    def _browse_exe(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Pick the game's .exe", str(HOME),
+                                           "Windows programs (*.exe *.EXE)")
+        if f:
+            self.pick_exe(f)
+
+    def pick_exe(self, path: str):
+        """A game another launcher installed: added where it is (--add-exe)."""
+        self.pick_import(path)
+        self._kind = 'exe'
+        self.name.setPlaceholderText(import_name_guess(str(Path(path).parent)))
+        pfx = wine_prefix_of(path) if has('proton') else None
+        self.in_prefix.setText(f"Run it in the Wine prefix it's in ({pfx})" if pfx else "")
+        self.in_prefix.setVisible(bool(pfx))
+        self.picked.setText(f"Adds {Path(path).name} where it is: nothing is copied, and "
+                            "removing it from Nexus later leaves the game alone.")
+        self.picked.setVisible(True)
+
     def pick_import(self, path: str):
         """Any other game: no repack checks; the CLI names it (editable)."""
+        if self._mode != 'game':
+            self.set_mode('game')
         self.folder.setText(path)
-        self._import = path
+        self._import, self._kind = path, 'import'
+        self.picked.setText(f"Adds {Path(path).name}.")
+        self.picked.setVisible(True)
+        self.in_prefix.setVisible(False)
         self._detected = {}
         self.name.clear()
         self.name.setPlaceholderText(import_name_guess(path))
@@ -536,10 +711,15 @@ class InstallPage(QWidget):
     def _go(self):
         folder = self.folder.text().strip()
         if not folder:
-            self.warning.setText("Pick a repack folder first.")
+            self.warning.setText("Pick a repack folder first." if self._mode == 'repack' else
+                                 "Pick what to add first.")
             self.warning.setVisible(True)
             return
         name = self.name.text().strip()
+        if getattr(self, '_import', None) == folder and self._kind == 'exe':
+            cmd = self._command(folder, name, imported=True, exe=True)
+            self.submit.emit(cmd, name or self.name.placeholderText() or Path(folder).stem, '')
+            return
         if getattr(self, '_import', None) == folder:
             cmd = self._command(folder, name, imported=True)
             self.submit.emit(cmd, name or self.name.placeholderText() or Path(folder).name, '')
@@ -554,15 +734,20 @@ class InstallPage(QWidget):
         for c in list(getattr(self, '_fresh', [])):
             self.submit.emit(self._command(c['path'], ''), c['name'], c.get('slug') or '')
 
-    def _command(self, folder: str, name: str, imported: bool = False) -> list[str]:
+    def _command(self, folder: str, name: str, imported: bool = False,
+                 exe: bool = False) -> list[str]:
         """The install command line for the options on this page. Steam never
         holds it up: the shortcut is added afterwards, once Steam is closed.
-        `imported`: any other game (--import), which has no repack checks."""
-        cmd = ([*CLI, "--import", folder] if imported else [*CLI, folder]) + \
+        `imported`: any other game (--import), which has no repack checks;
+        with `exe`, one that's installed already (--add-exe)."""
+        cmd = ([*CLI, "--add-exe", folder] if exe else
+               [*CLI, "--import", folder] if imported else [*CLI, folder]) + \
             ["--yes", "--log", "--defer-steam"]
         if name:
             cmd += ["--name", name]
-        if not self.silent.isChecked():
+        if exe and self.in_prefix.isVisible() and self.in_prefix.isChecked():
+            cmd.append("--in-prefix")
+        if not exe and not self.silent.isChecked():
             cmd.append("--interactive")
         deps = self.deps.text().strip()
         if deps:
@@ -585,4 +770,8 @@ class InstallPage(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .jobs import cli_json  # noqa: E402
-from .widgets import amp, clear_layout, label, plain_label  # noqa: E402
+from .art import placeholder_pixmap  # noqa: E402
+from .details import ElideLabel  # noqa: E402
+from .setup import ChoiceCard  # noqa: E402
+from .widgets import (clear_layout, FlowLayout, label, plain_label,
+    SegmentedControl)  # noqa: E402

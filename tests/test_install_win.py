@@ -629,6 +629,22 @@ class WindowsImport(Harness):
         self.assertTrue(e['local'])
         self.assertFalse((self.base / 'some-game').exists())
 
+    def test_add_exe_remembers_it_where_it_is(self):
+        # A game from a launcher Nexus doesn't support (w-22): nothing runs,
+        # nothing is copied, and Nexus owns no folder of it.
+        args = entry.build_parser().parse_args(
+            ['--add-exe', str(self.folder / 'bin' / 'Game.exe'), '--name', 'Some Game', '--yes',
+             '--no-artwork', '--no-steam'])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            fi.cmd_add_exe(args, self.base)
+        self.assertEqual(self.calls, [])
+        e = fi.registry_get('some-game')
+        self.assertEqual((e['install_dir'], e['exe'], e['uninstaller']),
+                         (str(self.folder / 'bin'), str(self.folder / 'bin' / 'Game.exe'), None))
+        self.assertTrue(e['local'] and e['added_exe'])
+        self.assertFalse((self.base / 'some-game').exists())
+
     def test_an_inno_installer_runs_silently_into_the_base(self):
         setup = self.root / 'setup_some_game.exe'
         setup.write_bytes(b'MZ')

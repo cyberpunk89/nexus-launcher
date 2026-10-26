@@ -143,7 +143,7 @@ from .snapshots import (
     auto_snapshot, btrfs_ready, cmd_snapshots, convert, fs_type, is_subvolume,
     list_snapshots, make_game_dir, remove_game_dir, rollback, snap_root, snapshot_dirs,
     snapshot_doctor, SnapshotError, status as snapshot_status, take)  # noqa: F401
-from .importgame import cmd_import, guess_name, run_windows_exe  # noqa: F401
+from .importgame import cmd_add_exe, cmd_import, guess_name, run_windows_exe, wine_prefix_of  # noqa: F401
 from .backup import (
     BackupError, cmd_export_settings, cmd_import_settings, export_settings, import_settings,
     keep_secrets, strip_secrets)  # noqa: F401
