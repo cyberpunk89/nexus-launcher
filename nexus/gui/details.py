@@ -6,9 +6,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt, QTimer, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QLinearGradient, QPainter,
-    QPainterPath, QPixmap)
+from PyQt6.QtCore import pyqtSignal, QPoint, QPointF, QRectF, Qt, QTimer, QUrl
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QLinearGradient, QPainter, QPixmap,
+    QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
@@ -18,15 +18,61 @@ from nexus.features import has
 
 from .common import alive, HOME, MAX_NOTE
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
-from .theme import FS, G, P, R, SP
+from .theme import FS, G, LOOK, P, R, SP
 
 
 def _hero_art(game: dict) -> str | None:
     return art_source(game, HERO_KINDS)[0]
 
 
+def art_tint(pm: QPixmap) -> QColor:
+    """The art's average colour."""
+    return pm.toImage().scaled(1, 1, Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation).pixelColor(0, 0)
+
+
+def wash_color(c: QColor) -> QColor:
+    """An art colour made richer, and dark (on a light theme, light) enough
+    to sit behind text. Worked out at paint time, so a theme change applies."""
+    h, s, v, _a = c.getHsvF()
+    v = max(v, 0.85) if LOOK['light'] else min(v, 0.55)
+    return QColor.fromHsvF(max(h, 0.0), min(1.0, s * 1.2), v)
+
+
+class TintedPage(QWidget):
+    """The details page: a soft wash of the hero art's colour behind its top,
+    fading into the panel's background. Follows Appearance: Background glow
+    sets its strength, and "Tint the glow with game art" off turns it off."""
+    REACH = 520                                # px the wash fades over
+
+    def __init__(self):
+        super().__init__()
+        self._tint = None
+
+    def set_tint(self, color):
+        self._tint = color
+        self.update()
+
+    def paintEvent(self, ev):
+        strength = 0.32 * LOOK['glow'] if LOOK['art_tint'] else 0.0
+        if self._tint is None or strength <= 0:
+            return
+        pt = QPainter(self)
+        g = QLinearGradient(0, 0, 0, self.REACH)
+        c0, c1 = wash_color(self._tint), wash_color(self._tint)
+        c0.setAlphaF(min(0.6, strength))
+        c1.setAlphaF(0.0)
+        g.setColorAt(0.0, c0)
+        g.setColorAt(1.0, c1)
+        pt.fillRect(0, 0, self.width(), self.REACH, QBrush(g))
+        pt.end()
+
+
 class HeroBanner(QWidget):
-    """Wide art strip at the top of the panel, clipped to the card radius.
+    """Wide art strip across the top of the panel. The art fades out at the
+    bottom and edges into whatever is behind it (the panel, tinted with the
+    art's own colour by TintedPage), so it blends in instead of sitting in a
+    card.
 
     Art and logo are decoded at about the size they're shown at, not full
     size: a 3840x1240 SteamGridDB hero cost ~30 ms on every selection (too
@@ -34,6 +80,7 @@ class HeroBanner(QWidget):
     Big files decode on a worker; small ones (most) stay synchronous so the
     banner doesn't flash a placeholder; the last few stay decoded."""
     logo_changed = pyqtSignal(bool)            # a logo is (not) shown now
+    tint_changed = pyqtSignal(object)          # the art's average QColor, or None
 
     DECODE_W = 1600                            # wider than any details panel
     SYNC_BYTES = 1_500_000                     # smaller decodes faster than a frame
@@ -42,7 +89,7 @@ class HeroBanner(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(176)
+        self.setFixedHeight(200)
         self._pm = None
         self._logo = None
         self._name = ''
@@ -104,6 +151,8 @@ class HeroBanner(QWidget):
     def _set(self, which, pm, pending=False):
         if which == 'art':
             self._pm = pm
+            self._frames.pop('faded', None)
+            self.tint_changed.emit(art_tint(pm) if pm is not None else None)
         else:
             self._logo, self._logo_pending = pm, pending
             self.logo_changed.emit(self.has_logo())
@@ -141,30 +190,63 @@ class HeroBanner(QWidget):
             self._frames[which] = hit
         return hit[1]
 
+    def _faded(self) -> QPixmap:
+        """The art (or placeholder) at widget size with its bottom and sides
+        faded to transparent; cached until the art or the size changes."""
+        w, h = self.width(), self.height()
+        hit = self._frames.get('faded')
+        if hit is not None and hit[0] == (w, h, self._pm is None):
+            return hit[1]
+        dpr = self.devicePixelRatioF()
+        out = QPixmap(round(w * dpr), round(h * dpr))
+        out.setDevicePixelRatio(dpr)
+        out.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(out)
+        pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        if self._pm is not None:
+            s = self._scaled('art', self._pm, w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+            # Hero art keeps the top (logos / faces); covers look best centred.
+            pt.drawPixmap(0, -(s.height() - h) // 3, s)
+        else:
+            pt.drawPixmap(0, 0, placeholder_pixmap(self._name, w, h))
+        pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        down = QLinearGradient(0, 0, 0, h)
+        down.setColorAt(0.0, QColor(0, 0, 0, 255))
+        down.setColorAt(0.45, QColor(0, 0, 0, 255))
+        down.setColorAt(1.0, QColor(0, 0, 0, 0))
+        pt.fillRect(0, 0, w, h, QBrush(down))
+        across = QLinearGradient(0, 0, w, 0)
+        across.setColorAt(0.0, QColor(0, 0, 0, 120))
+        across.setColorAt(0.12, QColor(0, 0, 0, 255))
+        across.setColorAt(0.88, QColor(0, 0, 0, 255))
+        across.setColorAt(1.0, QColor(0, 0, 0, 120))
+        pt.fillRect(0, 0, w, h, QBrush(across))
+        pt.end()
+        self._frames['faded'] = ((w, h, self._pm is None), out)
+        return out
+
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
         pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         r = QRectF(self.rect())
-        clip = QPainterPath()
-        clip.addRoundedRect(r, R['card'], R['card'])
-        pt.setClipPath(clip)
-        if self._pm is not None:
-            s = self._scaled('art', self._pm, self.width(), self.height(),
-                             Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-            # Hero art keeps the top (logos / faces); covers look best centred.
-            pt.drawPixmap(0, -(s.height() - self.height()) // 3, s)
-        else:
-            pt.drawPixmap(0, 0, placeholder_pixmap(self._name, self.width(), self.height()))
-        g = QLinearGradient(0, r.bottom(), 0, r.top())
-        c0 = QColor(P['mantle']); c0.setAlphaF(0.85)
-        c1 = QColor(P['mantle']); c1.setAlphaF(0.0)
-        g.setColorAt(0.0, c0); g.setColorAt(0.6, c1)
-        pt.fillRect(r, QBrush(g))
+        pt.drawPixmap(0, 0, self._faded())
+        # A little shade under the close button and behind the logo.
+        top = QLinearGradient(0, 0, 0, 56)
+        top.setColorAt(0.0, QColor(0, 0, 0, 70))
+        top.setColorAt(1.0, QColor(0, 0, 0, 0))
+        pt.fillRect(QRectF(0, 0, r.width(), 56), QBrush(top))
         if self._logo is not None:
             lg = self._scaled('logo', self._logo, int(self.width() * 0.62),
                               int(self.height() * 0.42), Qt.AspectRatioMode.KeepAspectRatio)
-            pt.drawPixmap(SP['4'], self.height() - lg.height() - SP['3'], lg)
+            x, y = SP['4'], self.height() - lg.height() - SP['3']
+            if LOOK['light']:                   # light logos on a light fade: shade them
+                c = QPointF(x + lg.width() / 2, y + lg.height() / 2)
+                shade = QRadialGradient(c, max(lg.width(), lg.height()) * 0.75)
+                shade.setColorAt(0.0, QColor(0, 0, 0, 110))
+                shade.setColorAt(1.0, QColor(0, 0, 0, 0))
+                pt.fillRect(self.rect(), QBrush(shade))
+            pt.drawPixmap(x, y, lg)
         pt.end()
 
 
@@ -534,14 +616,19 @@ class DetailsPanel(QFrame):
         root.addWidget(self.stack)
 
         # ---- single game ----
-        page = QWidget()
+        page = TintedPage()
+        self.page = page
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(page)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.stack.addWidget(scroll)
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(SP['4'], SP['4'], SP['4'], SP['4'])
+        # The hero runs edge to edge; everything under it keeps the margins.
+        bleed = QVBoxLayout(page)
+        bleed.setContentsMargins(0, 0, 0, SP['4'])
+        bleed.setSpacing(0)
+        lay = QVBoxLayout()
+        lay.setContentsMargins(SP['4'], 0, SP['4'], 0)
         lay.setSpacing(SP['3'])
 
         hero_wrap = QWidget()
@@ -550,10 +637,16 @@ class DetailsPanel(QFrame):
         self.hero = HeroBanner()
         self.hero.logo_changed.connect(lambda shown: self.name.setVisible(not shown))
         hw.addWidget(self.hero, 0, 0)
+        self.hero.tint_changed.connect(page.set_tint)
         close = icon_button(G['close'], "Close (Esc)", 28, "TileMore")
         close.clicked.connect(self.closed)
-        hw.addWidget(close, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
-        lay.addWidget(hero_wrap)
+        corner = QWidget()                      # the art is edge to edge; the button isn't
+        cl = QHBoxLayout(corner)
+        cl.setContentsMargins(0, SP['2'], SP['2'], 0)
+        cl.addWidget(close)
+        hw.addWidget(corner, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        bleed.addWidget(hero_wrap)
+        bleed.addLayout(lay)
 
         self.name = label("", "PageTitle", wrap=True)
         lay.addWidget(self.name)

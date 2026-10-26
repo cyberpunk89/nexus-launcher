@@ -12,6 +12,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Always offscreen: a desktop session exports QT_QPA_PLATFORM=wayland, and
 # setdefault() would then pop real windows up (and let the compositor tile
@@ -22,7 +23,7 @@ os.environ['NEXUS_NO_GAMEPAD'] = '1'
 REPO = Path(__file__).resolve().parent.parent
 
 try:
-    from PyQt6.QtCore import QRect
+    from PyQt6.QtCore import QPoint, QRect
     from PyQt6.QtWidgets import QApplication, QWidget, QWidgetItem
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
@@ -119,6 +120,57 @@ class DetailsPanelWidth(unittest.TestCase):
         self.panel.show_games([game])
         QApplication.processEvents()
         self.assertLessEqual(self._page_min_width(), self.panel.maximumWidth())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class HeroBlend(unittest.TestCase):
+    """The game page's hero art runs edge to edge, fades into the panel and
+    tints the page with its colour (w-21)."""
+
+    def setUp(self):
+        self._cli_json = nx.cli_json
+        set_gui('cli_json', lambda *a, **k: None)
+        self.panel = nx.DetailsPanel()
+        self.panel.resize(380, 900)
+        self.panel.show()
+        self.panel.show_games([{'slug': 'x', 'display_name': 'X', 'source': 'nexus',
+                                'launcher': '/x'}])
+        QApplication.processEvents()
+
+    def tearDown(self):
+        set_gui('cli_json', self._cli_json)
+        self.panel.deleteLater()
+
+    def test_hero_spans_the_page_and_fades_out(self):
+        from PyQt6.QtGui import QColor, QPixmap
+        hero, page = self.panel.hero, self.panel.page
+        self.assertEqual(hero.mapTo(page, QPoint(0, 0)), QPoint(0, 0))
+        self.assertEqual(hero.width(), page.width())
+        art = QPixmap(64, 32)
+        art.fill(QColor('#3060c0'))
+        hero._set('art', art)
+        img = hero._faded().toImage()
+        self.assertEqual(img.pixelColor(img.width() // 2, 2).alpha(), 255)
+        self.assertLess(img.pixelColor(img.width() // 2, img.height() - 1).alpha(), 10)
+
+    def test_page_takes_the_arts_colour_and_follows_the_glow_settings(self):
+        from PyQt6.QtGui import QColor, QPixmap
+        from nexus.gui import details, theme
+        art = QPixmap(8, 8)
+        art.fill(QColor('#c03020'))
+        self.panel.hero._set('art', art)
+        tint = self.panel.page._tint
+        self.assertEqual(tint.name(), '#c03020')
+        self.assertLessEqual(details.wash_color(tint).valueF(), 0.56)
+
+        def painted():
+            img = self.panel.page.grab().toImage()
+            return img.pixelColor(img.width() // 2, 230)
+        base = painted()
+        with mock.patch.dict(theme.LOOK, {'art_tint': False}):
+            self.assertNotEqual(painted(), base)        # the wash is gone
+        self.panel.hero._set('art', None)
+        self.assertIsNone(self.panel.page._tint)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
