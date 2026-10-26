@@ -342,16 +342,31 @@ class JobManager(QObject):
         self.changed.emit()
 
 
+def _error_body(out: str) -> tuple[str, str]:
+    """(message, kind) of a JSON `{"error": "text" | {"kind", "message"}}`
+    body, else ('', '')."""
+    try:
+        e = json.loads(out).get('error')
+    except (ValueError, AttributeError):
+        return '', ''
+    if isinstance(e, dict):
+        msg, kind = e.get('message') or e.get('kind'), e.get('kind') or ''
+    else:
+        msg, kind = e, ''
+    return (msg, kind) if isinstance(msg, str) and msg else ('', '')
+
+
 class CliQuery(QObject):
     """Run a short read-only CLI command (e.g. --list --json) without blocking
     the GUI thread; `callback(stdout_text or None, error_text)` runs on
     completion. Kept alive by a class-level set until it finishes."""
     _live: set = set()
 
-    def __init__(self, args, callback, timeout_ms=60000):
+    def __init__(self, args, callback, timeout_ms=60000, error_body=False):
         super().__init__()
         self._cb = callback
         self._done = False
+        self._error_body = error_body
         self.proc = QProcess(self)
         self.proc.setProcessEnvironment(_cli_env())
         self.proc.finished.connect(self._finished)
@@ -375,6 +390,13 @@ class CliQuery(QObject):
         err = bytes(self.proc.readAllStandardError()).decode('utf-8', 'replace').strip()
         if code != 0 and 'Traceback (most recent call last)' in err:
             err = err.splitlines()[-1]         # the one-line summary, not the stack
+        msg, kind = _error_body(out) if code != 0 and self._error_body else ('', '')
+        if msg:
+            # A --json command that failed but said why on stdout: hand that
+            # body on with its message. A crash ('internal') has no useful
+            # body, so callers keep seeing None for it.
+            self._complete(None if kind == 'internal' else out, msg)
+            return
         self._complete(out if code == 0 else None, err or f"exit {code}")
 
     def _error(self, e):
@@ -488,7 +510,7 @@ def cli_json(args, callback, timeout_ms=60000, ttl: float = 0):
 
     def deliver(data, err):
         cbs = _CLI_WAITING.pop(key, [callback]) if ttl else [callback]
-        if ttl and data is not None:
+        if ttl and data is not None and not err:
             _CLI_MEMO[key] = (time.monotonic(), data)
         for cb in cbs:
             try:
@@ -505,5 +527,5 @@ def cli_json(args, callback, timeout_ms=60000, ttl: float = 0):
         except ValueError as e:
             deliver(None, f"bad JSON from CLI: {e}")
             return
-        deliver(data, '')
-    return CliQuery(args, done, timeout_ms)
+        deliver(data, err)            # err is set when the CLI failed with a JSON error body
+    return CliQuery(args, done, timeout_ms, error_body=True)

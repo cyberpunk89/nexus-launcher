@@ -158,6 +158,22 @@ class FakeBtrfs:
             raise AssertionError(args)
 
 
+class SnapshotsKeepDefault(unittest.TestCase):
+    """[snapshots] keep: the newest one per game unless set (docs say so too)."""
+
+    def test_default_is_one_and_the_setting_is_clamped(self):
+        from nexus.cli import config as C
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'config.toml'
+            with mock.patch.object(C, 'CONFIG_PATH', path):
+                path.write_text('[install]\n')
+                self.assertEqual(C.load_config()['snapshots_keep'], 1)
+                path.write_text('[snapshots]\nkeep = 3\n')
+                self.assertEqual(C.load_config()['snapshots_keep'], 3)
+                path.write_text('[snapshots]\nkeep = 99\n')
+                self.assertEqual(C.load_config()['snapshots_keep'], 20)
+
+
 class Snapshots(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

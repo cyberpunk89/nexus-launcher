@@ -5,13 +5,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 from PyQt6.QtCore import pyqtSignal, QObject, QRectF, Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from nexus import paths as NX
+from nexus import instance as instance_mod, paths as NX
 from nexus.features import has
 from nexus.instance import INSTANCE, INSTANCE_MAX
 
@@ -234,10 +235,21 @@ def refresh_desktop_entry(icon: str, argv) -> bool:
     return False
 
 
+def wait_for_exit(timeout: float = 15.0) -> None:
+    """After a restart: wait until the old window stops listening, so this
+    one becomes the instance instead of handing its argv to it and exiting."""
+    end = time.monotonic() + timeout
+    while instance_mod.window_running() and time.monotonic() < end:
+        time.sleep(0.25)
+
+
 def main():
     app = QApplication(sys.argv)
     argv = sys.argv[1:]
     instance = None
+    if "--restarted" in argv:                # MainWindow.restart(): let the old one go
+        argv.remove("--restarted")
+        wait_for_exit()
     if "--install-desktop" not in argv:
         if forward_to_running(argv):
             return

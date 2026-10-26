@@ -753,7 +753,7 @@ the rare game that needs one. `--doctor` flags any prefix still carrying a winet
   drive get their own subvolume; one is snapshotted in an instant before every repack update,
   Proton change and winetricks run, and by hand with *Snapshot now*. **Roll back** puts the
   game and its prefix (settings and saves too) back the way they were — and snapshots what's
-  there first, so a roll back can itself be undone. The newest 3 per game are kept (`[snapshots]
+  there first, so a roll back can itself be undone. The newest one per game is kept (`[snapshots]
   keep`); older ones are in Storage → Clean up. Games installed before this are made
   snapshot-ready with *Enable snapshots* (`--snapshots-enable <slug>`: a reflink copy into a new
   subvolume, instant, no extra space). No root needed: everything runs as you.

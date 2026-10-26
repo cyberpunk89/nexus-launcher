@@ -33,7 +33,7 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # [runner], [snapshots] and the Proton keys below are ignored there.
 
 [snapshots]               # btrfs game snapshots (Undo update)
-# keep = 3                               # per game; older ones are removed automatically
+# keep = 1                               # per game (1-20); older ones are removed automatically
 
 [runner]
 # backend = "auto"        # umu | proton | wine | auto

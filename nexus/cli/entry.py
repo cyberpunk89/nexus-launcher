@@ -492,7 +492,6 @@ GATED = {
     'btrfs': ('snapshots', 'snapshot', 'rollback', 'delete_snapshot', 'snapshots_enable'),
     'sunshine': ('sunshine', 'remove_sunshine'),
     'pause': ('pause', 'resume', 'pause_toggle'),
-    'systemd_agent': ('agent_enable', 'agent_disable'),
     'tips': ('game_tips',),
 }
 _FEATURE_OF = {dest: f for f, dests in GATED.items() for dest in dests}

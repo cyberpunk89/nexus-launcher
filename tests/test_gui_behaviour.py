@@ -621,3 +621,42 @@ class Storage(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class CliErrorBodies(unittest.TestCase):
+    """A --json command that fails but prints {"error": ...} on stdout: the
+    GUI gets that body and its message, not a bare 'exit 1' (w-13)."""
+
+    def finish(self, code, out, err=b'', error_body=True):
+        from PyQt6.QtCore import QObject
+        from nexus.gui import jobs
+
+        class Proc:
+            def readAllStandardOutput(self):
+                return out
+
+            def readAllStandardError(self):
+                return err
+        got = []
+        q = jobs.CliQuery.__new__(jobs.CliQuery)
+        QObject.__init__(q)
+        q._cb, q._done, q._error_body, q.proc = (lambda o, e: got.append((o, e)),
+                                                  False, error_body, Proc())
+        q._finished(code, None)
+        return got[0]
+
+    def test_error_body_and_its_message_reach_the_caller(self):
+        body = b'{"error": {"kind": "torrent", "message": "Transmission is not running"}}'
+        out, err = self.finish(1, body, b'Torrent client: Transmission is not running')
+        self.assertEqual(err, "Transmission is not running")
+        self.assertIn('"torrent"', out)
+        out, err = self.finish(1, b'{"error": "site down"}')
+        self.assertEqual(err, "site down")
+
+    def test_crash_and_plain_failures_still_give_none(self):
+        crash = b'{"error": {"kind": "internal", "message": "KeyError: x"}}'
+        self.assertEqual(self.finish(1, crash), (None, "KeyError: x"))
+        self.assertEqual(self.finish(2, b'', b'--x isn\'t available'),
+                         (None, "--x isn't available"))
+        self.assertEqual(self.finish(1, b'{"error": "x"}', error_body=False), (None, "exit 1"))

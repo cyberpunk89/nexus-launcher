@@ -372,6 +372,10 @@ class CommandTable(unittest.TestCase):
             self.assertEqual(cm.exception.code, 2)
             self.assertIn('--pause-toggle', err.getvalue())
             entry._refuse_unavailable(parser, parser.parse_args(['--library']))   # fine
+            # Start with Windows: agent on/off has a Startup-shortcut branch, so
+            # the Windows feature set must let it through (w-11).
+            for flag in ('--agent-enable', '--agent-disable'):
+                entry._refuse_unavailable(parser, parser.parse_args([flag]))
         with mock.patch.object(features, 'FEATURES', features.ALL):
             self.assertIn('--proton-install', fi.build_parser().format_help())
 

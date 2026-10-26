@@ -577,9 +577,7 @@ class LibraryMixin:
             # skips it when it already ran today); reload only if it found any.
             self._art_filled = True
             QTimer.singleShot(6000, lambda: alive(self) and cli_json(
-                ['--fill-art', '--if-stale', '--json'],
-                lambda d, _e: (d or {}).get('filled') and alive(self) and self.reload_library(),
-                600000))
+                ['--fill-art', '--if-stale', '--json'], self._art_fill_done, 600000))
         if not self._deals_warmed and self.config.get('gamedb_enabled'):
             # One cached call (45 min): keeps the sidebar badge and the details
             # panel's deal line warm without opening the Deals page.

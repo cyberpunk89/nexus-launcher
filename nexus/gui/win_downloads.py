@@ -289,7 +289,7 @@ class DownloadsMixin:
                 and self.config.get('api_key') and not self._playing:
             # The first fill ran when the library loaded; the CLI stamps it
             # and skips it when it already ran today.
-            cli_json(['--fill-art', '--if-stale', '--json'], self._art_filled, 600000)
+            cli_json(['--fill-art', '--if-stale', '--json'], self._art_fill_done, 600000)
         if not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
             return
 
@@ -308,7 +308,7 @@ class DownloadsMixin:
                                + ".", 'info', None, 8000)
         cli_json(['--repack-feed', '--json'], done, 120000)
 
-    def _art_filled(self, data, _err):
+    def _art_fill_done(self, data, _err):
         if (data or {}).get('filled') and alive(self):
             self.reload_library()
 

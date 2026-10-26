@@ -4,7 +4,7 @@ import html
 import re
 from datetime import datetime
 
-from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt, QTimer, QUrl
+from PyQt6.QtCore import pyqtSignal, QEvent, QPoint, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
     QLinearGradient, QPainter, QPainterPath, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout,
@@ -887,6 +887,10 @@ class DealsPage(QWidget):
         body.addLayout(self.list)
         body.addStretch()
         self.scroll.setWidget(host)
+        # Columns follow the viewport, not the page: a page filled while hidden
+        # gets its real viewport width only when first shown, with no resize of
+        # its own.
+        self.scroll.viewport().installEventFilter(self)
         outer.addWidget(self.scroll, 1)
         self._fill_tabs()
 
@@ -1331,13 +1335,13 @@ class DealsPage(QWidget):
             except RuntimeError:
                 pass
 
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if getattr(self, '_cards', None):
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Resize and getattr(self, '_cards', None):
             try:
                 self._place()
             except RuntimeError:
                 pass
+        return super().eventFilter(obj, ev)
 
     def repacks(self) -> dict:
         """{appid (str): FitGirl match} for the wishlist."""

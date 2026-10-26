@@ -13,11 +13,11 @@ from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
-from nexus import platform
+from nexus import paths as NX, platform
 from nexus.features import has
 
 from .. import updates
-from .common import alive, CLI_BIN, COLLECTION_NAMES, CONFIG_PATH, HOME
+from .common import alive, COLLECTION_NAMES, CONFIG_PATH, HOME
 from .fmt import fmt_size
 from .theme import apply_appearance, build_stylesheet, FS, G, P, scaled, SP
 from .topbar import _TabHandle, TopBar
@@ -685,8 +685,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def restart(self):
         """Start Nexus again once this one is gone (the new one would hand its
         arguments to us and exit while we still listen), then quit."""
-        exe = str(Path(CLI_BIN).with_name('nexus'))
-        QProcess.startDetached('sh', ['-c', 'sleep 2; exec "$0"', exe])
+        exe, *args = platform.gui_command(NX.REPO)
+        QProcess.startDetached(exe, [*args, '--restarted'])
         self.quit_after_jobs()
 
     def _background_changed(self, what: str, on: bool):

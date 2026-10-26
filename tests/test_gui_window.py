@@ -445,6 +445,22 @@ class Window(unittest.TestCase):
             art.refresh_size()
             self.assertEqual(asked, [(138, 50)])
 
+    def test_deals_filled_while_hidden_use_every_column_when_shown(self):
+        # The warm-up fills Deals before it is ever shown, when the scroll
+        # viewport still has its unlaid-out width; opening the page must
+        # recount the columns (it used to stay at 1-2 until a tab switch).
+        self.win.resize(1600, 900)
+        self.win.go(self.win.HOME)
+        QApplication.processEvents()
+        d = self._deals()
+        self.win.go(self.win.DEALS)
+        QApplication.processEvents()
+        self.assertGreaterEqual(d._columns(), 3)
+        self.assertEqual(d._cols, d._columns())
+        grid = d._grids[0]
+        self.assertEqual({grid.getItemPosition(grid.indexOf(c))[1] for c in grid._cards},
+                         set(range(min(3, d._cols))))
+
     def test_deals_card_cap_says_so(self):
         with mock.patch.object(nx.DealsPage, 'MAX_CARDS', 2):
             d = self._deals()
@@ -806,6 +822,26 @@ class Window(unittest.TestCase):
             self.assertTrue(w.prefs.controls['close_to_tray'])   # left as it is
             w._apply_controls({'close_to_tray': False})
 
+    def test_first_library_load_fills_art_once(self):
+        # `_art_filled` was also the name of the callback method, so the
+        # getattr guard always saw a (truthy) bound method and never ran (w-10).
+        from nexus.gui import win_library
+        w = self.win
+        w.__dict__.pop('_art_filled', None)
+        w.config = {**w.config, 'api_key': 'k'}
+        asked = []
+
+        class Now:
+            @staticmethod
+            def singleShot(_ms, fn):
+                fn()
+        with mock.patch.object(win_library, 'QTimer', Now), \
+                patch_gui('cli_json', lambda args, cb, *_a: asked.append(args[0])):
+            w._on_library({'games': fake_games(), 'disks': []}, '')
+            w._on_library({'games': fake_games(), 'disks': []}, '')
+        self.assertEqual(asked.count('--fill-art'), 1)
+        self.assertIs(w._art_filled, True)
+
     def test_the_window_stands_in_for_the_agent_on_windows(self):
         from nexus import features, instance
         from nexus.gui import win_downloads
@@ -942,6 +978,35 @@ class Window(unittest.TestCase):
             yes.click()
             self.assertEqual(calls[-1], ['--import-settings', '/t/s.tar.gz', '--json'])
             restart.assert_called_once()
+
+    def test_restart_starts_the_gui_without_a_shell(self):
+        # It used to be `sh -c 'sleep 2; exec nexus'`, which can't run on
+        # Windows (w-16). Now the new window waits for this one itself.
+        from nexus import platform
+        from nexus.gui import window as W
+        started = []
+
+        class Proc:
+            @staticmethod
+            def startDetached(program, args):
+                started.append([program, *args])
+                return True
+        for argv in (['/src/bin/nexus'], [r'C:\Py\pythonw.exe', r'C:\src\nexus\gui\__main__.py']):
+            started.clear()
+            with mock.patch.object(W, 'QProcess', Proc), \
+                    mock.patch.object(platform, 'gui_command', return_value=argv), \
+                    mock.patch.object(self.win, 'quit_after_jobs') as quit_:
+                self.win.restart()
+            self.assertEqual(started, [[*argv, '--restarted']])
+            quit_.assert_called_once()
+
+    def test_a_restarted_window_waits_for_the_old_one(self):
+        from nexus.gui import app
+        answers = iter([True, True, False])
+        with mock.patch.object(app.instance_mod, 'window_running', lambda: next(answers)), \
+                mock.patch.object(app.time, 'sleep') as sleep:
+            app.wait_for_exit()
+        self.assertEqual(sleep.call_count, 2)
 
     def test_first_run_setup_walks_through_and_saves(self):
         import os
