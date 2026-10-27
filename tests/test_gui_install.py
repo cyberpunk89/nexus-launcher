@@ -173,18 +173,22 @@ class AchievementsUI(unittest.TestCase):
         return [lab.text() for lab in w.findChildren(QLabel)]
 
     def test_details_panel(self):
+        nx.Disclosure.OPEN.pop('about', None)              # closed, whatever ran before
         panel = nx.DetailsPanel()
         panel.show_games([dict(self.GAME)])
         self.assertFalse(panel.st_ach.isHidden())
         self.assertEqual(panel.st_ach.value.text(), "3 of 12")
-        self.assertFalse(panel.sec_ach.isHidden())
-        panel.sec_ach.set_open(True)
+        self.assertFalse(panel.sec_about.isHidden())          # achievements live in About
+        self.assertFalse(panel.ach_box.isHidden())
+        self.assertNotIn(['--achievements', '7', '--json'], self.asked)   # not until opened
+        panel.sec_about.set_open(True)
         self.assertIn(['--achievements', '7', '--json'], self.asked)
+        self.assertIn("3 / 12", panel.sec_about.summary.text())
         texts = self.texts(panel.ach_body)
         self.assertIn("First", texts)
         self.assertIn("Hidden achievement", texts)          # a secret stays secret
         self.assertNotIn("Spoiler", texts)
-        panel.sec_ach.set_open(False)
+        panel.sec_about.set_open(False)
         panel.show_games([{'slug': 'r', 'source': 'nexus', 'launcher': '/r'}])
         self.assertTrue(panel.st_ach.isHidden())             # repacks: nothing
         panel.deleteLater()

@@ -227,13 +227,14 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   - **Details panel** (click a tile, from Home or Library): hero art, the game's status as
     chips (source, ProtonDB tier, update, favourite, launch options), Play, play time /
     last played / size.
-    Repacks get tabs — Overview (Steam/Heroic toggles, Proton, protongen drift), Launch
-    (name, exe, per-game Proton, launch options), Tools (folder, saves, integrity, art,
-    winecfg/regedit/winetricks, stop, uninstall), Logs (with *Explain with local AI* when
-    protongen's AI coach is on). Steam games get Steam shortcuts (page, properties, verify,
-    uninstall) and *Tune in protongen*. All games get a **Tuning** card: ProtonDB tier,
-    protongen's saved options, and protongen recipes that fit your GPU (Apply for repacks,
-    Copy for Steam/Heroic games).
+    Below them, five sections: **Launch** (repacks: Runtime, Display, Frame rate, Fixes and
+    overlay, suggested fixes for your GPU, Advanced, with one Apply bar; Steam/Heroic games
+    get only the suggestions and protongen's saved options to copy), **Game and files**
+    (name, exe, folder, Steam/Heroic, snapshots), **Troubleshoot** (logs, benchmarks,
+    *Explain with local AI* when protongen's AI coach is on), **About** (store info,
+    Game-db, compatibility with the ProtonDB tier, achievements) and **Notes**. Wine tools
+    and the rest live in ⋮. Steam games get Steam shortcuts (page, properties, verify,
+    uninstall) and *Tune in protongen*.
 - **System** (Ctrl+5) — Activity, Play history, Storage and Health as sections of one page:
   - **Activity** — every job as a card (step, progress, elapsed, Cancel, its own log), a strip
     under the library and a ring on the tile; toasts when done (and `notify-send` if the window
@@ -283,7 +284,7 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   tonight's three picks per time budget (Play if installed, else Install in Steam). Cards
   are focusable: Enter/A opens the best deal, Menu/X lists every link (deal, GG.deals,
   Steam, Game-db, copy). The Deals tab's badge counts games on sale, and the details panel's
-  Tuning card shows a Game-db line for any game it knows (wishlist price, or HLTB time and
+  About section shows a Game-db line for any game it knows (wishlist price, or HLTB time and
   how far through you are). Up to 200 cards show at once; the line above them says how many
   matched, and search or the filters reach the rest. A refresh that fails keeps what is on
   screen and says why in the banner.
@@ -388,10 +389,12 @@ steps aside (minimises) once the game is running.
 **Game page.** Click a game (or A on a controller) for its page: Play, a row of quick
 actions (favourite, Steam page / properties / protongen, launch settings, log, folder,
 artwork), a stats grid (play time, last played, size, install date, Proton, ProtonDB, and for
-Steam games **achievements** — with an Achievements section listing them, newest unlock
-first; hidden ones stay hidden until unlocked), a
-"how far through" bar when Game-db knows the time to beat, and collapsed sections for
-launch settings, library & files, tuning and the log. Wine tools and the rest live in ⋮.
+Steam games **achievements**, listed under About, newest unlock first; hidden ones stay
+hidden until unlocked), a "how far through" bar when Game-db knows the time to beat, and
+five collapsed sections: Launch, Game and files, Troubleshoot, About and Notes. In Launch,
+nothing changes until you press **Apply**: the bar says how many changes wait, and
+*Discard* puts them back. Switches whose tool isn't installed say so. Wine tools and the
+rest live in ⋮.
 
 Shortcuts: **Ctrl+K command palette** (games, pages, Settings sections and commands, fuzzy —
 "hk", "move noc"; Tab on a game lists its actions) · `/` search · Esc back · Ctrl+N install · Ctrl+R refresh (also retries art that
@@ -425,7 +428,7 @@ whole):
   **copy** into their launcher.
 - protongen's **default profile** (Settings → *Save as default profile*) can set a repack up
   in one step: *Use my protongen defaults* on the Install page (on whenever a default
-  exists), or *Use protongen defaults* in a game's ⋮ menu / Launch settings. It sets the
+  exists), or *Use protongen defaults* in a game's ⋮ menu / Launch → Advanced. It sets the
   launch options and the Proton, applied to Steam, Heroic and `launch.sh`.
 - protongen's recipe catalog (`~/.config/protongen/recipes.toml`, else a bundled copy in
   `nexus/data/`) becomes GPU- and ProtonDB-aware suggestions.
@@ -616,7 +619,7 @@ A repack runs as `nexus-cli --launch <slug> --wait`, so the stream ends with the
 and Heroic games are handed to their launcher. Restart Sunshine afterwards for Moonlight to
 see the change.
 
-**Launch through Steam** (Launch settings → *Launch through Steam*, or `nexus-cli
+**Launch through Steam** (Launch → Runtime → *Start from: Steam*, then Apply, or `nexus-cli
 --launch-via <slug> steam|nexus`): Play starts the repack's Steam shortcut, so it gets Steam
 Input, the overlay, game recording and your Steam status. Nexus's own extras for a launch
 (Discord, stay-awake, `[session]` tuning, achievement pop-ups) then don't run; play time is
@@ -681,7 +684,7 @@ nexus-cli --prefix-tool <slug> winecfg           # also: regedit, winetricks, ki
 ```
 
 Until a game has a profile, the launch options you set in Steam/Heroic yourself are left
-alone. In the GUI all of this is on the game's page (click its tile) under *Launch settings*.
+alone. In the GUI all of this is on the game's page (click its tile) under *Launch*.
 
 ### protongen
 

@@ -314,7 +314,7 @@ class LibraryMixin:
     def _rename_selected(self):
         g = self._selected_repack()
         if g is not None:
-            self.details.open_section('launch')
+            self.details.open_section('files')
             self.details.ed_name.setFocus(Qt.FocusReason.ShortcutFocusReason)
             self.details.ed_name.selectAll()
 

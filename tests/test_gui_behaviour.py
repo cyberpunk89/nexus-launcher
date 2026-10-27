@@ -662,6 +662,135 @@ class CliErrorBodies(unittest.TestCase):
         self.assertEqual(self.finish(1, b'{"error": "x"}', error_body=False), (None, "exit 1"))
 
 
+INFO = {'proton': 'GE-Proton10-1', 'proton_pinned': None, 'protons': ['GE-Proton10-1', 'cachy'],
+        'launch_options': 'X=1 %command%', 'owns_options': True, 'profile': {'source': 'nexus'},
+        'perf': {'mangohud': True}, 'lsfg': None, 'launch_via': 'nexus', 'in_steam': True,
+        'perf_tools': {'gamescope': False, 'mangohud': True, 'game-performance': True,
+                       'gamemoderun': False}}
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class GamePanel(unittest.TestCase):
+    """The game panel's five sections, and Launch's one Apply bar (w-29)."""
+    REPACK = {'slug': 'r', 'display_name': 'R', 'source': 'nexus', 'launcher': '/r',
+              'installed': True, 'launch_options': 'X=1 %command%', 'steam': False}
+
+    def setUp(self):
+        # Sections remember being open (Disclosure.OPEN, for the whole app):
+        # give it back as it was, or later tests start with Launch open.
+        saved = dict(nx.Disclosure.OPEN)
+        self.addCleanup(lambda: (nx.Disclosure.OPEN.clear(), nx.Disclosure.OPEN.update(saved)))
+        self.asked = []
+        p = patch_gui('cli_json', lambda args, cb, *a, **k: self.asked.append(args))
+        p.start()
+        self.addCleanup(p.stop)
+        self.p = nx.DetailsPanel()
+        self.p.resize(400, 900)
+        self.p.show()
+        self.addCleanup(self.p.deleteLater)
+        self.sent = []
+        self.p.request.connect(lambda args, title, *_: self.sent.append(args))
+
+    def repack(self, **extra):
+        self.p.show_games([dict(self.REPACK, **extra)])
+        self.p._apply_info(dict(INFO), None)
+        self.p.sec_launch.set_open(True, remember=False)
+
+    def visible_sections(self):
+        lay = self.p.sections
+        return [lay.itemAt(i).widget().key for i in range(lay.count())
+                if not lay.itemAt(i).widget().isHidden()]
+
+    @linux_features
+    def test_a_repack_has_five_sections_and_old_keys_still_open_them(self):
+        self.repack(achievements=[1, 4])
+        self.assertEqual(self.visible_sections(),
+                         ['launch', 'files', 'troubleshoot', 'about', 'notes'])
+        for old, new in (('log', self.p.sec_trouble), ('snapshots', self.p.sec_files),
+                         ('achievements', self.p.sec_about), ('tune', self.p.sec_launch)):
+            self.p.open_section(old)
+            self.assertTrue(new.is_open, old)
+
+    @linux_features
+    def test_apply_bar_counts_changes_and_queues_jobs_in_order(self):
+        self.repack()
+        p = self.p
+        self.assertTrue(p.apply_bar.isHidden())               # nothing changed yet
+        p.perf.ck_wayland.setChecked(True)
+        p.cb_proton.setCurrentIndex(p.cb_proton.findData('cachy'))
+        p._proton_picked(0)
+        p.ed_opts.setText('Y=2 %command%')
+        p._opts_edited('')
+        p.seg_via.set_current('steam', emit=True)
+        self.assertFalse(p.apply_bar.isHidden())
+        self.assertEqual(p.pending_text.text(), "4 changes to apply")
+        p.btn_apply.click()
+        self.assertEqual(self.sent, [['--proton', 'r', 'cachy'],
+                                     ['--set-launch', 'r', 'Y=2 %command%'],
+                                     ['--perf', 'r', 'wayland=on'],
+                                     ['--launch-via', 'r', 'steam']])
+        self.assertTrue(p.apply_bar.isHidden())                # sent; waiting for the jobs
+        self.assertTrue(p.perf.ck_wayland.isChecked())        # the edits stay on screen
+        # The jobs run (busy) and finish: the settings are read again.
+        self.asked.clear()
+        p.show_games([dict(self.REPACK, busy=True)])
+        p.show_games([dict(self.REPACK)])
+        self.assertIn(['--show-launch', 'r', '--json'], self.asked)
+        self.assertFalse(p._dirty & p.LAUNCH_KEYS)
+
+    @linux_features
+    def test_discard_puts_everything_back(self):
+        self.repack()
+        p = self.p
+        p.perf.ck_gs.setEnabled(True)
+        p.perf.ck_gs.setChecked(True)
+        self.assertFalse(p.perf.gs_box.isHidden())            # gamescope's settings show
+        p.ed_opts.setText('')
+        p._opts_edited('')
+        self.assertEqual(p.pending_text.text(), "2 changes to apply")
+        p._discard_launch()
+        self.assertTrue(p.apply_bar.isHidden())
+        self.assertFalse(p.perf.ck_gs.isChecked())
+        self.assertTrue(p.perf.gs_box.isHidden())
+        self.assertEqual(p.ed_opts.text(), 'X=1 %command%')
+        self.assertEqual(self.sent, [])
+
+    @linux_features
+    def test_clearing_the_line_is_a_change(self):
+        self.repack()
+        self.p.ed_opts.setText('')
+        self.p._opts_edited('')
+        self.p._apply_launch()
+        self.assertEqual(self.sent, [['--set-launch', 'r', '']])
+
+    @linux_features
+    def test_missing_tools_say_so(self):
+        self.repack()
+        perf = self.p.perf
+        self.assertFalse(perf.missing.isHidden())
+        self.assertIn("gamescope", perf.missing.text())
+        self.assertIn("GameMode", perf.missing.text())
+        self.assertNotIn("MangoHud", perf.missing.text())
+        self.assertIn("isn't set up", perf.cb_fg.itemText(0))
+        self.assertFalse(perf.ck_gs.isEnabled())
+
+    @linux_features
+    def test_steam_game_gets_advice_only(self):
+        p = self.p
+        p.show_games([{'slug': 'steam-1', 'display_name': 'S', 'source': 'steam',
+                       'appid': 1, 'installed': True}])
+        self.assertTrue(p.sec_launch.isHidden())             # nothing to say yet
+        p._fill_tips({'recipes': [{'name': 'Fix it', 'launch_options': 'A=1 %command%'}],
+                      'protondb': {'tier': 'gold', 'total': 3, 'url': 'https://protondb.com'}})
+        self.assertFalse(p.sec_launch.isHidden())
+        for w in (p.runtime_box, p.perf, p.adv_box):
+            self.assertTrue(w.isHidden(), w)
+        self.assertFalse(p.sugg_box.isHidden())
+        self.assertIn("1 suggestion", p.sec_launch.summary.text())
+        self.assertFalse(p.compat_box.isHidden())            # ProtonDB moved to About
+        self.assertTrue(p.sec_files.isHidden() and p.sec_trouble.isHidden())
+
+
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class MenuShape(unittest.TestCase):
     """The game menu: everyday actions at the top, the rest in a few named

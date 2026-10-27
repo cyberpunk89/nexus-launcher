@@ -215,7 +215,7 @@ class ActionsMixin:
             self._begin_launch(game)
             self.run(['--benchmark', slug], f"Benchmarking {name}", slug, 'launch')
             self.toast("Logging starts 30 s after launch and runs 60 s (Shift+F2 starts it "
-                       "by hand). Results appear in the game's Log section.", 'info', None, 8000)
+                       "by hand). Results appear under the game's Troubleshoot section.", 'info', None, 8000)
         elif action == 'settings':
             self._reveal_game(slug)
             self.details.open_section('launch')

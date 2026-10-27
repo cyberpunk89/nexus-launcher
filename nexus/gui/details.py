@@ -430,61 +430,69 @@ class StatChip(QFrame):
         self.value.setText(text or "—")
 
 
+def _group(title: str, hint: str = '') -> tuple[QWidget, QGridLayout]:
+    """One titled block inside a section: a small heading, then a grid of
+    label | control rows (column 0 the label, 1-3 the control)."""
+    w = QWidget()
+    outer = QVBoxLayout(w)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(SP['1_5'])
+    head = QHBoxLayout()
+    head.addWidget(label(title, "StatLabel"))
+    if hint:
+        h = label(hint, "Muted")
+        h.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        h.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        head.addWidget(h, 1)
+    outer.addLayout(head)
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(SP['2'])
+    grid.setVerticalSpacing(SP['1_5'])
+    grid.setColumnStretch(1, 1)
+    outer.addLayout(grid)
+    return w, grid
+
+
+def _grid_row(grid: QGridLayout, name: str, widget: QWidget):
+    row = grid.rowCount()
+    lab = label(name, "Muted")
+    lab.setMinimumWidth(96)
+    grid.addWidget(lab, row, 0)
+    grid.addWidget(widget, row, 1, 1, 3)
+    return lab
+
+
 class PerfPanel(QWidget):
-    """Performance switches for one game (`nexus-cli --perf`): frame cap,
-    power mode, upscaler, overlay, Wine Wayland, hidraw and gamescope.
-    `set_state` takes --show-launch's `perf`; `items()` is the CLI argument
-    list for what's shown now."""
+    """Performance switches for one game (`nexus-cli --perf`), in three
+    groups: Display (gamescope, upscaler), Frame rate (cap, frame
+    generation, power mode) and Fixes and overlay (MangoHud, Wine Wayland,
+    hidraw). `set_state` takes --show-launch's `perf`; `items()` is the CLI
+    argument list for what's shown now; `changed` fires on a user edit."""
     FPS = (0, 30, 40, 45, 60, 72, 90, 120, 144, 165, 240)
     RES = ((1280, 720), (1920, 1080), (2560, 1440), (3440, 1440), (3840, 2160))
     REFRESH = (60, 75, 90, 120, 144, 165, 240)
+    TOOL_NAMES = {'gamescope': "gamescope", 'mangohud': "MangoHud",
+                  'game-performance': "game-performance", 'gamemoderun': "GameMode"}
+    changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
-        lay = QGridLayout(self)
+        self._loading = False
+        lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setHorizontalSpacing(SP['2'])
-        lay.setVerticalSpacing(SP['1_5'])
-        self.cb_fps = NoWheelCombo()
-        for n in self.FPS:
-            self.cb_fps.addItem("No cap" if not n else f"{n} fps", n)
-        self.cb_fps.setToolTip("DXVK_FRAME_RATE / VKD3D_FRAME_RATE: a frame cap inside the "
-                               "game's renderer (Direct3D 8–12)")
-        self.cb_mode = NoWheelCombo()
-        for text, key in (("Off", 'off'), ("game-performance (power profile)", 'game-performance'),
-                          ("gamemoderun (Feral GameMode)", 'gamemoderun')):
-            self.cb_mode.addItem(text, key)
-        self.cb_up = NoWheelCombo()
-        for text, key in (("Off", 'off'), ("FSR 4 upgrade", 'fsr4'),
-                          ("OptiScaler (DLSS/XeSS → FSR 4)", 'optiscaler')):
-            self.cb_up.addItem(text, key)
-        self.cb_up.setToolTip("FSR 4 needs an RDNA 4 GPU and a Proton that supports it "
-                              "(GE-Proton 10+, proton-cachyos)")
-        self.cb_fg = NoWheelCombo()
-        for text, key in (("Off", None), ("2× (lsfg-vk)", 2), ("3× (lsfg-vk)", 3),
-                          ("4× (lsfg-vk)", 4)):
-            self.cb_fg.addItem(text, key)
-        self.cb_fg.setToolTip("Lossless Scaling frame generation through lsfg-vk: a profile "
-                              "for this game's exe in ~/.config/lsfg-vk/conf.toml")
-        self.lsfg = None                 # None: lsfg-vk isn't set up
-        for row, (name, w) in enumerate((("Frame cap", self.cb_fps), ("Power mode", self.cb_mode),
-                                         ("Upscaler", self.cb_up), ("Frame gen", self.cb_fg))):
-            lay.addWidget(label(name, "Muted"), row, 0)
-            lay.addWidget(w, row, 1, 1, 3)
-        self.ck_mango = QCheckBox("MangoHud overlay")
-        self.ck_wayland = QCheckBox("Wine Wayland driver")
-        self.ck_wayland.setToolTip("PROTON_ENABLE_WAYLAND=1: no XWayland in between. "
-                                   "Newer Protons only; some games misbehave.")
-        self.ck_hidraw = QCheckBox("Plain controller input (no hidraw)")
-        self.ck_hidraw.setToolTip("PROTON_DISABLE_HIDRAW=1: the game sees an ordinary pad "
-                                  "instead of the raw DualSense — try it when buttons or "
-                                  "glyphs are wrong")
-        lay.addWidget(self.ck_mango, 4, 0, 1, 2)
-        lay.addWidget(self.ck_wayland, 4, 2, 1, 2)
-        lay.addWidget(self.ck_hidraw, 5, 0, 1, 4)
+        lay.setSpacing(SP['4'])
+        self.missing = label("", "Muted", wrap=True)     # tools that aren't installed
+        self.missing.setVisible(False)
+        lay.addWidget(self.missing)
+
+        # Display: gamescope (its settings only while it's on) and the upscaler.
+        disp, dg = _group("Display")
         self.ck_gs = QCheckBox("Run inside gamescope")
+        self.ck_gs.setToolTip("Valve's micro-compositor: a fixed size and refresh, FSR "
+                              "upscaling, HDR. Helps games that pick the wrong mode.")
         self.ck_gs.toggled.connect(self._gs_toggled)
-        lay.addWidget(self.ck_gs, 6, 0, 1, 4)
+        dg.addWidget(self.ck_gs, 0, 0, 1, 4)
         self.cb_res = NoWheelCombo()
         for w_, h_ in self.RES:
             self.cb_res.addItem(f"{w_}×{h_}", (w_, h_))
@@ -497,18 +505,81 @@ class PerfPanel(QWidget):
             self.cb_render.addItem(f"{w_}×{h_}", (w_, h_))
         self.ck_full = QCheckBox("Fullscreen")
         self.ck_hdr = QCheckBox("HDR")
-        lay.addWidget(self.cb_res, 7, 0, 1, 2)
-        lay.addWidget(self.cb_hz, 7, 2, 1, 2)
-        lay.addWidget(self.ck_fsr, 8, 0)
-        lay.addWidget(self.cb_render, 8, 1, 1, 3)
-        lay.addWidget(self.ck_full, 9, 0, 1, 2)
-        lay.addWidget(self.ck_hdr, 9, 2, 1, 2)
+        self.gs_box = QWidget()                 # gamescope's own settings, under the switch
+        gl = QGridLayout(self.gs_box)
+        gl.setContentsMargins(SP['5'], 0, 0, 0)
+        gl.setHorizontalSpacing(SP['2'])
+        gl.setVerticalSpacing(SP['1_5'])
+        gl.addWidget(self.cb_res, 0, 0, 1, 2)
+        gl.addWidget(self.cb_hz, 0, 2, 1, 2)
+        gl.addWidget(self.ck_fsr, 1, 0)
+        gl.addWidget(self.cb_render, 1, 1, 1, 3)
+        gl.addWidget(self.ck_full, 2, 0, 1, 2)
+        gl.addWidget(self.ck_hdr, 2, 2, 1, 2)
+        dg.addWidget(self.gs_box, 1, 0, 1, 4)
+        self.cb_up = NoWheelCombo()
+        for text, key in (("Off", 'off'), ("FSR 4 upgrade", 'fsr4'),
+                          ("OptiScaler (DLSS/XeSS → FSR 4)", 'optiscaler')):
+            self.cb_up.addItem(text, key)
+        self.cb_up.setToolTip("FSR 4 needs an RDNA 4 GPU and a Proton that supports it "
+                              "(GE-Proton 10+, proton-cachyos)")
+        _grid_row(dg, "Upscaler", self.cb_up)
+        lay.addWidget(disp)
+
+        # Frame rate: a cap, frame generation, the power profile.
+        rate, rg = _group("Frame rate")
+        self.cb_fps = NoWheelCombo()
+        for n in self.FPS:
+            self.cb_fps.addItem("No cap" if not n else f"{n} fps", n)
+        self.cb_fps.setToolTip("DXVK_FRAME_RATE / VKD3D_FRAME_RATE: a frame cap inside the "
+                               "game's renderer (Direct3D 8–12)")
+        _grid_row(rg, "Frame cap", self.cb_fps)
+        self.cb_fg = NoWheelCombo()
+        for text, key in (("Off", None), ("2× (lsfg-vk)", 2), ("3× (lsfg-vk)", 3),
+                          ("4× (lsfg-vk)", 4)):
+            self.cb_fg.addItem(text, key)
+        self.cb_fg.setToolTip("Lossless Scaling frame generation through lsfg-vk: a profile "
+                              "for this game's exe in ~/.config/lsfg-vk/conf.toml")
+        _grid_row(rg, "Frame generation", self.cb_fg)
+        self.lsfg = None                 # None: lsfg-vk isn't set up
+        self.cb_mode = NoWheelCombo()
+        for text, key in (("Off", 'off'), ("game-performance (power profile)", 'game-performance'),
+                          ("gamemoderun (Feral GameMode)", 'gamemoderun')):
+            self.cb_mode.addItem(text, key)
+        _grid_row(rg, "Power mode", self.cb_mode)
+        lay.addWidget(rate)
+
+        # Fixes and overlay: switches you try when something looks or feels wrong.
+        fixes, fg = _group("Fixes and overlay")
+        self.ck_mango = QCheckBox("MangoHud overlay (fps, frame times)")
+        self.ck_wayland = QCheckBox("Wine Wayland driver")
+        self.ck_wayland.setToolTip("PROTON_ENABLE_WAYLAND=1: no XWayland in between. "
+                                   "Newer Protons only; some games misbehave.")
+        self.ck_hidraw = QCheckBox("Plain controller input (no hidraw)")
+        self.ck_hidraw.setToolTip("PROTON_DISABLE_HIDRAW=1: the game sees an ordinary pad "
+                                  "instead of the raw DualSense — try it when buttons or "
+                                  "glyphs are wrong")
+        for i, ck in enumerate((self.ck_mango, self.ck_wayland, self.ck_hidraw)):
+            fg.addWidget(ck, i, 0, 1, 4)
+        lay.addWidget(fixes)
+
         self._gs_widgets = (self.cb_res, self.cb_hz, self.ck_fsr, self.cb_render, self.ck_full,
                             self.ck_hdr)
         self.niri = False
+        for cb in (self.cb_fps, self.cb_mode, self.cb_up, self.cb_fg, self.cb_res, self.cb_hz,
+                   self.cb_render):
+            cb.currentIndexChanged.connect(self._changed)
+        for ck in (self.ck_gs, self.ck_fsr, self.ck_full, self.ck_hdr, self.ck_mango,
+                   self.ck_wayland, self.ck_hidraw):
+            ck.toggled.connect(self._changed)
         self._gs_toggled(False)
 
+    def _changed(self, *_):
+        if not self._loading:
+            self.changed.emit()
+
     def _gs_toggled(self, on: bool):
+        self.gs_box.setVisible(on)
         for w in self._gs_widgets:
             w.setEnabled(on)
         if self.niri:
@@ -526,11 +597,24 @@ class PerfPanel(QWidget):
 
     def set_state(self, perf: dict, tools: dict | None = None, niri: bool = False,
                   lsfg: dict | None = None):
+        self._loading = True
+        try:
+            self._set_state(perf, tools, niri, lsfg)
+        finally:
+            self._loading = False
+
+    def _set_state(self, perf, tools, niri, lsfg):
         perf, tools = perf or {}, tools or {}
+        gone = [name for key, name in self.TOOL_NAMES.items() if tools.get(key) is False]
+        self.missing.setText("Not installed here: " + ", ".join(gone)
+                             + ". Their switches stay off until you install them."
+                             if gone else "")
+        self.missing.setVisible(bool(gone))
         self.niri = niri
         self.lsfg = lsfg
         self._select(self.cb_fg, (lsfg or {}).get('multiplier'))
         self.cb_fg.setEnabled(lsfg is not None)
+        self.cb_fg.setItemText(0, "Off" if lsfg is not None else "Off (lsfg-vk isn't set up)")
         if lsfg is None:
             self.cb_fg.setToolTip("lsfg-vk isn't set up: install it and point its "
                                   "conf.toml at Lossless Scaling (owned on Steam)")
@@ -737,111 +821,37 @@ class DetailsPanel(QFrame):
         self.confirm.setVisible(False)
         lay.addWidget(self.confirm)
 
-        # Compact sections, closed until you need them.
-        overview = self._overview_tab()
+        # Five sections, closed until you need them: Launch (how a repack
+        # starts, on Linux; advice for Steam/Heroic games), Game and files,
+        # Troubleshoot, About, Notes.
+        self.pg_notice = self._pg_notice()
         lay.addWidget(self.pg_notice)        # protongen drift: always in view
         self.ac_notice = label("", None, wrap=True)
         self.ac_notice.setObjectName("DangerBar")
         self.ac_notice.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
         self.ac_notice.setVisible(False)
         lay.addWidget(self.ac_notice)        # online play broken: always in view
-        self.sec_launch = Disclosure('launch', "Launch settings", G['tune'], self._launch_tab())
-        self.sec_files = Disclosure('files', "Library & files", G['folder'], overview)
-        self.sections = QVBoxLayout()
-        self.sections.setSpacing(SP['2'])
-        self.sections.addWidget(self.sec_launch)
-        self.sections.addWidget(self.sec_files)
-        # Snapshots (btrfs): undo an update, a Proton change, winetricks.
-        self.snap_body = QFrame()
-        snl = QVBoxLayout(self.snap_body)
-        snl.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
-        snl.setSpacing(SP['1_5'])
-        self.snap_note = label("", "Muted", wrap=True)
-        snl.addWidget(self.snap_note)
-        self.snap_rows = QVBoxLayout()
-        self.snap_rows.setSpacing(SP['1'])
-        snl.addLayout(self.snap_rows)
-        sbr = QHBoxLayout()
-        self.snap_take = QPushButton("Snapshot now")
-        self.snap_take.clicked.connect(lambda: self._act('snapshot-now'))
-        self.snap_enable = QPushButton("Enable snapshots")
-        self.snap_enable.setToolTip("Moves the game into its own btrfs subvolume — instant, "
-                                    "and it takes no extra space")
-        self.snap_enable.clicked.connect(lambda: self._act('snapshots-enable'))
-        sbr.addWidget(self.snap_take)
-        sbr.addWidget(self.snap_enable)
-        sbr.addStretch()
-        snl.addLayout(sbr)
-        self.sec_snap = Disclosure('snapshots', "Snapshots", G['history'], self.snap_body)
-        self.sec_snap.toggled.connect(lambda on: on and self._load_snapshots(force=True))
-        self.sec_snap.setVisible(False)
-        self.sections.addWidget(self.sec_snap)
-        self._snap_at = (None, 0.0)
-        lay.addLayout(self.sections)
-
-        # Tuning: ProtonDB, protongen's saved options (for Steam/Heroic games,
-        # where Nexus doesn't own the launch options) and recipe suggestions.
-        self.tune = QFrame()
-        tl = QVBoxLayout(self.tune)
-        tl.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
-        tl.setSpacing(SP['1_5'])
-        self.tune_pdb = label("", None, wrap=True)
-        self.tune_pdb.setOpenExternalLinks(True)
-        tl.addWidget(self.tune_pdb)
-        self.tune_deal = label("", None, wrap=True)
-        self.tune_deal.setOpenExternalLinks(True)
-        tl.addWidget(self.tune_deal)
-        self.tune_pg_title = label("protongen tuning", "StatLabel")
-        tl.addWidget(self.tune_pg_title)
-        pgrow = QHBoxLayout()
-        self.tune_pg = QLineEdit()
-        self.tune_pg.setReadOnly(True)
-        pgrow.addWidget(self.tune_pg, 1)
-        self.tune_pg_copy = QPushButton("Copy")
-        self.tune_pg_copy.setToolTip("Copy, then paste into Steam → Properties → Launch options")
-        self.tune_pg_copy.clicked.connect(lambda: self._copy(self.tune_pg.text()))
-        pgrow.addWidget(self.tune_pg_copy)
-        self.tune_pg_row = QWidget()
-        self.tune_pg_row.setLayout(pgrow)
-        tl.addWidget(self.tune_pg_row)
-        self.tune_sugg_title = label("", "StatLabel")
-        tl.addWidget(self.tune_sugg_title)
-        self.tune_rows = QVBoxLayout()
-        self.tune_rows.setSpacing(SP['1'])
-        tl.addLayout(self.tune_rows)
-        self.sec_tune = Disclosure('tune', "Tuning", G['wrench'], self.tune)
-        self.sec_tune.setVisible(False)
-        self.sections.addWidget(self.sec_tune)
-        # Compatibility: Steam Deck, anti-cheat and PCGamingWiki's table.
-        self.compat_body = QFrame()
-        cbl = QVBoxLayout(self.compat_body)
-        cbl.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
-        self.compat_text = label("", None, wrap=True)
-        self.compat_text.setOpenExternalLinks(True)
-        cbl.addWidget(self.compat_text)
-        self.sec_compat = Disclosure('compat', "Compatibility", G['shield'], self.compat_body)
-        self.sec_compat.setVisible(False)
-        self.sections.addWidget(self.sec_compat)
-        # About: the store's blurb, reviews, time to beat, trailers, similar games.
-        self.about_body = QFrame()
-        abl = QVBoxLayout(self.about_body)
-        abl.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
-        abl.setSpacing(SP['1_5'])
-        self.about_text = label("", None, wrap=True)
-        self.about_text.setOpenExternalLinks(True)
-        abl.addWidget(self.about_text)
-        self.trailer_rows = QVBoxLayout()
-        self.trailer_rows.setSpacing(SP['1'])
-        abl.addLayout(self.trailer_rows)
-        self.similar_title = label("More like this", "StatLabel")
-        abl.addWidget(self.similar_title)
-        self.similar_rows = QVBoxLayout()
-        self.similar_rows.setSpacing(SP['0_5'])
-        abl.addLayout(self.similar_rows)
-        self.sec_about = Disclosure('about', "About", G['info'], self.about_body)
+        self._dirty: set[str] = set()
+        self._launch_full = False            # a Linux repack: the whole Launch section
+        self._about_summary = ''
+        self._sent = False                   # applied; waiting for the jobs to finish
+        self._was_busy = False
+        self._base = {'proton': '', 'opts': '', 'via': 'nexus'}
+        self._perf_base: list[str] = []
+        self.sec_launch = Disclosure('launch', "Launch", G['tune'], self._launch_tab())
+        self.sec_files = Disclosure('files', "Game and files", G['folder'], self._files_tab())
+        self.sec_files.toggled.connect(
+            lambda on: on and not self.snap_box.isHidden() and self._load_snapshots(force=True))
+        self.sec_trouble = Disclosure('troubleshoot', "Troubleshoot", G['wrench'],
+                                      self._logs_tab())
+        self.sec_trouble.toggled.connect(lambda on: on and self._load_log())
+        self.sec_about = Disclosure('about', "About", G['info'], self._about_tab())
+        self.sec_about.toggled.connect(lambda on: on and self._load_achievements())
         self.sec_about.setVisible(False)
-        self.sections.addWidget(self.sec_about)
         self._store: dict = {}
+        self._about_parts = {'store': False, 'compat': False, 'deal': False, 'ach': False}
+        self._snap_at = (None, 0.0)
+        self._ach_for = None
         # Notes: yours, saved as you type (a second after you stop).
         self.notes_edit = QPlainTextEdit()
         self.notes_edit.setPlaceholderText("Where you left off, settings that worked, "
@@ -854,19 +864,12 @@ class DetailsPanel(QFrame):
         self.notes_edit.textChanged.connect(self._notes_timer.start)
         self._notes_for = None
         self.sec_notes = Disclosure('notes', "Notes", G['pencil'], self.notes_edit)
-        self.sections.addWidget(self.sec_notes)
-        self.ach_body = QWidget()
-        self.ach_rows = QVBoxLayout(self.ach_body)
-        self.ach_rows.setContentsMargins(SP['1'], 0, SP['1'], SP['1'])
-        self.ach_rows.setSpacing(SP['1_5'])
-        self.sec_ach = Disclosure('achievements', "Achievements", G['trophy'], self.ach_body)
-        self.sec_ach.toggled.connect(lambda on: on and self._load_achievements())
-        self.sec_ach.setVisible(False)
-        self.sections.addWidget(self.sec_ach)
-        self._ach_for = None
-        self.sec_log = Disclosure('log', "Log", G['log'], self._logs_tab())
-        self.sec_log.toggled.connect(lambda on: on and self._load_log())
-        self.sections.addWidget(self.sec_log)
+        self.sections = QVBoxLayout()
+        self.sections.setSpacing(SP['2'])
+        for sec in (self.sec_launch, self.sec_files, self.sec_trouble, self.sec_about,
+                    self.sec_notes):
+            self.sections.addWidget(sec)
+        lay.addLayout(self.sections)
         lay.addStretch()
         self._tips_query = None
 
@@ -915,40 +918,19 @@ class DetailsPanel(QFrame):
         lay.addLayout(row)
         return row, val
 
-    def _overview_tab(self):
+    @staticmethod
+    def _body(margin_top: int = SP['3']) -> tuple[QWidget, QVBoxLayout]:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, SP['3'], 0, 0)
-        lay.setSpacing(SP['2_5'])
-        r, self.ov_steam = self._row(lay, "Steam")
-        self.btn_steam = QPushButton()
-        self.btn_steam.clicked.connect(self._toggle_steam)
-        r.addWidget(self.btn_steam)
-        r, self.ov_heroic = self._row(lay, "Heroic")
-        self.btn_heroic = QPushButton()
-        self.btn_heroic.clicked.connect(self._toggle_heroic)
-        r.addWidget(self.btn_heroic)
-        if not has('heroic'):
-            _hide_row(r)
-        r, self.ov_proton = self._row(lay, "Proton")
-        if not has('proton'):
-            _hide_row(r)
-        r, self.ov_opts = self._row(lay, "Options")
-        self.btn_copy_opts = icon_button(G['copy'], "Copy launch options", 28, "Ghost")
-        self.btn_copy_opts.clicked.connect(
-            lambda: self._copy(self.game.get('launch_options') or ''))
-        r.addWidget(self.btn_copy_opts, 0, Qt.AlignmentFlag.AlignTop)
-        self.ov_opts.setStyleSheet(f"font-size: {FS['xs']}px; color: {P['subtext']};")
-        r, self.ov_folder = self._row(lay, "Folder")
-        self.btn_copy_folder = icon_button(G['copy'], "Copy folder path", 28, "Ghost")
-        self.btn_copy_folder.clicked.connect(lambda: self._copy(self._folder))
-        r.addWidget(self.btn_copy_folder, 0, Qt.AlignmentFlag.AlignTop)
-        self._folder = ''
+        lay.setContentsMargins(SP['1'], margin_top, SP['1'], SP['1'])
+        lay.setSpacing(SP['3'])
+        return w, lay
 
-        # protongen drift notice with the fix right there.
-        self.pg_notice = QFrame()
-        self.pg_notice.setObjectName("Card")
-        pl = QVBoxLayout(self.pg_notice)
+    def _pg_notice(self) -> QFrame:
+        """protongen drift notice with the fix right there."""
+        box = QFrame()
+        box.setObjectName("Card")
+        pl = QVBoxLayout(box)
         pl.setContentsMargins(SP['3'], SP['2_5'], SP['3'], SP['2_5'])
         self.pg_notice_text = label("", wrap=True)
         pl.addWidget(self.pg_notice_text)
@@ -958,18 +940,16 @@ class DetailsPanel(QFrame):
         pull.clicked.connect(self._pull_protongen)
         prow.addWidget(pull)
         pl.addLayout(prow)
-        self.pg_notice.setVisible(False)
-        lay.addStretch()
-        return w
+        box.setVisible(False)
+        return box
 
-    def _launch_tab(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, SP['3'], 0, 0)
+    def _files_tab(self):
+        """Game and files: what the game is called and runs, where it lives,
+        which launchers know it, and its snapshots."""
+        w, lay = self._body()
         lay.setSpacing(SP['2'])
         lay.addWidget(label("Name", "StatLabel"))
         nrow = QHBoxLayout()
-        self._dirty: set[str] = set()
         self.ed_name = QLineEdit()
         self.ed_name.textEdited.connect(self._name_edited)
         self.ed_name.returnPressed.connect(self._rename)
@@ -989,67 +969,186 @@ class DetailsPanel(QFrame):
         erow.addWidget(change)
         lay.addLayout(erow)
 
-        lay.addWidget(label("Proton — used by launch.sh, Steam and Heroic", "StatLabel"))
-        prow = QHBoxLayout()
+        rows = QVBoxLayout()
+        rows.setContentsMargins(0, SP['2'], 0, 0)
+        rows.setSpacing(SP['2_5'])
+        r, self.ov_folder = self._row(rows, "Folder")
+        self.btn_copy_folder = icon_button(G['copy'], "Copy folder path", 28, "Ghost")
+        self.btn_copy_folder.clicked.connect(lambda: self._copy(self._folder))
+        r.addWidget(self.btn_copy_folder, 0, Qt.AlignmentFlag.AlignTop)
+        self._folder = ''
+        r, self.ov_steam = self._row(rows, "Steam")
+        self.btn_steam = QPushButton()
+        self.btn_steam.clicked.connect(self._toggle_steam)
+        r.addWidget(self.btn_steam)
+        r, self.ov_heroic = self._row(rows, "Heroic")
+        self.btn_heroic = QPushButton()
+        self.btn_heroic.clicked.connect(self._toggle_heroic)
+        r.addWidget(self.btn_heroic)
+        if not has('heroic'):
+            _hide_row(r)
+        lay.addLayout(rows)
+
+        # Snapshots (btrfs): undo an update, a Proton change, winetricks.
+        self.snap_box = QWidget()
+        snl = QVBoxLayout(self.snap_box)
+        snl.setContentsMargins(0, SP['2'], 0, 0)
+        snl.setSpacing(SP['1_5'])
+        self.snap_title = label("Snapshots", "StatLabel")
+        snl.addWidget(self.snap_title)
+        self.snap_note = label("", "Muted", wrap=True)
+        snl.addWidget(self.snap_note)
+        self.snap_rows = QVBoxLayout()
+        self.snap_rows.setSpacing(SP['1'])
+        snl.addLayout(self.snap_rows)
+        sbr = QHBoxLayout()
+        self.snap_take = QPushButton("Snapshot now")
+        self.snap_take.clicked.connect(lambda: self._act('snapshot-now'))
+        self.snap_enable = QPushButton("Enable snapshots")
+        self.snap_enable.setToolTip("Moves the game into its own btrfs subvolume — instant, "
+                                    "and it takes no extra space")
+        self.snap_enable.clicked.connect(lambda: self._act('snapshots-enable'))
+        sbr.addWidget(self.snap_take)
+        sbr.addWidget(self.snap_enable)
+        sbr.addStretch()
+        snl.addLayout(sbr)
+        self.snap_box.setVisible(False)
+        lay.addWidget(self.snap_box)
+        return w
+
+    def _about_tab(self):
+        """About: the store's blurb, reviews, time to beat, trailers, similar
+        games; then compatibility (ProtonDB, Deck, anti-cheat, PCGamingWiki)
+        and achievements (loaded when the section opens)."""
+        w, lay = self._body()
+        self.tune_deal = label("", None, wrap=True)          # Game-db: price, progress
+        self.tune_deal.setOpenExternalLinks(True)
+        lay.addWidget(self.tune_deal)
+        self.store_box = QWidget()
+        abl = QVBoxLayout(self.store_box)
+        abl.setContentsMargins(0, 0, 0, 0)
+        abl.setSpacing(SP['1_5'])
+        self.about_text = label("", None, wrap=True)
+        self.about_text.setOpenExternalLinks(True)
+        abl.addWidget(self.about_text)
+        self.trailer_rows = QVBoxLayout()
+        self.trailer_rows.setSpacing(SP['1'])
+        abl.addLayout(self.trailer_rows)
+        self.similar_title = label("More like this", "StatLabel")
+        abl.addWidget(self.similar_title)
+        self.similar_rows = QVBoxLayout()
+        self.similar_rows.setSpacing(SP['0_5'])
+        abl.addLayout(self.similar_rows)
+        lay.addWidget(self.store_box)
+        self.compat_box, cg = _group("Compatibility")
+        self.tune_pdb = label("", None, wrap=True)
+        self.tune_pdb.setOpenExternalLinks(True)
+        cg.addWidget(self.tune_pdb, 0, 0, 1, 4)
+        self.compat_text = label("", None, wrap=True)
+        self.compat_text.setOpenExternalLinks(True)
+        cg.addWidget(self.compat_text, 1, 0, 1, 4)
+        lay.addWidget(self.compat_box)
+        self.ach_box, ag = _group("Achievements")
+        self.ach_body = QWidget()
+        self.ach_rows = QVBoxLayout(self.ach_body)
+        self.ach_rows.setContentsMargins(0, 0, 0, 0)
+        self.ach_rows.setSpacing(SP['1_5'])
+        ag.addWidget(self.ach_body, 0, 0, 1, 4)
+        lay.addWidget(self.ach_box)
+        for box in (self.store_box, self.compat_box, self.ach_box, self.tune_deal,
+                    self.tune_pdb):
+            box.setVisible(False)
+        return w
+
+    def _launch_tab(self):
+        """Launch: Runtime, the performance groups, suggested fixes and the
+        Advanced line, with one Apply bar for everything that waits. Steam
+        and Heroic games (whose launchers own their options) get only the
+        advice: suggestions and protongen's tuning to copy."""
+        w, lay = self._body()
+        lay.setSpacing(SP['4'])
+
+        self.runtime_box, rg = _group("Runtime")
         self.cb_proton = NoWheelCombo()
         self.cb_proton.activated.connect(self._proton_picked)
-        apply_p = QPushButton("Apply")
-        apply_p.clicked.connect(self._apply_proton)
-        prow.addWidget(self.cb_proton, 1)
-        prow.addWidget(apply_p)
-        lay.addLayout(prow)
+        self.cb_proton.setToolTip("The Proton launch.sh, the Steam shortcut and Heroic all use")
+        _grid_row(rg, "Proton", self.cb_proton)
+        self.seg_via = SegmentedControl('pill', 30)
+        self.seg_via.add('nexus', "Nexus", tip="Play starts the game from Nexus: Discord "
+                         "status, stay-awake and session tuning run")
+        self.seg_via.add('steam', "Steam", tip="Play starts the game's Steam shortcut: Steam "
+                         "Input, the overlay, recording and your Steam status")
+        self.seg_via.set_current('nexus', animate=False)
+        self.seg_via.changed.connect(self._via_picked)
+        via = QWidget()
+        vl = QHBoxLayout(via)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.addWidget(self.seg_via)
+        vl.addStretch()
+        _grid_row(rg, "Start from", via)
+        lay.addWidget(self.runtime_box)
 
-        lay.addWidget(label("Launch options", "StatLabel"))
+        self.perf = PerfPanel()
+        self.perf.changed.connect(self._perf_edited)
+        lay.addWidget(self.perf)
+
+        # Suggested fixes: recipes for this GPU and game (Add applies one now;
+        # for Steam/Heroic games, Copy for their own launch options).
+        self.sugg_box = QWidget()
+        sl = QVBoxLayout(self.sugg_box)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(SP['1_5'])
+        self.tune_sugg_title = label("", "StatLabel")
+        sl.addWidget(self.tune_sugg_title)
+        self.tune_rows = QVBoxLayout()
+        self.tune_rows.setSpacing(SP['1'])
+        sl.addLayout(self.tune_rows)
+        self.sugg_box.setVisible(False)
+        lay.addWidget(self.sugg_box)
+
+        # protongen's saved options for a Steam/Heroic game, to paste there.
+        self.tune_pg_row = QWidget()
+        tpl = QVBoxLayout(self.tune_pg_row)
+        tpl.setContentsMargins(0, 0, 0, 0)
+        tpl.setSpacing(SP['1_5'])
+        self.tune_pg_title = label("protongen tuning", "StatLabel")
+        tpl.addWidget(self.tune_pg_title)
+        pgrow = QHBoxLayout()
+        self.tune_pg = QLineEdit()
+        self.tune_pg.setReadOnly(True)
+        pgrow.addWidget(self.tune_pg, 1)
+        self.tune_pg_copy = QPushButton("Copy")
+        self.tune_pg_copy.setToolTip("Copy, then paste into Steam → Properties → Launch options")
+        self.tune_pg_copy.clicked.connect(lambda: self._copy(self.tune_pg.text()))
+        pgrow.addWidget(self.tune_pg_copy)
+        tpl.addLayout(pgrow)
+        self.tune_pg_row.setVisible(False)
+        lay.addWidget(self.tune_pg_row)
+
+        # Advanced: the launch options line itself, and protongen.
+        self.adv_box, ag = _group("Advanced")
+        al = QVBoxLayout()
+        al.setSpacing(SP['1_5'])
+        orow = QHBoxLayout()
         self.ed_opts = QLineEdit()
         self.ed_opts.setPlaceholderText("PROTON_ENABLE_WAYLAND=1 mangohud %command%")
-        self.ed_opts.setToolTip("A Steam launch-options string, or paste a protongen:v1:… "
-                                "preset code. Enter applies it.")
+        self.ed_opts.setToolTip("The whole launch line, Steam style, or a protongen:v1:… "
+                                "preset code. Empty it and apply to clear the options.")
         self.ed_opts.textEdited.connect(self._opts_edited)
-        self.ed_opts.returnPressed.connect(self._apply_options)
-        lay.addWidget(self.ed_opts)
+        self.ed_opts.returnPressed.connect(self._apply_launch)
+        orow.addWidget(self.ed_opts, 1)
+        self.btn_copy_opts = icon_button(G['copy'], "Copy launch options", 30, "Ghost")
+        self.btn_copy_opts.clicked.connect(lambda: self._copy(self.ed_opts.text()))
+        orow.addWidget(self.btn_copy_opts)
+        al.addLayout(orow)
         self.opts_state = label("", "Muted", wrap=True)
-        lay.addWidget(self.opts_state)
-        orow = QHBoxLayout()
-        orow.addStretch()
-        clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: (self._dirty.discard('opts'), self._emit(
-            ['--set-launch', self.slug, ''], "Clearing launch options", True)))
-        apply_o = QPushButton("Apply options")
-        apply_o.setObjectName("Primary")
-        apply_o.clicked.connect(self._apply_options)
-        orow.addWidget(clear)
-        orow.addWidget(apply_o)
-        lay.addLayout(orow)
-
-        self.ck_via_steam = QCheckBox("Launch through Steam")
-        self.ck_via_steam.setToolTip("Play starts the game's Steam shortcut: Steam Input, the "
-                                     "overlay, recording and your Steam status. Nexus's own "
-                                     "extras (Discord, stay-awake, session tuning) then don't run.")
-        self.ck_via_steam.clicked.connect(lambda on: self._emit(
-            ['--launch-via', self.slug, 'steam' if on else 'nexus'],
-            "Launching through Steam" if on else "Launching from Nexus", False))
-        lay.addWidget(self.ck_via_steam)
-
-        lay.addWidget(label("Performance", "StatLabel"))
-        self.perf = PerfPanel()
-        lay.addWidget(self.perf)
-        prow2 = QHBoxLayout()
-        prow2.addStretch()
-        apply_perf = QPushButton("Apply performance")
-        apply_perf.setToolTip("Writes these into the launch options above "
-                              "(launch.sh, Steam and Heroic)")
-        apply_perf.clicked.connect(lambda: self._emit(
-            ['--perf', self.slug, *self.perf.items()], "Applying performance settings",
-            bool(self.game.get('steam'))))
-        prow2.addWidget(apply_perf)
-        lay.addLayout(prow2)
-
-        lay.addWidget(label("protongen", "StatLabel"))
+        al.addWidget(self.opts_state)
+        al.addWidget(label("protongen", "StatLabel"))
         self.pg_state = label("", "Muted", wrap=True)
-        lay.addWidget(self.pg_state)
+        al.addWidget(self.pg_state)
         self.pg_opts = QLineEdit()
         self.pg_opts.setReadOnly(True)
-        lay.addWidget(self.pg_opts)
+        al.addWidget(self.pg_opts)
         grow = QHBoxLayout()
         grow.addStretch()
         self.btn_pg_open = QPushButton("Open protongen")
@@ -1062,8 +1161,29 @@ class DetailsPanel(QFrame):
         grow.addWidget(self.btn_pg_open)
         grow.addWidget(self.btn_pg_default)
         grow.addWidget(self.btn_pg_pull)
-        lay.addLayout(grow)
-        lay.addStretch()
+        al.addLayout(grow)
+        ag.addLayout(al, 0, 0, 1, 4)
+        lay.addWidget(self.adv_box)
+
+        # One Apply for Proton, Start from, the switches and the line: shown
+        # only while something differs from what the game uses now.
+        self.apply_bar = QFrame()
+        self.apply_bar.setObjectName("Card")
+        bl = QHBoxLayout(self.apply_bar)
+        bl.setContentsMargins(SP['3'], SP['2'], SP['2'], SP['2'])
+        self.pending_text = label("", None)
+        bl.addWidget(self.pending_text, 1)
+        discard = QPushButton("Discard")
+        discard.clicked.connect(self._discard_launch)
+        self.btn_apply = QPushButton("Apply")
+        self.btn_apply.setObjectName("Primary")
+        self.btn_apply.setToolTip("Writes the changes into launch.sh, the Steam shortcut and "
+                                  "Heroic")
+        self.btn_apply.clicked.connect(self._apply_launch)
+        bl.addWidget(discard)
+        bl.addWidget(self.btn_apply)
+        self.apply_bar.setVisible(False)
+        lay.addWidget(self.apply_bar)
         return w
 
     def _logs_tab(self):
@@ -1128,6 +1248,15 @@ class DetailsPanel(QFrame):
             self.confirm.setVisible(False)
             self.info = {}
             self._dirty = set()                 # edits belong to the game they were made on
+            self._sent = self._was_busy = False
+        # Applied changes wait for their jobs: once the game stops being busy,
+        # ask again what it uses now, and let go of the edits.
+        busy = bool(self.game.get('busy'))
+        done_job = same and self._was_busy and not busy
+        self._was_busy = busy
+        if done_job and self._sent:
+            self._sent = False
+            self._dirty -= self.LAUNCH_KEYS
         if not same:
             if self._notes_timer.isActive():        # keep what was typed for the last game
                 self._notes_timer.stop()
@@ -1138,12 +1267,12 @@ class DetailsPanel(QFrame):
             self._notes_for = self.slug
             self.sec_notes.set_summary((self.game.get('notes') or '').strip().split('\n')[0][:40])
         self._fill()
-        self._refresh_info()
+        self._refresh_info(force=done_job)
         if not same:
             self._load_tips()
-        self.sec_snap.setVisible(has('btrfs') and self.game.get('source', 'nexus') == 'nexus'
+        self.snap_box.setVisible(has('btrfs') and self.game.get('source', 'nexus') == 'nexus'
                                  and bool(self.game.get('owned_dir')))
-        if self.sec_snap.is_open and self.sec_snap.isVisibleTo(self):
+        if self.sec_files.is_open and not self.snap_box.isHidden():
             self._load_snapshots(force=not same)
 
     def _load_snapshots(self, force: bool = False):
@@ -1180,7 +1309,7 @@ class DetailsPanel(QFrame):
             self.snap_note.setText("Roll back puts the game and its prefix (settings, saves) "
                                    "back the way they were. What's there now is kept as a "
                                    "snapshot too.")
-        self.sec_snap.set_summary(f"{len(snaps)}" if snaps else "")
+        self.snap_title.setText(f"Snapshots · {len(snaps)}" if snaps else "Snapshots")
         for x in snaps:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
@@ -1199,9 +1328,12 @@ class DetailsPanel(QFrame):
             self.snap_rows.addWidget(w)
 
     def _load_tips(self):
-        self.sec_tune.setVisible(False)
-        self.sec_compat.setVisible(False)
-        self.sec_about.setVisible(False)
+        self.sugg_box.setVisible(False)
+        self.tune_pg_row.setVisible(False)
+        self.sec_launch.setVisible(self._launch_full)
+        for key in ('store', 'compat', 'deal'):
+            self._about_parts[key] = False
+        self._sync_about()
         self.ac_notice.setVisible(False)
         self._store, self._tips_hltb = {}, None
         if self.slug:
@@ -1242,13 +1374,13 @@ class DetailsPanel(QFrame):
                   f"<a href='{html.escape(pdb['url'])}' style='color:{P['accent']}'>open</a>")
         elif pdb:
             self.tune_pdb.setText("ProtonDB: no reports yet")
-        self.tune_pdb.setVisible(bool(pdb))
+        self.tune_pdb.setVisible(bool(pdb) and has('proton'))
         deal = self._gamedb_line(info.get('gamedb'))
         self.tune_deal.setText(deal)
         self.tune_deal.setVisible(bool(deal))
+        self._about_parts['deal'] = bool(deal)
         pg = info.get('protongen')
-        show_pg = bool(pg) and external
-        self.tune_pg_title.setVisible(show_pg)
+        show_pg = bool(pg) and external and has('proton')
         self.tune_pg_row.setVisible(show_pg)
         if show_pg:
             self.tune_pg.setText(pg['launch_options'])
@@ -1269,8 +1401,8 @@ class DetailsPanel(QFrame):
                 b = QPushButton("Copy")
                 b.clicked.connect(lambda _=False, t=r['launch_options']: self._copy(t))
             else:
-                b = QPushButton("Apply")
-                b.setToolTip("Adds this to the game's launch options (Steam, Heroic and "
+                b = QPushButton("Add")
+                b.setToolTip("Adds this to the game's launch options now (Steam, Heroic and "
                              "launch.sh)")
                 b.clicked.connect(lambda _=False, n=r['name']: self._emit(
                     ['--apply-recipe', self.slug, n], f"Applying '{n}'",
@@ -1296,15 +1428,18 @@ class DetailsPanel(QFrame):
         self.btn_explain.setVisible(bool(info.get('llm')) and not external)
         lines, more = compat_facts(info)
         self.compat_text.setText(more)
-        self.sec_compat.set_summary(lines[0][0] if lines else "")
-        self.sec_compat.setVisible(bool(more))
+        self.compat_text.setVisible(bool(more))
+        self._about_parts['compat'] = bool(more) or not self.tune_pdb.isHidden()
         warn = anticheat_warning(info)
         self.ac_notice.setText(warn or '')
         self.ac_notice.setVisible(bool(warn))
-        has_tune = has('proton') and bool(pdb or show_pg or recipes or deal)
-        self.sec_tune.setVisible(has_tune)
-        self.sec_tune.set_summary(f"{len(recipes)} suggestion{'s' if len(recipes) != 1 else ''}"
-                                  if recipes else '')
+        sugg = has('proton') and bool(recipes)
+        self.sugg_box.setVisible(sugg)
+        if not self._launch_full:            # Steam/Heroic: advice only, when there is some
+            self.sec_launch.setVisible(sugg or show_pg)
+            self.sec_launch.set_summary(
+                f"{len(recipes)} suggestion{'s' if len(recipes) != 1 else ''}" if recipes else '')
+        self._sync_about()
         if pdb and pdb.get('tier'):
             t = pdb['tier']
             self.st_rating.set(t.capitalize(), f"ProtonDB · {pdb.get('total') or 0} reports",
@@ -1362,10 +1497,23 @@ class DetailsPanel(QFrame):
                             f"{html.escape(s_['name'])}</a>", None)
                 lab.setOpenExternalLinks(True)
                 self.similar_rows.addWidget(lab)
-        has = bool(st or info.get('reviews') or similar or self._tips_hltb)
-        self.sec_about.setVisible(has)
+        self._about_parts['store'] = bool(st or info.get('reviews') or similar or self._tips_hltb)
         rv = info.get('reviews') or {}
-        self.sec_about.set_summary(rv.get('desc') or ', '.join((st.get('genres') or [])[:2]))
+        self._about_summary = rv.get('desc') or ', '.join((st.get('genres') or [])[:2])
+        self._sync_about()
+
+    def _sync_about(self):
+        """About shows when any of its parts has something: the store blurb,
+        Game-db's line, compatibility facts, achievements."""
+        parts = self._about_parts
+        self.store_box.setVisible(parts['store'])
+        self.compat_box.setVisible(parts['compat'])
+        self.ach_box.setVisible(parts['ach'])
+        self.sec_about.setVisible(any(parts.values()))
+        ach = self.game.get('achievements') if parts['ach'] else None
+        self.sec_about.set_summary(" · ".join(x for x in (
+            getattr(self, '_about_summary', '') if parts['store'] else '',
+            f"{ach[0]} / {ach[1]}" if ach else '') if x))
 
     @staticmethod
     def _gamedb_line(gd) -> str:
@@ -1458,26 +1606,29 @@ class DetailsPanel(QFrame):
                 self.chips.addWidget(_pill(text, role or 'muted'))
         self.chips_host.setVisible(self.chips.count() > 0)
         external = src != 'nexus'
-        for sec in (self.sec_launch, self.sec_files, self.sec_log):
+        self._launch_full = not external and has('launch_profiles')
+        for w in (self.runtime_box, self.perf, self.adv_box):
+            w.setVisible(self._launch_full)
+        for sec in (self.sec_files, self.sec_trouble):
             sec.setVisible(not external)
-        self.sec_launch.setVisible(not external and has('launch_profiles'))
+        if self._launch_full:
+            self.sec_launch.setVisible(True)
+        elif not self.slug or self.sugg_box.isHidden() and self.tune_pg_row.isHidden():
+            self.sec_launch.setVisible(False)
         if external:
             self.confirm.setVisible(False)
         self._fill_quick(g)
         self.btn_play.setText(play_label(g))
         self.btn_play.setEnabled(play_enabled(g))
         self._fill_stats(g)
-        self.sec_launch.set_summary(g.get('proton') or '')
+        if self._launch_full:
+            self.sec_launch.set_summary(g.get('proton') or '')
         self.sec_files.set_summary(" · ".join(x for x in (
             "Steam" if g.get('steam') else '', "Heroic" if g.get('heroic') else '') if x))
         self.ov_steam.setText("In your Steam library" if g.get('steam') else "Not added")
         self.btn_steam.setText("Remove" if g.get('steam') else "Add")
         self.ov_heroic.setText("In your Heroic library" if g.get('heroic') else "Not added")
         self.btn_heroic.setText("Remove" if g.get('heroic') else "Add")
-        self.ov_proton.setText(g.get('proton') or "default")
-        opts = g.get('launch_options') or ''
-        self.ov_opts.setText(soft_wrap(opts) or "none (Steam/Heroic keep their own)")
-        self.btn_copy_opts.setVisible(bool(opts))
         exe = g.get('exe')
         self._folder = str(Path(exe).parent) if exe else (g.get('wine_prefix') or '')
         self.ov_folder.setText(soft_wrap(self._folder) or '—')
@@ -1489,6 +1640,8 @@ class DetailsPanel(QFrame):
         self.ed_exe.setText(exe or '')
         if 'opts' not in self._dirty and not self.ed_opts.hasFocus():
             self.ed_opts.setText(g.get('launch_options') or '')
+        self.btn_copy_opts.setVisible(bool(self.ed_opts.text()))
+        self._update_pending()
 
     def _fill_quick(self, g):
         """Round buttons for the handful of things you'd actually do here.
@@ -1506,7 +1659,7 @@ class DetailsPanel(QFrame):
                      (G['settings'], "Steam properties", 'steam-props'),
                      (G['wrench'], "Tune in protongen", 'protongen')]
         elif src == 'nexus':
-            acts += [(G['tune'], "Launch settings", '__launch'),
+            acts += [(G['tune'], "Launch", '__launch'),
                      (G['log'], "Log", '__log')]
         if is_installed(g):
             acts.append((G['folder'], "Open game folder", 'open-folder'))
@@ -1557,13 +1710,13 @@ class DetailsPanel(QFrame):
                            "Proton")
         ach = g.get('achievements')
         self.st_ach.setVisible(bool(ach))
-        self.sec_ach.setVisible(bool(ach))
+        self._about_parts['ach'] = bool(ach)
+        self._sync_about()
         if ach:
             done, total = ach
             self.st_ach.set(f"{done} of {total}", f"Achievements · {round(100 * done / total)}%",
                             P['success'] if done == total else None)
-            self.sec_ach.set_summary(f"{done} / {total}")
-            if self.sec_ach.is_open and self._ach_for != (g['slug'], done):
+            if self.sec_about.is_open and self._ach_for != (g['slug'], done):
                 self._load_achievements()
         tier = g.get('protondb')
         if tier in TIER_COLORS:
@@ -1578,6 +1731,8 @@ class DetailsPanel(QFrame):
         g = self.game
         if not g.get('achievements') or g.get('source', 'nexus') not in ('steam', 'nexus'):
             return
+        if self._ach_for == (g['slug'], g['achievements'][0]):
+            return                                  # already listed
         self._ach_for = (g['slug'], g['achievements'][0])
         clear_layout(self.ach_rows)
         self.ach_rows.addWidget(label("Loading…", "Muted"))
@@ -1604,23 +1759,25 @@ class DetailsPanel(QFrame):
             self.ach_rows.addWidget(label(f"…and {len(items) - self.ACH_SHOWN} more", "Muted"))
 
     def open_section(self, key):
-        sec = {'launch': self.sec_launch, 'files': self.sec_files, 'tune': self.sec_tune,
-               'log': self.sec_log, 'achievements': self.sec_ach,
-               'compat': self.sec_compat, 'about': self.sec_about,
-               'notes': self.sec_notes, 'snapshots': self.sec_snap}.get(key)
+        # Older keys still work: they name what moved into the five sections.
+        sec = {'launch': self.sec_launch, 'tune': self.sec_launch,
+               'files': self.sec_files, 'snapshots': self.sec_files,
+               'troubleshoot': self.sec_trouble, 'log': self.sec_trouble,
+               'about': self.sec_about, 'compat': self.sec_about,
+               'achievements': self.sec_about, 'notes': self.sec_notes}.get(key)
         if sec is None or sec.isHidden():
             return
         sec.set_open(True)
         QTimer.singleShot(0, lambda: alive(sec.head) and focus_and_reveal(sec.head))
 
-    def _refresh_info(self):
+    def _refresh_info(self, force: bool = False):
         slug = self.slug
         if not slug or self.game.get('source', 'nexus') != 'nexus':
             return
         # Selection syncs often (every library refresh); one query per game
-        # every few seconds is plenty — a finished job refreshes it anyway.
+        # every few seconds is plenty, and again as soon as a job finishes.
         last = getattr(self, '_info_at', (None, 0.0))
-        if last[0] == slug and time.monotonic() - last[1] < 5 and self.info:
+        if not force and last[0] == slug and time.monotonic() - last[1] < 5 and self.info:
             return
         self._info_at = (slug, time.monotonic())
 
@@ -1650,17 +1807,26 @@ class DetailsPanel(QFrame):
             self.cb_proton.blockSignals(False)
         want = choice if choice is not None else (pinned or '')
         self.cb_proton.setCurrentIndex(max(0, self.cb_proton.findData(want)))
-        if info.get('proton'):
-            self.ov_proton.setText(info['proton'] + ("  (pinned for this game)" if pinned else ""))
         if info.get('exe'):
             self.ed_exe.setText(info['exe'])
         prof = info.get('profile') or {}
-        self.perf.set_state(info.get('perf') or {}, info.get('perf_tools'), info.get('niri'),
-                            info.get('lsfg'))
-        self.ck_via_steam.setChecked(info.get('launch_via') == 'steam')
-        self.ck_via_steam.setEnabled(bool(info.get('in_steam')) or self.ck_via_steam.isChecked())
+        via = info.get('launch_via') or 'nexus'
+        self._base = {'proton': pinned or '', 'opts': info.get('launch_options') or '',
+                      'via': via}
+        if 'perf' not in self._dirty:
+            self.perf.set_state(info.get('perf') or {}, info.get('perf_tools'), info.get('niri'),
+                                info.get('lsfg'))
+            self._perf_base = self.perf.items()
+        if 'via' not in self._dirty:
+            self.seg_via.set_current(via, animate=False)
+        steam_item = self.seg_via.item('steam')
+        steam_item.setEnabled(bool(info.get('in_steam')) or via == 'steam')
         if not info.get('in_steam'):
-            self.ck_via_steam.setToolTip("Add the game to Steam first (⋮ → In Steam)")
+            steam_item.setToolTip("Add the game to Steam first (Game and files → Steam)")
+        if 'opts' not in self._dirty and not self.ed_opts.hasFocus():
+            self.ed_opts.setText(self._base['opts'])
+            self.ed_opts.setCursorPosition(0)
+        self.btn_copy_opts.setVisible(bool(self.ed_opts.text()))
         self.opts_state.setText(
             f"Managed here · from {prof.get('source', '?')}" if info.get('owns_options') else
             "Not managed yet: Steam and Heroic keep their own options until you apply some here.")
@@ -1698,10 +1864,11 @@ class DetailsPanel(QFrame):
             self.pg_opts.setVisible(False)
             self.btn_pg_pull.setEnabled(False)
             self.pg_notice.setVisible(False)
-        if self.sec_log.is_open:
+        if self.sec_trouble.is_open:
             self._load_log()
         if self.game:
             self._fill_stats(self.game)
+        self._update_pending()
 
     def _load_bench(self):
         slug = self.slug
@@ -1754,14 +1921,88 @@ class DetailsPanel(QFrame):
         self._emit(['--remove-heroic' if on else '--heroic', self.slug],
                    "Removing from Heroic" if on else "Adding to Heroic", False)
 
+    # The launch settings that wait for Apply (the rest act at once).
+    LAUNCH_KEYS = frozenset({'proton', 'opts', 'perf', 'via'})
+
     def _name_edited(self, _text):
         self._dirty.add('name')
 
     def _opts_edited(self, _text):
         self._dirty.add('opts')
+        self._update_pending()
 
     def _proton_picked(self, _i):
         self._dirty.add('proton')
+        self._update_pending()
+
+    def _perf_edited(self):
+        self._dirty.add('perf')
+        self._update_pending()
+
+    def _via_picked(self, _key):
+        self._dirty.add('via')
+        self._update_pending()
+
+    def _pending_ops(self) -> list[tuple[list, str, bool]]:
+        """The CLI jobs Apply would run, in order: Proton, the typed line,
+        the switches that changed, where Play starts from."""
+        if not self.slug or not self.info or not self._launch_full:
+            return []
+        steam = bool(self.game.get('steam'))
+        ops = []
+        proton = self.cb_proton.currentData()
+        if 'proton' in self._dirty and proton is not None and proton != self._base['proton']:
+            ops.append((['--proton', self.slug, proton or 'default'], "Switching Proton", steam))
+        text = self.ed_opts.text().strip()
+        if 'opts' in self._dirty and text != self._base['opts']:
+            ops.append((['--set-launch', self.slug, text],
+                        "Applying launch options" if text else "Clearing launch options", steam))
+        if 'perf' in self._dirty:
+            changed = [i for i in self.perf.items() if i not in self._perf_base]
+            if changed:
+                ops.append((['--perf', self.slug, *changed], "Applying performance settings",
+                            steam))
+        via = self.seg_via.current() or 'nexus'
+        if 'via' in self._dirty and via != self._base['via']:
+            ops.append((['--launch-via', self.slug, via],
+                        "Launching through Steam" if via == 'steam' else "Launching from Nexus",
+                        False))
+        return ops
+
+    def _update_pending(self):
+        ops = [] if self._sent else self._pending_ops()
+        n = sum(len(args) - 2 if args[0] == '--perf' else 1 for args, _t, _s in ops)
+        self.pending_text.setText(f"{n} change{'s' if n != 1 else ''} to apply")
+        self.apply_bar.setVisible(bool(ops))
+
+    def _apply_launch(self):
+        ops = self._pending_ops()
+        if not ops or self._sent:
+            return
+        line = next((args[2] for args, _t, _s in ops if args[0] == '--set-launch'), '')
+        preview = protongen_code_preview(line) if line else None
+        if preview is not None:          # someone else's preset: show what it runs first
+            ask(self, "Apply this preset?", preview, "Apply",
+                lambda: self._send_ops(ops), danger=False)
+            return
+        self._send_ops(ops)
+
+    def _send_ops(self, ops):
+        # The jobs run one after another, in this order. The edits stay on
+        # screen until the game's jobs are done and its settings are read again.
+        self._sent = True
+        self._update_pending()
+        for args, title, steam in ops:
+            self._emit(args, title, steam)
+
+    def _discard_launch(self):
+        self._dirty -= self.LAUNCH_KEYS
+        self._sent = False
+        self.ed_opts.setText(self._base['opts'])
+        if self.info:
+            self._apply_info(self.info, None)
+        else:
+            self._update_pending()
 
     def _rename(self):
         name = self.ed_name.text().strip()
@@ -1778,31 +2019,6 @@ class DetailsPanel(QFrame):
         if path:
             self._emit(['--set-exe', self.slug, path], "Changing executable",
                        bool(self.game.get('steam')))
-
-    def _apply_proton(self):
-        data = self.cb_proton.currentData()
-        if data is None:
-            return
-        self._dirty.discard('proton')
-        self._emit(['--proton', self.slug, data or 'default'], "Switching Proton",
-                   bool(self.game.get('steam')))
-
-    def _apply_options(self):
-        text = self.ed_opts.text().strip()
-        if not text:
-            self.toast.emit("Enter launch options, or use Clear to remove them.", 'warn')
-            return
-        preview = protongen_code_preview(text)
-        if preview is not None:          # someone else's preset: show what it runs first
-            ask(self, "Apply this preset?", preview, "Apply",
-                lambda: self._send_options(text), danger=False)
-            return
-        self._send_options(text)
-
-    def _send_options(self, text):
-        self._dirty.discard('opts')
-        self._emit(['--set-launch', self.slug, text], "Applying launch options",
-                   bool(self.game.get('steam')))
 
     def _pull_protongen(self):
         self._emit(['--from-protongen', self.slug], "Pulling protongen tuning",
@@ -1855,4 +2071,5 @@ from .gameinfo import (anticheat_warning, compat_facts, is_installed, play_enabl
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .widgets import (ask, clear_layout, FlowLayout, icon_button, icon_label, label,
-    NoWheelCombo, plain_label, protongen_code_preview, set_glyph_icon, soft_wrap)  # noqa: E402
+    NoWheelCombo, plain_label, protongen_code_preview, SegmentedControl, set_glyph_icon,
+    soft_wrap)  # noqa: E402

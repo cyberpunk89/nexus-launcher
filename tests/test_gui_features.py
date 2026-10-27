@@ -92,10 +92,11 @@ class Details(unittest.TestCase):
         with windows():
             p = self.panel()
             p.show_games([dict(GAME, playing=False)])
-            for w in (p.sec_launch, p.sec_tune, p.sec_snap, p.st_proton, p.st_rating,
-                      p.btn_heroic, p.ov_heroic, p.ov_proton, p.pg_notice):
+            for w in (p.sec_launch, p.snap_box, p.tune_pdb, p.st_proton, p.st_rating,
+                      p.btn_heroic, p.ov_heroic, p.pg_notice):
                 self.assertTrue(w.isHidden(), w)
-            self.assertFalse(p.sec_files.isHidden())
+            self.assertFalse(p.sec_files.isHidden())       # rename, exe, Steam: Windows too
+            self.assertFalse(p.sec_trouble.isHidden())
             self.assertFalse(p.confirm_backup.isHidden())
             p.show_games([GAME, STEAM])
             for key in details.BATCH_NEEDS:
