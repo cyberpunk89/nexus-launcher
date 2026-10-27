@@ -17,3 +17,10 @@ test-output.txt
 # PyInstaller output
 build/
 dist/
+
+# Editor swap files, partial downloads, timestamped backups, type-checker cache
+*.swp
+*.part
+*.bak-*
+.mypy_cache/
+*.egg-info/

@@ -1,0 +1,43 @@
+# Project metadata and tool settings. Nexus runs from the checkout (bin/nexus,
+# bin/nexus-cli; see README → Install), so nothing here is needed to use it.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-launcher"
+description = "One launcher for all your PC games: Steam, Epic, Heroic and Windows installers"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dynamic = ["version"]
+# The GUI needs PyQt6; nexus-cli is stdlib only.
+dependencies = ["PyQt6>=6.5"]
+
+[project.optional-dependencies]
+steam = ["vdf>=3.4"]            # Steam shortcuts and library details
+
+[project.urls]
+Homepage = "https://github.com/cyberpunk89/nexus-launcher"
+
+[tool.setuptools.dynamic]
+version = {attr = "nexus.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
+
+[tool.setuptools.package-data]
+nexus = ["data/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["knowledge-base"]
+
+[tool.ruff.lint]
+# pycodestyle + pyflakes, as the existing `# noqa: E402/F401` comments assume.
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]            # tests import tests.sandbox before nexus
