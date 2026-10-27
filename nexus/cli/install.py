@@ -547,7 +547,6 @@ def _finish_install(args, *, slug: str, display_name: str, game_dir: Path, wine_
         # waiting for that.
         steam_pending = True
         log.print("\nSteam is running — the Steam shortcut is added once Steam is closed.")
-        emit_event('steam-pending', {'slug': slug})
     elif not args.no_steam and config.get('steam', True):
         steam_appid_val = _best_effort(
             "The Steam shortcut", add_steam_shortcut_native,

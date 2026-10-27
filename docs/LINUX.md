@@ -221,8 +221,8 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
     game page) and says when it's ready. Home, featured games and Storage stay about installed
     games; there's an optional *In your library* dashboard row. Off in Settings if you don't
     want them.
-  - A tile is just the game's art — no badges. The title fades in on hover with **Play** and
-    **⋮** (⋮ and right-click open the same menu); a green dot marks the game being played.
+  - A tile is just the game's art — no badges. The title fades in on hover with a **⋮** button
+    (⋮ and right-click open the same menu); a green dot marks the game being played.
     A click (or Enter / A) opens the game's page, where Play is.
   - **Details panel** (click a tile, from Home or Library): hero art, the game's status as
     chips (source, ProtonDB tier, update, favourite, launch options), Play, play time /
@@ -493,7 +493,7 @@ nexus-cli --discard-incomplete <slug>   # bin an unfinished install (never a lib
 ```
 
 Installs print `@nexus <event> <json>` lines for the GUI (`progress`,
-`exe-candidates`, `steam-pending`, `retry-interactive`, `installed`); `--defer-steam`
+`exe-candidates`, `retry-interactive`, `installed`); `--defer-steam`
 leaves the Steam shortcut for a later `--steam <slug>` when Steam is running. An
 unfinished install keeps a `.nexus-incomplete` marker (with the arguments to resume
 it) in its folder.

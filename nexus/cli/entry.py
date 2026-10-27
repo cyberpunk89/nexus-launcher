@@ -142,8 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=argparse.SUPPRESS)       # the download this install is from
     parser.add_argument('--defer-steam', action='store_true', dest='defer_steam',
                         help="If Steam is running when the install finishes, don't wait for "
-                             "it: print a steam-pending event and leave the shortcut for a "
-                             "later `--steam <slug>` (the GUI does this once Steam is closed)")
+                             "it: the installed event says steam_pending, and the shortcut "
+                             "waits for a later `--steam <slug>` (the GUI does this once Steam is closed)")
     parser.add_argument('--trash-repack', action='store_true', dest='trash_repack',
                         help='After a successful install, move the repack folder to the '
                              'Trash (config [install] trash_repack = true does it always)')

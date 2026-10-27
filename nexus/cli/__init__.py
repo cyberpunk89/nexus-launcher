@@ -5,7 +5,7 @@ The code lives in the modules of this package, one per area (common is the
 base layer; main parses arguments). This module re-exports every name, so
 `nexus.cli.<name>` keeps working for bin/nexus-cli, the GUI's tooling and the
 tests. To patch a name in tests, patch it where it is used: each module
-imports what it needs (tests/cli_patch.py does that for every module)."""
+imports what it needs (tests/patching.py does that for every module)."""
 
 from nexus.inno import (
     _inno_block, _INNO_MAX, _INNO_TAG, inno_header)  # noqa: F401

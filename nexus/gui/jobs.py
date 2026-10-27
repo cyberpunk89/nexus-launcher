@@ -181,6 +181,9 @@ class Job(QObject):
             self.events[m.group(1)] = data
             if m.group(1) == 'progress':
                 self._on_progress(int(data.get('written') or 0))
+            elif m.group(1) == 'move' and data.get('total'):
+                self.detail = (f"{fmt_bytes(int(data.get('done') or 0))} of "
+                               f"{fmt_bytes(int(data['total']))} copied")
             return
         m = _STEP_RE.match(line)
         if m:
