@@ -808,6 +808,106 @@ GE-Proton. They go to the phone targets in `[notify]` (ntfy / KDE Connect) and, 
 open, to the desktop. The first check only records what's already true, so switching alerts on
 doesn't send forty old lows. `nexus-cli --check-alerts [--dry-run]` checks now.
 
+## Command-line reference
+
+Everything the app does goes through `nexus-cli`, so all of it works from a terminal too. The
+flags the sections above already explain aren't repeated here; `nexus-cli --help` has the full
+list. Flags whose help says *Internal* are the app's own plumbing and may change.
+
+**Install switches** (with `nexus-cli "<repack>"`):
+
+| Flag | Does |
+|---|---|
+| `--unattended` | Install silently even when `[install] unattended = false` |
+| `--no-deps` | Skip winetricks dependencies even if `--deps` was given (they're off by default) |
+| `--skip-mem-check` | Skip the low-memory stop before installing (not recommended) |
+| `--no-steam`, `--no-heroic`, `--no-desktop` | Don't add the game to Steam / Heroic / the app menu |
+| `--no-artwork` | Don't fetch cover, hero, logo and icon art from SteamGridDB |
+| `--import-save` | Put back an earlier save backup of this game, if there is one |
+| `--use-protongen-default` | Set the game up with protongen's default profile unless it has its own |
+| `--log` | Keep the full install log in `~/.local/share/nexus/logs/<game>-<time>.log` |
+| `--trash-repack-dir PATH` | Move a repack folder to the Trash, without installing |
+
+**Uninstall, saves and integrity:**
+
+| Flag | Does |
+|---|---|
+| `--uninstall SLUG --save-backup` | Back up the game's saves before removing it (without it, you're asked; with `--yes` and no `--save-backup`, saves are not backed up) |
+| `--restore-saves SLUG` | Copy the newest save backup back into the game's prefix |
+| `--check-integrity SLUG` | Hash the installed files against a saved baseline (made on the first run) to catch corruption |
+| `--check-integrity SLUG --rebaseline` | Accept the current files as the new baseline |
+
+**Adding games and Steam / Heroic shortcuts:**
+
+| Flag | Does |
+|---|---|
+| `--add-steam PATH [--name NAME]` | Add a game that's already installed (folder or .exe) to Steam and the app menu |
+| `--add-exe EXE [--name NAME]` | Add a game another launcher installed, by its .exe, where it is; nothing is copied and uninstall never touches its files |
+| `--add-exe EXE --in-prefix` | Run it in the Wine prefix it already sits in instead of a new one |
+
+**Artwork** (needs a SteamGridDB key):
+
+| Flag | Does |
+|---|---|
+| `--set-art GAME --kind cover\|hero\|logo\|icon\|wide --url URL` | Use this SteamGridDB image for the game (`--reset` goes back to the default) |
+| `--set-sgdb GAME --id ID [--sgdb-name NAME]` | Pin the SteamGridDB game the art comes from (`--reset` goes back to automatic matching) |
+| `--fill-art` | Fetch missing hero, logo and banner art for every game |
+| `--refetch-art SLUG` | Download one game's art again |
+
+**Proton builds:**
+
+| Flag | Does |
+|---|---|
+| `--list-protons` | Installed Proton builds (`--json` too) |
+| `--proton-releases` | Recent GE-Proton releases |
+| `--proton-remove NAME` | Move a Proton build you installed to the Trash (refused while a game uses it) |
+| `--proton-migrate OLD NEW` | Move every Nexus, Steam and Heroic game from one Proton build to another |
+
+**Storage clean-up** (`--cleanup-scan` lists the candidates and their ids):
+
+| Flag | Does |
+|---|---|
+| `--cleanup ID…` | Move those candidates to the Trash (stray prefixes go to quarantine instead) |
+| `--cleanup ID… --forever` | Delete them for good instead |
+| `--quarantine-restore NAME` | Put a quarantined prefix back where it was |
+| `--orphans` | Stray Steam `compatdata` prefixes (`--json` too) |
+| `--clean-orphan-compatdata APPID` | Move one of them out of Steam's way (never deleted outright) |
+
+**Library and running games:**
+
+| Flag | Does |
+|---|---|
+| `--list --sizes` | Work out (and cache) each game's size on disk; slow on a big library |
+| `--pause SLUG`, `--resume SLUG` | Freeze and thaw a running repack (everything in its prefix) |
+
+**Tips and protongen:**
+
+| Flag | Does |
+|---|---|
+| `--game-tips GAME` | protongen tuning, ProtonDB tier, Steam Deck / anti-cheat / PCGamingWiki facts and fitting recipes (a slug, `steam-<appid>` or a Heroic slug) |
+| `--protondb APPID…` | ProtonDB tiers for Steam app ids (cached a day) |
+| `--apply-recipe SLUG RECIPE` | Merge one of protongen's recipes into a game's launch options |
+| `--explain-log SLUG` | Explain the game's latest log with protongen's local AI, if enabled |
+
+**Repacks and torrents:**
+
+| Flag | Does |
+|---|---|
+| `--repack-index` | Sync the whole repack catalogue and show which wishlist games have one (at most every 6 h; `--refresh` forces it) |
+| `--repack-grab SLUG [--auto-install]` | Send a repack's magnet link to your torrent client, and install it when done |
+| `--torrents --all` | Every torrent in the client, not only the ones Nexus added |
+| `--torrent-pause HASH…`, `--torrent-resume HASH…` | Pause / resume torrents |
+| `--torrent-remove HASH… [--delete-data]` | Remove torrents, and with `--delete-data` their files |
+| `--torrent-test` | Check that Nexus can reach your torrent client |
+
+**News and notifications:**
+
+| Flag | Does |
+|---|---|
+| `--news-add-feed URL [NAME]`, `--news-remove-feed URL` | Add or remove your own RSS/Atom feed |
+| `--news-source NAME on\|off` | Switch a news source on or off: a source id from the News page, `steam` (news for your games) or `proton` (releases) |
+| `--notify-test` | Send a test push to the phone targets in `[notify]` |
+
 ## Config & data
 
 `~/.config/nexus/config.toml` — optional. Start from

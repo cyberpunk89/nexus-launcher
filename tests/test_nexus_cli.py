@@ -379,6 +379,22 @@ class CommandTable(unittest.TestCase):
         with mock.patch.object(features, 'FEATURES', features.ALL):
             self.assertIn('--proton-install', fi.build_parser().format_help())
 
+    def test_every_flag_is_documented_or_marked_internal(self):
+        # docs/LINUX.md is the CLI reference; app-only plumbing says so in its help (w-36)
+        import argparse
+        import re
+        from nexus import features
+        root = Path(__file__).resolve().parents[1]
+        docs = (root / 'README.md').read_text() + (root / 'docs' / 'LINUX.md').read_text()
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            parser = fi.build_parser()
+        missing = [opt for a in parser._actions
+                   if a.help != argparse.SUPPRESS and not (a.help or '').startswith('Internal')
+                   for opt in a.option_strings
+                   if opt.startswith('--') and opt != '--help'
+                   and not re.search(re.escape(opt) + r'(?![\w-])', docs)]
+        self.assertEqual(missing, [], 'add these to docs/LINUX.md or mark them Internal')
+
     def test_every_command_flag_exists_and_none_fires_by_default(self):
         parser = fi.build_parser()
         defaults = parser.parse_args(['/some/repack'])
