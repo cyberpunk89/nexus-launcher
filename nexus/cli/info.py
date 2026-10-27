@@ -5,6 +5,8 @@ import re
 import sys
 from datetime import datetime
 
+from nexus import features
+
 from .common import _cached_read, _load_toml, CONFIG_PATH, STEAM_ROOT
 
 
@@ -85,23 +87,28 @@ def compat_lines(info: dict) -> list[str]:
 
 def cmd_game_tips(ident: str, as_json: bool) -> None:
     """Everything the details panel shows beyond the basics, for any game:
-    protongen's saved tuning, ProtonDB tier (Steam games), and the protongen
-    recipes that fit this machine."""
+    PCGamingWiki, Game-db and HowLongToBeat facts everywhere; where Proton is
+    (Linux), also protongen's saved tuning, ProtonDB tier (Steam games),
+    Steam Deck and anti-cheat status, and the protongen recipes that fit this
+    machine. Without Proton those keys are there but empty."""
     from nexus import tips, protondb
     g = _game_by_id(ident, light=True)
     if not g:
         print(f"Unknown game {ident!r}", file=sys.stderr)
         sys.exit(1)
     from nexus import compat
-    hw = tips.hardware()
+    proton = features.has('proton')
+    hw = tips.hardware() if proton else {'gpus': []}
     tier = None
     pdb = None
     store = compat.store_appid(g)            # a repack's comes from its umu GAMEID
-    if store:
+    if store and proton:
         pdb = protondb.tiers([store]).get(store)
         tier = (pdb or {}).get('tier')
     pg = None
-    if g.get('source') == 'nexus':
+    if not proton:
+        hit = None
+    elif g.get('source') == 'nexus':
         hit = protongen_memory_for(g)
     else:
         pid = _protongen_id(g)
@@ -117,13 +124,18 @@ def cmd_game_tips(ident: str, as_json: bool) -> None:
         pg = {'source': hit[0], 'launch_options': format_launch_options(prof),
               'proton': prof.get('proton')}
     cur = format_launch_options(g.get('launch') or {}) if g.get('source') == 'nexus' else None
-    recipes = tips.recipes_for(hw, tier)
-    info = {'id': ident, 'protondb': pdb, 'protongen': pg, 'protongen_id': _protongen_id(g),
+    recipes = tips.recipes_for(hw, tier) if proton else []
+    # Deck and Are We Anti-Cheat Yet are about running under Proton; PCGamingWiki isn't.
+    facts = compat.facts(store) if proton else {
+        'anticheat': None, 'deck': None,
+        'pcgw': compat.pcgw([store]).get(store) if store else None}
+    info = {'id': ident, 'protondb': pdb, 'protongen': pg,
+            'protongen_id': _protongen_id(g) if proton else None,
             'recipes': recipes, 'current': cur,
             'gpu': next((f"{x['name']} ({x['gen'] or x['vendor']})" for x in hw['gpus']
                          if not x['integrated']), None),
             'llm': _llm_config() is not None, 'gamedb': None,
-            'store_appid': store, **compat.facts(store)}
+            'store_appid': store, **facts}
     try:
         from nexus import gamedb
         appid = g['appid'] if g.get('source') == 'steam' else g.get('steam_appid')
@@ -151,7 +163,8 @@ def cmd_game_tips(ident: str, as_json: bool) -> None:
         print(line)
     if pg:
         print(f"protongen ({pg['source']}): {pg['launch_options']}")
-    print(f"Suggestions for {info['gpu']}:")
+    if recipes:
+        print(f"Suggestions for {info['gpu']}:")
     for r in recipes:
         print(f"  - {r['name']}: {r['launch_options']}")
 
