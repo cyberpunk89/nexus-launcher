@@ -18,13 +18,31 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 from . import net
+from .features import has
 from .paths import NEWS_CONFIG
 
 MAX_AGE = 3600
-DEFAULT_FEEDS = [
-    {'id': 'gol', 'name': 'GamingOnLinux', 'url': 'https://www.gamingonlinux.com/article_rss.php'},
-    {'id': 'boilingsteam', 'name': 'Boiling Steam', 'url': 'https://boilingsteam.com/feed/'},
+# The sources you can tick on the News page. `on` lists the platforms where a
+# source starts switched on; the rest are one tick away in Manage feeds.
+CATALOGUE = [
+    {'id': 'gol', 'name': 'GamingOnLinux', 'url': 'https://www.gamingonlinux.com/article_rss.php',
+     'on': ('linux',)},
+    {'id': 'boilingsteam', 'name': 'Boiling Steam', 'url': 'https://boilingsteam.com/feed/',
+     'on': ('linux',)},
+    {'id': 'pcgamer', 'name': 'PC Gamer', 'url': 'https://www.pcgamer.com/rss/',
+     'on': ('windows',)},
+    {'id': 'rps', 'name': 'Rock Paper Shotgun', 'url': 'https://www.rockpapershotgun.com/feed',
+     'on': ('windows',)},
+    {'id': 'eurogamer', 'name': 'Eurogamer', 'url': 'https://www.eurogamer.net/feed', 'on': ()},
+    {'id': 'ign', 'name': 'IGN', 'url': 'https://feeds.feedburner.com/ign/games-all', 'on': ()},
+    {'id': 'gamespot', 'name': 'GameSpot', 'url': 'https://www.gamespot.com/feeds/mashup/',
+     'on': ()},
+    {'id': 'polygon', 'name': 'Polygon', 'url': 'https://www.polygon.com/rss/index.xml',
+     'on': ()},
+    {'id': 'vg247', 'name': 'VG247', 'url': 'https://www.vg247.com/feed', 'on': ()},
+    {'id': 'kotaku', 'name': 'Kotaku', 'url': 'https://kotaku.com/rss', 'on': ()},
 ]
+OPTIONS = ('steam', 'proton')       # "Steam news for my games", "Proton releases"
 SUMMARY_MAX = 600
 MRSS = '{http://search.yahoo.com/mrss/}'
 CONTENT = '{http://purl.org/rss/1.0/modules/content/}encoded'
@@ -144,9 +162,17 @@ def _news_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _disabled(data: dict) -> list[str]:
-    d = data.get('disabled', [])
+def platform() -> str:
+    return 'linux' if has('proton') else 'windows'     # what this build can do, not the OS name
+
+
+def _listed(data: dict, key: str) -> list[str]:
+    d = data.get(key, [])
     return [str(x) for x in d] if isinstance(d, list) else []
+
+
+def _disabled(data: dict) -> list[str]:
+    return _listed(data, 'disabled')
 
 
 def user_feeds() -> list[dict]:
@@ -159,23 +185,82 @@ def user_feeds() -> list[dict]:
     return out
 
 
+def _default_on(f: dict) -> bool:
+    return True if f.get('user') else platform() in f['on']
+
+
+def all_feeds() -> list[dict]:
+    """Every source you can pick, each with `on`: its platform default,
+    changed by the `enabled` / `disabled` lists in news.toml."""
+    cfg = _news_config()
+    enabled, disabled = set(_listed(cfg, 'enabled')), set(_disabled(cfg))
+    out = []
+    for f in [{**c, 'user': False} for c in CATALOGUE] + user_feeds():
+        on = f['id'] in enabled or (_default_on(f) and f['id'] not in disabled)
+        out.append({'id': f['id'], 'name': f['name'], 'url': f['url'],
+                    'user': f['user'], 'on': on})
+    return out
+
+
 def feeds() -> list[dict]:
-    """Default feeds plus the user's own, minus any listed in `disabled`."""
-    disabled = set(_disabled(_news_config()))
-    return [f for f in DEFAULT_FEEDS + user_feeds() if f['id'] not in disabled]
+    """The sources that are switched on."""
+    return [f for f in all_feeds() if f['on']]
 
 
-def save_user_feeds(user_feeds: list[dict]) -> None:
-    """Rewrite the [[feed]] list, keeping the hand-edited `disabled` list."""
+def _option_default(name: str) -> bool:
+    return name == 'steam' or platform() == 'linux'      # Proton releases mean little on Windows
+
+
+def options() -> dict:
+    """{'steam': bool, 'proton': bool}: the two non-feed sources, on by
+    default (Proton releases: on Linux only) unless news.toml says otherwise."""
+    cfg = _news_config()
+    return {k: cfg[k] if isinstance(cfg.get(k), bool) else _option_default(k) for k in OPTIONS}
+
+
+def _save(user: list[dict], disabled: list[str], enabled: list[str], opts: dict) -> None:
     def q(s):
         return json.dumps(str(s), ensure_ascii=False)
     lines = ["# Nexus news feeds (RSS or Atom). Managed from the News page.", ""]
-    disabled = _disabled(_news_config())
-    if disabled:
-        lines += [f"disabled = [{', '.join(q(d) for d in disabled)}]", ""]
-    for f in user_feeds:
+    for key, ids in (('disabled', disabled), ('enabled', enabled)):
+        if ids:
+            lines += [f"{key} = [{', '.join(q(d) for d in ids)}]", ""]
+    for k in OPTIONS:
+        if opts[k] != _option_default(k):
+            lines += [f"{k} = {'true' if opts[k] else 'false'}", ""]
+    for f in user:
         lines += ["[[feed]]", f"name = {q(f['name'])}", f"url = {q(f['url'])}", ""]
     net.write_atomic(NEWS_CONFIG, "\n".join(lines))
+
+
+def save_user_feeds(user: list[dict]) -> None:
+    """Rewrite the [[feed]] list, keeping the on/off choices."""
+    cfg = _news_config()
+    _save(user, _disabled(cfg), _listed(cfg, 'enabled'), options())
+
+
+def set_source(feed_id: str, on: bool) -> bool:
+    """Switch one source on or off. Only a difference from its default is
+    stored. False if there is no such source."""
+    f = next((f for f in [{**c, 'user': False} for c in CATALOGUE] + user_feeds()
+              if f['id'] == feed_id), None)
+    if f is None:
+        return False
+    cfg = _news_config()
+    disabled = [d for d in _disabled(cfg) if d != feed_id]
+    enabled = [e for e in _listed(cfg, 'enabled') if e != feed_id]
+    if on != _default_on(f):
+        (enabled if on else disabled).append(feed_id)
+    _save(user_feeds(), disabled, enabled, options())
+    return True
+
+
+def set_option(name: str, on: bool) -> bool:
+    if name not in OPTIONS:
+        return False
+    cfg = _news_config()
+    _save(user_feeds(), _disabled(cfg), _listed(cfg, 'enabled'), {**options(), name: on})
+    return True
 
 
 def _fetch_feed(f: dict, refresh: bool):

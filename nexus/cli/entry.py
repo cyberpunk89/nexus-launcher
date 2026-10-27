@@ -462,6 +462,10 @@ def build_parser() -> argparse.ArgumentParser:
                          'your installed games (cached an hour; --refresh to bypass)')
     g6.add_argument('--news-add-feed', nargs='+', metavar=('URL', 'NAME'), dest='news_add',
                     help='Add an RSS/Atom feed to the News page')
+    g6.add_argument('--news-source', nargs=2, metavar=('NAME', 'on|off'), dest='news_source',
+                    action='append',
+                    help='Switch a news source on or off: a source id (see the News page), '
+                         '"steam" (news for your games) or "proton" (releases)')
     g6.add_argument('--news-remove-feed', metavar='URL', dest='news_remove',
                     help='Remove a feed you added')
     g7 = parser.add_argument_group('Game-db (wishlist deals, releases, backlog)')
@@ -720,6 +724,7 @@ COMMANDS = (
     ('news_add',
      lambda a, base: cmd_news_feed('add', a.news_add[0], ' '.join(a.news_add[1:]) or None)),
     ('news_remove', lambda a, base: cmd_news_feed('remove', a.news_remove, None)),
+    ('news_source', lambda a, base: cmd_news_source(a.news_source)),
     ('gamedb', lambda a, base: cmd_gamedb('all', a.refresh, a.json, a.time)),
     ('deals', lambda a, base: cmd_gamedb('deals', a.refresh, a.json, a.time)),
     ('upcoming', lambda a, base: cmd_gamedb('upcoming', a.refresh, a.json, a.time)),
@@ -840,7 +845,7 @@ from .gamecmds import (add_existing_to_steam, cmd_achievements, cmd_add_heroic, 
     cmd_rename, cmd_repair_launchers, cmd_scan, cmd_set_exe, cmd_trash_repack)  # noqa: E402
 from .heroic import remove_heroic_entry  # noqa: E402
 from .info import (cmd_apply_recipe, cmd_explain_log, cmd_game_tips, cmd_gamedb, cmd_history,
-    cmd_news, cmd_news_feed, cmd_store_info)  # noqa: E402
+    cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402
 from .manage import cmd_library, cmd_list, cmd_running  # noqa: E402
 from .protoncmds import (cmd_list_protons, cmd_proton_install, cmd_proton_migrate,
     cmd_proton_releases, cmd_proton_remove, cmd_protondb, cmd_protons)  # noqa: E402

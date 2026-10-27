@@ -112,3 +112,67 @@ class UserFeeds(unittest.TestCase):
             for u in (base + '/one', base + '/two'):
                 news._fetch_feed({'id': f'user:{u}', 'url': u, 'name': 'x'}, False)
         self.assertEqual(len(set(seen)), 2)
+
+
+class Sources(unittest.TestCase):
+    """The catalogue, per-platform defaults and the on/off switches."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cfg = Path(self._tmp.name) / 'news.toml'
+        self.addCleanup(self._tmp.cleanup)
+        patch = mock.patch.object(news, 'NEWS_CONFIG', self.cfg)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def on(self):
+        return [f['id'] for f in news.feeds()]
+
+    def test_catalogue_is_sane(self):
+        ids = [c['id'] for c in news.CATALOGUE]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(c['url'].startswith('https://') for c in news.CATALOGUE))
+        self.assertGreaterEqual(len(ids), 8)
+
+    def test_defaults_follow_the_platform(self):
+        with mock.patch.object(news, 'platform', lambda: 'linux'):
+            self.assertEqual(self.on(), ['gol', 'boilingsteam'])
+            self.assertTrue(news.options()['proton'])
+        with mock.patch.object(news, 'platform', lambda: 'windows'):
+            self.assertEqual(self.on(), ['pcgamer', 'rps'])
+            self.assertEqual(news.options(), {'steam': True, 'proton': False})
+
+    def test_switches_store_only_the_difference(self):
+        with mock.patch.object(news, 'platform', lambda: 'linux'):
+            self.assertTrue(news.set_source('ign', True))
+            self.assertTrue(news.set_source('gol', False))
+            self.assertEqual(self.on(), ['boilingsteam', 'ign'])
+            text = self.cfg.read_text()
+            self.assertIn('enabled = ["ign"]', text)
+            self.assertIn('disabled = ["gol"]', text)
+            news.set_source('gol', True)           # back to its default: nothing stored
+            self.assertNotIn('gol', self.cfg.read_text())
+            self.assertFalse(news.set_source('nope', True))
+
+    def test_switches_survive_adding_a_feed(self):
+        with mock.patch.object(news, 'platform', lambda: 'linux'):
+            news.set_source('kotaku', True)
+            news.set_option('steam', False)
+            news.save_user_feeds([{'name': 'Mine', 'url': 'https://m.example/rss'}])
+            self.assertIn('kotaku', self.on())
+            self.assertIn('user:https://m.example/rss', self.on())
+            self.assertEqual(news.options(), {'steam': False, 'proton': True})
+            news.set_source('user:https://m.example/rss', False)
+            self.assertNotIn('user:https://m.example/rss', self.on())
+            self.assertIn('user:https://m.example/rss', [f['id'] for f in news.all_feeds()])
+
+    def test_options_round_trip_against_platform_default(self):
+        with mock.patch.object(news, 'platform', lambda: 'windows'):
+            news.set_option('proton', True)
+            self.assertIn('proton = true', self.cfg.read_text())
+            self.assertTrue(news.options()['proton'])
+            news.set_option('proton', False)
+            self.assertNotIn('proton', self.cfg.read_text())
+            self.assertFalse(news.set_option('bogus', True))
+

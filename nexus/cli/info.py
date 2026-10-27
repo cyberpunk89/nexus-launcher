@@ -237,17 +237,19 @@ def cmd_explain_log(ident: str) -> None:
 
 def cmd_news(refresh: bool, as_json: bool) -> None:
     from nexus import news, steamlib, protons as PR, net
+    opts = news.options()
     games = [{'appid': g['appid'], 'name': g['display_name']}
-             for g in steamlib.scan(STEAM_ROOT)]
+             for g in steamlib.scan(STEAM_ROOT)] if opts['steam'] else []
     rel = []
-    for fam in ('ge', 'cachyos'):
+    for fam in (('ge', 'cachyos') if opts['proton'] else ()):
         try:
             for r in PR.releases(fam)['releases'][:3]:
                 rel.append({**r, 'family_label': PR.FAMILIES[fam]['label']})
         except net.NetError:
             pass
     data = news.collect(games, rel, refresh)
-    data['feeds'] = news.feeds()
+    data['feeds'] = news.all_feeds()
+    data['options'] = opts
     if as_json:
         print(json.dumps(data))
         return
@@ -278,6 +280,22 @@ def cmd_news_feed(action: str, url: str, name: str | None) -> None:
         user = [f for f in user if f['url'] != url]
     news.save_user_feeds(user)
     print(f"{'Added' if action == 'add' else 'Removed'} feed {url}")
+
+
+def cmd_news_source(pairs: list[list[str]]) -> None:
+    """Switch news sources (a feed id, or `steam` / `proton`) on or off."""
+    from nexus import news
+    for name, state in pairs:
+        if state not in ('on', 'off'):
+            print("Say 'on' or 'off'.", file=sys.stderr)
+            sys.exit(2)
+        on = state == 'on'
+        ok = news.set_option(name, on) if name in news.OPTIONS else news.set_source(name, on)
+        if not ok:
+            ids = ', '.join([*news.OPTIONS, *(f['id'] for f in news.all_feeds())])
+            print(f"No news source '{name}'. Choose from: {ids}", file=sys.stderr)
+            sys.exit(2)
+        print(f"News source {name}: {state}")
 
 
 def _ago(ts: float) -> str:

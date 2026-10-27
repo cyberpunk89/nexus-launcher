@@ -4,8 +4,10 @@
 from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
     QLinearGradient, QPainter, QPainterPath, QPixmap)
-from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+
+from nexus.features import has
 
 from .fmt import fmt_relative
 from .theme import FONTS, FS, G, GRAD, P, PAL, R, SP
@@ -39,6 +41,38 @@ def news_image(item: dict, games_by_appid: dict) -> tuple[str | None, str | None
         path, url, _k = art_lookup(game, ('wide', 'hero'))
         return path, url
     return None, None
+
+
+def source_color(name: str) -> QColor:
+    """A steady colour per source (same name, same colour), for its monogram."""
+    h = sum(ord(c) * (i + 1) for i, c in enumerate(name or '?')) % 360
+    return QColor.fromHsl(h, 120, 90)
+
+
+class Monogram(QWidget):
+    """A source's first letter on a round badge — a logo stand-in that needs
+    no network and never goes stale."""
+    D = 18
+
+    def __init__(self, name: str, color: QColor | None = None):
+        super().__init__()
+        self.name = (name or '?').strip()[:1].upper() or '?'
+        self.color = color or source_color(name)
+        self.setFixedSize(self.D, self.D)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, ev):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(self.color)
+        pt.drawEllipse(self.rect())
+        f = QFont(FONTS.ui, -1, QFont.Weight.Bold)
+        f.setPixelSize(int(self.D * 0.58))
+        pt.setFont(f)
+        pt.setPen(QColor('#ffffff'))
+        pt.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.name)
+        pt.end()
 
 
 def elide_lines(text: str, fm: QFontMetrics, width: int, lines: int) -> str:
@@ -176,6 +210,7 @@ class NewsTile(QFrame):
         meta = QHBoxLayout()
         meta.setContentsMargins(SP['3'], SP['1'], SP['3'], 0)
         meta.setSpacing(SP['1_5'])
+        meta.addWidget(Monogram(item.get('source') or ''))
         src = ElideLabel(item.get('source') or '', None)
         src.setStyleSheet(f"color: {P[role]}; font-size: {FS['xs']}px; font-weight: 600;")
         meta.addWidget(src, 1)
@@ -223,7 +258,7 @@ class NewsTile(QFrame):
 
 class NewsFeature(QFrame):
     """The lead story: a wide picture with the headline over a scrim."""
-    H = 280
+    H = 340
     opened = pyqtSignal(int)
 
     def __init__(self, images):
@@ -547,7 +582,23 @@ class NewsPage(QWidget):
 
     def _feeds_box(self):
         body = QWidget()
-        feeds = QHBoxLayout(body)
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(SP['2'])
+        col.addWidget(label("Sources — tick the ones you want in your News.", "Muted"))
+        self.sources_host = QWidget()
+        self.sources = QGridLayout(self.sources_host)
+        self.sources.setContentsMargins(0, 0, 0, 0)
+        self.sources.setHorizontalSpacing(SP['4'])
+        col.addWidget(self.sources_host)
+        self.opt_steam = QCheckBox("Steam news for my games")
+        self.opt_proton = QCheckBox("Proton releases")
+        if not has('proton'):
+            self.opt_proton.hide()               # hide only: a parentless show() is a window
+        for name, box in (('steam', self.opt_steam), ('proton', self.opt_proton)):
+            box.toggled.connect(lambda on, n=name: self._switch(n, on))
+            col.addWidget(box)
+        feeds = QHBoxLayout()
         feeds.setContentsMargins(0, 0, 0, 0)
         self.feed_url = QLineEdit()
         self.feed_url.setPlaceholderText("Add a feed: https://example.com/rss")
@@ -564,8 +615,48 @@ class NewsPage(QWidget):
         feeds.addWidget(self.user_feeds)
         feeds.addWidget(rm)
         self.feeds_row = feeds
+        col.addLayout(feeds)
+        # Several ticks in a row become one CLI call and one reload.
+        self._pending: dict[str, bool] = {}
+        self._switch_timer = QTimer(self)
+        self._switch_timer.setSingleShot(True)
+        self._switch_timer.setInterval(500)
+        self._switch_timer.timeout.connect(self._send_switches)
         self.feeds_box = Disclosure('news-feeds', "Manage feeds", G['news'], body)
         return self.feeds_box
+
+    def _fill_sources(self, feeds: list[dict], opts: dict):
+        """One tick box per source, three to a row; ticks are not re-sent."""
+        clear_layout(self.sources)
+        cols = 3
+        for n, f in enumerate(feeds):
+            box = QCheckBox(f['name'] + (" (yours)" if f.get('user') else ""))
+            box.setToolTip(f.get('url') or '')
+            box.setChecked(bool(f.get('on')))
+            box.toggled.connect(lambda on, i=f['id']: self._switch(i, on))
+            self.sources.addWidget(box, n // cols, n % cols)
+        for box, key in ((self.opt_steam, 'steam'), (self.opt_proton, 'proton')):
+            box.blockSignals(True)
+            box.setChecked(opts.get(key, True))
+            box.blockSignals(False)
+
+    def _switch(self, name: str, on: bool):
+        self._pending[name] = on
+        self._switch_timer.start()
+
+    def _send_switches(self):
+        if not self._pending:
+            return
+        args = []
+        for name, on in self._pending.items():
+            args += ['--news-source', name, 'on' if on else 'off']
+        self._pending = {}
+        CliQuery(args, lambda out, err: self._switched(err))
+
+    def _switched(self, err):
+        if err:
+            self.toast.emit(f"Couldn't change the sources: {err}", 'error')
+        self.refresh(reload=True)
 
     # ---- data ----
     def set_games(self, games: list[dict]):
@@ -576,10 +667,11 @@ class NewsPage(QWidget):
     def _image_for(self, item):
         return news_image(item, self.games_by_appid)
 
-    def refresh(self, force=False):
+    def refresh(self, force=False, reload=False):
         # One fetch at a time: the dashboard's News card and opening the page
-        # both ask until the first answer lands.
-        if (self._loaded and not force) or getattr(self, '_busy', False):
+        # both ask until the first answer lands. `reload` asks again for the
+        # same (cached) sources, e.g. after a source was switched.
+        if (self._loaded and not (force or reload)) or getattr(self, '_busy', False):
             return
         self._busy = True
         self.error = ''
@@ -621,6 +713,7 @@ class NewsPage(QWidget):
         self._fill_chips()
         self._fill()
         self.user_feeds.clear()
+        self._fill_sources(data.get('feeds', []), data.get('options', {}))
         for f in data.get('feeds', []):
             if f.get('user'):
                 self.user_feeds.addItem(f['name'], f['url'])

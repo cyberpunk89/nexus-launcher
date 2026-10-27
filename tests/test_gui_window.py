@@ -1859,6 +1859,31 @@ class News(unittest.TestCase):
         self.assertEqual(sum(t.isVisibleTo(p) for t in p.tiles.values()), 59)
         self.assertFalse(p.btn_more.isVisibleTo(p))
 
+    def test_manage_feeds_lists_every_source_and_batches_ticks(self):
+        p = self.page
+        feeds = [{'id': 'gol', 'name': 'GamingOnLinux', 'url': 'https://g/', 'user': False, 'on': True},
+                 {'id': 'ign', 'name': 'IGN', 'url': 'https://i/', 'user': False, 'on': False},
+                 {'id': 'user:https://m/', 'name': 'Mine', 'url': 'https://m/', 'user': True,
+                  'on': True}]
+        p.set_data({'items': [], 'sources': [], 'feeds': feeds,
+                    'options': {'steam': True, 'proton': False}})
+        boxes = [p.sources.itemAt(i).widget() for i in range(p.sources.count())]
+        self.assertEqual([b.isChecked() for b in boxes], [True, False, True])
+        self.assertEqual(boxes[2].text(), "Mine (yours)")
+        self.assertEqual((p.opt_steam.isChecked(), p.opt_proton.isChecked()), (True, False))
+        self.assertEqual(p.user_feeds.count(), 1)
+        boxes[1].setChecked(True)
+        boxes[0].setChecked(False)
+        boxes[1].setChecked(False)               # the last tick on a source wins
+        self.assertEqual(p._pending, {'ign': False, 'gol': False})
+        sent = []
+        patch = patch_gui('CliQuery', lambda args, cb: sent.append(args))
+        patch.start()
+        self.addCleanup(patch.stop)
+        p._send_switches()
+        self.assertEqual(sent, [['--news-source', 'ign', 'off', '--news-source', 'gol', 'off']])
+        self.assertEqual(p._pending, {})
+
     def test_pictures_load_lazily(self):
         p = self.page
         p.show()

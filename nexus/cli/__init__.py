@@ -113,7 +113,7 @@ from .downloads import (
     cmd_repack_reject, cmd_torrent, send_alerts)  # noqa: F401
 from .info import (
     _ago, _llm_config, cmd_apply_recipe, cmd_explain_log, cmd_game_tips, cmd_gamedb,
-    cmd_history, cmd_news, cmd_news_feed, cmd_store_info, compat_lines, CONFIG_SECRETS,
+    cmd_history, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info, compat_lines, CONFIG_SECRETS,
     config_secrets_doctor, gamedb_doctor)  # noqa: F401
 from .gamecmds import (
     _launcher_display_name, _local_artwork, ACHIEVEMENT_COUNTS, add_existing_to_steam,
