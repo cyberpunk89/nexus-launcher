@@ -38,6 +38,11 @@ class Events(unittest.TestCase):
         self.assertEqual(job.events['exe-candidates']['chosen'], '/a.exe')
         self.assertNotIn('@nexus', job.detail)
 
+    def test_move_shows_how_much_is_copied(self):
+        job = nx.Job(['nexus-cli', '--move', 't', '/mnt/b'], "Moving T", 't', 'task')
+        feed(job, '@nexus move {"done": 500000000, "total": 2000000000}')
+        self.assertEqual(job.detail, "500.0 MB of 2.0 GB copied")
+
     def test_setup_window_keeps_its_step(self):
         job = nx.Job(['nexus-cli', '/r', '--interactive'], "Installing T", None, 'install')
         feed(job, "[3/4] Running setup.exe via umu-run + GE...")

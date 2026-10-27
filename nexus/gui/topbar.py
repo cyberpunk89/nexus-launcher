@@ -93,7 +93,7 @@ def _wordmark_renderer():
 
 class TopIcon(QToolButton):
     """A round icon button in the top bar, with an optional count badge and
-    (for Storage) a disk-usage ring around it."""
+    (for System) a disk-usage ring around it."""
 
     SIZE = 36
 

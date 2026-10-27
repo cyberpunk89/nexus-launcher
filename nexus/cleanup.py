@@ -26,8 +26,6 @@ CATEGORIES = {
                          "The downloaded repack folders. Keep one if you might reinstall."),
     'force-leftover': ("Old installs replaced by a reinstall",
                        "Left by a fresh reinstall (--force). May still hold your saves."),
-    'unused-proton':  ("Proton builds nothing uses",
-                       "Not used by any game in Nexus, Steam or Heroic."),
     'old-logs':       ("Old logs", "Install and launch logs older than 30 days."),
     'old-save-backups': ("Older save backups", "Beyond the newest 3 backups per game."),
     'stale-data':     ("Leftovers of removed games", "Artwork and integrity data."),

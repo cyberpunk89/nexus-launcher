@@ -15,8 +15,8 @@ from .theme import FONTS, FS, G, GRAD, P, pill, R, SP, TILE_LIFT, TILE_W
 
 class GameTile(QFrame):
     """A game's art, nothing else at rest — no badges or tags (all of that
-    lives on the game page). On hover/focus the title fades in with one big
-    Play button and a ⋮ menu button. A running job replaces Play with a
+    lives on the game page). On hover/focus the title fades in; the mouse
+    also gets a ⋮ menu button (Play is on the game page). A running job replaces Play with a
     progress ring; a playing game gets a small green dot.
 
     kind='cover' is the portrait 2/3 tile; kind='wide' is a 16:9 card using

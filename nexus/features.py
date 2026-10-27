@@ -24,7 +24,7 @@ LINUX_ONLY = frozenset({
     'systemd_agent',    # the background agent as a systemd user service
     'kdeconnect',
     'desktop_entry',    # freedesktop .desktop launchers (Windows: Start Menu .lnk)
-    'sunshine',         # exists on Windows; later
+    'sunshine',         # Sunshine apps.json entries (Linux only)
     'heroic',           # Heroic shortcuts and status (Heroic is skipped on Windows)
 })
 

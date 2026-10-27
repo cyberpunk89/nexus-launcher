@@ -16,7 +16,7 @@ from .theme import P, PAL, pill, R, SP
 
 # Cleanup categories that need a Linux-only feature (features.has).
 CATEGORY_NEEDS = {'orphan-prefix': 'compatdata', 'shadercache': 'compatdata',
-                  'mesa-cache': 'proton', 'unused-proton': 'proton',
+                  'mesa-cache': 'proton',
                   'game-snapshot': 'btrfs'}
 
 

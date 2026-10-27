@@ -23,14 +23,13 @@ from pathlib import Path
 
 from nexus import features
 
-from .common import emit_event, log, Logger, use_logger
+from .common import log, Logger, use_logger
 
 SNAP_DIR = '.nexus-snapshots'
 REASON_RE = re.compile(r'^[a-z][a-z0-9-]{0,30}$')
 NAME_RE = re.compile(r'^(\d{8}-\d{6})-([a-z][a-z0-9-]{0,30})$')
 REASONS = {'manual': "Snapshot", 'update': "Before an update", 'proton': "Before a Proton change",
-           'winetricks': "Before winetricks", 'reinstall': "Before a reinstall",
-           'before-rollback': "Before a roll back", 'deps': "Before installing extras"}
+           'winetricks': "Before winetricks", 'before-rollback': "Before a roll back"}
 
 
 class SnapshotError(Exception):
@@ -325,7 +324,6 @@ def cmd_snapshots(install_base: Path, args) -> int:
         print(json.dumps({'ok': True, **extra}))
     else:
         log.print(msg)
-    emit_event('snapshots', {'ok': True})
     return 0
 
 

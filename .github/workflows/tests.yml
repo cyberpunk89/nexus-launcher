@@ -1,6 +1,6 @@
-# The unit suite on Linux (the product) and Windows (the port). Tests that
-# can't pass on Windows yet are skipped there with @windows_todo('<task>'),
-# so a red Windows job is a real regression.
+# The unit suite on Linux (the product) and Windows (the port). Tests for one
+# OS only are skipped on the other (tests/oskind.py), so a red Windows job is a
+# real regression.
 name: tests
 
 on:

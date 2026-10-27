@@ -11,12 +11,6 @@ linux_only = unittest.skipIf(IS_WINDOWS, "Linux-only")
 windows_only = unittest.skipUnless(IS_WINDOWS, "Windows-only")
 
 
-def windows_todo(task: str, why: str):
-    """Skip on Windows until the port task `task` (a tracker id like 'p2-09')
-    makes the test pass there. Grep for the id to find what a task unblocks."""
-    return unittest.skipIf(IS_WINDOWS, f"Windows port {task}: {why}")
-
-
 def why_not_private(path) -> str:
     """'' when only this user can read `path`: mode 0600 on Linux; on Windows
     an ACL with nothing inherited and no other ordinary account on it
