@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLa
     QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from nexus import gamedb
+from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .fmt import fmt_hours, fmt_relative, fmt_size
@@ -270,7 +271,7 @@ class TheatreDetails(QWidget):
         # Compatibility
         compat, more = [], []
         pdb = tips.get('protondb') or {}
-        tier = pdb.get('tier') or g.get('protondb')
+        tier = (pdb.get('tier') or g.get('protondb')) if has('proton') else None
         if tier:
             compat.append((f"ProtonDB {tier.capitalize()}", TIER_COLORS.get(tier), True))
             if pdb.get('trending') and pdb['trending'] != tier:

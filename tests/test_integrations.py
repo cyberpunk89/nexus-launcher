@@ -106,6 +106,72 @@ class Compat(unittest.TestCase):
             self.assertEqual(compat.pcgw([5], refresh=True), {})
 
 
+class GameTips(unittest.TestCase):
+    """--game-tips runs everywhere; ProtonDB, protongen, recipes, Deck and
+    anti-cheat are Proton facts, so only where the 'proton' feature is."""
+
+    def setUp(self):
+        from nexus import features, gamedb, hltb, protondb, tips
+        self.features = features
+        game = {'slug': 'hades', 'source': 'steam', 'appid': 1145360, 'name': 'Hades'}
+        pw = {'support': {'4K': 'true'}, 'fixes': [], 'url': 'https://pcgamingwiki.com/x'}
+        for p in (patch_cli('_game_by_id', return_value=game),
+                  patch_cli('_llm_config', return_value=None),
+                  mock.patch.object(protondb, 'tiers',
+                                    return_value={1145360: {'tier': 'platinum', 'url': 'u'}}),
+                  mock.patch.object(tips, 'hardware', return_value={'gpus': []}),
+                  mock.patch.object(tips, 'recipes_for',
+                                    return_value=[{'name': 'r', 'launch_options': 'X=1'}]),
+                  mock.patch.object(compat, 'facts', return_value={
+                      'anticheat': {'status': 'Broken'}, 'deck': {'deck': 'Verified'},
+                      'pcgw': pw}),
+                  mock.patch.object(compat, 'pcgw', return_value={1145360: pw}),
+                  mock.patch.object(gamedb, 'lookup', return_value={}),
+                  mock.patch.object(hltb, 'lookup', return_value={'main': 22})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tips(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_game_tips('hades', True)
+        return json.loads(out.getvalue())
+
+    @linux_features
+    def test_linux_has_proton_facts(self):
+        info = self.tips()
+        self.assertEqual(info['protondb']['tier'], 'platinum')
+        self.assertEqual(info['deck'], {'deck': 'Verified'})
+        self.assertEqual(info['anticheat'], {'status': 'Broken'})
+        self.assertEqual(len(info['recipes']), 1)
+        self.assertEqual(info['hltb'], {'main': 22})
+
+    def test_without_proton_only_neutral_facts(self):
+        with mock.patch.object(self.features, 'FEATURES', self.features.WINDOWS):
+            info = self.tips()
+        self.assertIsNone(info['protondb'])
+        self.assertIsNone(info['protongen'])
+        self.assertIsNone(info['deck'])
+        self.assertIsNone(info['anticheat'])
+        self.assertEqual(info['recipes'], [])
+        self.assertEqual(info['pcgw']['support'], {'4K': 'true'})
+        self.assertEqual(info['hltb'], {'main': 22})
+        compat.facts.assert_not_called()           # no AWACY / Deck requests
+
+    def test_game_tips_is_not_gated(self):
+        import contextlib
+        import io
+        from nexus.cli import entry
+        with mock.patch.object(self.features, 'FEATURES', self.features.WINDOWS):
+            parser = entry.build_parser()
+            self.assertIn('--game-tips', parser.format_help())
+            entry._refuse_unavailable(parser, parser.parse_args(['--game-tips', 'hades']))
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                entry._refuse_unavailable(parser, parser.parse_args(['--protondb', '1']))
+
+
 class FakeDiscord(threading.Thread):
     """Speaks just enough of Discord's IPC: READY after the handshake, then
     echoes SET_ACTIVITY back as a success. Listens on an AF_UNIX socket at

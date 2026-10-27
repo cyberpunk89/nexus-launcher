@@ -17,7 +17,7 @@ if nx is not None:
     from PyQt6.QtCore import Qt, QPoint
     from PyQt6.QtGui import QFont, QFontMetrics
     from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
-    from nexus import winfocus
+    from nexus import features, winfocus
 
 
 def fake_games():
@@ -1549,7 +1549,8 @@ class Window(unittest.TestCase):
                    news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes',
                           'date': '2026-10-01T10:00:00'},
                          {'appid': 2, 'title': 'Other game'}])
-        self.assertFalse(d.cards['compat'].isHidden())
+        # ProtonDB is a Proton fact: the card has nothing else here to show without it.
+        self.assertEqual(d.cards['compat'].isHidden(), not features.has('proton'))
         self.assertFalse(d.cards['gamedb'].isHidden())
         self.assertFalse(d.cards['news'].isHidden())
         self.assertNotIn('Other game', d.cards['news'].more)

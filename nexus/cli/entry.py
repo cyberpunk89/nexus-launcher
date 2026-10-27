@@ -377,9 +377,10 @@ def build_parser() -> argparse.ArgumentParser:
     g5.add_argument('--protondb', nargs='+', metavar='APPID',
                     help='ProtonDB tiers for Steam appids (cached a day)')
     g5.add_argument('--game-tips', metavar='GAME', dest='game_tips',
-                    help='protongen tuning, ProtonDB tier, Steam Deck / anti-cheat / '
-                         'PCGamingWiki facts and fitting recipes for a game '
-                         '(slug, steam-<appid> or Heroic slug)')
+                    help='PCGamingWiki, Game-db and HowLongToBeat facts for a game, plus '
+                         'protongen tuning, ProtonDB tier, Steam Deck / anti-cheat status '
+                         'and fitting recipes where Proton is (slug, steam-<appid> or '
+                         'Heroic slug)')
     g5.add_argument('--perf', nargs='+', metavar=('SLUG', 'KEY=VALUE'),
                     help='Performance switches for a game: fps=60 mode=game-performance|'
                          'gamemoderun|off mangohud=on|off wayland=on|off hidraw=on|off '
@@ -503,7 +504,6 @@ GATED = {
     'btrfs': ('snapshots', 'snapshot', 'rollback', 'delete_snapshot', 'snapshots_enable'),
     'sunshine': ('sunshine', 'remove_sunshine'),
     'pause': ('pause', 'resume', 'pause_toggle'),
-    'tips': ('game_tips',),
 }
 _FEATURE_OF = {dest: f for f, dests in GATED.items() for dest in dests}
 
