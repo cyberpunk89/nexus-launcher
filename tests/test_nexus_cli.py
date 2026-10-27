@@ -792,6 +792,77 @@ class Sandbox(unittest.TestCase):
         self.assertTrue((tests.sandbox.data_dir(self.home) / 'games.json').exists())
         self.assertTrue(base.is_dir())
 
+    def test_check_integrity_baseline_change_and_rebaseline(self):
+        r = self.cli('--check-integrity', 'test-game')
+        self.assertIn('Baseline saved (1 files)', r.stdout)
+        self.assertIn('all 1 file(s) match', self.cli('--check-integrity', 'test-game').stdout)
+        self.exe.write_bytes(b'\1' * 600_000)                   # same size, other bytes
+        r = self.cli('--check-integrity', 'test-game', check=False)
+        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+        self.assertIn('CHANGED since the baseline', r.stdout)
+        self.assertIn('Test$Game.exe', r.stdout)
+        self.assertIn('Rebaselining', self.cli('--check-integrity', 'test-game',
+                                               '--rebaseline').stdout)
+        self.assertIn('all 1 file(s) match', self.cli('--check-integrity', 'test-game').stdout)
+        self.exe.unlink()
+        r = self.cli('--check-integrity', 'test-game', check=False)
+        self.assertEqual(r.returncode, 0)                        # nothing left to check
+        self.assertIn('No installed game files', r.stdout)
+
+    @linux_only                     # saves inside a Wine prefix
+    def test_save_backup_on_uninstall_then_restore_saves(self):
+        games_json = tests.sandbox.data_dir(self.home) / 'games.json'
+        registered = games_json.read_text()
+        save = self.game_dir / 'pfx/drive_c/users/steamuser/Documents/My Games/Test/slot1.sav'
+        save.parent.mkdir(parents=True)
+        save.write_bytes(b'level 7')
+        self.cli('--uninstall', 'test-game', '--yes', '--save-backup')
+        self.assertFalse(self.game_dir.exists())
+        self.assertNotIn('test-game', json.loads(games_json.read_text())['games'])
+        # Reinstalled: the same entry, an empty prefix.
+        games_json.write_text(registered)
+        (self.game_dir / 'pfx/drive_c').mkdir(parents=True)
+        r = self.cli('--restore-saves', 'test-game')
+        self.assertIn('Restored 1 save file(s)', r.stdout)
+        self.assertEqual(save.read_bytes(), b'level 7')
+
+    def test_restore_saves_without_a_backup_says_so(self):
+        r = self.cli('--restore-saves', 'test-game', check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('No save backup found', r.stdout)
+
+    @linux_only                     # Windows: test_install_win covers its native shortcuts
+    def test_steam_shortcut_add_then_remove(self):
+        if steam_running():
+            self.skipTest("Steam is running")
+        self.cli('--steam', 'test-game')
+        self.assertEqual(sorted(e['AppName'] for e in self.shortcuts()),
+                         ['Test Game', 'Unrelated Game'])
+        self.assertTrue(self.registry()['steam_appid'])
+        self.cli('--remove-steam', 'test-game')
+        self.assertEqual([e['AppName'] for e in self.shortcuts()], ['Unrelated Game'])
+        other = self.shortcuts()[0]
+        self.assertEqual(other['LaunchOptions'], 'KEEP=1 %command%')
+
+    @linux_only                     # a Proton prefix and a launch script
+    def test_add_steam_registers_a_game_installed_elsewhere(self):
+        if steam_running():
+            self.skipTest("Steam is running")
+        exe = self.home / 'Elsewhere/Other/pfx/drive_c/Other/Other.exe'
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b'\0' * 600_000)
+        self.cli('--add-steam', str(exe.parents[3]), '--name', 'Other Game')
+        self.assertIn('Other Game', [e['AppName'] for e in self.shortcuts()])
+        games = json.loads((tests.sandbox.data_dir(self.home) / 'games.json').read_text())
+        entry = games['games']['other-game']
+        self.assertEqual(entry['exe'], str(exe))
+        self.assertTrue(entry['steam_appid'])
+        self.assertTrue(exe.exists())                            # nothing was moved
+        r = self.cli('--add-steam', str(self.home / 'Nowhere'), check=False)
+        self.assertEqual(r.returncode, 1)
+        self.cli('--remove-steam', 'other-game')
+        self.assertNotIn('Other Game', [e['AppName'] for e in self.shortcuts()])
+
     def test_prune_lists_then_removes_games_deleted_by_hand(self):
         import shutil
         shutil.rmtree(self.game_dir)
