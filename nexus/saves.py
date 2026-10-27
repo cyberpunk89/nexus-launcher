@@ -1,7 +1,7 @@
 """Where a Windows game keeps its saves, from the Ludusavi manifest
 (github.com/mtkennerly/ludusavi-manifest, built from PCGamingWiki).
 
-On Linux a game's saves live in its Wine prefix (cli/steam.py walks the
+On Linux a game's saves live in its Wine prefix (cli/savedata.py walks the
 prefix's user folders). A native Windows install has no prefix: its saves are
 spread over the user's real AppData and Documents, so we need to know which
 folders are this game's. The manifest says so for ~20k games.

@@ -516,6 +516,6 @@ from .repack import (_install_session, clear_incomplete_marker, exe_candidates, 
     repack_fingerprint, repack_info, verify_bins, write_incomplete_marker)  # noqa: E402
 from .sgdb import fetch_artwork  # noqa: E402
 from nexus.inno import inno_header  # noqa: E402
-from .steam import (add_steam_shortcut_native, backup_manifest_saves, is_manifest_backup,
-    latest_save_backup, manifest_save_entry, PRE_RESTORE, restore_manifest_saves,
-    steam_is_running)  # noqa: E402
+from .steam import add_steam_shortcut_native, steam_is_running  # noqa: E402
+from .savedata import (backup_manifest_saves, is_manifest_backup, latest_save_backup,
+    manifest_save_entry, PRE_RESTORE, restore_manifest_saves)  # noqa: E402

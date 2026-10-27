@@ -65,18 +65,21 @@ from .launchprofile import (
     protongen_memory_for, PROTONGEN_STATE, split_wrappers, UPSCALERS, WRAPPER_RANK)  # noqa: F401
 from .steam import (
     _appid_signed, _ci_key, _copy_grid_art, _count_shortcuts, _ensure_tracked_files,
-    _integrity_files, _INTEGRITY_SKIP_TOPLEVEL, _is_save_noise, _iter_savedata,
-    _load_vdf_text, _read_compat_mapping, _redirect_compatdata, _report_failed_copies,
-    _SAVE_CONTAINERS, _SAVE_DIRS, _SAVE_NOISE, _SAVE_NOISE_ANY, _SAVE_NOISE_EXT,
-    _shortcut_uid, _STEAM_ANNOUNCED, _steam_last_logged_in, _steam_login_users,
-    _STEAM_PROFILE, _stored_appid, _unique_dir, _wait_for_steam_closed, _write_compat_mapping,
-    add_steam_shortcut_native, backup_prefix_saves, cmd_check_integrity, find_prefix_savedata,
-    find_steam_userdata, INTEGRITY_DIR, integrity_manifest_path, latest_save_backup,
-    load_integrity_manifest, load_shortcuts, match_steam_account, PRE_RESTORE,
-    resolve_steam_account, restore_prefix_saves, save_integrity_manifest, save_shortcuts,
-    savedata_owners, set_steam_account_pin, set_steam_compat_tool, shortcut_appid,
+    _load_vdf_text, _read_compat_mapping, _redirect_compatdata, _shortcut_uid,
+    _STEAM_ANNOUNCED, _steam_last_logged_in, _steam_login_users, _STEAM_PROFILE,
+    _stored_appid, _wait_for_steam_closed, _write_compat_mapping, add_steam_shortcut_native,
+    find_steam_userdata, load_shortcuts, match_steam_account, resolve_steam_account,
+    save_shortcuts, set_steam_account_pin, set_steam_compat_tool, shortcut_appid,
     split_game_shortcuts, steam_account_label, STEAM_ACCOUNT_PIN, steam_accounts,
     steam_is_running)  # noqa: F401
+from .integrity import (
+    _integrity_files, _INTEGRITY_SKIP_TOPLEVEL, cmd_check_integrity, INTEGRITY_DIR,
+    integrity_manifest_path, load_integrity_manifest, save_integrity_manifest)  # noqa: F401
+from .savedata import (
+    _is_save_noise, _iter_savedata, _report_failed_copies, _SAVE_CONTAINERS, _SAVE_DIRS,
+    _SAVE_NOISE, _SAVE_NOISE_ANY, _SAVE_NOISE_EXT, _unique_dir, backup_prefix_saves,
+    find_prefix_savedata, latest_save_backup, PRE_RESTORE, restore_prefix_saves,
+    savedata_owners)  # noqa: F401
 from .desktop import (
     _desktop_path, write_desktop_entry)  # noqa: F401
 from .heroic import (
@@ -92,12 +95,13 @@ from .running import (
     _OPEN_URL_RE, _proc_state, BENCH_DIR, cmd_bench_results, cmd_benchmark, cmd_open_url,
     cmd_pause, parse_mangohud_csv, running_repacks)  # noqa: F401
 from .sunshine import (
-    _achievement_watcher, _cli_command, _has_option, _launch_through_steam,
-    _owned_artwork_dir, _owned_game_dir, _prefix_markers, _rmtree_collect, _run_session,
-    _sunshine_find, _sunshine_marker, _sunshine_png, cmd_launch, cmd_launch_via, cmd_sunshine,
-    cmd_track_session, cmd_uninstall, game_has_steam_shortcut, launch_log_path,
-    prefix_processes, remove_steam_shortcut, steam_shortcut_url, SUNSHINE_APPS, SUNSHINE_ART,
-    sunshine_entry, sunshine_has)  # noqa: F401
+    _achievement_watcher, _cli_command, _has_option, _launch_through_steam, _prefix_markers,
+    _run_session, _sunshine_find, _sunshine_marker, _sunshine_png, cmd_launch,
+    cmd_launch_via, cmd_sunshine, cmd_track_session, game_has_steam_shortcut,
+    launch_log_path, prefix_processes, remove_steam_shortcut, steam_shortcut_url,
+    SUNSHINE_APPS, SUNSHINE_ART, sunshine_entry, sunshine_has)  # noqa: F401
+from .uninstall import (
+    _owned_artwork_dir, _owned_game_dir, _rmtree_collect, cmd_uninstall)  # noqa: F401
 from .apply import (
     _entry_paths, _proton_is_explicit, _require_entry, _save_profile, cmd_apply,
     cmd_from_protongen, cmd_perf, cmd_protongen_default, cmd_set_launch, cmd_set_proton,

@@ -21,7 +21,7 @@ from nexus import features, platform, saves  # noqa: E402
 from nexus import cli as fi  # noqa: E402
 from nexus.cli import entry  # noqa: E402
 from nexus.cli import install_win as IW  # noqa: E402
-from nexus.cli import steam  # noqa: E402
+from nexus.cli import savedata  # noqa: E402
 
 
 MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
@@ -332,8 +332,8 @@ class WindowsUninstall(Harness):
         p.start()
         self.addCleanup(p.stop)
         for p in (mock.patch.object(platform, 'trash', self.fake_trash),
-                  mock.patch.object(fi.sunshine, 'game_has_steam_shortcut', return_value=False),
-                  mock.patch.object(fi.sunshine, 'remove_heroic_entry')):
+                  mock.patch.object(fi.uninstall, 'game_has_steam_shortcut', return_value=False),
+                  mock.patch.object(fi.uninstall, 'remove_heroic_entry')):
             p.start()
             self.addCleanup(p.stop)
         self.calls.clear()
@@ -365,7 +365,7 @@ class WindowsUninstall(Harness):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.calls, [(self.game / 'unins000.exe',
                                        ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'])])
-        self.assertIn(fi.steam.NO_SAVE_PATHS, out)                 # --save-backup
+        self.assertIn(fi.savedata.NO_SAVE_PATHS, out)                 # --save-backup
         self.assertEqual(self.trashed, [self.game])
         self.assertFalse(lnk.exists())
         self.assertIsNone(fi.registry_get('test-game'))
@@ -417,10 +417,10 @@ class WindowsSaves(Harness):
         folders = saves.windows_folders(self.home)
         for p in (mock.patch.object(saves, 'load_index', lambda *a, **k: self.index),
                   mock.patch.object(saves, 'windows_folders', lambda home=None: folders),
-                  mock.patch.object(steam, 'SAVES_DIR', self.root / 'saves'),
+                  mock.patch.object(savedata, 'SAVES_DIR', self.root / 'saves'),
                   mock.patch.object(platform, 'trash', lambda p: __import__('shutil').rmtree(p)),
-                  mock.patch.object(fi.sunshine, 'game_has_steam_shortcut', return_value=False),
-                  mock.patch.object(fi.sunshine, 'remove_heroic_entry')):
+                  mock.patch.object(fi.uninstall, 'game_has_steam_shortcut', return_value=False),
+                  mock.patch.object(fi.uninstall, 'remove_heroic_entry')):
             p.start()
             self.addCleanup(p.stop)
 
@@ -442,7 +442,7 @@ class WindowsSaves(Harness):
     def uninstall(self, save_backup=True):
         def uninstaller(exe, args, cwd=None):
             # The backup is taken before the game's own uninstaller runs.
-            self.backed_up_first = steam.latest_save_backup('test-game') is not None
+            self.backed_up_first = savedata.latest_save_backup('test-game') is not None
             import shutil
             shutil.rmtree(Path(exe).parent)
             return mock.Mock(wait=lambda timeout=None: 0)
@@ -465,8 +465,8 @@ class WindowsSaves(Harness):
         self.assertEqual(code, 0, out)
         self.assertTrue(self.backed_up_first)
         self.assertIn('Backed up 2 save file(s)', out)
-        backup = steam.latest_save_backup('test-game')
-        mapping = json.loads((backup / steam.SAVE_FILES_MAP).read_text())
+        backup = savedata.latest_save_backup('test-game')
+        mapping = json.loads((backup / savedata.SAVE_FILES_MAP).read_text())
         self.assertEqual(sorted(mapping.values()), sorted(
             [str(self.game / 'saves' / 'slot1.sav'), str(self.appdata / 'profile.sav')]))
         self.assertIsNone(fi.registry_get('test-game'))
@@ -478,7 +478,7 @@ class WindowsSaves(Harness):
             code, out = self.uninstall(save_backup=False)
         self.assertEqual(code, 0, out)
         load.assert_not_called()
-        self.assertIsNone(steam.latest_save_backup('test-game'))
+        self.assertIsNone(savedata.latest_save_backup('test-game'))
 
     def test_a_game_the_manifest_does_not_know_is_not_guessed(self):
         self.index = saves.build_index([])
@@ -487,21 +487,21 @@ class WindowsSaves(Harness):
         code, out = self.uninstall()
         self.assertEqual(code, 0, out)
         self.assertIn("Nexus doesn't know where this game keeps its saves", out)
-        self.assertIsNone(steam.latest_save_backup('test-game'))
+        self.assertIsNone(savedata.latest_save_backup('test-game'))
         self.assertIsNone(fi.registry_get('test-game'))
 
     def test_restore_keeps_the_current_saves_first(self):
         self.install_game()
         sav = self.put(self.appdata / 'profile.sav', 'old')
-        steam.backup_manifest_saves('test-game', self.game, self.index['games']['Test Game'])
+        savedata.backup_manifest_saves('test-game', self.game, self.index['games']['Test Game'])
         sav.write_text('newer')
         code, out = self.restore()
         self.assertEqual(code, 0, out)
         self.assertEqual(sav.read_text(), 'old')
         before = [d for d in (self.root / 'saves' / 'test-game').iterdir()
-                  if d.name.endswith(steam.PRE_RESTORE)]
+                  if d.name.endswith(savedata.PRE_RESTORE)]
         self.assertEqual(len(before), 1)
-        mapping = json.loads((before[0] / steam.SAVE_FILES_MAP).read_text())
+        mapping = json.loads((before[0] / savedata.SAVE_FILES_MAP).read_text())
         rel = next(k for k, v in mapping.items() if v == str(sav))
         self.assertEqual((before[0] / rel).read_text(), 'newer')
         self.assertIn('Restored 1 save file(s)', out)
@@ -509,7 +509,7 @@ class WindowsSaves(Harness):
     def test_restore_of_an_unknown_game_changes_nothing(self):
         self.install_game()
         sav = self.put(self.appdata / 'profile.sav', 'old')
-        steam.backup_manifest_saves('test-game', self.game, self.index['games']['Test Game'])
+        savedata.backup_manifest_saves('test-game', self.game, self.index['games']['Test Game'])
         sav.write_text('newer')
         self.index = saves.build_index([])
         code, out = self.restore()

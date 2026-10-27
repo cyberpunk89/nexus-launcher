@@ -1,5 +1,5 @@
 """Saves of a native Windows install, found through the Ludusavi manifest
-(nexus/saves.py) and backed up and restored by cli/steam.py. On a small
+(nexus/saves.py) and backed up and restored by cli/savedata.py. On a small
 synthetic manifest, in the test HOME, with a fake user-folder layout — so it
 runs the same on Linux and Windows, offline."""
 
@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import net, saves  # noqa: E402
-from nexus.cli import steam  # noqa: E402
+from nexus.cli import savedata  # noqa: E402
 
 MANIFEST = '''---
 "! Bastard Gold !":
@@ -151,7 +151,7 @@ class BackupRestore(unittest.TestCase):
         self.home = self.t / 'Users' / 'me'
         self.folders = saves.windows_folders(self.home)
         self.game = self.t / 'Games' / 'HK'
-        p = mock.patch.object(steam, 'SAVES_DIR', self.t / 'saves')
+        p = mock.patch.object(savedata, 'SAVES_DIR', self.t / 'saves')
         p.start()
         self.addCleanup(p.stop)
         self.entry = index()['games']['Hollow Knight™']
@@ -169,29 +169,29 @@ class BackupRestore(unittest.TestCase):
         c = self.put(self.game / 'saves' / 'slot1.sav')
         self.put(self.game / 'saves' / 'logs' / 'today.txt')
         got = sorted(f for f, _ in saves.resolve(self.entry, self.game, self.folders,
-                                                  noise=steam._is_save_noise))
+                                                  noise=savedata._is_save_noise))
         self.assertEqual(got, sorted([a, b, c]))
 
     def test_backup_and_restore_round_trip(self):
         a = self.put(self.game / 'saves' / 'slot1.sav', 'one')
         b = self.put(self.home / 'Documents' / 'My Games' / 'HK' / '42' / 'user.sav', 'two')
-        dest, n, failed = steam.backup_manifest_saves('hk', self.game, self.entry, self.folders)
+        dest, n, failed = savedata.backup_manifest_saves('hk', self.game, self.entry, self.folders)
         self.assertEqual((n, failed), (2, []))
         self.assertEqual(dest.parent, self.t / 'saves' / 'hk')
-        mapping = json.loads((dest / steam.SAVE_FILES_MAP).read_text())
+        mapping = json.loads((dest / savedata.SAVE_FILES_MAP).read_text())
         self.assertEqual(sorted(mapping.values()), sorted([str(a), str(b)]))
         a.unlink()
         b.write_text('changed')
-        self.assertEqual(steam.restore_manifest_saves('hk'), (2, []))
+        self.assertEqual(savedata.restore_manifest_saves('hk'), (2, []))
         self.assertEqual((a.read_text(), b.read_text()), ('one', 'two'))
 
     def test_nothing_to_back_up(self):
-        self.assertIsNone(steam.backup_manifest_saves('hk', self.game, self.entry, self.folders))
-        self.assertIsNone(steam.restore_manifest_saves('hk'))
+        self.assertIsNone(savedata.backup_manifest_saves('hk', self.game, self.entry, self.folders))
+        self.assertIsNone(savedata.restore_manifest_saves('hk'))
 
     def test_restore_ignores_a_prefix_backup(self):
         self.put(self.t / 'saves' / 'hk' / '20260101-000000' / 'drive_c' / 'x.sav')
-        self.assertIsNone(steam.restore_manifest_saves('hk'))
+        self.assertIsNone(savedata.restore_manifest_saves('hk'))
 
 
 if __name__ == '__main__':

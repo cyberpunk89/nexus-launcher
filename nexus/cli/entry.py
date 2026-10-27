@@ -859,12 +859,14 @@ from .registry import load_registry, registry_get  # noqa: E402
 from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause  # noqa: E402
 from .sgdb import (cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search,
     SGDB_KINDS)  # noqa: E402
-from .steam import (_report_failed_copies, backup_manifest_saves, backup_prefix_saves,
-    cmd_check_integrity, is_manifest_backup, latest_save_backup, manifest_save_entry,
-    PRE_RESTORE, restore_manifest_saves, restore_prefix_saves,
-    set_steam_account_pin)  # noqa: E402
+from .steam import set_steam_account_pin  # noqa: E402
+from .integrity import cmd_check_integrity  # noqa: E402
+from .savedata import (_report_failed_copies, backup_manifest_saves, backup_prefix_saves,
+    is_manifest_backup, latest_save_backup, manifest_save_entry, PRE_RESTORE,
+    restore_manifest_saves, restore_prefix_saves)  # noqa: E402
 from .sunshine import (cmd_launch, cmd_launch_via, cmd_sunshine, cmd_track_session,
-    cmd_uninstall, remove_steam_shortcut)  # noqa: E402
+    remove_steam_shortcut)  # noqa: E402
+from .uninstall import cmd_uninstall  # noqa: E402
 from .install import cmd_install  # noqa: E402
 from .install_win import cmd_install_win  # noqa: E402
 from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402

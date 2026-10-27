@@ -354,4 +354,5 @@ from .common import disable_cow, existing_ancestor  # noqa: E402
 from .config import load_config  # noqa: E402
 from .move import file_map  # noqa: E402
 from .registry import load_registry, registry_get  # noqa: E402
-from .sunshine import _owned_game_dir, _prefix_markers, _rmtree_collect, prefix_processes  # noqa: E402
+from .sunshine import _prefix_markers, prefix_processes  # noqa: E402
+from .uninstall import _owned_game_dir, _rmtree_collect  # noqa: E402
