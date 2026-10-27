@@ -117,7 +117,12 @@ class Details(unittest.TestCase):
             sent = []
             p.request.connect(lambda args, *_: sent.append(args))
             p._do_uninstall()
-        self.assertIn('--save-backup', sent[0])
+            self.assertIn('--save-backup', sent[0])
+            self.assertNotIn('--remove-snapshots', sent[0])      # kept unless ticked
+            p.confirm_snaps.show()
+            p.confirm_snaps.setChecked(True)
+            p._do_uninstall()
+        self.assertIn('--remove-snapshots', sent[1])
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

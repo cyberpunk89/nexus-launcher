@@ -122,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help='With --uninstall, back up detected save-game files before '
                              'removing the prefix (default: off — asks interactively unless '
                              '--yes is also given, in which case saves are NOT backed up)')
+    parser.add_argument('--remove-snapshots', action='store_true', dest='remove_snapshots',
+                        help="With --uninstall, also delete the game's btrfs snapshots "
+                             '(they hold copies of its saves; default: kept, asks '
+                             'interactively unless --yes is also given)')
     parser.add_argument('--import-save', action='store_true', dest='import_save',
                         help='On install, restore a previous save backup if one exists: into '
                              'the fresh Wine prefix, or on Windows back to the '
@@ -683,7 +687,8 @@ COMMANDS = (
     ('discard_incomplete',
      lambda a, base: sys.exit(cmd_discard_incomplete(base, a.discard_incomplete))),
     ('uninstall',
-     lambda a, base: cmd_uninstall(base, a.uninstall, yes=a.yes, save_backup=a.save_backup)),
+     lambda a, base: cmd_uninstall(base, a.uninstall, yes=a.yes, save_backup=a.save_backup,
+                                    remove_snapshots=a.remove_snapshots)),
     ('restore_saves', _cmd_restore_saves),
     ('check_integrity',
      lambda a, base: cmd_check_integrity(a.check_integrity, rebaseline=a.rebaseline)),

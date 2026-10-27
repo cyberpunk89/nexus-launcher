@@ -289,7 +289,7 @@ def _run_uninstaller(unins: Path) -> bool:
 
 
 def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
-                  save_backup: bool = False) -> None:
+                  save_backup: bool = False, remove_snapshots: bool = False) -> None:
     entry = registry_get(slug) or {}
     owned_dir = _owned_game_dir(entry, install_base, slug)
     if owned_dir is not None and not owned_dir.exists():
@@ -339,6 +339,11 @@ def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
     else:
         save_hits = find_prefix_savedata(owned_dir) if owned_dir else []
 
+    # Snapshots hold copies of the saves, so they go only when asked; the
+    # integrity baseline is only checksums and would be wrong for a reinstall.
+    snaps = snapshot_dirs(entry, slug) if entry else []
+    baseline = integrity_manifest_path(slug)
+
     print(f"About to remove '{slug}':")
     unins = Path(entry['uninstaller']) if windows and entry.get('uninstaller') else None
     if unins and unins.is_file():
@@ -353,6 +358,8 @@ def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
         print(f"  - desktop: {desktop}")
     if artwork_dir and artwork_dir.exists():
         print(f"  - artwork: {artwork_dir}")
+    if baseline.exists():
+        print(f"  - integrity baseline: {baseline}")
     print("  - matching Steam shortcut + Heroic entry (if any)")
     print("  (install logs are kept)")
 
@@ -383,6 +390,25 @@ def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
             except (EOFError, KeyboardInterrupt):
                 ans = 'n'
             do_backup = ans in ('y', 'yes')
+
+    drop_snaps = remove_snapshots
+    if snaps:
+        where = snaps[0].parent
+        if remove_snapshots:
+            print(f"  Its {len(snaps)} snapshot(s) in {where} will be deleted too, and the "
+                  f"save copies in them with them.")
+        elif yes:
+            print(f"  Its {len(snaps)} snapshot(s) in {where} are kept (they hold copies of "
+                  f"its saves); pass --remove-snapshots to delete them, or use Storage > "
+                  f"Clean up later.")
+        else:
+            print(f"  It has {len(snaps)} snapshot(s) in {where}; they hold copies of its "
+                  f"saves.")
+            try:
+                ans = input("  Delete them too? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = 'n'
+            drop_snaps = ans in ('y', 'yes')
 
     if not yes:
         try:
@@ -454,6 +480,22 @@ def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
         print(f"Partially removed '{slug}' — fix the permissions and run --uninstall "
               f"again.", file=sys.stderr)
         sys.exit(1)
+    try:
+        baseline.unlink(missing_ok=True)
+    except OSError as e:
+        print(f"  [!] Could not delete the integrity baseline {baseline} ({e})",
+              file=sys.stderr)
+    if snaps and drop_snaps:
+        left = [p for s in snaps for p in remove_game_dir(s)]
+        if left:
+            print(f"  [!] Could not delete {len(left)} path(s) of its snapshots, e.g. "
+                  f"{left[0]}; Storage > Clean up lists them.", file=sys.stderr)
+        else:
+            try:
+                snaps[0].parent.rmdir()
+            except OSError:
+                pass
+            print(f"  Deleted {len(snaps)} snapshot(s).")
     unregister_game(slug)
     print(f"Removed '{slug}'.")
 
@@ -800,8 +842,9 @@ from .heroic import remove_heroic_entry  # noqa: E402
 from .manage import _cover_path, _game_by_id, _read_shortcuts  # noqa: E402
 from .registry import (load_registry, registry_get, registry_lock, save_registry,
     set_registry_steam_appid, touch_last_played, unregister_game, update_registry_entry)  # noqa: E402
+from .snapshots import remove_game_dir, snapshot_dirs  # noqa: E402
 from .steam import (_is_save_noise, _report_failed_copies, _shortcut_uid,
     _wait_for_steam_closed, _write_compat_mapping, backup_manifest_saves, backup_prefix_saves,
-    find_prefix_savedata, load_shortcuts, manifest_save_entry, save_shortcuts,
-    split_game_shortcuts, steam_is_running)  # noqa: E402
+    find_prefix_savedata, integrity_manifest_path, load_shortcuts, manifest_save_entry,
+    save_shortcuts, split_game_shortcuts, steam_is_running)  # noqa: E402
 from .runner import proton_by_name  # noqa: E402

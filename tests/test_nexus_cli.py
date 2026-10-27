@@ -783,6 +783,47 @@ class Sandbox(unittest.TestCase):
         self.assertIn('test-game', json.loads(
             (tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games'])
 
+    def _leftovers(self):
+        snaps = self.home / 'Games/FitGirl/.nexus-snapshots/test-game'
+        for name in ('20261020-100000-update', '20261027-090000-manual'):
+            (snaps / name / 'pfx').mkdir(parents=True)
+            (snaps / name / 'pfx/slot1.sav').write_bytes(b'level 7')
+        self.cli('--check-integrity', 'test-game')
+        baseline = tests.sandbox.data_dir(self.home) / 'integrity/test-game.json'
+        self.assertTrue(baseline.is_file())
+        return snaps, baseline
+
+    def test_uninstall_keeps_snapshots_unless_asked_and_drops_the_baseline(self):
+        snaps, baseline = self._leftovers()
+        r = self.cli('--uninstall', 'test-game', '--yes')
+        self.assertIn('2 snapshot(s)', r.stdout)
+        self.assertIn('--remove-snapshots', r.stdout)
+        self.assertFalse(self.game_dir.exists())
+        self.assertFalse(baseline.exists())
+        self.assertEqual(len(list(snaps.iterdir())), 2)       # they hold saves: kept
+
+    def test_uninstall_removes_snapshots_when_asked(self):
+        snaps, baseline = self._leftovers()
+        self.cli('--uninstall', 'test-game', '--yes', '--remove-snapshots')
+        self.assertFalse(self.game_dir.exists())
+        self.assertFalse(baseline.exists())
+        self.assertFalse(snaps.exists())
+        self.assertTrue(snaps.parent.is_dir())                 # other games' snapshots live there
+
+    @linux_only                     # a read-only folder that its owner can't empty
+    def test_failed_uninstall_keeps_snapshots_and_baseline(self):
+        snaps, baseline = self._leftovers()
+        stuck = self.game_dir / 'pfx/drive_c/Test Game'
+        stuck.chmod(0o500)
+        try:
+            r = self.cli('--uninstall', 'test-game', '--yes', '--remove-snapshots',
+                         check=False)
+        finally:
+            stuck.chmod(0o700)
+        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+        self.assertTrue(baseline.exists())
+        self.assertEqual(len(list(snaps.iterdir())), 2)
+
     def test_uninstall_refuses_anything_but_a_slug(self):
         base = self.home / 'Games/FitGirl'
         for bad in ('..', '.', 'test-game/..', '../FitGirl'):
