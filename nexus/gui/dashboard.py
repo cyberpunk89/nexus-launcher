@@ -934,7 +934,7 @@ def _note_row(lay, title: str, right: str):
     _add(lay, row)
 
 
-def _day_bars(period: dict, today: str, height: int, month: bool) -> MinuteBars:
+def _day_bars(period: dict, today: str, height: int, month: bool) -> "MinuteBars":
     """A week (weekday under each bar, today highlighted) or a month (every
     seventh day numbered, this week highlighted) from history.periods()."""
     days = period.get('days') or []

@@ -833,6 +833,7 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 | Flag | Does |
 |---|---|
 | `--uninstall SLUG --save-backup` | Back up the game's saves before removing it (without it, you're asked; with `--yes` and no `--save-backup`, saves are not backed up) |
+| `--uninstall SLUG --remove-snapshots` | Also delete the game's btrfs snapshots, which hold copies of its saves (without it, you're asked; with `--yes`, they are kept). The integrity baseline is always removed with the game |
 | `--restore-saves SLUG` | Copy the newest save backup back into the game's prefix |
 | `--check-integrity SLUG` | Hash the installed files against a saved baseline (made on the first run) to catch corruption |
 | `--check-integrity SLUG --rebaseline` | Accept the current files as the new baseline |
