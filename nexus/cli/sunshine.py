@@ -21,6 +21,8 @@ from .common import (APPLICATIONS_DIR, ARTWORK_DIR, atomic_write, backup_file, C
 
 SUNSHINE_APPS = Path.home() / '.config/sunshine/apps.json'
 SUNSHINE_ART = NX.DATA_DIR / 'sunshine'
+# The store launch URLs a Sunshine entry can call (Epic's is Windows-only).
+SUNSHINE_URL_RE = re.compile(r'^(steam|heroic)://[\w/.?=&-]+$')
 
 
 def _cli_command() -> str:
@@ -121,8 +123,8 @@ def cmd_sunshine(ident: str, remove: bool = False) -> None:
     if not g:
         print(f"Unknown game {ident!r}", file=sys.stderr)
         sys.exit(1)
-    if g.get('source', 'nexus') != 'nexus' and not re.match(
-            r'^(steam|heroic)://[\w/.?=&-]+$', g.get('launcher') or ''):
+    if g.get('source', 'nexus') != 'nexus' and not SUNSHINE_URL_RE.match(
+            g.get('launcher') or ''):
         print(f"{ident!r} has no launch URL Sunshine could use", file=sys.stderr)
         sys.exit(1)
     try:

@@ -125,11 +125,13 @@ class Background(unittest.TestCase):
                  {'slug': 'trk', 'source': 'nexus'},
                  {'slug': 'steam-10', 'source': 'steam', 'appid': 10},
                  {'slug': 'heroic-x', 'source': 'heroic', 'install_dir': '/g/Epic X'},
+                 {'slug': 'epic-Fable', 'source': 'epic', 'install_dir': 'C:\\Games\\Fable'},
+                 {'slug': 'epic-Idle', 'source': 'epic', 'install_dir': 'C:\\Games\\Fab'},
                  {'slug': 'idle', 'source': 'steam', 'appid': 11}]
         r = {'appids': [10, 3000000000], 'slugs': ['trk'], 'exes': ['game.exe'],
-             'paths': ['wine /g/Epic X/bin/x.exe']}
+             'paths': ['wine /g/Epic X/bin/x.exe', 'C:\\Games\\Fable\\Fable.exe']}
         self.assertEqual(nx.match_running(games, r),
-                         {'rep', 'sc', 'trk', 'steam-10', 'heroic-x'})
+                         {'rep', 'sc', 'trk', 'steam-10', 'heroic-x', 'epic-Fable'})
 
     def test_in_thread_delivers_on_the_gui_thread(self):
         from PyQt6.QtCore import QThread

@@ -162,16 +162,18 @@ def cmd_bench_results(slug: str, as_json: bool) -> None:
 _OPEN_URL_RE = re.compile(
     r'^steam://(?:(?:rungameid|install|uninstall|validate|gameproperties|store'
     r'|nav/games/details)/\d+|open/keyboard)$'
-    r'|^heroic://launch/\w[\w.-]*/\w[\w.-]*$')
+    r'|^heroic://launch/\w[\w.-]*/\w[\w.-]*$'
+    # Epic: namespace, catalog item and app name, as sources/epic.launch_url builds it.
+    r'|^com\.epicgames\.launcher://apps/\w+%3A\w+%3A\w[\w.-]*\?action=launch&silent=true$')
 
 
 def cmd_open_url(url: str) -> None:
-    """Launch a Steam or Heroic game (or open a Steam page) by URL. Only the
-    steam:// and heroic:// forms in _OPEN_URL_RE are accepted, and the pages
+    """Launch a Steam, Heroic or Epic game (or open a Steam page) by URL. Only
+    the forms in _OPEN_URL_RE are accepted, and the pages
     Doctor's fixes open (platform.fix_page: Windows settings, help links)."""
     from nexus import platform, steamlib
     if not _OPEN_URL_RE.match(url) and not platform.fix_page(url):
-        print(f"Refusing to open {url!r}: only steam:// and heroic:// URLs", file=sys.stderr)
+        print(f"Refusing to open {url!r}: only Steam, Heroic and Epic launch URLs", file=sys.stderr)
         sys.exit(2)
     if not steamlib.open_url(url):
         print(f"Nothing here can open {url} (on Linux: no `steam` or `xdg-open`).",

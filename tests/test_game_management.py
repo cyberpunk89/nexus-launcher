@@ -375,5 +375,25 @@ class TryProton(unittest.TestCase):
         self.assertEqual((started, code), ([], 1))
 
 
+class RunningStoreGames(unittest.TestCase):
+    def test_a_running_epic_game_is_playing(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from nexus import sources, steamlib
+        from nexus.cli import manage
+        snap = {'appids': set(), 'slugs': set(), 'exes': set(),
+                'paths': ['C:\\Games\\Fable\\Fable.exe --flag']}
+        epic = [{'slug': 'epic-Fable', 'source': 'epic', 'install_dir': 'C:\\Games\\Fable'},
+                {'slug': 'epic-Fab', 'source': 'epic', 'install_dir': 'C:\\Games\\Fab'}]
+        out = StringIO()
+        with mock.patch.object(steamlib, 'running', return_value=snap), \
+                mock.patch.object(sources, 'installed_games', return_value=epic), \
+                patch_cli('managed_entries', return_value=[]), \
+                mock.patch.object(steamlib, 'heroic_store_games', return_value=[]), \
+                redirect_stdout(out):
+            manage.cmd_running(Path('/nowhere'), as_json=True)
+        self.assertEqual(json.loads(out.getvalue())['playing'], ['epic-Fable'])
+
+
 if __name__ == '__main__':
     unittest.main()

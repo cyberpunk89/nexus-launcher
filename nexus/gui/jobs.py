@@ -463,7 +463,7 @@ def in_thread(fn, callback):
 def match_running(games: list[dict], r: dict) -> set:
     """Slugs of the library games in steamlib.running()'s snapshot: Steam's
     reaper AppId (Steam games and repack shortcuts), Nexus's own session
-    trackers, a repack's exe name, or a Heroic game's install folder."""
+    trackers, a repack's exe name, or a Heroic or Epic game's install folder."""
     appids, slugs, exes = set(r['appids']), set(r['slugs']), set(r['exes'])
     out = set()
     for g in games:
@@ -476,7 +476,7 @@ def match_running(games: list[dict], r: dict) -> set:
         elif src == 'steam':
             if g.get('appid') in appids:
                 out.add(g['slug'])
-        elif src == 'heroic':
+        elif src in ('heroic', 'epic'):
             d = g.get('install_dir')
             if d and steamlib.in_dir_cmdline(d, r['paths']):
                 out.add(g['slug'])

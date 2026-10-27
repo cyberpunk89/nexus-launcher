@@ -874,7 +874,10 @@ class Sandbox(unittest.TestCase):
 
     def test_open_url_only_accepts_launcher_schemes(self):
         for bad in ('file:///etc/passwd', 'https://example.com', 'steam://x; rm -rf ~',
-                    'steam://rungameid/440//-console', 'steam://exit', 'heroic://launch/../x'):
+                    'steam://rungameid/440//-console', 'steam://exit', 'heroic://launch/../x',
+                    'com.epicgames.launcher://apps/a%3Ab%3Ac?action=uninstall',
+                    'com.epicgames.launcher://apps/a%3Ab%3A../c?action=launch&silent=true',
+                    'com.epicgames.launcher://store/p/x'):
             r = self.cli('--open-url', bad, check=False)
             self.assertEqual(r.returncode, 2, bad)
 

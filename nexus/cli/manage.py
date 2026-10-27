@@ -345,7 +345,7 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
             g['sgdb_id'] = gid
     for g in games:
         overlay_art(g)
-        if g.get('source') == 'nexus' or g.get('launcher'):
+        if g.get('source') == 'nexus' or SUNSHINE_URL_RE.match(g.get('launcher') or ''):
             g['sunshine'] = bool(sun_apps) and _sunshine_find(sun_apps, g) is not None
     # The id protongen knows each game by (its `--game` argument and its
     # game_memory key): Steam appid, else the FNV hash of the Heroic app name.
@@ -413,6 +413,11 @@ def cmd_running(install_base: Path, as_json: bool) -> None:
         d = h.get('install_dir')
         if d and steamlib.in_dir_cmdline(d, r['paths']):
             playing.append(h['slug'])
+    from nexus import sources
+    for e in sources.installed_games():          # Epic etc.
+        d = e.get('install_dir')
+        if d and steamlib.in_dir_cmdline(d, r['paths']):
+            playing.append(e['slug'])
     if as_json:
         print(json.dumps({'playing': sorted(set(playing))}))
     else:
@@ -471,4 +476,4 @@ from .registry import load_registry, update_registry_size  # noqa: E402
 from .repack import incomplete_installs  # noqa: E402
 from .sgdb import _art_file, cached_sgdb_id, overlay_art  # noqa: E402
 from .steam import _read_compat_mapping, _shortcut_uid, find_steam_userdata  # noqa: E402
-from .sunshine import _owned_game_dir, _sunshine_find, SUNSHINE_APPS  # noqa: E402
+from .sunshine import _owned_game_dir, _sunshine_find, SUNSHINE_APPS, SUNSHINE_URL_RE  # noqa: E402

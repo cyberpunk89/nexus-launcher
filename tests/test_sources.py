@@ -98,5 +98,17 @@ class Hook(unittest.TestCase):
             self.assertEqual(sources.sources(), [])
 
 
+class EpicLaunch(unittest.TestCase):
+    """Play hands the manifest's launch URL to --open-url, which used to refuse it."""
+
+    def test_open_url_accepts_the_epic_launch_url(self):
+        from nexus.cli.running import _OPEN_URL_RE
+        from nexus.cli.sunshine import SUNSHINE_URL_RE
+        for g in epic.Epic(FIXTURES / 'normal' / 'Manifests').installed():
+            self.assertTrue(_OPEN_URL_RE.match(g['launcher']), g['launcher'])
+            # Sunshine can't call it (no Epic on Linux), so no "In Sunshine" item.
+            self.assertFalse(SUNSHINE_URL_RE.match(g['launcher']), g['launcher'])
+
+
 if __name__ == '__main__':
     unittest.main()
