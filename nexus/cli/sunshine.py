@@ -302,6 +302,13 @@ def cmd_uninstall(install_base: Path, slug: str, yes: bool = False,
         print(f"Nothing found for slug '{slug}'")
         sys.exit(1)
 
+    # Deleting the folder of a running game fails halfway (Windows) or pulls
+    # files out from under it (Linux); the GUI checks too, the CLI is the gate.
+    if entry and game_processes(entry):
+        print(f"'{entry.get('display_name') or slug}' is running. Quit it and try again; "
+              f"nothing was removed.", file=sys.stderr)
+        sys.exit(2)
+
     # Steam must be closed to remove the shortcut. Check this BEFORE deleting
     # anything: deleting the prefix and registry entry while leaving the
     # shortcut, its compatdata symlink and forced-tool mapping behind strands

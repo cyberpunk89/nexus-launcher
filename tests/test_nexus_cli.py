@@ -768,6 +768,21 @@ class Sandbox(unittest.TestCase):
         self.assertFalse(self.game_dir.exists())
         self.assertIn('Unrelated Game', [e['AppName'] for e in self.shortcuts()])
 
+    @linux_only                     # a Wine process found by its WINEPREFIX
+    def test_uninstall_refuses_a_running_game(self):
+        game = subprocess.Popen(['sleep', '30'], env={**os.environ,
+                                                      'WINEPREFIX': str(self.game_dir / 'pfx')})
+        try:
+            r = self.cli('--uninstall', 'test-game', '--yes', check=False)
+        finally:
+            game.kill()
+            game.wait()
+        self.assertEqual(r.returncode, 2, (r.stdout, r.stderr))
+        self.assertIn('is running', r.stderr)
+        self.assertTrue(self.game_dir.is_dir())
+        self.assertIn('test-game', json.loads(
+            (tests.sandbox.data_dir(self.home) / 'games.json').read_text())['games'])
+
     def test_uninstall_refuses_anything_but_a_slug(self):
         base = self.home / 'Games/FitGirl'
         for bad in ('..', '.', 'test-game/..', '../FitGirl'):
