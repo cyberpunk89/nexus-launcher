@@ -824,8 +824,9 @@ from .protoncmds import install_hint  # noqa: E402
 from .registry import load_registry, unregister_game  # noqa: E402
 from .runner import (damaged_protons, find_proton, find_umu, list_protons, proton_by_name,
     proton_repair_tag, resolve_game_proton)  # noqa: E402
-from .steam import (_read_compat_mapping, _shortcut_uid, find_prefix_savedata, INTEGRITY_DIR,
-    resolve_steam_account, savedata_owners, steam_account_label, steam_accounts,
-    steam_is_running)  # noqa: E402
+from .steam import (_read_compat_mapping, _shortcut_uid, resolve_steam_account,
+    steam_account_label, steam_accounts, steam_is_running)  # noqa: E402
+from .integrity import INTEGRITY_DIR  # noqa: E402
+from .savedata import find_prefix_savedata, savedata_owners  # noqa: E402
 from .sunshine import game_has_steam_shortcut, remove_steam_shortcut  # noqa: E402
 from .snapshots import list_snapshots, SNAP_DIR, snapshot_doctor  # noqa: E402

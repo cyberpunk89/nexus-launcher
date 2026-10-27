@@ -229,4 +229,5 @@ from .registry import (load_registry, registry_get, update_registry_entry,
     update_registry_size)  # noqa: E402
 from .snapshots import make_game_dir, remove_game_dir, snapshot_dirs, SnapshotError  # noqa: E402
 from .steam import steam_is_running  # noqa: E402
-from .sunshine import _owned_game_dir, game_processes  # noqa: E402
+from .sunshine import game_processes  # noqa: E402
+from .uninstall import _owned_game_dir  # noqa: E402

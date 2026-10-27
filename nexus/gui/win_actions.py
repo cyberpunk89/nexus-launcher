@@ -365,7 +365,7 @@ class ActionsMixin:
             names = ", ".join(nm(g) for g in ok[:4]) + ("…" if len(ok) > 4 else "")
             self.confirm(f"Uninstall {len(ok)} games?",
                          f"{names}. Their folders and prefixes are deleted; save games found "
-                         "in them are backed up first.",
+                         "in them are backed up first. Their snapshots are kept.",
                          f"Uninstall {len(ok)} games",
                          lambda: each(lambda g: ['--uninstall', g['slug'], '--yes',
                                                  '--save-backup'],

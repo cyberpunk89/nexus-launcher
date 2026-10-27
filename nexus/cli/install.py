@@ -602,5 +602,5 @@ from .runner import (_umu_env, browser_muted, damaged_protons, find_proton, init
     write_launch_script)  # noqa: E402
 from .sgdb import fetch_artwork  # noqa: E402
 from .snapshots import auto_snapshot, make_game_dir  # noqa: E402
-from .steam import (add_steam_shortcut_native, latest_save_backup, restore_prefix_saves,
-    steam_is_running)  # noqa: E402
+from .steam import add_steam_shortcut_native, steam_is_running  # noqa: E402
+from .savedata import latest_save_backup, restore_prefix_saves  # noqa: E402

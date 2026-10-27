@@ -808,6 +808,11 @@ class DetailsPanel(QFrame):
         if not has('save_backup'):
             self.confirm_backup.hide()
         cl.addWidget(self.confirm_backup)
+        # Snapshots hold copies of the saves: kept unless ticked; shown only
+        # when the game has some (ask_uninstall asks the CLI).
+        self.confirm_snaps = QCheckBox("")
+        self.confirm_snaps.hide()
+        cl.addWidget(self.confirm_snaps)
         crow = QHBoxLayout()
         crow.addStretch()
         keep = QPushButton("Keep it")
@@ -2036,6 +2041,17 @@ class DetailsPanel(QFrame):
         self.confirm_text.setText(
             f"Uninstall {name}? This deletes its install folder and removes it from Steam, "
             f"Heroic and the app menu. Logs are kept.")
+        self.confirm_snaps.setChecked(False)
+        self.confirm_snaps.hide()
+        if not self.snap_box.isHidden():
+            def done(data, _err, slug=self.slug):
+                n = len((data or {}).get('snapshots') or [])
+                if slug == self.slug and n and alive(self.confirm_snaps):
+                    self.confirm_snaps.setText(
+                        f"Also delete its {n} snapshot{'s' if n > 1 else ''} "
+                        f"(they hold copies of its saves)")
+                    self.confirm_snaps.show()
+            cli_json(['--snapshots', self.slug, '--json'], done, 30000)
         self.confirm.setVisible(True)
         page = self.stack.currentWidget()
         if isinstance(page, QScrollArea):
@@ -2047,6 +2063,8 @@ class DetailsPanel(QFrame):
         args = ['--uninstall', self.slug, '--yes']
         if has('save_backup') and self.confirm_backup.isChecked():
             args.append('--save-backup')
+        if not self.confirm_snaps.isHidden() and self.confirm_snaps.isChecked():
+            args.append('--remove-snapshots')
         self._emit(args, "Uninstalling", bool(self.game.get('steam')))
 
 

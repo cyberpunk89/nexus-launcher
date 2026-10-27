@@ -476,4 +476,5 @@ from .registry import load_registry, update_registry_size  # noqa: E402
 from .repack import incomplete_installs  # noqa: E402
 from .sgdb import _art_file, cached_sgdb_id, overlay_art  # noqa: E402
 from .steam import _read_compat_mapping, _shortcut_uid, find_steam_userdata  # noqa: E402
-from .sunshine import _owned_game_dir, _sunshine_find, SUNSHINE_APPS, SUNSHINE_URL_RE  # noqa: E402
+from .sunshine import _sunshine_find, SUNSHINE_APPS, SUNSHINE_URL_RE  # noqa: E402
+from .uninstall import _owned_game_dir  # noqa: E402

@@ -122,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help='With --uninstall, back up detected save-game files before '
                              'removing the prefix (default: off — asks interactively unless '
                              '--yes is also given, in which case saves are NOT backed up)')
+    parser.add_argument('--remove-snapshots', action='store_true', dest='remove_snapshots',
+                        help="With --uninstall, also delete the game's btrfs snapshots "
+                             '(they hold copies of its saves; default: kept, asks '
+                             'interactively unless --yes is also given)')
     parser.add_argument('--import-save', action='store_true', dest='import_save',
                         help='On install, restore a previous save backup if one exists: into '
                              'the fresh Wine prefix, or on Windows back to the '
@@ -683,7 +687,8 @@ COMMANDS = (
     ('discard_incomplete',
      lambda a, base: sys.exit(cmd_discard_incomplete(base, a.discard_incomplete))),
     ('uninstall',
-     lambda a, base: cmd_uninstall(base, a.uninstall, yes=a.yes, save_backup=a.save_backup)),
+     lambda a, base: cmd_uninstall(base, a.uninstall, yes=a.yes, save_backup=a.save_backup,
+                                    remove_snapshots=a.remove_snapshots)),
     ('restore_saves', _cmd_restore_saves),
     ('check_integrity',
      lambda a, base: cmd_check_integrity(a.check_integrity, rebaseline=a.rebaseline)),
@@ -854,12 +859,14 @@ from .registry import load_registry, registry_get  # noqa: E402
 from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause  # noqa: E402
 from .sgdb import (cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search,
     SGDB_KINDS)  # noqa: E402
-from .steam import (_report_failed_copies, backup_manifest_saves, backup_prefix_saves,
-    cmd_check_integrity, is_manifest_backup, latest_save_backup, manifest_save_entry,
-    PRE_RESTORE, restore_manifest_saves, restore_prefix_saves,
-    set_steam_account_pin)  # noqa: E402
+from .steam import set_steam_account_pin  # noqa: E402
+from .integrity import cmd_check_integrity  # noqa: E402
+from .savedata import (_report_failed_copies, backup_manifest_saves, backup_prefix_saves,
+    is_manifest_backup, latest_save_backup, manifest_save_entry, PRE_RESTORE,
+    restore_manifest_saves, restore_prefix_saves)  # noqa: E402
 from .sunshine import (cmd_launch, cmd_launch_via, cmd_sunshine, cmd_track_session,
-    cmd_uninstall, remove_steam_shortcut)  # noqa: E402
+    remove_steam_shortcut)  # noqa: E402
+from .uninstall import cmd_uninstall  # noqa: E402
 from .install import cmd_install  # noqa: E402
 from .install_win import cmd_install_win  # noqa: E402
 from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402
