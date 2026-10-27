@@ -154,8 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
                              'library) to the Trash and exit')
     parser.add_argument('--achievements', metavar='GAME',
                         help="A Steam game's achievements (appid or steam-<appid>), or "
-                             "'recent' for the newest unlocks across games; from Steam's "
-                             "local cache, read-only (use --json)")
+                             "'recent' for the newest unlocks across games, or 'rarest' "
+                             "for your rarest unlocks (Steam's public global percentages, "
+                             "cached); from Steam's local cache, read-only (use --json)")
     parser.add_argument('--restore-saves', metavar='SLUG', dest='restore_saves',
                         help="Re-copy a managed game's most recent save backup into its "
                              "current prefix and exit")

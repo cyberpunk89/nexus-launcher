@@ -182,57 +182,73 @@ class HealthPage(QWidget):
 # Settings page
 # --------------------------------------------------------------------------
 
-class WeekBars(QWidget):
-    """Hours played per week, oldest left: plain painted bars with the
-    week's hours above each and its date below."""
+class MinuteBars(QWidget):
+    """Minutes played per slot (a day or a week), oldest left: plain painted
+    bars with the time above each (when there's room) and a label below
+    every `labels_every`-th one, counted back from the last. Bars in
+    `highlight` are full strength, the rest dimmed."""
 
-    def __init__(self):
+    def __init__(self, height: int = 170, labels_every: int = 2):
         super().__init__()
-        self.weeks: list[dict] = []
-        self.setMinimumHeight(170)
+        self.bars: list[dict] = []          # {minutes, label}
+        self.highlight: set[int] = set()
+        self.labels_every = labels_every
+        self.setMinimumHeight(height)
 
-    def set_weeks(self, weeks: list[dict]):
-        self.weeks = weeks
+    def set_bars(self, bars: list[dict], highlight=None):
+        self.bars = bars
+        self.highlight = set(highlight if highlight is not None else [len(bars) - 1])
         self.update()
 
     def paintEvent(self, ev):
-        if not self.weeks:
+        if not self.bars:
             return
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
         f = QFont(FONTS.ui)
         f.setPixelSize(FS['2xs'])
         pt.setFont(f)
-        n = len(self.weeks)
+        n = len(self.bars)
         top, bottom = 18.0, 20.0
         h = self.height() - top - bottom
         slot = self.width() / n
-        most = max((w['minutes'] for w in self.weeks), default=0) or 1
-        for i, w in enumerate(self.weeks):
+        most = max((b['minutes'] for b in self.bars), default=0) or 1
+        for i, b in enumerate(self.bars):
             x = i * slot + slot * 0.18
             bw = slot * 0.64
-            bh = max(2.0, h * w['minutes'] / most) if w['minutes'] else 2.0
+            bh = max(2.0, h * b['minutes'] / most) if b['minutes'] else 2.0
             r = QRectF(x, top + h - bh, bw, bh)
             pt.setPen(Qt.PenStyle.NoPen)
-            col = QColor(P['accent'] if w['minutes'] else P['overlay'])
-            if w['minutes'] and i != n - 1:
-                col.setAlphaF(0.55)                     # this week stands out
+            col = QColor(P['accent'] if b['minutes'] else P['overlay'])
+            if b['minutes'] and i not in self.highlight:
+                col.setAlphaF(0.55)
             pt.setBrush(col)
             pt.drawRoundedRect(r, 3.0, 3.0)
             pt.setPen(QColor(P['subtext']))
-            if w['minutes']:
-                pt.drawText(QRectF(i * slot, r.top() - 16, slot, 14),
-                            Qt.AlignmentFlag.AlignCenter, f"{w['minutes'] / 60:.0f} h"
-                            if w['minutes'] >= 60 else f"{w['minutes']:.0f} m")
-            if i % 2 == (n - 1) % 2:
-                try:
-                    d = datetime.fromisoformat(w['start'])
-                    pt.setPen(QColor(P['muted']))
-                    pt.drawText(QRectF(i * slot - slot / 2, self.height() - bottom + 4, slot * 2, 14),
-                                Qt.AlignmentFlag.AlignCenter, d.strftime('%d %b'))
-                except ValueError:
-                    pass
+            if b['minutes'] and slot >= 22:
+                pt.drawText(QRectF(i * slot - 4, r.top() - 16, slot + 8, 14),
+                            Qt.AlignmentFlag.AlignCenter, f"{b['minutes'] / 60:.0f} h"
+                            if b['minutes'] >= 60 else f"{b['minutes']:.0f} m")
+            if b.get('label') and (n - 1 - i) % self.labels_every == 0:
+                pt.setPen(QColor(P['muted']))
+                pt.drawText(QRectF(i * slot - slot, self.height() - bottom + 4, slot * 3, 14),
+                            Qt.AlignmentFlag.AlignCenter, b['label'])
         pt.end()
+
+
+class WeekBars(MinuteBars):
+    """Hours played per week (the Play history page): this week stands out,
+    every other week dated."""
+
+    def set_weeks(self, weeks: list[dict]):
+        bars = []
+        for w in weeks:
+            try:
+                lab = datetime.fromisoformat(w['start']).strftime('%d %b')
+            except (KeyError, ValueError):
+                lab = ''
+            bars.append({'minutes': w['minutes'], 'label': lab})
+        self.set_bars(bars)
 
 
 class PlayHistoryPage(QWidget):

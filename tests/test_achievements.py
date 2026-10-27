@@ -91,9 +91,77 @@ class Achievements(unittest.TestCase):
         recent = A.recent(self.root, ACCOUNT, [APPID], n=2)
         self.assertEqual([a['title'] for a in recent], ['First 3', 'Secret'])
 
+    def test_rarest_order(self):
+        pct = {APPID: {'A0': 50.0, 'A3': 2.5, 'A31': 2.5, 'A5': 0.1}, 7: {}}
+        got = A.rarest(self.root, ACCOUNT, pct, n=5)
+        # A5 isn't unlocked; the tie at 2.5 % goes newest first.
+        self.assertEqual([a['title'] for a in got], ['First 3', 'Secret', 'First 0'])
+        self.assertEqual(got[0]['percent'], 2.5)
+        self.assertEqual(A.rarest(self.root, ACCOUNT, {APPID: {}}), [])
+
     def test_corrupt_file_is_ignored(self):
         (self.stats / f'UserGameStatsSchema_{APPID}.bin').write_bytes(b'\x00garbage')
         self.assertIsNone(A.achievements(self.root, ACCOUNT, APPID))
+
+
+class GlobalPercentages(unittest.TestCase):
+    """Rarest needs Steam's public global percentages: parsed, cached like
+    the community schema, and cache-only for a while once offline."""
+    BODY = json.dumps({'achievementpercentages': {'achievements': [
+        {'name': 'A1', 'percent': '12.5'}, {'name': 'A2', 'percent': 0.4},
+        {'name': 'bad', 'percent': 'x'}, {'percent': 3}]}}).encode()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name) / 'achpct'
+
+    def test_parse_percentages(self):
+        self.assertEqual(A.parse_percentages(self.BODY), {'A1': 12.5, 'A2': 0.4})
+        self.assertEqual(A.parse_percentages(b'<html>'), {})
+        self.assertEqual(A.parse_percentages(b'{"achievementpercentages": {}}'), {})
+
+    def test_closest_order(self):
+        counts = {'a': [9, 10], 'b': [1, 2], 'c': [10, 10], 'd': [0, 5], 'e': [18, 20]}
+        self.assertEqual(A.closest(counts, 3), ['a', 'e', 'b'])     # done and unstarted left out
+
+    def test_cache_empty_and_offline(self):
+        import os
+        import time
+        from nexus import net
+        calls = []
+
+        def fetch(body):
+            def f():
+                calls.append(1)
+                if isinstance(body, Exception):
+                    raise body
+                return body
+            return f
+        self.assertEqual(A.global_percentages(5, self.dir, fetch=fetch(self.BODY)),
+                         {'A1': 12.5, 'A2': 0.4})
+        self.assertFalse(A.needs_fetch(5, self.dir))
+        self.assertEqual(A.global_percentages(5, self.dir, fetch=fetch(b'')), {'A1': 12.5,
+                                                                                'A2': 0.4})
+        self.assertEqual(len(calls), 1)                         # fresh: not asked again
+        old = time.time() - A.PERCENT_AGE - 10
+        os.utime(self.dir / '5.json', (old, old))
+        self.assertTrue(A.needs_fetch(5, self.dir))
+        # A stale good copy is never replaced by an empty answer.
+        self.assertEqual(A.global_percentages(5, self.dir, fetch=fetch(b'{}')), {'A1': 12.5,
+                                                                                  'A2': 0.4})
+        self.assertFalse(A.needs_fetch(5, self.dir))
+        # An empty answer for a new game is trusted only EMPTY_PERCENT_AGE.
+        self.assertEqual(A.global_percentages(6, self.dir, fetch=fetch(b'{}')), {})
+        old = time.time() - A.EMPTY_PERCENT_AGE - 10
+        os.utime(self.dir / '6.json', (old, old))
+        self.assertTrue(A.needs_fetch(6, self.dir))
+        # Offline: the marker makes the next lookups cache-only.
+        n = len(calls)
+        self.assertEqual(A.global_percentages(6, self.dir, fetch=fetch(net.NetError('down'))), {})
+        self.assertEqual(A.global_percentages(7, self.dir, fetch=fetch(self.BODY)), {})
+        self.assertEqual(len(calls), n + 1)
+        self.assertEqual(A.global_percentages(7, self.dir, allow_fetch=False), {})
 
 
 if __name__ == '__main__':

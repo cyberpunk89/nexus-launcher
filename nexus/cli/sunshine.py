@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from nexus import features, paths as NX, platform, saves
@@ -665,17 +665,26 @@ def cmd_track_session(slug: str, launcher: str) -> None:
         if discord:
             discord.close()
         presence.release(awake)
-    if elapsed >= 30:           # an immediate crash isn't play time
-        from nexus import history
-        history.record(slug, 'nexus', started, datetime.now(), name)
-        with registry_lock():
-            reg = load_registry()
-            e = reg['games'].get(slug)
-            if e is not None:
-                e['playtime_seconds'] = int(e.get('playtime_seconds') or 0) + int(elapsed)
-                e['last_played'] = datetime.now().isoformat(timespec='seconds')
-                save_registry(reg)
+    _record_session(slug, name, started, elapsed)
     sys.exit(rc)
+
+
+def _record_session(slug: str, name: str, started: datetime, elapsed: float) -> bool:
+    """Add a finished run to play time and sessions.jsonl. One rule
+    (history.is_session) decides for both: an immediate crash isn't play."""
+    from nexus import history
+    if not history.is_session(elapsed):
+        return False
+    # The session ends where play time stopped counting, so both use one number.
+    history.record(slug, 'nexus', started, started + timedelta(seconds=elapsed), name)
+    with registry_lock():
+        reg = load_registry()
+        e = reg['games'].get(slug)
+        if e is not None:
+            e['playtime_seconds'] = int(e.get('playtime_seconds') or 0) + int(elapsed)
+            e['last_played'] = datetime.now().isoformat(timespec='seconds')
+            save_registry(reg)
+    return True
 
 
 def _achievement_watcher(entry: dict, game_name: str):

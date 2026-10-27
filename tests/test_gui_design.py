@@ -13,7 +13,7 @@ from tests.patching import linux_features, patch_gui  # noqa: E402
 if nx is not None:
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QColor, QPixmap
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QLabel
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -225,6 +225,23 @@ class DashboardModel(unittest.TestCase):
         ids = [i['id'] for i in nx.dash_normalize(saved)]
         self.assertEqual(ids[:3], ['deals', 'upcoming', 'jump'])
 
+    def test_full_size_for_playtime_and_achievements(self):
+        for k in ('playtime', 'achievements'):
+            self.assertEqual(nx.DASH_SIZES[k], ('small', 'wide', 'full'))
+            self.assertEqual(nx.DASH_DEFAULT_SIZE[k], 'small')
+        items = self.items(('playtime', 'full'), ('achievements', 'small'))
+        self.assertEqual(nx.dash_pack(items, 3), [('playtime', 0, 0, 3),
+                                                  ('achievements', 1, 0, 1)])
+
+    def test_old_layout_round_trips(self):
+        """A layout saved before full size existed loads unchanged."""
+        old = nx.dash_normalize([dict(i, size='wide') if i['id'] in ('playtime', 'achievements')
+                                 else i for i in nx.dash_default()])
+        self.assertEqual(nx.dash_normalize(old), old)
+        self.assertEqual(nx.dash_normalize(nx.dash_normalize(old)), old)
+        full = [dict(i, size='full') if i['id'] == 'playtime' else i for i in old]
+        self.assertEqual(nx.dash_normalize(full), full)
+
     def test_system_badge(self):
         self.assertEqual(nx.system_badge(2, 3, 1), ('2', 'accent'))   # jobs first
         self.assertEqual(nx.system_badge(0, 3, 1), ('3', 'danger'))
@@ -278,6 +295,101 @@ class DashboardModel(unittest.TestCase):
             self.assertEqual(data['dashboard']['version'], 1)
             self.assertTrue(again.dashboard[0]['hidden'])
             self.assertEqual(again.favorites, {'a'})
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class DashboardFill(unittest.TestCase):
+    """Play time and Achievements at each size, from stub CLI answers that
+    come back synchronously (as a cached cli_json answer does, inside fill)."""
+    HIST = {'since': '2026-10-01', 'weeks': [{'start': '2026-10-26', 'minutes': 90}],
+            'periods': {'today': '2026-10-28',
+                        'week': {'minutes': 90, 'days': [{'date': f'2026-10-{d}', 'minutes': 45}
+                                                         for d in range(26, 33) if d < 32],
+                                 'games': [{'slug': 'a', 'name': 'Alpha', 'minutes': 90}]},
+                        'month': {'minutes': 200,
+                                  'days': [{'date': f'2026-10-{d:02}', 'minutes': 10}
+                                           for d in range(1, 32)],
+                                  'games': [{'slug': 'a', 'name': 'Alpha', 'minutes': 150},
+                                            {'slug': 'b', 'name': 'Beta', 'minutes': 50}]}}}
+    ANSWERS = {'--history': HIST,
+               'recent': {'recent': [{'appid': 1, 'title': 'First steps', 'time': 1_700_000_000}]},
+               'rarest': {'rarest': [{'appid': 1, 'title': 'Needle', 'time': 1_700_000_000,
+                                      'percent': 0.7}]}}
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from nexus.gui import dashboard as D
+        self.D = D
+        self.asked = []
+        self.fail_rarest = False
+
+        def cli_json(args, cb, timeout=0, ttl=0):
+            key = args[1] if args[0] == '--achievements' else args[0]
+            self.asked.append(key)
+            if key == 'rarest' and self.fail_rarest:
+                cb(None, 'offline')
+            else:
+                cb(self.ANSWERS[key], '')
+        p = mock.patch.object(D, 'cli_json', cli_json)
+        p.start()
+        self.addCleanup(p.stop)
+        self.hub = SimpleNamespace(_games=[
+            {'slug': 'a', 'display_name': 'Alpha', 'playtime_minutes': 600, 'source': 'steam',
+             'appid': 1, 'achievements': [9, 10]},
+            {'slug': 'b', 'display_name': 'Beta', 'playtime_minutes': 60, 'source': 'steam',
+             'appid': 2, 'achievements': [10, 10]}])
+
+    def texts(self, w):
+        return [lb.text() for lb in w.findChildren(QLabel) if lb.text()]
+
+    def filled(self, cls, size):
+        w = cls()
+        self.addCleanup(w.deleteLater)
+        w.size_ = size
+        w.fill(self.hub)
+        return w
+
+    def test_playtime_fill_sizes(self):
+        D = self.D
+        small = self.filled(D.PlaytimeWidget, 'small')
+        self.assertEqual(len(small.findChildren(D.MinuteBars)), 1)
+        self.assertIn('Alpha', self.texts(small))
+        wide = self.filled(D.PlaytimeWidget, 'wide')
+        self.assertIn('This month', self.texts(wide))
+        bars = wide.findChildren(D.MinuteBars)[0]
+        self.assertEqual(len(bars.bars), 31)
+        self.assertEqual(bars.highlight, set(range(25, 31)))    # this week: 26th–31st
+        full = self.filled(D.PlaytimeWidget, 'full')
+        self.assertTrue({'This month', 'All time', 'Last 12 weeks'} <= set(self.texts(full)))
+        self.assertEqual(len(full.findChildren(D.MinuteBars)), 2)
+        # No change: the rows are kept (pad focus), not rebuilt.
+        before = full.findChildren(QLabel)[0]
+        full.fill(self.hub)
+        self.assertIs(full.findChildren(QLabel)[0], before)
+
+    def test_playtime_without_sessions(self):
+        self.ANSWERS = dict(self.ANSWERS, **{'--history': {}})
+        w = self.filled(self.D.PlaytimeWidget, 'wide')
+        self.assertFalse(w.findChildren(self.D.MinuteBars))
+        self.assertTrue(any('recorded from now on' in t for t in self.texts(w)))
+
+    def test_achievements_fill_sizes(self):
+        D = self.D
+        small = self.filled(D.AchievementsWidget, 'small')
+        self.assertNotIn('rarest', self.asked)                  # small never asks
+        t = self.texts(small)
+        self.assertEqual(t.count('First steps'), 1)             # drawn once despite the sync answer
+        self.assertIn('Closest to 100%', t)
+        wide = self.filled(D.AchievementsWidget, 'wide')
+        self.assertIn('Needle', self.texts(wide))
+        self.assertIn('0.7% · Alpha', self.texts(wide))
+        full = self.filled(D.AchievementsWidget, 'full')
+        self.assertTrue({'Recent', 'Closest to 100%', 'Rarest'} <= set(self.texts(full)))
+        self.fail_rarest = True
+        off = self.filled(D.AchievementsWidget, 'wide')
+        self.assertNotIn('Rarest', self.texts(off))             # offline: section left out
+        self.assertIn('First steps', self.texts(off))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

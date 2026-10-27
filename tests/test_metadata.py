@@ -120,6 +120,40 @@ class History(unittest.TestCase):
         self.assertEqual(sm['since'], '2026-10-01')
 
 
+    def test_is_session_threshold(self):
+        """One rule for play time and sessions.jsonl (w-18): 60 s."""
+        self.assertFalse(history.is_session(59))
+        self.assertTrue(history.is_session(60))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, 'sessions.jsonl')
+            t = datetime(2026, 10, 15, 20, 0)
+            for secs in (45, 59, 60, 90):
+                self.assertEqual(history.record('x', 'nexus', t, t + timedelta(seconds=secs),
+                                                path=path), history.is_session(secs))
+            self.assertEqual(len(history.load(path)), 2)
+
+    def test_periods(self):
+        def sess(day, mins, slug, month=10):
+            s = datetime(2026, month, day, 20, 0)
+            return {'slug': slug, 'name': slug.title(), 'start': s.isoformat(),
+                    '_start': s, 'minutes': float(mins)}
+        sessions = [sess(26, 60, 'hades'), sess(28, 30, 'celeste'), sess(28, 15, 'hades'),
+                    sess(1, 120, 'celeste'), sess(30, 999, 'hades', month=9)]
+        p = history.periods(sessions, date(2026, 10, 28))          # a Wednesday
+        week, month = p['week'], p['month']
+        self.assertEqual((week['start'], len(week['days'])), ('2026-10-26', 7))
+        self.assertEqual([d['minutes'] for d in week['days']], [60, 0, 45, 0, 0, 0, 0])
+        self.assertEqual((week['minutes'], week['sessions']), (105, 3))
+        self.assertEqual([g['slug'] for g in week['games']], ['hades', 'celeste'])
+        self.assertEqual((month['start'], len(month['days'])), ('2026-10-01', 31))
+        self.assertEqual(month['minutes'], 225)                    # September left out
+        self.assertEqual(month['games'][0], {'slug': 'celeste', 'name': 'Celeste',
+                                             'minutes': 150})
+        self.assertEqual(history.periods([], date(2026, 2, 3))['month']['days'][-1]['date'],
+                         '2026-02-28')
+        self.assertIn('periods', history.summary(sessions, date(2026, 10, 28)))
+
+
 try:
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     os.environ.setdefault('NEXUS_NO_GAMEPAD', '1')

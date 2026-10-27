@@ -10,7 +10,7 @@ from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPain
 from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar,
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from nexus import gamedb
+from nexus import achievements as A, gamedb
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
@@ -31,8 +31,8 @@ DASH_KINDS = [                       # default order packs evenly in 3 columns
     ('favourites', ('full',),                  'full',  False),
     ('collections', ('full',),                 'full',  False),
     ('updates',    ('full',),                  'full',  False),
-    ('playtime',   ('small', 'wide'),          'small', True),
-    ('achievements', ('small', 'wide'),        'small', True),
+    ('playtime',   ('small', 'wide', 'full'),  'small', True),
+    ('achievements', ('small', 'wide', 'full'), 'small', True),
     ('owned',      ('full',),                  'full',  True),
 ]
 DASH_SIZES = {k: sizes for k, sizes, _d, _h in DASH_KINDS}
@@ -874,53 +874,227 @@ class UpcomingWidget(DashWidget):
             self.body.addWidget(label(f"+{len(items) - n} more on the Deals page", "Muted"))
 
 
+def _columns(body, n: int) -> list[QVBoxLayout]:
+    """`n` side-by-side columns in a full-width card."""
+    row = QHBoxLayout()
+    row.setSpacing(SP['6'])
+    cols = []
+    for _ in range(n):
+        c = QVBoxLayout()
+        c.setSpacing(SP['1_5'])
+        row.addLayout(c, 1)
+        cols.append(c)
+    body.addLayout(row)
+    for c in cols:
+        c.addStretch()
+    return cols
+
+
+def _add(lay, w):
+    """Add above a column's closing stretch (or at the end of a plain body)."""
+    i = lay.count() - 1
+    if not (i >= 0 and lay.itemAt(i).spacerItem()):
+        i = lay.count()
+    if isinstance(w, QWidget):
+        lay.insertWidget(i, w)
+    else:
+        lay.insertLayout(i, w)
+
+
+def _bar_rows(lay, rows):
+    """Name, value on the right, and a 4 px bar under it: rows of
+    (name, text, value, most)."""
+    for name, text, value, most in rows:
+        row = QHBoxLayout()
+        n = plain_label(name, None)
+        n.setStyleSheet(f"color: {P['subtext']}; font-size: {FS['xs']}px;")
+        n.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(n, 1)
+        row.addWidget(label(text, "Muted"))
+        _add(lay, row)
+        bar = QProgressBar()
+        bar.setObjectName("CardProgress")
+        bar.setTextVisible(False)
+        bar.setFixedHeight(4)
+        bar.setRange(0, 1000)
+        bar.setValue(int(1000 * value / most) if most else 0)
+        _add(lay, bar)
+
+
+def _note_row(lay, title: str, right: str):
+    """A title with a muted note on the right (an achievement and its game)."""
+    row = QHBoxLayout()
+    t = plain_label(title, None)
+    t.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px;")
+    t.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    row.addWidget(t, 1)
+    r = plain_label(right, "Muted")
+    r.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+    row.addWidget(r)
+    _add(lay, row)
+
+
+def _day_bars(period: dict, today: str, height: int, month: bool) -> MinuteBars:
+    """A week (weekday under each bar, today highlighted) or a month (every
+    seventh day numbered, this week highlighted) from history.periods()."""
+    days = period.get('days') or []
+    bars, hi = [], set()
+    try:
+        now = datetime.fromisoformat(today).date()
+    except (TypeError, ValueError):
+        now = None
+    for i, d in enumerate(days):
+        try:
+            day = datetime.fromisoformat(d['date']).date()
+        except (KeyError, ValueError):
+            day = None
+        lab = ''
+        if day:
+            lab = (str(day.day) if day.day % 7 == 1 else '') if month else day.strftime('%a')
+            if now and (day == now if not month
+                        else now.isocalendar()[:2] == day.isocalendar()[:2]):
+                hi.add(i)
+        bars.append({'minutes': d.get('minutes') or 0, 'label': lab})
+    chart = MinuteBars(height, labels_every=1)
+    chart.set_bars(bars, hi)
+    return chart
+
+
 class PlaytimeWidget(DashWidget):
+    """All-time play time, and from sessions.jsonl (nexus-cli --history)
+    this week and month by day and by game."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'playtime', "Play time", G['clock'], 'dusk', None
 
+    def __init__(self):
+        super().__init__()
+        self._hist: dict | None = None
+        self._asked = 0.0
+        self._total = None
+        self._filling = False
+        self._sig = None
+
     def fill(self, hub):
-        self.clear()
         games = [g for g in hub._games if g.get('playtime_minutes')]
         total = sum(g['playtime_minutes'] for g in games)
-        if not total:
+        self._filling = True
+        try:
+            # Ask first: a cached answer comes back right here, inside fill.
+            if self._hist is None or total != self._total \
+                    or time.monotonic() - self._asked > 300:
+                fresh = self._total is not None and total != self._total
+                self._asked, self._total = time.monotonic(), total
+                cli_json(['--history', '--json'],
+                         lambda d, e, hub=hub: self._arrived(hub, d, e), 30000,
+                         ttl=0 if fresh else 60)
+            sig = (self.size_, total, tuple((g.get('slug'), g['playtime_minutes'])
+                                            for g in games),
+                   repr((self._hist or {}).get('periods')), repr((self._hist or {}).get('weeks')))
+            if sig == self._sig and self.body.count():
+                return                  # nothing changed: keep the rows (and pad focus)
+            self._sig = sig
+            self.clear()
+            self._build(games, total)
+        finally:
+            self._filling = False
+
+    def _arrived(self, hub, data, err=''):
+        if data is None:
+            if self._hist is not None:
+                return
+            data = {}                        # no history: show the totals alone
+        self._hist = data
+        if not self._filling:
+            self.fill(hub)
+
+    def _build(self, games, total):
+        hist = self._hist or {}
+        per = hist.get('periods') or {}
+        week, month = per.get('week') or {}, per.get('month') or {}
+        if not total and not hist.get('since'):
             self.body.addWidget(label("No play time recorded yet.", "Muted"))
             return
-        big = label(fmt_hours(total) or '0 h', "DashBig")
-        self.body.addWidget(big)
-        self.body.addWidget(label(f"across {len(games)} game{'s' if len(games) != 1 else ''}",
-                                  "Muted"))
+        self.body.addWidget(label(fmt_hours(total) or '0 h', "DashBig"))
+        facts = [f"across {len(games)} game{'s' if len(games) != 1 else ''}"]
+        if week.get('minutes'):
+            facts.append(f"{fmt_hours(week['minutes'])} this week")
+        if self.size_ != 'small' and month.get('minutes'):
+            facts.append(f"{fmt_hours(month['minutes'])} this month")
+        self.body.addWidget(label(" · ".join(facts), "Muted", wrap=True))
         top = sorted(games, key=lambda g: g['playtime_minutes'], reverse=True)
-        top = top[:3 if self.size_ == 'small' else 5]
-        most = top[0]['playtime_minutes']
-        for g in top:
-            row = QHBoxLayout()
-            n = label(g.get('display_name', ''), None)
-            n.setStyleSheet(f"color: {P['subtext']}; font-size: {FS['xs']}px;")
-            n.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            row.addWidget(n, 1)
-            row.addWidget(label(fmt_hours(g['playtime_minutes']) or '', "Muted"))
-            self.body.addLayout(row)
-            bar = QProgressBar()
-            bar.setObjectName("CardProgress")
-            bar.setTextVisible(False)
-            bar.setFixedHeight(4)
-            bar.setRange(0, 1000)
-            bar.setValue(int(1000 * g['playtime_minutes'] / most))
-            self.body.addWidget(bar)
+        all_time = [(g.get('display_name', ''), fmt_hours(g['playtime_minutes']) or '',
+                     g['playtime_minutes'], top[0]['playtime_minutes']) for g in top]
+        month_games = month.get('games') or []
+        this_month = [(m['name'], fmt_hours(m['minutes']) or '', m['minutes'],
+                       month_games[0]['minutes']) for m in month_games]
+        has_sessions = bool(hist.get('since'))
+        today = per.get('today') or ''
+        if self.size_ == 'small':
+            if has_sessions:
+                self.body.addWidget(_day_bars(week, today, 84, month=False))
+            _bar_rows(self.body, all_time[:3])
+            return
+        if not has_sessions:
+            self.body.addWidget(label("Sessions are recorded from now on; the week and "
+                                      "month charts fill in as you play.", "Muted", wrap=True))
+        if self.size_ == 'wide':
+            if has_sessions:
+                self.body.addWidget(_day_bars(month, today, 100, month=True))
+            self.body.addWidget(label("This month" if this_month else "All time", "StatLabel"))
+            _bar_rows(self.body, (this_month or all_time)[:5])
+            return
+        charts, by_month, by_all = _columns(self.body, 3)
+        if has_sessions:
+            _add(charts, label("This month by day", "StatLabel"))
+            _add(charts, _day_bars(month, today, 110, month=True))
+            weeks = WeekBars()
+            weeks.setMinimumHeight(110)
+            weeks.set_weeks(hist.get('weeks') or [])
+            _add(charts, label("Last 12 weeks", "StatLabel"))
+            _add(charts, weeks)
+        _add(by_month, label("This month", "StatLabel"))
+        if this_month:
+            _bar_rows(by_month, this_month[:6])
+        else:
+            _add(by_month, label("Nothing played this month yet.", "Muted", wrap=True))
+        _add(by_all, label("All time", "StatLabel"))
+        _bar_rows(by_all, all_time[:6])
 
 
 class AchievementsWidget(DashWidget):
-    """Steam achievements: how many you've unlocked, the newest unlocks and
-    the games closest to 100% — from Steam's own stats cache."""
+    """Steam achievements: how many you've unlocked, the newest unlocks, the
+    games closest to 100% (Steam's own stats cache) and, wide and full, your
+    rarest unlocks (Steam's public global percentages, via the CLI)."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'achievements', "Achievements", G['trophy'], 'dusk', None
 
     def __init__(self):
         super().__init__()
         self._recent: list | None = None
+        self._rarest: list | None = None
         self._err = ''
         self._asked = 0.0
+        self._asked_rare = 0.0
+        self._filling = False
 
     def fill(self, hub):
-        self.clear()
+        self._filling = True
+        try:
+            # Ask first: a cached answer comes back right here, inside fill,
+            # and must not draw a second set of rows.
+            if self._recent is None or time.monotonic() - self._asked > 300:
+                self._asked = time.monotonic()
+                cli_json(['--achievements', 'recent', '--json'],
+                         lambda d, e, hub=hub: self._got_recent(hub, d, e), 30000, ttl=300)
+            if self.size_ != 'small' and (self._rarest is None
+                                          or time.monotonic() - self._asked_rare > 1800):
+                self._asked_rare = time.monotonic()
+                cli_json(['--achievements', 'rarest', '--json'],
+                         lambda d, e, hub=hub: self._got_rarest(hub, d, e), 60000, ttl=1800)
+            self.clear()
+            self._build(hub)
+        finally:
+            self._filling = False
+
+    def _build(self, hub):
         games = [g for g in hub._games if g.get('source') == 'steam' and g.get('achievements')]
         if not games:
             self.body.addWidget(label("Steam games you've played show their achievements "
@@ -931,56 +1105,58 @@ class AchievementsWidget(DashWidget):
         done = sum(1 for g in games if g['achievements'][0] == g['achievements'][1])
         self.body.addWidget(label(f"unlocked across {len(games)} games"
                                   + (f" · {done} complete" if done else ""), "Muted"))
-        n = 3 if self.size_ == 'small' else 5
-        if self._recent is None or time.monotonic() - self._asked > 300:
-            self._asked = time.monotonic()
-            cli_json(['--achievements', 'recent', '--json'],
-                     lambda d, e, hub=hub: self._arrived(hub, d, e), 30000, ttl=300)
+        n_recent, n_close, n_rare = {'small': (3, 2, 0), 'wide': (4, 3, 3),
+                                     'full': (6, 6, 6)}[self.size_]
+        if self.size_ == 'full':
+            recent_col, close_col, rare_col = _columns(self.body, 3)
+            _add(recent_col, label("Recent", "StatLabel"))
+        else:
+            recent_col = close_col = rare_col = self.body
         if self._err:
-            self.body.addWidget(label(f"Recent unlocks unavailable: {self._err}", "Muted",
-                                      wrap=True))
+            _add(recent_col, label(f"Recent unlocks unavailable: {self._err}", "Muted",
+                                   wrap=True))
         names = {g['appid']: g.get('display_name', '') for g in hub._games if g.get('appid')}
-        for a in (self._recent or [])[:n]:
-            row = QHBoxLayout()
-            t = plain_label(a['title'], None)
-            t.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px;")
-            t.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            row.addWidget(t, 1)
+        for a in (self._recent or [])[:n_recent]:
             when = fmt_relative(datetime.fromtimestamp(a['time']).isoformat()) or ''
-            row.addWidget(label(f"{names.get(a['appid'], '')} · {when}".strip(' ·'), "Muted"))
-            self.body.addLayout(row)
-        close = sorted((g for g in games if 0 < g['achievements'][0] < g['achievements'][1]),
-                       key=lambda g: g['achievements'][0] / g['achievements'][1], reverse=True)
+            _note_row(recent_col, a['title'],
+                      f"{names.get(a['appid'], '')} · {when}".strip(' ·'))
+        close = [games[i] for i in A.closest({i: g['achievements']
+                                              for i, g in enumerate(games)}, n_close)]
         if close:
-            self.body.addWidget(label("Closest to 100%", "StatLabel"))
-        for g in close[:2 if self.size_ == 'small' else 4]:
-            a, b = g['achievements']
-            row = QHBoxLayout()
-            nm = label(g.get('display_name', ''), None)
-            nm.setStyleSheet(f"color: {P['subtext']}; font-size: {FS['xs']}px;")
-            nm.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            row.addWidget(nm, 1)
-            row.addWidget(label(f"{a}/{b}", "Muted"))
-            self.body.addLayout(row)
-            bar = QProgressBar()
-            bar.setObjectName("CardProgress")
-            bar.setTextVisible(False)
-            bar.setFixedHeight(4)
-            bar.setRange(0, b)
-            bar.setValue(a)
-            self.body.addWidget(bar)
+            _add(close_col, label("Closest to 100%", "StatLabel"))
+            _bar_rows(close_col, [(g.get('display_name', ''),
+                                   f"{g['achievements'][0]}/{g['achievements'][1]}",
+                                   g['achievements'][0], g['achievements'][1]) for g in close])
+        rare = (self._rarest or [])[:n_rare]
+        if rare:                         # offline or nothing cached: the section stays out
+            _add(rare_col, label("Rarest", "StatLabel"))
+            for a in rare:
+                _note_row(rare_col, a['title'],
+                          f"{a['percent']:.1f}% · {names.get(a['appid'], '')}".strip(' ·'))
 
-    def _arrived(self, hub, data, err=''):
+    def _got_recent(self, hub, data, err=''):
         if data is None:
-            if not self._err:
-                self._err = err or 'error'
-                self._recent = self._recent or []
-                self.fill(hub)
+            if self._err:
+                return
+            self._err = err or 'error'
+            self._recent = self._recent or []
+        else:
+            new = data.get('recent') or []
+            if new == self._recent and not self._err:
+                return
+            self._err, self._recent = '', new
+        if not self._filling:
+            self.fill(hub)
+
+    def _got_rarest(self, hub, data, err=''):
+        if data is None:                 # offline or failed: keep what we had
+            new = self._rarest or []
+        else:
+            new = data.get('rarest') or []
+        if new == self._rarest:
             return
-        had_err, self._err = bool(self._err), ''
-        first = self._recent is None
-        self._recent = data.get('recent') or []
-        if first or had_err or self._recent:
+        self._rarest = new
+        if not self._filling:
             self.fill(hub)
 
 
@@ -1159,6 +1335,7 @@ from .gameinfo import is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .newspage import news_style, NewsArt  # noqa: E402
+from .system import MinuteBars, WeekBars  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label, plain_label,
     set_glyph_icon)  # noqa: E402

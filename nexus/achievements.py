@@ -1,5 +1,6 @@
-"""Steam achievements, read from the Steam client's own cache — no network,
-no Steam Web API key, read-only.
+"""Steam achievements, read from the Steam client's own cache — no Steam
+Web API key, read-only. The network is used only for the global unlock
+percentages behind "rarest" (Steam's public, keyless endpoint, cached).
 
 Steam keeps two binary-VDF files per game under appcache/stats/:
   UserGameStatsSchema_<appid>.bin        every achievement: stat id + bit,
@@ -10,10 +11,18 @@ Steam keeps two binary-VDF files per game under appcache/stats/:
                                          bits and `AchievementTimes`
 Both only exist for games the account has run with Steam at least once."""
 
+import json
+import os
+import time
 from pathlib import Path
 
 ICON_URL = ("https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/"
             "{appid}/{icon}")
+
+PERCENT_URL = ("https://api.steampowered.com/ISteamUserStats/"
+               "GetGlobalAchievementPercentagesForApp/v2/?gameid={appid}")
+PERCENT_AGE = 30 * 86400
+EMPTY_PERCENT_AGE = 6 * 3600     # empty may be an error page as much as "no data"
 
 _CACHE: dict[tuple, tuple[float, object]] = {}      # (kind, path) -> (mtime, parsed)
 
@@ -171,4 +180,108 @@ def recent(steam_root: Path, account_id: int | str, appids, n: int = 8) -> list[
                             'icon_url': ICON_URL.format(appid=appid, icon=a['icon'])
                             if a['icon'] else None})
     out.sort(key=lambda a: -a['time'])
+    return out[:n]
+
+
+def closest(counts: dict, n: int = 4) -> list:
+    """The keys of `counts` ({key: [unlocked, total]}) started but not
+    finished, nearest to 100% first."""
+    left = [(k, v) for k, v in counts.items() if v and 0 < v[0] < v[1]]
+    left.sort(key=lambda kv: (-kv[1][0] / kv[1][1], str(kv[0])))
+    return [k for k, _v in left[:n]]
+
+
+def parse_percentages(data: bytes) -> dict[str, float]:
+    """API name -> global unlock percentage, from the
+    GetGlobalAchievementPercentagesForApp answer (percent is a string in v2)."""
+    try:
+        root = json.loads(data)
+        items = root['achievementpercentages']['achievements']
+    except (ValueError, KeyError, TypeError):
+        return {}
+    out = {}
+    for a in items if isinstance(items, list) else []:
+        try:
+            out[str(a['name'])] = float(a['percent'])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _percent_path(cache_dir: Path, appid: int) -> Path:
+    return Path(cache_dir) / f"{appid}.json"
+
+
+def needs_fetch(appid: int, cache_dir: Path) -> bool:
+    """True when the cached percentages are missing or too old."""
+    from . import net
+    path = _percent_path(cache_dir, appid)
+    try:
+        cached = json.loads(path.read_text(encoding='utf-8'))
+        return net._age(path) >= (PERCENT_AGE if cached else EMPTY_PERCENT_AGE)
+    except (OSError, ValueError):
+        return True
+
+
+def global_percentages(appid: int, cache_dir: Path, allow_fetch: bool = True,
+                       fetch=None) -> dict[str, float]:
+    """{api name: percent} for a game, cached per appid like the community
+    schema: 30 days, an empty answer only 6 h, and a good copy is never
+    replaced by an empty one. A failed fetch leaves an `.offline` marker, so
+    for net.FAIL_TTL every later lookup is cache-only."""
+    from . import net
+    cache_dir = Path(cache_dir)
+    path = _percent_path(cache_dir, appid)
+    try:
+        cached = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        cached = None
+    if not allow_fetch or not needs_fetch(appid, cache_dir):
+        return cached or {}
+    marker = cache_dir / '.offline'
+    try:
+        if net._age(marker) < net.FAIL_TTL:
+            return cached or {}
+    except OSError:
+        pass
+    fetch = fetch or (lambda: net.get(PERCENT_URL.format(appid=appid), timeout=8,
+                                      limit=4 << 20))
+    try:
+        got = parse_percentages(fetch())
+    except net.NetError:
+        try:
+            net.write_atomic(marker, str(int(time.time())))
+        except OSError:
+            pass
+        return cached or {}
+    if not got and cached:
+        try:
+            os.utime(path)                  # keep the good copy, don't re-ask each call
+        except OSError:
+            pass
+        return cached
+    net.save_json(path, got)
+    return got
+
+
+def rarest(steam_root: Path, account_id: int | str, percents: dict, n: int = 6) -> list[dict]:
+    """Your rarest unlocks: {appid, title, desc, time, percent, icon_url},
+    lowest global percentage first (newest first on a tie). `percents` is
+    {appid: {api name: percent}}; games without it are left out."""
+    out = []
+    for appid, pct in percents.items():
+        if not pct:
+            continue
+        got = unlocked(steam_root, account_id, appid)
+        if not got:
+            continue
+        for a in schema(steam_root, appid):
+            t = got.get((a['stat'], a['bit']))
+            if t is None or a['name'] not in pct:
+                continue
+            out.append({'appid': appid, 'title': a['title'], 'desc': a['desc'], 'time': t,
+                        'percent': pct[a['name']],
+                        'icon_url': ICON_URL.format(appid=appid, icon=a['icon'])
+                        if a['icon'] else None})
+    out.sort(key=lambda a: (a['percent'], -(a['time'] or 0)))
     return out[:n]

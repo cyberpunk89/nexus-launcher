@@ -256,11 +256,11 @@ class Regressions(unittest.TestCase):
         hub = mock.Mock(_games=[{'slug': 's', 'source': 'steam', 'appid': 1,
                                  'achievements': (1, 2)}])
         with patch_gui('cli_json', lambda *a, **k: None):
-            w._arrived(hub, None, 'offline')
+            w._got_recent(hub, None, 'offline')
             def shown():                                   # clear() hides, then deletes later
                 return [c.text() for c in w.findChildren(QLabel) if not c.isHidden()]
             self.assertTrue(any('unavailable' in t for t in shown()))
-            w._arrived(hub, {'recent': []})
+            w._got_recent(hub, {'recent': []})
             self.assertFalse(any('unavailable' in t for t in shown()))
 
     def test_seen_repacks_trim_drops_the_oldest(self):

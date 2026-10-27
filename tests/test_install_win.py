@@ -743,6 +743,33 @@ class Session(unittest.TestCase):
         self.elapsed = got[1]
         return got[0], clock[0], log
 
+    def test_short_run_adds_no_playtime(self):
+        """w-18: play time and sessions.jsonl use one rule, so a 45 s run is
+        in neither and a 90 s run is in both."""
+        from nexus import history
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(history, 'PATH', Path(d) / 'sessions.jsonl'):
+            with fi.registry_lock():
+                reg = fi.load_registry()
+                reg['games']['short-run'] = {'display_name': 'Short Run'}
+                fi.save_registry(reg)
+            try:
+                started = fi.sunshine.datetime.now()
+                self.assertFalse(fi.sunshine._record_session('short-run', 'Short Run',
+                                                             started, 45))
+                self.assertNotIn('playtime_seconds', fi.load_registry()['games']['short-run'])
+                self.assertEqual(history.load(), [])
+                self.assertTrue(fi.sunshine._record_session('short-run', 'Short Run',
+                                                            started, 90))
+                self.assertEqual(fi.load_registry()['games']['short-run']['playtime_seconds'],
+                                 90)
+                self.assertEqual([s['slug'] for s in history.load()], ['short-run'])
+            finally:
+                with fi.registry_lock():
+                    reg = fi.load_registry()
+                    reg['games'].pop('short-run', None)
+                    fi.save_registry(reg)
+
     def test_stub_hands_over_and_the_game_is_waited_for(self):
         rc, waited, log = self.run_session(0, alive_polls=3)
         self.assertEqual(rc, 0)

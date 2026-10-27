@@ -316,6 +316,14 @@ def cmd_achievements(ident: str, as_json: bool) -> int:
                 when = datetime.fromtimestamp(a['time']).strftime('%Y-%m-%d')
                 print(f"  {when}  {a['title']}  ({a['appid']})")
         return 0
+    if ident == 'rarest':
+        out = {'rarest': _rarest_achievements(account)}
+        if as_json:
+            print(json.dumps(out))
+        else:
+            for a in out['rarest']:
+                print(f"  {a['percent']:5.1f}%  {a['title']}  ({a['appid']})")
+        return 0
     appid = ident.removeprefix('steam-')
     if not appid.isdigit():
         print(f"Not a Steam game: {ident!r} (achievements come from Steam)", file=sys.stderr)
@@ -331,6 +339,32 @@ def cmd_achievements(ident: str, as_json: bool) -> int:
         title = a['title'] if a['unlocked'] or not a['hidden'] else "Hidden achievement"
         print(f"  [{mark}] {title}")
     return 0
+
+
+RAREST_GAMES = 30         # games looked at, newest unlock first
+RAREST_FETCHES = 10       # global-percentage downloads per call, so the GUI never waits long
+
+
+def _rarest_achievements(account) -> list[dict]:
+    """Your rarest unlocks across the games you played most recently, from
+    Steam's public global percentages (cached; offline gives what's cached)."""
+    from nexus import achievements as A
+    stats = STEAM_ROOT / 'appcache' / 'stats'
+    newest = {}
+    for p in stats.glob(f'UserGameStats_{account}_*.bin'):
+        tail = p.stem.rsplit('_', 1)[-1]
+        if tail.isdigit():
+            got = A.unlocked(STEAM_ROOT, account, int(tail))
+            if got:
+                newest[int(tail)] = max(got.values())
+    appids = sorted(newest, key=lambda a: -newest[a])[:RAREST_GAMES]
+    cache = NX.CACHE_DIR / 'achpct'
+    budget, percents = RAREST_FETCHES, {}
+    for appid in appids:
+        fetch = budget > 0 and A.needs_fetch(appid, cache)
+        budget -= fetch
+        percents[appid] = A.global_percentages(appid, cache, allow_fetch=fetch)
+    return A.rarest(STEAM_ROOT, account, percents, n=12)
 
 
 def cmd_trash_repack(path: Path) -> int:
