@@ -217,11 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--remove-heroic', metavar='SLUG', dest='remove_heroic',
                         help='Remove just the Heroic sideload entry for a game and exit')
     parser.add_argument('--art-variants', metavar='GAME', dest='art_variants',
-                        help='SteamGridDB images to choose from for a game (any source); '
+                        help='Internal (used by the app): SteamGridDB images to choose from for a game (any source); '
                              'use with --kind and --page')
     parser.add_argument('--kind', choices=sorted(SGDB_KINDS), default='cover',
                         help='Art kind for --art-variants / --set-art')
-    parser.add_argument('--page', type=int, default=0, help='Result page for --art-variants')
+    parser.add_argument('--page', type=int, default=0, help='Internal (used by the app): result page for --art-variants')
     parser.add_argument('--set-art', metavar='GAME', dest='set_art',
                         help='Use a SteamGridDB image (--url) for a game, or --reset it')
     parser.add_argument('--url', help='Image URL for --set-art (SteamGridDB only)')
@@ -229,14 +229,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--sgdb-search', metavar='NAME', dest='sgdb_search',
                         help='Search SteamGridDB games by name (to pick the right match)')
     parser.add_argument('--set-sgdb', metavar='GAME', dest='set_sgdb',
-                        help='Pin the SteamGridDB game (--id, --name) a game fetches art '
+                        help='Pin the SteamGridDB game (--id, --sgdb-name) a game fetches art '
                              'from, or --reset to automatic matching')
     parser.add_argument('--id', type=int, dest='sgdb_gid', help='SteamGridDB game id for --set-sgdb')
     parser.add_argument('--sgdb-name', dest='sgdb_name', help='Its name, for display (--set-sgdb)')
     parser.add_argument('--fill-art', action='store_true', dest='fill_art',
                         help='Fetch missing hero/logo/banner art from SteamGridDB for every game')
     parser.add_argument('--if-stale', action='store_true', dest='if_stale',
-                        help='With --fill-art: only if it has not run in the last day')
+                        help='Internal (used by the app): with --fill-art, only if it has not run in the last day')
     parser.add_argument('--refetch-art', metavar='SLUG', dest='refetch_art',
                         help='Re-download SteamGridDB artwork for a game and exit')
     parser.add_argument('--reindex', action='store_true',
@@ -248,8 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Folder to search with --scan. Overrides config '
                              '[install] scan_dir; default ~/Downloads')
     parser.add_argument('--detect', metavar='PATH',
-                        help="Print a repack folder's detected name/slug and whether "
-                             "it's already installed, as JSON, then exit (used by the GUI)")
+                        help="Internal (used by the app): print a repack folder's detected name/slug "
+                             "and whether it's already installed, as JSON, then exit")
     parser.add_argument('--steam-account', metavar='ACCOUNT', dest='steam_account',
                         help='Steam account to add shortcuts to (accountid, steamid64, login '
                              'name or persona name). Overrides config [integrations] '
@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Move an installed game to another folder or drive (DIR is the new "
                          "base: the game goes to DIR/SLUG); the old copy is kept as .old-*")
     gm.add_argument('--move-targets', action='store_true', dest='move_targets',
-                    help='Folders a game can be moved to, with free space (--json)')
+                    help='Internal (used by the app): folders a game can be moved to, with free space (--json)')
     gm.add_argument('--import', metavar='PATH', dest='import_path',
                     help='Add any Windows game: an offline installer (.exe/.msi; Inno Setup '
                          'ones run silently) or a folder holding the game (--name sets the title)')
@@ -349,9 +349,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help='With --library: also games you own but have not installed '
                          '(Steam via Game-db, Epic/GOG via Heroic)')
     g2.add_argument('--running', action='store_true',
-                    help='Which library games are running right now')
+                    help='Internal (used by the app): which library games are running right now')
     g2.add_argument('--open-url', metavar='URL', dest='open_url',
-                    help='Launch/open a steam:// or heroic:// URL (e.g. steam://rungameid/APPID)')
+                    help='Internal (used by the app): launch/open a steam:// or heroic:// URL (e.g. steam://rungameid/APPID)')
     g3 = parser.add_argument_group('cleanup')
     g3.add_argument('--cleanup-scan', action='store_true', dest='cleanup_scan',
                     help='List what can be cleaned up (stray prefixes, caches, old logs, '
@@ -397,13 +397,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Sync FitGirl's whole catalogue and show which wishlist games have "
                          "a repack (incremental, at most every 6 h; --refresh forces it)")
     g5.add_argument('--repack-page', metavar='SLUG', dest='repack_page',
-                    help="A repack's sizes and where a grab would download it")
+                    help="Internal (used by the app): a repack's sizes and where a grab would download it")
     g5.add_argument('--repack-grab', metavar='SLUG', dest='repack_grab',
                     help="Send a FitGirl repack's magnet link to your torrent client "
                          "(--auto-install installs it when done; --appid tags the wishlist game)")
-    g5.add_argument('--appid', metavar='APPID', help='With --repack-grab: the wishlist game')
+    g5.add_argument('--appid', metavar='APPID', help='Internal (used by the app): with --repack-grab, the wishlist game')
     g5.add_argument('--repack-reject', nargs='+', metavar=('APPID', 'SLUG'), dest='repack_reject',
-                    help="That repack isn't this wishlist game (no SLUG: undo)")
+                    help="Internal (used by the app): that repack isn't this wishlist game (no SLUG: undo)")
     g5.add_argument('--store-info', metavar='GAME', dest='store_info',
                     help='Steam store facts for a game: trailers, reviews, metacritic, '
                          'similar games (cached)')
