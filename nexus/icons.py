@@ -22,6 +22,7 @@ ICONS = {
     'plus':           '\ue13d',  # plus
     'search':         '\ue151',  # search
     'shelves':        '\ue4cf',  # gallery-horizontal-end
+    'sparkles':       '\ue412',  # sparkles (smart shelves)
     'grid':           '\ue0ff',  # layout-grid
     'list':           '\ue106',  # list
     'play':           '\ue13c',  # play

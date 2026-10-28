@@ -4,12 +4,12 @@ filters, selection, collections, and loading the library from the CLI."""
 import json
 import random
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QCursor
-from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QPushButton, QSlider, QStackedWidget,
-    QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QMenu, QPushButton, QSlider,
+    QStackedWidget, QVBoxLayout, QWidget)
 
-from nexus import net, paths as NX
+from nexus import facts, net, paths as NX, smart
 
 from .common import alive, COLLECTION_NAMES
 from .theme import G, SP
@@ -37,6 +37,10 @@ class LibraryMixin:
         v.pending_clicked.connect(self._open_job)
         v.activated.connect(self._tile_activated)
         v.double.connect(self._tile_double)
+        if isinstance(v, HomeView):                 # smart shelves: Library and Home
+            v.show_filter.connect(self._show_filter)
+            v.shelf_menu.connect(self._smart_menu)
+            v.hidden_menu.connect(self._smart_hidden_menu)
 
     def _see_all(self, chip, sort):
         self.go(self.LIBRARY)
@@ -53,6 +57,11 @@ class LibraryMixin:
         self._set_chip(chip if chip in self.chips else 'all')
 
     def _build_library(self):
+        self._facts_stamp = None              # (mtime, size) of facts.json last read
+        self._facts_idx = facts.read_index()
+        self._smart_sig = None                # what the Smart group was built from
+        self._smart_temp = None               # a key shown only while in use (a genre)
+        self._smart_want = None               # a restored key waiting for its entry
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -72,6 +81,10 @@ class LibraryMixin:
                           ("Hidden games", 'hidden')):
             self.filter.addItem(text, key)
         self.filter.currentIndexChanged.connect(self.apply_filter)
+        self._smart_from = self.filter.count()    # the Smart group starts here
+        self.btn_clear_filter = icon_button(G['close'], "Clear filter", 34, "Ghost", round_=True)
+        self.btn_clear_filter.clicked.connect(self._clear_filter)
+        self.btn_clear_filter.setVisible(False)
         self.sort = QComboBox()
         for text, key in (("Recently played", 'played'), ("Name", 'name'),
                           ("Most played", 'most'), ("Recently added", 'added'),
@@ -104,7 +117,8 @@ class LibraryMixin:
         self.btn_surprise = dice
         # Right-anchored, with the view switch last before refresh: controls
         # that hide per view are on its left, so the switch itself never moves.
-        for w in (self.filter, self.sort, self.size_slider, self.view_seg, dice, refresh):
+        for w in (self.btn_clear_filter, self.filter, self.sort, self.size_slider,
+                  self.view_seg, dice, refresh):
             bl.addWidget(w)
         lay.addWidget(bar)
 
@@ -157,6 +171,17 @@ class LibraryMixin:
             self.views.addWidget(v)
         self.home.see_all.connect(self._see_all)
         lay.addWidget(self.views, 1)
+        # A game page's genre or Co-op chip (DetailsPanel.filter_library,
+        # when that panel has it) filters the Library the same way.
+        sig = getattr(self.details, 'filter_library', None) if hasattr(self, 'details') else None
+        if sig is not None:
+            sig.connect(lambda key: self._show_filter(key, from_page=True))
+        # The agent (or, on Windows, this window) fills the facts index in
+        # the background: look for a new one now and then, cheaply (a stat).
+        self._facts_timer = QTimer(self)
+        self._facts_timer.setInterval(60000)
+        self._facts_timer.timeout.connect(self._facts_tick)
+        self._facts_timer.start()
         self.set_view(self.prefs.view, save=False)
         return page
 
@@ -245,6 +270,9 @@ class LibraryMixin:
 
     def _restore_library_state(self):
         st = self.prefs.library_state
+        status = st.get('status')
+        if isinstance(status, str) and status.startswith(('smart:', 'genre:')):
+            self._smart_want = status             # its entry comes with the library
         for box, key in ((self.sort, 'sort'), (self.filter, 'status')):
             i = box.findData(st.get(key))
             if i >= 0:
@@ -259,7 +287,10 @@ class LibraryMixin:
             self._store_chips()
 
     def _save_library_state(self, *_):
-        st = {'sort': self.sort.currentData(), 'status': self.filter.currentData(),
+        status = self.filter.currentData()
+        if status == 'all' and self._smart_want:      # not restored yet: keep it
+            status = self._smart_want
+        st = {'sort': self.sort.currentData(), 'status': status,
               'chip': self._chip, 'details_w': self.prefs.library_state.get('details_w')}
         if st != self.prefs.library_state:
             self.prefs.library_state = st
@@ -599,9 +630,19 @@ class LibraryMixin:
             self._refresh_home(empty, pending)
             return
         self._filter_dirty = False
+        self._sync_facts()
+        self._rebuild_smart_filter()
         q = self.search.text().strip().lower()
-        status = self.filter.currentData()
-        keep = {
+        status = self.filter.currentData() or 'all'
+        self.btn_clear_filter.setVisible(status != 'all')
+        if status.startswith(('smart:', 'genre:')):
+            hit = {g['slug'] for g in smart.games_for(
+                status, [g for g in self._games if not g.get('hidden')], self._smart_facts(),
+                linux=has('proton'))}
+            smart_keep = lambda g: g['slug'] in hit
+        else:
+            smart_keep = None
+        keep = smart_keep or {
             'all': lambda g: not g.get('hidden'),
             'hidden': lambda g: g.get('hidden'),
             'update': lambda g: g.get('update_pending') and not g.get('hidden'),
@@ -667,19 +708,198 @@ class LibraryMixin:
         if isinstance(target, HomeView):            # shelves are rebuilt: keep the place
             with KeepPlace(target):
                 target.set_games(games, empty, pending)
+                if games:
+                    target.set_smart(*self._smart_shelves(games))
         else:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
         self._refresh_home(empty, pending)
 
+    # ---- smart shelves (nexus/smart.py) ----
+    def _sync_facts(self) -> bool:
+        """Read the facts index again when its file changed; True if it did."""
+        try:
+            st = facts.index_path().stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        if stamp == self._facts_stamp:
+            return False
+        self._facts_stamp = stamp
+        self._facts_idx = facts.read_index()
+        return True
+
+    def _smart_facts(self) -> dict:
+        return self._facts_idx.get('games') or {}
+
+    def _facts_tick(self):
+        if self._loaded and self._sync_facts():
+            self.apply_filter()
+
+    def _smart_note(self, games) -> str:
+        """The divider's note: what the shelves come from, or, while the
+        index is still filling, how far it got."""
+        idx = self._facts_idx
+        missing = (idx.get('missing') or {}).get('steam')
+        if idx.get('built') and not missing:
+            return "Sorted from your play time and store info"
+        known = self._smart_facts()
+        could = [g for g in games if _game_store_id(g)]
+        have = sum(1 for g in could if g['slug'] in known)
+        return "More appear as Nexus learns about your games" + (
+            f" · {have} of {len(could)}" if could else '')
+
+    def _smart_shelves(self, games) -> tuple[list, str, int]:
+        """What HomeView.set_smart needs for the Shelves view."""
+        shelves = smart.shelves(games, self._smart_facts(), hidden=set(self.prefs.smart_hidden),
+                                linux=has('proton'))
+        return shelves, self._smart_note(games), len(self.prefs.smart_hidden)
+
+    def _rebuild_smart_filter(self, want: str | None = None):
+        """The status filter's Smart group: a separator, a "Smart" header,
+        then every rule that matches a game and the top genres (hidden
+        shelves too). A key in use that isn't among them (a genre chosen on
+        a game page) gets a temporary entry. Rebuilt only when that list
+        changes, without touching the current choice (or choosing `want`)."""
+        cur = want or self.filter.currentData()
+        if not want and self._smart_want and self._loaded:
+            cur, self._smart_want = self._smart_want, None
+        pool = [g for g in self._games if not g.get('hidden') and not g.get('dup_of')]
+        keys = smart.filter_keys(pool, self._smart_facts(), linux=has('proton'))
+        if self._smart_temp and self._smart_temp != cur:
+            self._smart_temp = None
+        if cur and cur.startswith(('smart:', 'genre:')) and cur not in keys:
+            self._smart_temp = cur
+        if self._smart_temp:
+            keys.append(self._smart_temp)
+        sig = (tuple(keys), cur)
+        if sig == self._smart_sig:
+            return
+        self._smart_sig = sig
+        box = self.filter
+        box.blockSignals(True)
+        while box.count() > self._smart_from:
+            box.removeItem(box.count() - 1)
+        if keys:
+            box.insertSeparator(box.count())
+            box.addItem("Smart")
+            box.model().item(box.count() - 1).setEnabled(False)
+            for key in keys:
+                box.addItem(f"  {smart.label(key)}", key)
+                box.setItemData(box.count() - 1, smart.tip(key), Qt.ItemDataRole.ToolTipRole)
+        i = box.findData(cur)
+        box.setCurrentIndex(i if i >= 0 else 0)
+        box.blockSignals(False)
+        self.btn_clear_filter.setVisible(box.currentData() != 'all')
+
+    def _show_filter(self, key: str, from_page: bool = False):
+        """Show the Library filtered by a smart key: a smart shelf's "See
+        all", or a game page's genre / Co-op chip (`from_page`, which also
+        drops the source chip so the whole library is searched). The grid
+        shows because a filter is on; ✕ or "Any status" goes back."""
+        if not isinstance(key, str) or not key.startswith(('smart:', 'genre:')):
+            return
+        if self.current() != self.LIBRARY:
+            self.go(self.LIBRARY)
+        self.search.clear()
+        if from_page and self._chip != 'all':
+            self._chip = 'all'
+            for k, c in self.chips.items():
+                c.setChecked(k == 'all')
+            self._store_chips()
+        self._smart_want = None
+        if self.filter.findData(key) < 0:
+            self._rebuild_smart_filter(want=key)      # a temporary entry, chosen
+        i = self.filter.findData(key)
+        if i >= 0 and i != self.filter.currentIndex():
+            self.filter.setCurrentIndex(i)            # apply_filter and save
+        else:
+            self._save_library_state()
+            self.apply_filter()
+
+    def _clear_filter(self):
+        """✕ next to the filter: back to "Any status" (Shelves come back in
+        the Shelves view)."""
+        self._smart_want = None
+        self.filter.setCurrentIndex(0)
+
+    def _smart_menu(self, key: str, pos: QPoint):
+        """A smart shelf's ⋮: See all, Save as collection, Hide this shelf.
+        The desktop menu, or the ActionSheet when a pad is driving."""
+        name = smart.label(key)
+        items = [("See all", G['grid'], lambda: self._show_filter(key)),
+                 ("Save as collection", G['collection'], lambda: self._save_smart(key)),
+                 ("Hide this shelf", G['eye_off'], lambda: self._hide_smart(key))]
+        if self.input.mode == 'pad':
+            self.sheet.choose(name, items, sub=smart.tip(key))
+            self._update_hints()
+            return
+        m = QMenu(self)
+        for text, glyph, fn in items:
+            m.addAction(text).triggered.connect(lambda _=False, fn=fn: fn())
+        m.exec(pos if not pos.isNull() else QCursor.pos())
+        m.deleteLater()
+
+    def _smart_hidden_menu(self, pos: QPoint):
+        """The divider's "N hidden": bring a hidden shelf back."""
+        items = [(f"Show “{smart.label(k)}” again", G['eye'],
+                  lambda k=k: self._unhide_smart(k)) for k in self.prefs.smart_hidden]
+        if not items:
+            return
+        if self.input.mode == 'pad':
+            self.sheet.choose("Hidden shelves", items)
+            self._update_hints()
+            return
+        m = QMenu(self)
+        for text, _glyph, fn in items:
+            m.addAction(amp(text)).triggered.connect(lambda _=False, fn=fn: fn())
+        m.exec(pos if not pos.isNull() else QCursor.pos())
+        m.deleteLater()
+
+    def _smart_pool(self) -> list[dict]:
+        """The games the Shelves view makes its smart shelves from."""
+        return [g for g in self._games if not g.get('hidden') and is_installed(g)
+                and not g.get('dup_of')]
+
+    def _save_smart(self, key: str):
+        """"Save as collection": an ordinary collection named after the
+        shelf, holding today's games (added to it if it exists)."""
+        games = smart.games_for(key, self._smart_pool(), self._smart_facts(),
+                                linux=has('proton'))
+        cname = self.prefs.add_collection(smart.label(key))
+        if not cname or not games:
+            return
+        slugs = self.prefs.collections[cname]
+        added = [g['slug'] for g in games if g['slug'] not in slugs]
+        slugs.extend(added)
+        self.prefs.save()
+        self._collections_changed()
+        self.toast(f"Saved {len(games)} game{'s' if len(games) != 1 else ''} to the "
+                   f"collection “{cname}”.", 'success', None, 4000)
+
+    def _hide_smart(self, key: str):
+        if key not in self.prefs.smart_hidden:
+            self.prefs.smart_hidden.append(key)
+            self.prefs.save()
+        self.apply_filter()
+        self.toast(f"Hid “{smart.label(key)}”.", 'info', ("Undo", lambda: self._unhide_smart(key)),
+                   6000)
+
+    def _unhide_smart(self, key: str):
+        if key in self.prefs.smart_hidden:
+            self.prefs.smart_hidden.remove(key)
+            self.prefs.save()
+        self.apply_filter()
+
     def _refresh_home(self, empty=None, pending=()):
         """Home shows the whole library, so it only rebuilds when the library
         (or a playing/favourite/job state) changes — not on every search key."""
         everything = [g for g in self._games if not g.get('hidden')]
         visible = [g for g in everything if is_installed(g)]
+        self._sync_facts()
         struct = (self._loaded, self._load_error, tuple(id(j) for j in pending),
-                  tuple(COLLECTION_NAMES),
+                  tuple(COLLECTION_NAMES), self._facts_stamp,
                   tuple((g['slug'], g.get('favorite'), tuple(g.get('collections') or ()),
                          g.get('last_played'), is_installed(g),
                          bool(g.get('installing')), g.get('install_requested'),
@@ -754,7 +974,7 @@ class LibraryMixin:
 # below is inside a method, so the cycle resolves at call time.
 from .actions import build_game_menu, game_actions  # noqa: E402
 from .art import ART  # noqa: E402
-from .dashboard import mark_duplicates  # noqa: E402
+from .dashboard import _game_store_id, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import cli_json  # noqa: E402
@@ -762,5 +982,5 @@ from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView
     surprise_pick)  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import icon_button, label, SegmentedControl, WrapRow  # noqa: E402
+from .widgets import amp, icon_button, label, SegmentedControl, WrapRow  # noqa: E402
 from .topbar import CollectionChip  # noqa: E402

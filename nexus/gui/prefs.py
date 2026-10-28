@@ -79,6 +79,11 @@ class LibraryPrefs:
         # and how wide the details panel was dragged.
         lib = self._data.get('library_state')
         self.library_state = lib if isinstance(lib, dict) else {}
+        # Smart shelves you hid (keys like 'smart:never', 'genre:RPG').
+        sh = self._data.get('smart_hidden')
+        self.smart_hidden = list(dict.fromkeys(k for k in sh if isinstance(k, str)
+                                               and k.startswith(('smart:', 'genre:'))))[:50] \
+            if isinstance(sh, list) else []
         # The Deals page as it was left: section, filter, sort, hide owned.
         ds = self._data.get('deals_state')
         self.deals_state = ds if isinstance(ds, dict) else {}
@@ -106,7 +111,8 @@ class LibraryPrefs:
                     'dashboard': {'version': 1, 'items': self.dashboard},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view, 'controls': self.controls,
-                    'library_state': self.library_state, 'collections': self.collections,
+                    'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
+                    'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
                     'uac_note_shown': self.uac_note_shown,
