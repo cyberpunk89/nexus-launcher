@@ -281,11 +281,25 @@ def hltb_name(row: dict, steam: dict | None) -> str:
     return (steam or {}).get('name') or row.get('name') or ''
 
 
+def gamedb_rows(library: list[dict]) -> dict:
+    """{appid: v2/games row} for the library's games that Game-db's synced
+    copy knows (gamedb.meta: cache only, {} when Game-db is off or old)."""
+    from . import gamedb
+    out = {}
+    try:
+        for appid in {r['appid'] for r in library if r.get('appid')}:
+            if (row := gamedb.meta(appid)) is not None:
+                out[appid] = row
+    except Exception:                                           # noqa: BLE001 — optional
+        return {}
+    return out
+
+
 def build(library: list[dict], gamedb_rows: dict | None = None) -> dict:
     """The index from caches alone (no network): {v, built, games: {slug:
     record}, missing: {steam, hltb}}. `library` is [{slug, appid, name}];
-    rows without a store appid are left out. `gamedb_rows` ({appid: v2 row})
-    is the Phase 3 merge point; None until then."""
+    rows without a store appid are left out. `gamedb_rows` ({appid: v2 row},
+    see gamedb_rows()) adds what Game-db knows about your own games."""
     games, missing = {}, {'steam': 0, 'hltb': 0}
     for row in library:
         appid = row.get('appid')
@@ -408,7 +422,7 @@ def report(site: str, error: Exception | None, now: float | None = None) -> None
 def todo(library: list[dict]) -> tuple[list[int], list[tuple[str, int | None]]]:
     """What a fill would fetch: store appids whose details are missing or
     stale, and (name, year) titles with no fresh HowLongToBeat answer and no
-    Game-db figure (cache only)."""
+    Game-db figure, v1 summary or v2 games (cache only)."""
     from . import gamedb
     appids, titles, seen = [], [], set()
     rows = [r for r in library if r.get('appid')]
@@ -423,7 +437,8 @@ def todo(library: list[dict]) -> tuple[list[int], list[tuple[str, int | None]]]:
             seen.add(r['appid'])
         steam = from_steam(d)
         name = hltb_name(r, steam)
-        if not name or ((gdb.get(r['appid']) or {}).get('hltb') or {}).get('main'):
+        if not name or ((gdb.get(r['appid']) or {}).get('hltb') or {}).get('main') \
+                or hltb.from_gamedb(r['appid']):            # v2: HLTB's or IGDB's hours
             continue
         if not hltb.cached(name)[0] and name not in {t for t, _y in titles}:
             titles.append((name, (steam or {}).get('year')))

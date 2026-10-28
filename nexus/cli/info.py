@@ -100,7 +100,7 @@ def cmd_game_facts(refresh: bool, as_json: bool, fill_n: int | None = None) -> N
     if refresh or fill_n is not None:
         n = facts.BUDGET if fill_n is None else max(0, min(fill_n, facts.BUDGET))
         res = facts.fill(lib, n)
-    idx = facts.build(lib)
+    idx = facts.build(lib, facts.gamedb_rows(lib))
     facts.write_index(idx)
     if as_json:
         print(json.dumps({'built': idx['built'], 'games': idx['games'],

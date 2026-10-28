@@ -22,7 +22,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import gamedb, hltb, protondb, storeinfo  # noqa: E402
+from nexus import facts, gamedb, hltb, protondb, storeinfo  # noqa: E402
 from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
@@ -603,6 +603,25 @@ class CacheFirst(V2Base):
         get.assert_called_once()
         self.age_games(storeinfo.REVIEWS_AGE + 10)          # reviews age with the sync
         self.assertIsNone(storeinfo.reviews_from_gamedb(1))
+
+    def test_facts_index_takes_the_synced_rows(self):
+        self.sync(game(241930, title='Shadow of Mordor', status='early_access',
+                       igdbSlug='middle-earth-shadow-of-mordor',
+                       playLength={'main': None, 'mainExtra': 17.9, 'completionist': 56.7,
+                                   'source': 'igdb', 'count': 10, 'fetchedAt': iso(60)}))
+        lib = [{'slug': 'mordor', 'appid': 241930, 'name': 'Shadow of Mordor'},
+               {'slug': 'other', 'appid': 5, 'name': 'Not on Game-db'}]
+        with self.no_network():
+            rows = facts.gamedb_rows(lib)
+            idx = facts.build(lib, rows)
+            _appids, titles = facts.todo(lib)
+        self.assertEqual(set(rows), {241930})
+        f = idx['games']['mordor']
+        self.assertEqual((f['status'], f['igdbSlug'], f['length']['source'],
+                          f['length']['plus']), ('early_access',
+                                                 'middle-earth-shadow-of-mordor', 'igdb', 17.9))
+        self.assertNotIn('other', idx['games'])
+        self.assertEqual([t for t, _y in titles], ['Not on Game-db'])   # no HLTB for ours
 
     def test_refresh_skips_gamedb(self):
         self.sync(game(620))
