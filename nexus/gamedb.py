@@ -1,11 +1,21 @@
 """Game-db integration: wishlist deals, upcoming releases and backlog picks
 from the user's Game-db instance (github.com/cyberpunk89/Game-db).
 
-One read-only endpoint, `GET {url}/api/nexus/v1/summary`, authenticated with
-a personal token (`Authorization: Bearer gdb_…`, minted on Game-db's /account
-page). The response is cached for 45 min under ~/.cache/nexus/gamedb/ (0600 —
-it's personal data) and served stale, with the error attached, when Game-db
-is unreachable or the token stops working.
+`GET {url}/api/nexus/v1/summary`, authenticated with a personal token
+(`Authorization: Bearer gdb_…`, minted on Game-db's /account page). The
+response is cached for 45 min under ~/.cache/nexus/gamedb/ (0600 — it's
+personal data) and served stale, with the error attached, when Game-db is
+unreachable or the token stops working.
+
+v2 adds `meta` (what the server offers, asked once a day) and `games`
+(ProtonDB, play length, reviews and release status for your own library and
+wishlist), kept in games.json and synced with `?since=` deltas at most every
+6 h. `meta(appid)` reads that copy, never the network, so protondb, hltb and
+storeinfo can skip their own fetch for games Game-db already knows. An old
+server (404) or one without `games` simply leaves the feature off.
+
+Every call says which Nexus is asking (`X-Nexus-Client`, `X-Nexus-Device`),
+which Game-db shows next to the token on /account.
 
 The token is read from `[gamedb] token` in config.toml or NEXUS_GAMEDB_TOKEN,
 never taken on a command line, and never appears in an error message. The
@@ -16,19 +26,26 @@ import hashlib
 import json
 import os
 import re
+import socket
 import time
 import tomllib
 import urllib.parse
 from datetime import datetime, timezone
 
-from . import net, paths
+from . import __version__, net, paths, platform
 
 # No built-in server: Game-db is self-hosted, so the address comes from [gamedb] url
 # (or NEXUS_GAMEDB_URL). Shown in empty fields only.
 EXAMPLE_URL = "https://gamedb.example.com"
 ENDPOINT = "/api/nexus/v1/summary"
+META_ENDPOINT = "/api/nexus/v2/meta"
+GAMES_ENDPOINT = "/api/nexus/v2/games"
 MAX_AGE = 45 * 60
+META_AGE = 24 * 3600            # v2/meta: asked about once a day
+GAMES_AGE = 6 * 3600            # v2/games: a since-delta at most this often
 SCHEMA = 1
+SCHEMA_V2 = 2
+MAX_PAGES = 200                 # 100k games at 500 a page: a cursor loop stops here
 LIMIT = 16 << 20
 STEAMID64_BASE = 76561197960265728
 _LOCAL_HOSTS = {'localhost', '127.0.0.1', '::1'}
@@ -36,7 +53,8 @@ TOKEN_RE = re.compile(r'^gdb_[A-Za-z0-9_-]{43}$')
 
 
 class GameDbError(net.NetError):
-    """kind: config | auth | rate | net | schema."""
+    """kind: config | auth | rate | net | schema | missing (404: the server
+    has no such endpoint, e.g. an older Game-db without v2)."""
 
     def __init__(self, kind: str, message: str, retry_after: float | None = None):
         super().__init__(message)
@@ -86,7 +104,24 @@ def settings() -> dict:
         'token': token or None,
         'token_source': 'env' if env_token else ('config' if cfg_token else None),
         'url_error': url_error,
+        'games': data.get('games', True) is not False,
+        'device': device_label(data.get('device')),
     }
+
+
+def device_label(value=None) -> str:
+    """What this PC is called on Game-db's /account: [gamedb] device, else
+    the hostname. Printable ASCII (an HTTP header), at most 64 characters,
+    and never a path — a value with / or \\ falls back to the hostname."""
+    def clean(v) -> str:
+        v = ''.join(c for c in str(v or '') if ' ' <= c <= '~').strip()[:64].strip()
+        return '' if '/' in v or '\\' in v else v
+    return clean(value) or clean(socket.gethostname().split('.')[0]) or 'nexus'
+
+
+def client_label() -> str:
+    """`nexus/0.5.0 linux` for X-Nexus-Client."""
+    return f"nexus/{__version__} {platform.OS_NAME}"
 
 
 def configured(s: dict | None = None) -> bool:
@@ -111,15 +146,25 @@ def _no_redirect():
     return _NoRedirect
 
 
-def _fetch(base: str, token: str, timeout: float = 20) -> dict:
-    import urllib.error
-    import urllib.request
-    url = base + ENDPOINT
-    req = urllib.request.Request(url, headers={
+def _headers(token: str, device: str | None = None) -> dict:
+    return {
         'User-Agent': net.UA,
         'Accept': 'application/json',
         'Authorization': f'Bearer {token}',
-    })
+        'X-Nexus-Client': client_label(),
+        'X-Nexus-Device': device_label(device),
+    }
+
+
+def _get(base: str, token: str, endpoint: str, schema: int, query: dict | None = None,
+         timeout: float = 20, device: str | None = None) -> dict:
+    """One authenticated GET of a Game-db JSON endpoint; GameDbError on
+    anything but a JSON object of the expected schema. The token is only
+    ever in the Authorization header, never in a message."""
+    import urllib.error
+    import urllib.request
+    url = base + endpoint + ('?' + urllib.parse.urlencode(query) if query else '')
+    req = urllib.request.Request(url, headers=_headers(token, device))
     opener = urllib.request.build_opener(_no_redirect())
     try:
         with opener.open(req, timeout=timeout) as r:
@@ -136,22 +181,29 @@ def _fetch(base: str, token: str, timeout: float = 20) -> dict:
                 retry = 600.0
             raise GameDbError('rate', f"Game-db is rate-limiting; retry in {int(retry)}s",
                               retry_after=retry) from None
-        raise GameDbError('net', f"{ENDPOINT}: HTTP {e.code}") from None
+        if e.code == 404:
+            raise GameDbError('missing', f"{endpoint}: this Game-db doesn't have it") from None
+        raise GameDbError('net', f"{endpoint}: HTTP {e.code}") from None
     except GameDbError:
         raise
     except net.errors() as e:
         raise GameDbError('net', f"{base}: {getattr(e, 'reason', e)}") from None
     if len(raw) > LIMIT:
-        raise GameDbError('net', f"{ENDPOINT}: response larger than {LIMIT} bytes")
+        raise GameDbError('net', f"{endpoint}: response larger than {LIMIT} bytes")
     try:
         data = json.loads(raw)
     except ValueError:
-        raise GameDbError('schema', f"{ENDPOINT}: not JSON") from None
-    if not isinstance(data, dict) or data.get('schema') != SCHEMA:
+        raise GameDbError('schema', f"{endpoint}: not JSON") from None
+    if not isinstance(data, dict) or data.get('schema') != schema:
         got = data.get('schema') if isinstance(data, dict) else None
         raise GameDbError('schema', f"Game-db API schema {got!r}, this Nexus understands "
-                                    f"{SCHEMA} — update one of them")
+                                    f"{schema} — update one of them")
     return data
+
+
+def _fetch(base: str, token: str, timeout: float = 20, device: str | None = None) -> dict:
+    """v1 summary. Unknown fields are ignored; only `schema` is checked."""
+    return _get(base, token, ENDPOINT, SCHEMA, timeout=timeout, device=device)
 
 
 # ---- cache ----------------------------------------------------------------
@@ -166,6 +218,14 @@ def _summary_path():
 
 def _state_path():
     return paths.GAMEDB_CACHE / 'state.json'
+
+
+def _meta_path():
+    return paths.GAMEDB_CACHE / 'meta.json'
+
+
+def _games_path():
+    return paths.GAMEDB_CACHE / 'games.json'
 
 
 def _write_private(path, obj) -> None:
@@ -195,8 +255,18 @@ def last_state() -> dict:
 
 
 def clear_cache() -> None:
-    for p in (_summary_path(), _state_path()):
+    for p in (_summary_path(), _state_path(), _meta_path(), _games_path()):
         p.unlink(missing_ok=True)
+    _games_memo.clear()
+
+
+def _note_rate(e: GameDbError, now: float) -> None:
+    """v1 and v2 share one rate-limit budget on the server, so a 429 from
+    either holds both back (summary() checks the same retry_at)."""
+    if e.kind != 'rate' or not e.retry_after:
+        return
+    st = last_state()
+    _write_private(_state_path(), {'error': st.get('error'), 'retry_at': now + e.retry_after})
 
 
 def summary(refresh: bool = False, cache_only: bool = False) -> dict:
@@ -231,7 +301,7 @@ def summary(refresh: bool = False, cache_only: bool = False) -> dict:
         return stale({'kind': 'rate', 'message': "Game-db asked us to slow down; retry in "
                                                  f"{int(state['retry_at'] - now)}s"})
     try:
-        data = _fetch(s['url'], s['token'])
+        data = _fetch(s['url'], s['token'], device=s['device'])
     except GameDbError as e:
         err = {'kind': e.kind, 'message': str(e), 'at': now}
         _write_private(_state_path(), {
@@ -283,6 +353,220 @@ def owned_library() -> list[dict]:
     cache = _cached(_fingerprint(s['url'], s['token']))
     lib = (cache or {}).get('data', {}).get('library') or []
     return [g for g in lib if isinstance(g, dict) and isinstance(g.get('appid'), int)]
+
+
+# ---- v2: meta and the games cache -------------------------------------------
+
+def server_meta(refresh: bool = False, s: dict | None = None) -> dict | None:
+    """What the server offers (v2/meta), asked at most once a day per
+    account. {'off': True} for a server without v2 (404) — remembered for a
+    day too, so an old Game-db costs one request a day. None when unknown
+    (never asked, or the last try failed and nothing is cached)."""
+    s = s or settings()
+    if not configured(s):
+        return None
+    fp = _fingerprint(s['url'], s['token'])
+    c = _read_json(_meta_path())
+    c = c if isinstance(c, dict) and c.get('fingerprint') == fp else None
+    now = time.time()
+    if c and not refresh and now - c.get('fetched_at', 0) < META_AGE:
+        return c.get('data')
+    if (last_state().get('retry_at') or 0) > now:
+        return (c or {}).get('data')
+    try:
+        data = _get(s['url'], s['token'], META_ENDPOINT, SCHEMA_V2, device=s['device'])
+    except GameDbError as e:
+        _note_rate(e, now)
+        if e.kind == 'missing':
+            data = {'off': True}
+        elif e.kind == 'schema':         # a v3-only server: as good as no v2
+            data = {'off': True, 'schema': True}
+        else:
+            return (c or {}).get('data')
+    _write_private(_meta_path(), {'fingerprint': fp, 'fetched_at': now, 'data': data})
+    return data
+
+
+def _offers_games(m: dict | None) -> bool:
+    return isinstance(m, dict) and not m.get('off') and 'games' in (m.get('features') or ())
+
+
+def games_available(s: dict | None = None) -> bool | None:
+    """Cache-only: True/False once the server answered v2/meta, None while
+    unknown. For Settings, which never asks the server itself."""
+    s = s or settings()
+    if not configured(s):
+        return None
+    c = _read_json(_meta_path())
+    if not (isinstance(c, dict) and c.get('fingerprint') == _fingerprint(s['url'], s['token'])):
+        return None
+    return _offers_games(c.get('data'))
+
+
+def _games_cache(fp: str):
+    c = _read_json(_games_path())
+    if isinstance(c, dict) and c.get('fingerprint') == fp and isinstance(c.get('games'), dict):
+        return c
+    return None
+
+
+def _fetch_games(s: dict, since: str | None) -> dict:
+    """Every page of one v2/games answer: {full, nextSince, removed, games}.
+    nextSince and removed come from the first page; the cursor carries the
+    rest. Raises on any failure so a half-read delta is never applied."""
+    first = _get(s['url'], s['token'], GAMES_ENDPOINT, SCHEMA_V2,
+                 {'since': since} if since else None, timeout=30, device=s['device'])
+    games = list(first.get('games') or [])
+    cursor = first.get('nextCursor')
+    for _ in range(MAX_PAGES):
+        if not cursor:
+            break
+        page = _get(s['url'], s['token'], GAMES_ENDPOINT, SCHEMA_V2, {'cursor': cursor},
+                    timeout=30, device=s['device'])
+        games += page.get('games') or []
+        cursor = page.get('nextCursor')
+    else:
+        raise GameDbError('net', f"{GAMES_ENDPOINT}: more than {MAX_PAGES} pages")
+    return {'full': bool(first.get('full')) or not since,
+            'nextSince': first.get('nextSince') if isinstance(first.get('nextSince'), str)
+            else None,
+            'removed': first.get('removed') or [], 'games': games}
+
+
+def sync_games(force: bool = False) -> dict:
+    """Bring games.json up to date: a full fetch the first time, then
+    `?since=` deltas at most every GAMES_AGE (`force` skips that wait, not a
+    Retry-After). Never raises. {status, count, changed, removed, error}:
+    status is off (Game-db not set up, switched off, or the server lacks
+    `games`) | fresh | synced | failed."""
+    s = settings()
+    out = {'status': 'off', 'count': 0, 'changed': 0, 'removed': 0, 'error': None}
+    if not configured(s) or not s['games']:
+        return out
+    fp = _fingerprint(s['url'], s['token'])
+    cache = _games_cache(fp)
+    now = time.time()
+    out['count'] = len((cache or {}).get('games') or {})
+    if cache and not force and now - cache.get('synced_at', 0) < GAMES_AGE:
+        return {**out, 'status': 'fresh'}
+    retry_at = last_state().get('retry_at') or 0
+    if retry_at > now:
+        return {**out, 'status': 'failed', 'error': {
+            'kind': 'rate', 'message': "Game-db asked us to slow down; retry in "
+                                       f"{int(retry_at - now)}s"}}
+    m = server_meta(s=s)
+    if m is None:
+        return {**out, 'status': 'failed', 'error': {
+            'kind': 'net', 'message': "couldn't ask Game-db what it offers", 'at': now}}
+    if not _offers_games(m):
+        return out
+    since = (cache or {}).get('since')
+    try:
+        try:
+            got = _fetch_games(s, since)
+        except GameDbError as e:
+            if e.kind != 'net' or not since or 'HTTP 400' not in str(e):
+                raise
+            since, got = None, _fetch_games(s, None)    # the server forgot our since: start over
+    except GameDbError as e:
+        _note_rate(e, now)
+        if e.kind == 'missing':          # v2 went away: forget it until meta says otherwise
+            server_meta(refresh=True, s=s)
+        err = {'kind': e.kind, 'message': str(e), 'at': now}
+        if cache:
+            _write_private(_games_path(), {**cache, 'error': err})
+        return {**out, 'status': 'failed', 'error': err}
+    games = {} if got['full'] or not cache else dict(cache['games'])
+    for g in got['games']:
+        if isinstance(g, dict) and isinstance(g.get('appid'), int):
+            games[str(g['appid'])] = g
+    removed = 0
+    for a in got['removed']:
+        removed += games.pop(str(a), None) is not None
+    _write_private(_games_path(), {
+        'fingerprint': fp, 'synced_at': now, 'since': got['nextSince'], 'games': games,
+        'error': None})
+    _games_memo.clear()
+    return {**out, 'status': 'synced', 'count': len(games), 'changed': len(got['games']),
+            'removed': removed}
+
+
+_games_memo: dict = {}
+
+
+def _games_rows(s: dict) -> tuple[dict, float] | None:
+    """games.json's rows and sync time, re-read only when the file changes
+    (a library list asks for hundreds of appids in one go)."""
+    path = _games_path()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    fp = _fingerprint(s['url'], s['token'])
+    key = (str(path), mtime, fp)
+    if _games_memo.get('key') != key:
+        c = _games_cache(fp)
+        _games_memo.clear()
+        _games_memo.update(key=key, value=(c['games'], c.get('synced_at') or 0) if c else None)
+    return _games_memo['value']
+
+
+def games_status() -> dict:
+    """Cache-only: {count, synced_at, error} of games.json, for --doctor."""
+    s = settings()
+    c = _games_cache(_fingerprint(s['url'], s['token'])) if configured(s) else None
+    if not c:
+        return {'count': 0, 'synced_at': None, 'error': None}
+    return {'count': len(c['games']), 'synced_at': c.get('synced_at'), 'error': c.get('error')}
+
+
+def meta(appid) -> dict | None:
+    """Cache-only (never network): what Game-db's v2/games said about one of
+    your own Steam games, or None (not set up, switched off, the server has
+    no v2, not synced yet, or not in your library/wishlist). The row as the
+    server sent it plus `synced_at` (epoch) and `url` (its Game-db page).
+    Callers check each source's own fetchedAt against their TTL (`fresh()`)."""
+    try:
+        appid = int(appid)
+    except (TypeError, ValueError):
+        return None
+    s = settings()
+    if not configured(s) or not s['games'] or games_available(s) is False:
+        return None
+    got = _games_rows(s)
+    row = got[0].get(str(appid)) if got else None
+    if not isinstance(row, dict):
+        return None
+    return {**row, 'synced_at': got[1], 'url': detail_url(s['url'], appid)}
+
+
+def fresh(stamp, max_age: float, now: float | None = None) -> bool:
+    """Whether an ISO `fetchedAt` (or an epoch number) is under max_age old."""
+    if isinstance(stamp, (int, float)):
+        t = float(stamp)
+    else:
+        d = parse_iso(stamp if isinstance(stamp, str) else None)
+        if not d:
+            return False
+        t = d.timestamp()
+    return 0 <= (now or time.time()) - t < max_age
+
+
+def play_length(row: dict | None) -> dict | None:
+    """A v2 `playLength` in hltb.lookup()'s shape — {main, plus, complete,
+    source ('hltb'|'igdb'), count, url, name} — or None without hours."""
+    pl = (row or {}).get('playLength')
+    if not isinstance(pl, dict):
+        return None
+
+    def hours(v):
+        return round(float(v), 1) if isinstance(v, (int, float)) and v > 0 else None
+    out = {'main': hours(pl.get('main')), 'plus': hours(pl.get('mainExtra')),
+           'complete': hours(pl.get('completionist')),
+           'source': 'igdb' if pl.get('source') == 'igdb' else 'hltb',
+           'count': pl.get('count') if isinstance(pl.get('count'), int) else None,
+           'url': None, 'name': (row or {}).get('title')}
+    return out if out['main'] or out['plus'] or out['complete'] else None
 
 
 # ---- helpers --------------------------------------------------------------

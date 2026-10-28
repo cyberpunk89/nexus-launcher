@@ -497,6 +497,9 @@ def build_parser() -> argparse.ArgumentParser:
     g7.add_argument('--gamedb-lookup', nargs='+', metavar='APPID', dest='gamedb_lookup',
                     help='Cached Game-db info (price, HLTB, release) for Steam appids; '
                          'never hits the network')
+    g7.add_argument('--gamedb-sync', action='store_true', dest='gamedb_sync',
+                    help='Sync game details (ProtonDB, play length, reviews) for your library '
+                         'and wishlist from Game-db, at most every 6 h (--refresh: now)')
     _hide_unavailable(parser)
     return parser
 
@@ -630,6 +633,23 @@ def _cmd_gamedb_lookup(args, install_base):
     sys.exit(0)
 
 
+def _cmd_gamedb_sync(args, install_base):
+    from nexus import gamedb
+    res = gamedb.sync_games(force=args.refresh)
+    if args.json:
+        print(json.dumps(res))
+    elif res['status'] == 'failed':
+        print(f"Game-db: {res['error']['message']}", file=sys.stderr)
+    elif res['status'] == 'off':
+        print("Game-db game details are off (not set up, switched off, or the server "
+              "doesn't offer them).")
+    else:
+        print(f"Game-db: {res['count']} games ({res['status']}"
+              + (f", {res['changed']} changed, {res['removed']} removed"
+                 if res['status'] == 'synced' else '') + ")")
+    sys.exit(1 if res['status'] == 'failed' else 0)
+
+
 def _cmd_move_targets(args, install_base):
     rows = move_targets(install_base)
     if args.json:
@@ -744,6 +764,7 @@ COMMANDS = (
     ('upcoming', lambda a, base: cmd_gamedb('upcoming', a.refresh, a.json, a.time)),
     ('backlog', lambda a, base: cmd_gamedb('backlog', a.refresh, a.json, a.time)),
     ('gamedb_lookup', _cmd_gamedb_lookup),
+    ('gamedb_sync', _cmd_gamedb_sync),
     ('protondb', lambda a, base: cmd_protondb(a.protondb, a.refresh, a.json)),
     ('game_tips', lambda a, base: cmd_game_tips(a.game_tips, a.json)),
     ('perf',

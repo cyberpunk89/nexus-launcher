@@ -26,6 +26,8 @@ paths (each takes the home directory, so tests can point it elsewhere)
                                             games (Windows: OneDrive, network,
                                             Program Files, long path); [] if fine
     APP_NAME                                'nexus' / 'nexus-launcher'
+    OS_NAME                                 'linux' / 'windows' (what Nexus tells
+                                            a server it runs on, e.g. Game-db)
 
 processes
     processes()                             every process now, as records with
@@ -170,6 +172,7 @@ else:
     from . import linux as _impl
 
 APP_NAME = _impl.APP_NAME
+OS_NAME = _impl.OS_NAME
 data_dir = _impl.data_dir
 config_dir = _impl.config_dir
 cache_dir = _impl.cache_dir

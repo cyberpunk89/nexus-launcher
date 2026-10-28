@@ -1455,10 +1455,11 @@ class DetailsPanel(QFrame):
             self._fill_about()
         main = hl.get('main')
         played = (self.game.get('playtime_minutes') or 0) / 60
-        if main and info.get('gamedb', {}).get('list') != 'wishlist':
+        if main and (info.get('gamedb') or {}).get('list') != 'wishlist':
             frac = min(1.0, played / main) if main else 0
+            src = "IGDB" if hl.get('source') == 'igdb' else "HowLongToBeat"
             self.progress_text.setText(f"{fmt_hours(int(played * 60)) or '0 h'} of about "
-                                       f"{main:g} h to beat the main story (HowLongToBeat)")
+                                       f"{main:g} h to beat the main story ({src})")
             self.progress_bar.setValue(int(frac * 1000))
             self.progress.setVisible(True)
         else:
@@ -1559,6 +1560,8 @@ class DetailsPanel(QFrame):
                 bits.append(f"{int(c.get('fraction', 0) * 100)}% through")
             elif c.get('label'):
                 bits.append(esc(c['label']))
+        if gd.get('status_label') or gd.get('status'):        # IGDB: Early Access, Beta…
+            bits.append(esc(gd.get('status_label') or str(gd['status']).replace('_', ' ')))
         if not bits:
             return ''
         page = gamedb.safe_url(gd.get('url'), gd.get('url', '').rsplit('/game/', 1)[0])

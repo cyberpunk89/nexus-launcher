@@ -681,6 +681,11 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> s
             parts.append(f"100% {hltb['complete']:g} h")
         link = (f" <a href='{html.escape(hltb['url'])}' style='color:{P['accent']}'>HLTB</a>"
                 if str(hltb.get('url', '')).startswith('https://howlongtobeat.com/') else '')
+        if hltb.get('source') == 'igdb':          # Game-db's fallback when HLTB has no hours
+            n = hltb.get('count')
+            link = (f" <span style='color:{P['subtext']}'>IGDB"
+                    + (f", {int(n)} submission{'s' if n != 1 else ''}" if n else '')
+                    + "</span>")
         out.append("<p><b>How long to beat</b>: " + " · ".join(parts) + link + "</p>")
     if str(st.get('url', '')).startswith('https://store.steampowered.com/'):
         out.append(f"<p><a href='{html.escape(st['url'])}' style='color:{P['accent']}'>"

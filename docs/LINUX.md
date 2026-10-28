@@ -464,10 +464,23 @@ Details:
   installed: `--library --owned --json` adds them (and Heroic's not-installed Epic / GOG /
   Amazon games) with `installed: false` and an `install_url`; games Steam or Heroic are
   downloading get `installing: {done, total, paused}`. Cache only, never the network.
+- **Game details** (a Game-db with API v2): ProtonDB tier, play length (HowLongToBeat's,
+  or IGDB's when HLTB has none, labelled as such), Steam reviews and release status (Early
+  Access and the like) for your own library and wishlist are kept in
+  `~/.cache/nexus/gamedb/games.json` (0600). The agent (on Windows, the window when no
+  agent runs) syncs it at most every 6 h, only what changed since the last sync. A game
+  page for one of those games then sends nothing to ProtonDB or HowLongToBeat while
+  Game-db's copy is fresh; for any other game, or with Game-db off, unreachable or too
+  old to offer it (Nexus asks `v2/meta` once a day), Nexus fetches them itself as before.
+  Settings → Game-db → Game details from Game-db switches it off. Every Game-db request
+  says which Nexus asks (`X-Nexus-Client: nexus/<version> <os>`) and from which PC
+  (`X-Nexus-Device`: Settings → This PC's name, default the hostname, never a path);
+  Game-db shows both next to the token on its account page.
 - CLI: `--gamedb` (everything), `--deals`, `--upcoming`, `--backlog [--time
-  lt1h|1to3|3plus|long]`, each with `--json`; `--gamedb-lookup APPID…`. `--doctor` reports
-  the sync state, a config.toml that holds the token but isn't 0600, and a Steam account
-  mismatch between Game-db and Nexus.
+  lt1h|1to3|3plus|long]`, each with `--json`; `--gamedb-lookup APPID…`; `--gamedb-sync
+  [--refresh] [--json]` (game details now; normally the agent's job). `--doctor` reports
+  the sync state of both, a config.toml that holds the token but isn't 0600, and a Steam
+  account mismatch between Game-db and Nexus.
 
 ## Finding a repack to install
 

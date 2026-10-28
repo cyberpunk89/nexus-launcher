@@ -2,7 +2,9 @@
 screenshots, metacritic score, genres and blurb (appdetails), the review
 summary (appreviews) and "more like this" (the store's similar-games page).
 No key needed; everything is cached on disk and fails soft — offline, the
-last good answer is served, else nothing."""
+last good answer is served, else nothing. The review summary of a game in
+your Game-db library or wishlist comes from Game-db's copy (gamedb.meta)
+while that is younger than the reviews cache's own 3 days."""
 
 import html
 import json
@@ -103,7 +105,29 @@ def cached_details(appid: int) -> tuple[bool, dict | None]:
     return net.peek_json(_details_path(appid), DETAILS_AGE, _current)
 
 
+REVIEWS_AGE = 3 * DAY
+
+
+def reviews_from_gamedb(appid: int) -> dict | None:
+    """Game-db's Steam review summary in reviews()' shape, or None. Its
+    age is when Nexus last synced the row (the server refreshes reviews
+    every few days on its own)."""
+    from . import gamedb
+    row = gamedb.meta(appid) or {}
+    rv = row.get('reviews')
+    if not isinstance(rv, dict) or not rv.get('steamDesc') or not rv.get('steamTotal') \
+            or not gamedb.fresh(row.get('synced_at'), REVIEWS_AGE):
+        return None
+    pct, total = rv.get('steamPercent'), rv['steamTotal']
+    return {'desc': rv['steamDesc'], 'score': None, 'total': total,
+            'positive': round(pct * total / 100) if isinstance(pct, (int, float)) else None,
+            'percent': pct if isinstance(pct, (int, float)) else None, 'source': 'gamedb'}
+
+
 def reviews(appid: int, refresh: bool = False) -> dict | None:
+    if not refresh and (hit := reviews_from_gamedb(appid)):
+        return hit
+
     def fetch():
         raw = json.loads(net.get(REVIEWS.format(appid=appid), timeout=15, limit=1 << 20))
         q = (raw or {}).get('query_summary') or {}
@@ -113,7 +137,7 @@ def reviews(appid: int, refresh: bool = False) -> dict | None:
                 'positive': q.get('total_positive'), 'total': q.get('total_reviews'),
                 'percent': round(100 * q['total_positive'] / q['total_reviews'])
                 if q.get('total_positive') is not None else None}
-    return net.cached_json(CACHE_DIR / 'reviews' / f"{appid}.json", 3 * DAY, fetch, refresh)
+    return net.cached_json(CACHE_DIR / 'reviews' / f"{appid}.json", REVIEWS_AGE, fetch, refresh)
 
 
 _SIMILAR = re.compile(r'class="similar_grid_capsule"[^>]*?data-ds-appid="(\d+)"[^>]*?'

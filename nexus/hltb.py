@@ -5,7 +5,11 @@ HowLongToBeat has no public API. Its own search page asks
 /api/search/site/init for a short-lived token, then POSTs the search with
 it in x-auth-token — Nexus does the same, once per title, and caches the
 answer for 30 days (a miss for a week, a failure for an hour). If the site
-changes, lookups quietly return nothing until this is updated."""
+changes, lookups quietly return nothing until this is updated.
+
+Given the Steam appid of a game in your Game-db library or wishlist, Game-db's
+play length (HowLongToBeat's, or IGDB's when HLTB has none) is used instead,
+while younger than HIT_AGE; no request goes to HowLongToBeat then."""
 
 import difflib
 import json
@@ -105,10 +109,28 @@ def cached(name: str) -> tuple[bool, dict | None]:
     return fresh, (record or {}).get('hit')
 
 
+def from_gamedb(appid) -> dict | None:
+    """Game-db's play length for one of your games ({main, plus, complete,
+    source 'hltb'|'igdb', count, url, name}), or None when it has none or
+    it's older than HIT_AGE."""
+    if not appid:
+        return None
+    from . import gamedb
+    row = gamedb.meta(appid)
+    pl = gamedb.play_length(row)
+    if not pl or not gamedb.fresh(((row or {}).get('playLength') or {}).get('fetchedAt'),
+                                  HIT_AGE):
+        return None
+    return pl
+
+
 def lookup(name: str, year: int | None = None, refresh: bool = False,
-           errors: list | None = None) -> dict | None:
+           errors: list | None = None, appid: int | None = None) -> dict | None:
     """{main, plus, complete (hours), id, url, name} or None. A failed
-    search is appended to `errors` (when given)."""
+    search is appended to `errors` (when given). From Game-db ({…, source,
+    count}) when `appid` is one of your games it has hours for."""
+    if not refresh and (hit := from_gamedb(appid)):
+        return hit
     key = title_key(name)
     if not key:
         return None

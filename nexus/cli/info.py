@@ -193,20 +193,30 @@ def cmd_game_tips(ident: str, as_json: bool) -> None:
                          if not x['integrated']), None),
             'llm': _llm_config() is not None, 'gamedb': None,
             'store_appid': store, **facts}
+    steam_id = None
     try:
         from nexus import gamedb
-        appid = g['appid'] if g.get('source') == 'steam' else g.get('steam_appid')
+        appid = g['appid'] if g.get('source') == 'steam' else g.get('steam_appid') or store
         if appid and str(appid).isdigit():
-            info['gamedb'] = gamedb.lookup([int(appid)]).get(int(appid))   # cache only
+            steam_id = int(appid)
+            info['gamedb'] = gamedb.lookup([steam_id]).get(steam_id)   # cache only
+            row = gamedb.meta(steam_id)                                # cache only too
+            if row and row.get('status'):
+                info['gamedb'] = {'list': row.get('list'), 'url': row['url'],
+                                  'fetched_at': row['synced_at'], **(info['gamedb'] or {}),
+                                  'status': row['status'],
+                                  'status_label': row.get('statusLabel')}
     except Exception:
         pass
     if not ((info.get('gamedb') or {}).get('hltb') or {}).get('main'):
         from nexus import hltb
-        name = g.get('display_name') or g.get('name')
-        if g.get('source') == 'steam' and not name:
-            full = _game_by_id(ident)
-            name = (full or {}).get('display_name') or (full or {}).get('name')
-        info['hltb'] = hltb.lookup(name) if name else None
+        info['hltb'] = hltb.from_gamedb(steam_id)        # IGDB hours too, when HLTB has none
+        if not info['hltb']:
+            name = g.get('display_name') or g.get('name')
+            if g.get('source') == 'steam' and not name:
+                full = _game_by_id(ident)
+                name = (full or {}).get('display_name') or (full or {}).get('name')
+            info['hltb'] = hltb.lookup(name) if name else None
     if as_json:
         print(json.dumps(info))
         return
@@ -214,8 +224,11 @@ def cmd_game_tips(ident: str, as_json: bool) -> None:
         print(f"ProtonDB: {pdb.get('tier') or 'no reports'}  {pdb['url']}")
     if info.get('hltb'):
         h = info['hltb']
-        print(f"HowLongToBeat: main {h['main'] or '?'} h · +extras {h['plus'] or '?'} h · "
+        src = "IGDB" if h.get('source') == 'igdb' else "HowLongToBeat"
+        print(f"{src}: main {h['main'] or '?'} h · +extras {h['plus'] or '?'} h · "
               f"100% {h['complete'] or '?'} h")
+    if (info.get('gamedb') or {}).get('status'):
+        print(f"Status: {info['gamedb'].get('status_label') or info['gamedb']['status']}")
     for line in compat_lines(info):
         print(line)
     if pg:
@@ -522,6 +535,23 @@ def gamedb_doctor(add, group: str) -> None:
         add(group, 'ok', 'Game-db', f"{s['url']} — synced {_ago(res['fetched_at'])} · "
                                     f"{on_sale} on sale"
             + (f" · last error: {err['message']}" if err else ''))
+        avail = gamedb.games_available(s)
+        if not s['games']:
+            add(group, 'info', 'Game-db game details', 'switched off in Settings')
+        elif avail is False:
+            add(group, 'info', 'Game-db game details',
+                "this Game-db doesn't offer them (an older server); Nexus asks ProtonDB "
+                "and HowLongToBeat itself")
+        elif avail:
+            g = gamedb.games_status()
+            gerr = g.get('error') or {}
+            if g.get('synced_at'):
+                add(group, 'warn' if gerr else 'ok', 'Game-db game details',
+                    f"{g['count']} games, synced {_ago(g['synced_at'])}"
+                    + (f" · last error: {gerr['message']}" if gerr else ''))
+            else:
+                add(group, 'info', 'Game-db game details', 'not synced yet',
+                    'nexus-cli --gamedb-sync')
         mine = (resolve_steam_account()[0] or {}).get('accountid')
         theirs = (d.get('user') or {}).get('steamId64')
         if mine and theirs and gamedb.steamid64(mine) != str(theirs):

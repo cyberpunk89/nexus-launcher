@@ -19,6 +19,7 @@ from pathlib import Path
 # The Windows edition's name: folder names, and later the exe and installer
 # names. One constant so a rename is one line.
 APP_NAME = 'nexus-launcher'
+OS_NAME = 'windows'
 
 
 def _known(var: str, home: Path, below_home: str) -> Path:

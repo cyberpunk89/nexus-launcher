@@ -257,6 +257,10 @@ class Agent:
         for kind, items in A.deal_alerts(wishlist, s).items():
             new += A.fresh(kind, items, s)
         send_alerts(new, desktop=not instance.window_running())
+        if not playing():
+            res = gamedb.sync_games()                   # itself at most every 6 h
+            if res['status'] == 'failed':
+                _say(f"[!] Game-db games: {res['error']['message']}")
         return EVERY['deals']
 
     def task_proton(self) -> float:
@@ -460,8 +464,9 @@ def cmd_agent_status(as_json: bool) -> None:
 
 def cmd_check_alerts(as_json: bool, dry_run: bool) -> None:
     """Check the deal and Proton alerts now (the agent does this on its own
-    schedule; the window does it when no agent runs). FitGirl and repack
-    update alerts ride on --repack-index and the feed."""
+    schedule; the window does it when no agent runs, so on Windows this is
+    also where Game-db's game details sync, at most every 6 h). FitGirl and
+    repack update alerts ride on --repack-index and the feed."""
     from nexus import alerts as A, gamedb, repackfeed
     s = A.settings()
     found: list[dict] = []
@@ -473,6 +478,8 @@ def cmd_check_alerts(as_json: bool, dry_run: bool) -> None:
         for items in A.deal_alerts(((res or {}).get('data') or {}).get('wishlist') or [],
                                    s).values():
             found += items
+        if not dry_run:
+            gamedb.sync_games()
     found += A.update_alerts(repackfeed.updates(load_registry()['games'].values()))
     found += A.proton_alerts(*ge_update())
     if dry_run:

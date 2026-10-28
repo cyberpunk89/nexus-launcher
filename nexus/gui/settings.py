@@ -759,6 +759,15 @@ class SettingsPage(QWidget):
         self.gdb_token_row = self._field_row(
             sec, "Desktop app token", "Read-only. Kept in config.toml, readable only by you; "
             "data is cached 45 minutes.", self.gdb_token, extra=(get,), keywords="key")
+        self.gdb_games = Switch()
+        self.gdb_games_row = self._row(
+            sec, "Game details from Game-db", "", self.gdb_games,
+            keywords="protondb howlongtobeat hltb igdb reviews early access")
+        self.gdb_device = QLineEdit()
+        self.gdb_device.setMaxLength(64)
+        self.gdb_device.setPlaceholderText(gamedb.device_label())
+        self._field_row(sec, "This PC's name", "How Game-db lists this Nexus on its account "
+                        "page.", self.gdb_device, keywords="device hostname")
 
     def _build_torrent(self):
         sec = self._add_section(SettingsSection(
@@ -1285,6 +1294,15 @@ class SettingsPage(QWidget):
         self.gdb_token.setText("" if env_token else (c.get('gamedb_token') or ""))
         self.gdb_token.setEnabled(not env_token)
         self.gdb_token.setPlaceholderText("set by NEXUS_GAMEDB_TOKEN" if env_token else "gdb_…")
+        self.gdb_games.setChecked(c.get('gamedb_games', True))
+        self.gdb_device.setText(c.get('gamedb_device') or "")
+        offered = gamedb.games_available()          # meta.json only; the GUI never asks Game-db
+        self.gdb_games.setEnabled(offered is not False)
+        self.gdb_games_row.set_description(
+            "This Game-db doesn't offer them yet, so Nexus asks ProtonDB and HowLongToBeat "
+            "itself." if offered is False else
+            "ProtonDB, play length, reviews and Early Access for your library and wishlist "
+            "come from Game-db (synced every 6 hours), so game pages don't ask those sites.")
         self.tor_client.setCurrentIndex(max(0, self.tor_client.findData(c.get('torrent_client'))))
         self._sync_torrent_rows()
         self.tor_url.setText(c.get('torrent_url') or "")
@@ -1371,6 +1389,12 @@ class SettingsPage(QWidget):
             gamedb_changed = gamedb_changed or gtok != c.get('gamedb_token')
             put('gamedb', 'token', gtok, c.get('gamedb_token'))
         put('gamedb', 'enabled', self.gdb_enabled.isChecked(), c.get('gamedb_cfg_enabled'))
+        put('gamedb', 'games', self.gdb_games.isChecked(), c.get('gamedb_games', True))
+        dev = self.gdb_device.text().strip() or None
+        if self._check(self.gdb_device, not dev or gamedb.device_label(dev) == dev,
+                       "A name without / or \\ and only plain letters, digits and "
+                       "punctuation, up to 64."):
+            put('gamedb', 'device', dev, c.get('gamedb_device'))
         turl = self.tor_url.text().strip().rstrip('/') or None
         if self._check(self.tor_url, not turl or bool(LOCAL_URL_RE.match(turl)),
                        "The client must be on this machine, like http://127.0.0.1:9091."):

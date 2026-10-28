@@ -1,5 +1,7 @@
 """Tests for nexus/gamedb.py: settings, the no-redirect authenticated fetch,
-the private stale-tolerant cache, cache-only lookups, and the CLI on top."""
+the private stale-tolerant cache, cache-only lookups, the v2 meta/games sync
+against a fake server, the cache-first ProtonDB/HLTB/review lookups on top,
+and the CLI."""
 
 import email.message
 import io
@@ -11,6 +13,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +22,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import gamedb  # noqa: E402
+from nexus import gamedb, hltb, protondb, storeinfo  # noqa: E402
 from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
@@ -277,6 +280,349 @@ class Lookup(Base):
         self.assertNotIn(5, info)
 
 
+# ---- v2 ----------------------------------------------------------------------
+
+def iso(ago: float = 0) -> str:
+    return datetime.fromtimestamp(time.time() - ago, timezone.utc).isoformat()
+
+
+META = {'schema': 2, 'apiVersion': 2, 'features': ['summary', 'games'],
+        'sources': {'steam': True, 'protondb': True, 'hltb': True, 'igdb': True},
+        'games': {'pageSize': 500, 'sinceOverlapSeconds': 300}, 'scopes': ['read']}
+
+
+def game(appid, **kw):
+    g = {'appid': appid, 'title': f'Game {appid}', 'list': 'library', 'updatedAt': iso(),
+         'genres': [], 'status': None, 'statusLabel': None,
+         'reviews': {'steamPercent': 93, 'steamDesc': 'Very Positive', 'steamTotal': 1000,
+                     'metacritic': 84},
+         'proton': {'tier': 'platinum', 'trendingTier': 'gold', 'total': 134,
+                    'fetchedAt': iso(3600)},
+         'playLength': {'main': 10.5, 'mainExtra': 15, 'completionist': 30, 'source': 'hltb',
+                        'count': None, 'fetchedAt': iso(3600)},
+         'igdbSlug': None, 'steamUrl': f'https://store.steampowered.com/app/{appid}'}
+    g.update(kw)
+    return g
+
+
+class FakeServer:
+    """urllib's opener, routed by path: `routes[path]` is a dict (JSON 200),
+    an exception, or a callable(query) returning either."""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.requests = []
+
+    def open(self, req, timeout=None):
+        self.requests.append(req)
+        u = urllib.parse.urlsplit(req.full_url)
+        q = dict(urllib.parse.parse_qsl(u.query))
+        r = self.routes[u.path] if u.path in self.routes else http_error(404)
+        if callable(r):
+            r = r(q)
+        if isinstance(r, Exception):
+            raise r
+        return FakeResponse(json.dumps(r).encode())
+
+    def paths(self):
+        return [urllib.parse.urlsplit(r.full_url).path for r in self.requests]
+
+    def queries(self, path):
+        return [dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.full_url).query))
+                for r in self.requests if urllib.parse.urlsplit(r.full_url).path == path]
+
+
+class V2Base(Base):
+    def setUp(self):
+        super().setUp()
+        self.write_config()
+
+    def server(self, routes):
+        fake = FakeServer(routes)
+        return fake, mock.patch.object(gamedb.urllib.request, 'build_opener',
+                                       return_value=fake)
+
+    def paged(self, pages, since_games=None, removed=()):
+        """A games route: `pages` lists of games for a full fetch (cursor
+        c1, c2…), one delta page for `?since=`."""
+        def route(q):
+            if 'cursor' in q:
+                i = int(q['cursor'][1:])
+                return {'schema': 2, 'full': True, 'games': pages[i],
+                        'nextCursor': f'c{i + 1}' if i + 1 < len(pages) else None}
+            if 'since' in q:
+                return {'schema': 2, 'full': False, 'since': q['since'],
+                        'nextSince': 'S2', 'nextCursor': None, 'removed': list(removed),
+                        'games': since_games or []}
+            return {'schema': 2, 'full': True, 'nextSince': 'S1', 'games': pages[0],
+                    'nextCursor': 'c1' if len(pages) > 1 else None, 'removed': []}
+        return route
+
+    def age_games(self, by=gamedb.GAMES_AGE + 10):
+        f = self.cache / 'games.json'
+        c = json.loads(f.read_text())
+        c['synced_at'] -= by
+        f.write_text(json.dumps(c))
+
+
+class Headers(V2Base):
+    def test_v1_and_v2_say_who_is_asking(self):
+        self.write_config('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+                          f'token = "{TOKEN}"\ndevice = "living room"\n')
+        fake, p = self.server({'/api/nexus/v1/summary': SUMMARY,
+                               '/api/nexus/v2/meta': META,
+                               '/api/nexus/v2/games': self.paged([[game(620)]])})
+        with p:
+            gamedb.summary()
+            gamedb.sync_games()
+        self.assertEqual(len(fake.requests), 3)
+        for req in fake.requests:
+            self.assertRegex(req.get_header('X-nexus-client'),
+                             r'^nexus/\d+\.\d+\.\d+\S* (linux|windows|\w+)$')
+            self.assertEqual(req.get_header('X-nexus-device'), 'living room')
+
+    def test_device_is_never_a_path(self):
+        host = gamedb.device_label()
+        self.assertTrue(host and '/' not in host and '\\' not in host)
+        self.assertEqual(gamedb.device_label('/home/me'), host)
+        self.assertEqual(gamedb.device_label('C:\\Users\\me'), host)
+        self.assertEqual(gamedb.device_label('  desk\x00top  '), 'desktop')
+        self.assertEqual(len(gamedb.device_label('x' * 200)), 64)
+        self.assertEqual(gamedb.device_label('café'), 'caf')     # an HTTP header: ASCII
+
+
+class UnknownFields(V2Base):
+    def test_summary_ignores_unknown_fields(self):
+        extra = {**SUMMARY, 'brandNew': {'x': 1},
+                 'wishlist': [{**SUMMARY['wishlist'][0], 'alerts': {'muted': True}}]}
+        _fake, p = self.server({'/api/nexus/v1/summary': extra})
+        with p:
+            res = gamedb.summary()
+        self.assertFalse(res['stale'])
+        self.assertEqual(gamedb.lookup([1086940])[1086940]['list'], 'wishlist')
+
+
+class Meta(V2Base):
+    def test_asked_once_a_day(self):
+        fake, p = self.server({'/api/nexus/v2/meta': META})
+        with p:
+            self.assertEqual(gamedb.server_meta()['features'], ['summary', 'games'])
+            gamedb.server_meta()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertIs(gamedb.games_available(), True)
+        self.assertEqual(why_not_private(self.cache / 'meta.json'), '')
+
+    def test_old_server_404_turns_the_feature_off(self):
+        fake, p = self.server({'/api/nexus/v1/summary': SUMMARY})      # no v2 at all
+        with p:
+            res = gamedb.sync_games()
+            again = gamedb.sync_games(force=True)
+            gamedb.summary()                                           # v1 still fine
+        self.assertEqual((res['status'], again['status']), ('off', 'off'))
+        self.assertEqual(fake.paths().count('/api/nexus/v2/meta'), 1)  # remembered
+        self.assertNotIn('/api/nexus/v2/games', fake.paths())
+        self.assertIs(gamedb.games_available(), False)
+        self.assertIsNone(gamedb.meta(620))
+
+    def test_server_without_games_feature(self):
+        fake, p = self.server({'/api/nexus/v2/meta': {**META, 'features': ['summary']}})
+        with p:
+            self.assertEqual(gamedb.sync_games()['status'], 'off')
+        self.assertNotIn('/api/nexus/v2/games', fake.paths())
+
+    def test_switched_off_in_settings_makes_no_request(self):
+        self.write_config('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+                          f'token = "{TOKEN}"\ngames = false\n')
+        fake, p = self.server({'/api/nexus/v2/meta': META})
+        with p:
+            self.assertEqual(gamedb.sync_games()['status'], 'off')
+        self.assertEqual(fake.requests, [])
+
+    def test_unreachable_is_a_failure_not_off(self):
+        _fake, p = self.server({'/api/nexus/v2/meta': urllib.error.URLError('down')})
+        with p:
+            res = gamedb.sync_games()
+        self.assertEqual(res['status'], 'failed')
+        self.assertIsNone(gamedb.games_available())
+
+
+class GamesSync(V2Base):
+    def test_full_fetch_follows_every_page(self):
+        pages = [[game(10), game(20)], [game(30)], [game(40)]]
+        fake, p = self.server({'/api/nexus/v2/meta': META,
+                               '/api/nexus/v2/games': self.paged(pages)})
+        with p:
+            res = gamedb.sync_games()
+        self.assertEqual((res['status'], res['count']), ('synced', 4))
+        self.assertEqual(fake.queries('/api/nexus/v2/games'),
+                         [{}, {'cursor': 'c1'}, {'cursor': 'c2'}])
+        f = self.cache / 'games.json'
+        self.assertEqual(why_not_private(f), '')
+        self.assertNotIn(TOKEN, f.read_text())
+        c = json.loads(f.read_text())
+        self.assertEqual(c['since'], 'S1')                    # the first page's nextSince
+        self.assertEqual(sorted(c['games']), ['10', '20', '30', '40'])
+
+    def test_delta_upserts_and_removes_at_most_every_6h(self):
+        fake, p = self.server({
+            '/api/nexus/v2/meta': META,
+            '/api/nexus/v2/games': self.paged(
+                [[game(10), game(20), game(30)]],
+                since_games=[game(20, title='Renamed'), game(50)], removed=[30, 999])})
+        with p:
+            gamedb.sync_games()
+            self.assertEqual(gamedb.sync_games()['status'], 'fresh')   # within 6 h
+            self.assertEqual(len(fake.queries('/api/nexus/v2/games')), 1)
+            self.age_games()
+            res = gamedb.sync_games()
+        self.assertEqual((res['status'], res['changed'], res['removed']), ('synced', 2, 1))
+        self.assertEqual(fake.queries('/api/nexus/v2/games')[-1], {'since': 'S1'})
+        c = json.loads((self.cache / 'games.json').read_text())
+        self.assertEqual(sorted(c['games']), ['10', '20', '50'])
+        self.assertEqual(c['games']['20']['title'], 'Renamed')
+        self.assertEqual(c['since'], 'S2')
+
+    def test_failed_page_applies_nothing(self):
+        def route(q):
+            if 'cursor' in q:
+                return urllib.error.URLError('dropped')
+            return {'schema': 2, 'full': True, 'nextSince': 'S1', 'nextCursor': 'c1',
+                    'games': [game(10)]}
+        _fake, p = self.server({'/api/nexus/v2/meta': META, '/api/nexus/v2/games': route})
+        with p:
+            res = gamedb.sync_games()
+        self.assertEqual(res['status'], 'failed')
+        self.assertNotIn(TOKEN, json.dumps(res))
+        self.assertFalse((self.cache / 'games.json').exists())
+
+    def test_rejected_since_starts_over(self):
+        def route(q):
+            if 'since' in q:
+                return http_error(400)
+            return {'schema': 2, 'full': True, 'nextSince': 'S9', 'nextCursor': None,
+                    'games': [game(77)]}
+        fake, p = self.server({'/api/nexus/v2/meta': META,
+                               '/api/nexus/v2/games': self.paged([[game(10)]])})
+        with p:
+            gamedb.sync_games()
+        self.age_games()
+        fake.routes['/api/nexus/v2/games'] = route
+        with p:
+            res = gamedb.sync_games()
+        self.assertEqual((res['status'], res['count']), ('synced', 1))
+        self.assertIsNotNone(gamedb.meta(77))
+        self.assertIsNone(gamedb.meta(10))
+
+    def test_429_backs_off_v1_and_v2(self):
+        fake, p = self.server({
+            '/api/nexus/v2/meta': META,
+            '/api/nexus/v2/games': http_error(429, {'Retry-After': '300'}),
+            '/api/nexus/v1/summary': SUMMARY})
+        with p:
+            res = gamedb.sync_games()
+            n = len(fake.requests)
+            again = gamedb.sync_games(force=True)
+            summ = gamedb.summary(refresh=True) if (self.cache / 'summary.json').exists() \
+                else None
+        self.assertEqual(res['error']['kind'], 'rate')
+        self.assertEqual(again['error']['kind'], 'rate')
+        self.assertEqual(len(fake.requests), n)                # nothing sent while waiting
+        self.assertIsNone(summ)
+        self.assertGreater(gamedb.last_state()['retry_at'], time.time() + 200)
+        with p, self.assertRaises(gamedb.GameDbError) as cm:
+            gamedb.summary()                                   # no copy: raises 'rate'
+        self.assertEqual(cm.exception.kind, 'rate')
+        self.assertEqual(len(fake.requests), n)
+
+    def test_token_change_hides_the_old_copy(self):
+        _fake, p = self.server({'/api/nexus/v2/meta': META,
+                                '/api/nexus/v2/games': self.paged([[game(620)]])})
+        with p:
+            gamedb.sync_games()
+        self.assertIsNotNone(gamedb.meta(620))
+        os.environ['NEXUS_GAMEDB_TOKEN'] = 'gdb_' + 'C' * 43
+        self.assertIsNone(gamedb.meta(620))
+
+
+class CacheFirst(V2Base):
+    """protondb, hltb and storeinfo reviews answer from games.json and send
+    nothing upstream while Game-db's copy is fresh; else their own fetch."""
+
+    def sync(self, *games):
+        _fake, p = self.server({'/api/nexus/v2/meta': META,
+                                '/api/nexus/v2/games': self.paged([list(games)])})
+        with p:
+            self.assertEqual(gamedb.sync_games()['status'], 'synced')
+
+    def no_network(self):
+        boom = AssertionError('network!')
+        return mock.patch.multiple(gamedb.net, get=mock.Mock(side_effect=boom),
+                                   post=mock.Mock(side_effect=boom))
+
+    def test_owned_game_page_asks_no_one(self):
+        self.sync(game(620, status='early_access', statusLabel='Early Access'))
+        with self.no_network():
+            pdb = protondb.tiers([620])[620]
+            hl = hltb.lookup('Portal 2', appid=620)
+            rv = storeinfo.reviews(620)
+            row = gamedb.meta(620)
+        self.assertEqual((pdb['tier'], pdb['trending'], pdb['total'], pdb['source']),
+                         ('platinum', 'gold', 134, 'gamedb'))
+        self.assertEqual((hl['main'], hl['plus'], hl['complete'], hl['source']),
+                         (10.5, 15, 30, 'hltb'))
+        self.assertEqual((rv['desc'], rv['percent'], rv['total'], rv['positive']),
+                         ('Very Positive', 93, 1000, 930))
+        self.assertEqual((row['status'], row['statusLabel']), ('early_access', 'Early Access'))
+        self.assertEqual(row['url'], 'https://gdb.example/game/620')
+
+    def test_igdb_play_length_keeps_its_source(self):
+        self.sync(game(241930, playLength={'main': None, 'mainExtra': 17.9,
+                                           'completionist': 56.7, 'source': 'igdb',
+                                           'count': 10, 'fetchedAt': iso(60)}))
+        with self.no_network():
+            hl = hltb.lookup('Shadow of Mordor', appid=241930)
+        self.assertEqual((hl['main'], hl['plus'], hl['complete']), (None, 17.9, 56.7))
+        self.assertEqual((hl['source'], hl['count']), ('igdb', 10))
+
+    def test_missing_or_stale_rows_fall_back(self):
+        self.sync(game(1, proton={'tier': 'gold', 'trendingTier': None, 'total': 3,
+                                  'fetchedAt': iso(3 * 86400)},
+                       playLength={'main': 5, 'mainExtra': None, 'completionist': None,
+                                   'source': 'hltb', 'count': None,
+                                   'fetchedAt': iso(hltb.HIT_AGE + 60)}),
+                  game(2, proton=None, playLength=None, reviews={}))
+        self.assertIsNone(protondb.from_gamedb(1))         # older than its TTL
+        self.assertIsNone(hltb.from_gamedb(1))
+        self.assertIsNone(protondb.from_gamedb(2))         # no report cached
+        self.assertIsNone(hltb.from_gamedb(2))
+        self.assertIsNone(storeinfo.reviews_from_gamedb(2))
+        self.assertIsNone(protondb.from_gamedb(3))         # not your game
+        with mock.patch.object(gamedb.net, 'get',
+                               return_value=json.dumps({'tier': 'silver'}).encode()) as get:
+            self.assertEqual(protondb.tiers([1])[1]['tier'], 'silver')
+        get.assert_called_once()
+        self.age_games(storeinfo.REVIEWS_AGE + 10)          # reviews age with the sync
+        self.assertIsNone(storeinfo.reviews_from_gamedb(1))
+
+    def test_refresh_skips_gamedb(self):
+        self.sync(game(620))
+        with mock.patch.object(gamedb.net, 'get',
+                               return_value=json.dumps({'tier': 'gold'}).encode()) as get:
+            self.assertEqual(protondb.tiers([620], refresh=True)[620]['tier'], 'gold')
+        get.assert_called_once()
+
+    def test_game_db_off_or_old_changes_nothing(self):
+        self.sync(game(620))
+        self.write_config('[gamedb]\nenabled = false\nurl = "https://gdb.example"\n'
+                          f'token = "{TOKEN}"\n')
+        self.assertIsNone(gamedb.meta(620))
+        self.write_config()
+        (self.cache / 'meta.json').write_text(json.dumps({
+            'fingerprint': gamedb._fingerprint('https://gdb.example', TOKEN),
+            'fetched_at': time.time(), 'data': {'off': True}}))
+        self.assertIsNone(gamedb.meta(620))                 # the server dropped v2
+
+
 class Helpers(unittest.TestCase):
     NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 
@@ -424,6 +770,13 @@ class Cli(unittest.TestCase):
         r = self.cli('--repack-reject', '1086940', 'baldurs-gate-3')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(self.cli('--gamedb', '--json').stdout)['repacks'], {})
+
+    def test_sync_offline_fails_soft(self):
+        r = self.cli('--gamedb-sync', '--json')          # gdb.invalid never resolves
+        self.assertEqual(r.returncode, 1, r.stderr)
+        res = json.loads(r.stdout)
+        self.assertEqual(res['status'], 'failed')
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
 
     def test_not_configured_exits_2(self):
         (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')

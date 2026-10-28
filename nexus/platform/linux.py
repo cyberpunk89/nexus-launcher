@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 APP_NAME = 'nexus'
+OS_NAME = 'linux'
 TRASH = Path.home() / '.local/share/Trash'
 
 
