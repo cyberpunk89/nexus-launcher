@@ -22,7 +22,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import facts, gamedb, hltb, protondb, storeinfo  # noqa: E402
+from nexus import facts, gamedb, gamedb_upload, hltb, protondb, storeinfo  # noqa: E402
 from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
@@ -754,6 +754,235 @@ class Writes(V2Base):
         self.assertEqual(gamedb.token_scopes(), ['read'])
 
 
+def session_line(slug, source, name, start='2026-10-20T20:00:00', minutes=30.0):
+    end = datetime.fromisoformat(start).timestamp() + minutes * 60
+    return json.dumps({'slug': slug, 'source': source, 'name': name, 'start': start,
+                       'end': datetime.fromtimestamp(end).isoformat(timespec='seconds'),
+                       'minutes': minutes}) + '\n'
+
+
+class SessionsServer:
+    """POST/DELETE v2/sessions the way Game-db answers them: upsert-ignore
+    on the session id, so a resend counts as duplicate."""
+
+    def __init__(self):
+        self.ids = {}
+        self.fail_after = None          # fail every POST after this many
+
+    def post(self, q):
+        if self.fail_after is not None:
+            if self.fail_after <= 0:
+                return urllib.error.URLError('dropped')
+            self.fail_after -= 1
+        new = dup = 0
+        for it in q['__body__']['sessions']:
+            if it['id'] in self.ids:
+                dup += 1
+            else:
+                self.ids[it['id']] = it
+                new += 1
+        return {'accepted': new, 'duplicate': dup}
+
+    def delete(self, q):
+        n, self.ids = len(self.ids), {}
+        return {'deleted': n}
+
+
+class SessionsUpload(V2Base):
+    """Phase 3: the opt-in play-session upload queue."""
+
+    ON = ('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+          f'token = "{TOKEN}"\nupload_sessions = true\n')
+
+    def setUp(self):
+        super().setUp()
+        self.data = Path(self.tmp.name) / 'data'
+        p = mock.patch.object(gamedb.paths, 'DATA_DIR', self.data)
+        p.start()
+        self.addCleanup(p.stop)
+        self.file = self.data / 'sessions.jsonl'
+        self.data.mkdir()
+        self.srv = SessionsServer()
+
+    def routes(self, meta=SCOPED_META):
+        return {'/api/nexus/v2/meta': meta,
+                'POST /api/nexus/v2/sessions': self.srv.post,
+                'DELETE /api/nexus/v2/sessions': self.srv.delete}
+
+    def add(self, *lines):
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.writelines(lines)
+
+    def upload(self, routes=None):
+        fake, p = self.server(routes or self.routes())
+        with p:
+            return gamedb_upload.upload_sessions(path=self.file), fake
+
+    def test_off_by_default_sends_nothing(self):
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'off')
+        self.assertEqual(fake.requests, [])
+        self.assertFalse(gamedb.settings()['upload_other'])
+
+    def test_store_games_go_up_with_ids_repacks_stay_home(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'),
+                 session_line('heroic-legendary-Fortnite', 'heroic', 'Fortnite',
+                              start='2026-10-21T10:00:00'),
+                 session_line('heroic-nile-amzn1.adg.product.x', 'heroic', 'Amazon Game',
+                              start='2026-10-21T11:00:00'),
+                 session_line('elden-ring', 'nexus',
+                              'ELDEN RING (v1.12 + DLC, MULTi14) [FitGirl Repack]',
+                              start='2026-10-22T10:00:00'),
+                 session_line('epic-Sugar', 'epic', 'Sugar', start='2026-10-22T12:00:00'))
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['sent'], res['accepted']), ('uploaded', 4, 4))
+        sent = fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions']
+        self.assertEqual([(i['store'], i['storeId']) for i in sent],
+                         [('steam', '620'), ('epic', 'Fortnite'),
+                          ('amazon', 'amzn1.adg.product.x'), ('epic', 'Sugar')])
+        body = json.dumps(sent)
+        self.assertNotIn('FitGirl', body)
+        self.assertNotIn('elden', body.lower())
+        for i in sent:
+            self.assertRegex(i['id'], r'^[0-9a-f]{32}$')
+            self.assertEqual(i['minutes'], 30)
+            self.assertTrue(i['start'].endswith('+00:00'))
+        self.assertEqual(why_not_private(self.cache / 'sessions-upload.json'), '')
+        self.assertNotIn(TOKEN, (self.cache / 'sessions-upload.json').read_text())
+        # nothing new: no request
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'idle')
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+
+    def test_other_games_only_with_the_switch_and_title_only(self):
+        self.write_config(self.ON + 'upload_other = true\n')
+        self.add(session_line('elden-ring', 'nexus',
+                              'ELDEN RING (v1.12 + DLC, MULTi14) [FitGirl Repack]'),
+                 session_line('odd', 'desktop', '/home/me/Games/odd/run.sh',
+                              start='2026-10-22T10:00:00'))
+        res, fake = self.upload()
+        sent = fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions']
+        self.assertEqual(res['sent'], 1)                       # a path is never a title
+        self.assertEqual(sent[0]['store'], 'other')
+        self.assertIsNone(sent[0]['storeId'])
+        self.assertEqual(sent[0]['title'], 'ELDEN RING')
+        self.assertNotIn('/home', json.dumps(sent))
+
+    def test_retry_adds_nothing_twice(self):
+        self.write_config(self.ON)
+        self.add(*[session_line(f'steam-{i}', 'steam', f'Game {i}',
+                                start=f'2026-10-01T{i // 60:02d}:{i % 60:02d}:00')
+                   for i in range(1, 451)])
+        self.srv.fail_after = 1                     # the 2nd batch of 200 fails
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['accepted']), ('failed', 200))
+        self.assertNotIn(TOKEN, json.dumps(res))
+        self.srv.fail_after = None
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['accepted'], res['duplicate']), ('uploaded', 250, 0))
+        self.assertEqual(len(self.srv.ids), 450)
+        self.assertEqual([len(b['sessions']) for b in fake.bodies(
+            'POST', '/api/nexus/v2/sessions')], [200, 50])
+        # A lost mark (cache cleared) or a new token resends; the ids keep it harmless.
+        (self.cache / 'sessions-upload.json').unlink()
+        res, _fake = self.upload()
+        self.assertEqual((res['accepted'], res['duplicate']), (0, 450))
+        self.assertEqual(len(self.srv.ids), 450)
+
+    def test_a_half_written_line_waits(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.write('{"slug": "steam-70", "sou')
+        res, _fake = self.upload()
+        self.assertEqual(res['sent'], 1)
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.write('rce": "steam", "name": "Half-Life", "start": "2026-10-23T10:00:00", '
+                    '"end": "2026-10-23T11:00:00", "minutes": 60.0}\n')
+        res, fake = self.upload()
+        self.assertEqual(res['sent'], 1)
+        self.assertEqual(fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions'][0][
+            'storeId'], '70')
+
+    def test_read_only_token_or_old_server_sends_nothing(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, fake = self.upload({**self.routes(), '/api/nexus/v2/meta': META})
+        self.assertEqual(res['status'], 'unavailable')        # META has no sessions
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        gamedb.clear_cache()
+        res, fake = self.upload({**self.routes(), '/api/nexus/v2/meta': {
+            **SCOPED_META, 'scopes': ['read']}})
+        self.assertEqual(res['status'], 'read_only')
+        self.assertIn("can only read", res['error']['message'])
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        gamedb.clear_cache()
+        res, fake = self.upload({'/api/nexus/v1/summary': SUMMARY})     # no v2 at all
+        self.assertEqual(res['status'], 'unavailable')
+
+    def test_scope_403_mid_upload_turns_into_the_hint(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({**self.routes(), 'POST /api/nexus/v2/sessions': http_error(
+            403, body={'error': 'scope', 'need': 'write:sessions'})})
+        self.assertEqual((res['status'], res['error']['kind']), ('failed', 'scope'))
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'read_only')            # no second try
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+
+    def test_429_waits_for_retry_after(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({**self.routes(), 'POST /api/nexus/v2/sessions': http_error(
+            429, {'Retry-After': '300'})})
+        self.assertEqual(res['error']['kind'], 'rate')
+        res, fake = self.upload()
+        self.assertEqual(res['error']['kind'], 'rate')
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        later = time.time() + 400
+        with mock.patch.object(gamedb.time, 'time', return_value=later), \
+                mock.patch.object(gamedb_upload.time, 'time', return_value=later):
+            res, _fake = self.upload()
+        self.assertEqual(res['status'], 'uploaded')
+
+    def test_offline_fails_soft(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({'/api/nexus/v2/meta': urllib.error.URLError('down')})
+        self.assertEqual(res['status'], 'unknown')
+
+    def test_delete_and_the_device_id_stays(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        self.upload()
+        dev = gamedb_upload.device_id()
+        self.assertEqual(why_not_private(self.data / 'device-id'), '')
+        fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.delete_sessions(), {'deleted': 1})
+        self.assertEqual(fake.requests[-1].get_method(), 'DELETE')
+        self.assertEqual(self.srv.ids, {})
+        gamedb.clear_cache()
+        self.assertEqual(gamedb_upload.device_id(), dev)
+        self.assertEqual(gamedb_upload.session_id(dev, 'steam-620', '2026-10-20T20:00:00'),
+                         gamedb_upload.session_id(dev, 'steam-620', '2026-10-20T20:00:00'))
+
+    def test_helpers(self):
+        st = gamedb_upload.store_of
+        self.assertEqual(st('steam-620', 'steam'), ('steam', '620'))
+        self.assertEqual(st('heroic-gog-1207658924', 'heroic'), ('gog', '1207658924'))
+        self.assertIsNone(st('heroic-legendary-', 'heroic'))
+        self.assertIsNone(st('steam-620', 'nexus'))
+        ct = gamedb_upload.clean_title
+        self.assertEqual(ct('Cyberpunk 2077: Ultimate Edition (v2.13 + All DLCs) '
+                            '[FitGirl Repack]'), 'Cyberpunk 2077: Ultimate Edition')
+        self.assertEqual(ct('Hades II - v1.0.4 - DODI Repack'), 'Hades II')
+        self.assertIsNone(ct('C:\\Games\\x'))
+        self.assertIsNone(ct('[FitGirl Repack]'))
+
+
 class Helpers(unittest.TestCase):
     NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 
@@ -908,6 +1137,14 @@ class Cli(unittest.TestCase):
         res = json.loads(r.stdout)
         self.assertEqual(res['status'], 'failed')
         self.assertNotIn(TOKEN, r.stdout + r.stderr)
+
+    def test_delete_sessions_offline_and_unconfigured(self):
+        r = self.cli('--gamedb-delete-sessions', '--json')   # gdb.invalid never resolves
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['error']['kind'], 'net')
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
+        (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')
+        self.assertEqual(self.cli('--gamedb-delete-sessions').returncode, 2)
 
     def test_not_configured_exits_2(self):
         (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')

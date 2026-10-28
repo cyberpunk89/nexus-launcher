@@ -552,6 +552,7 @@ def gamedb_doctor(add, group: str) -> None:
             else:
                 add(group, 'info', 'Game-db game details', 'not synced yet',
                     'nexus-cli --gamedb-sync')
+        _gamedb_uploads_doctor(add, group, s)
         mine = (resolve_steam_account()[0] or {}).get('accountid')
         theirs = (d.get('user') or {}).get('steamId64')
         if mine and theirs and gamedb.steamid64(mine) != str(theirs):
@@ -561,6 +562,37 @@ def gamedb_doctor(add, group: str) -> None:
         add(group, 'ok' if not err else 'warn', 'Game-db',
             f"{s['url']} — not fetched yet" + (f" ({err['message']})" if err else ''),
             'Open the Deals page or run nexus-cli --deals')
+
+
+def _gamedb_uploads_doctor(add, group: str, s: dict) -> None:
+    """--doctor lines for what goes up to Game-db; cache-only."""
+    from nexus import gamedb, gamedb_upload
+    st = gamedb_upload.sessions_status(s)
+    if not st['on']:
+        add(group, 'info', 'Game-db play sessions', 'not uploaded (off in Settings)')
+    elif st['ready'] == 'unavailable':
+        add(group, 'info', 'Game-db play sessions',
+            "switched on, but this Game-db doesn't take them (an older server)")
+    elif st['ready'] == 'read_only':
+        add(group, 'warn', 'Game-db play sessions', 'switched on, but the token can only read',
+            gamedb.SCOPE_HINT[gamedb.SCOPE_SESSIONS])
+    elif st['error']:
+        add(group, 'warn', 'Game-db play sessions', f"last upload failed: "
+                                                     f"{st['error']['message']}")
+    elif st['uploaded_at']:
+        add(group, 'ok', 'Game-db play sessions',
+            f"{st['accepted']} uploaded, last checked {_ago(st['uploaded_at'])}")
+    else:
+        add(group, 'info', 'Game-db play sessions', 'switched on, nothing uploaded yet',
+            'nexus-cli --gamedb-sync')
+    lib = gamedb_upload.library_status(s)
+    if lib['ready'] == 'ok' and lib['on']:
+        if lib['error']:
+            add(group, 'warn', 'Game-db Heroic library',
+                f"last upload failed: {lib['error']['message']}")
+        elif lib['uploaded_at']:
+            add(group, 'ok', 'Game-db Heroic library',
+                f"{lib['count']} games sent {_ago(lib['uploaded_at'])}")
 
 
 # Siblings, imported last: they import this module too, and every use

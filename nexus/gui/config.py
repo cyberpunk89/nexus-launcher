@@ -61,6 +61,9 @@ def load_config() -> dict:
     cfg['gamedb_cfg_enabled'] = gd.get('enabled', False) is True
     cfg['gamedb_games'] = gd.get('games', True) is not False
     cfg['gamedb_device'] = gd.get('device') or None
+    cfg['gamedb_upload_sessions'] = gd.get('upload_sessions', False) is True
+    cfg['gamedb_upload_other'] = gd.get('upload_other', False) is True
+    cfg['gamedb_upload_library'] = gd.get('upload_library', True) is not False
     cfg['gamedb_enabled'] = gamedb.settings()['enabled']       # config, or the env token
     tr = data.get('torrent', {}) if isinstance(data.get('torrent'), dict) else {}
     client = str(tr.get('client') or '').lower()

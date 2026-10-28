@@ -127,6 +127,11 @@ def settings() -> dict:
         'url_error': url_error,
         'games': data.get('games', True) is not False,
         'device': device_label(data.get('device')),
+        # What goes up (nexus/gamedb_upload.py): sessions are opt-in; the
+        # library also needs a token minted with write:library.
+        'upload_sessions': data.get('upload_sessions', False) is True,
+        'upload_other': data.get('upload_other', False) is True,
+        'upload_library': data.get('upload_library', True) is not False,
     }
 
 
