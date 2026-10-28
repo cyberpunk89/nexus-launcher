@@ -269,6 +269,119 @@ class FlowJustify(unittest.TestCase):
         self.assertEqual(nx.FlowLayout().heightForWidth(100), 0)
 
 
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class GameContextBlock(unittest.TestCase):
+    """The game page's context block (w-40): built from the facts index the
+    CLI writes, each row only when its fact exists, no block (and no gap)
+    with no facts, tags that ask for a Library filter."""
+
+    INDEX = {'games': {
+        'full': {'developers': ['FromSoftware'], 'publishers': ['Bandai Namco', 'FromSoftware'],
+                 'year': 2022, 'genres': ['RPG', 'Action', 'Adventure', 'Indie'],
+                 'modes': ['single', 'coop'], 'description': 'Rise, Tarnished. ' * 40,
+                 'length': {'main': 50, 'complete': 133, 'source': 'hltb'},
+                 'status': 'released'},
+        'part': {'developers': ['Larian Studios'], 'publishers': ['Larian Studios'],
+                 'year': 2023},
+        'ea': {'developers': ['Mega Crit'], 'genres': ['Strategy'], 'status': 'early_access'},
+    }}
+
+    def setUp(self):
+        import json
+        from nexus import facts
+        from nexus.gui import details
+        self.details = details
+        self._cli_json = nx.cli_json
+        set_gui('cli_json', lambda *a, **k: None)
+        self.path = facts.index_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({'v': facts.INDEX_V, **self.INDEX}))
+        details._FACTS.update(mtime=None, games={})
+        self.panel = nx.DetailsPanel()
+        self.panel.resize(340, 900)
+        self.panel.show()
+
+    def tearDown(self):
+        set_gui('cli_json', self._cli_json)
+        self.path.unlink(missing_ok=True)
+        self.details._FACTS.update(mtime=None, games={})
+        self.panel.deleteLater()
+
+    def _show(self, slug, **extra):
+        self.panel.show_games([{'slug': slug, 'display_name': slug, 'source': 'steam',
+                                'installed': True, **extra}])
+        QApplication.processEvents()
+        return self.panel.context
+
+    def _chips(self):
+        return [self.panel.chips.itemAt(i).widget().text()
+                for i in range(self.panel.chips.count())]
+
+    def test_full_facts(self):
+        ctx = self._show('full', playtime_minutes=12 * 60)
+        self.assertTrue(ctx.isVisible())
+        self.assertEqual(ctx.credits.text(), "FromSoftware · Bandai Namco · 2022")
+        self.assertEqual([b.text() for b in ctx.tag_btns], ['RPG', 'Action', 'Adventure', 'Co-op'])
+        self.assertTrue(ctx.desc.isVisible() and ctx.more.isVisible())
+        self.assertLess(len(ctx.desc.text()), len(ctx.desc.full))     # clamped to 3 lines
+        self.assertLessEqual(ctx.desc.height(), ctx.desc.fontMetrics().lineSpacing() * 3 + 6)
+        self.assertEqual(ctx.length_text.text(), "Main story about 50 h · everything 133 h")
+        self.assertEqual(ctx.length_pct.text(), "24 %")
+        self.assertTrue(ctx.bar.isVisible())
+        self.assertEqual(ctx.shows, {'facts', 'hltb'})
+        self.assertLessEqual(self.panel.stack.currentWidget().widget().minimumSizeHint().width(),
+                             self.panel.maximumWidth())
+
+    def test_tags_ask_for_a_library_filter(self):
+        got = []
+        self.panel.filter_library.connect(got.append)
+        ctx = self._show('full')
+        ctx.tag_btns[0].click()
+        ctx.tag_btns[-1].click()
+        self.assertEqual(got, ['genre:RPG', 'smart:coop'])
+
+    def test_partial_and_played_past_the_end(self):
+        ctx = self._show('part')
+        self.assertEqual(ctx.credits.text(), "Larian Studios · 2023")   # publisher = developer
+        for w in (ctx.tags_host, ctx.desc, ctx.more, ctx.length):
+            self.assertFalse(w.isVisible())
+        rec = {'length': {'main': 10, 'source': 'igdb', 'count': 3}}
+        ctx.set_facts(rec, 0)
+        self.assertFalse(ctx.bar.isVisible())                   # no play time, no bar
+        self.assertIn("IGDB, 3 submissions", ctx.length.toolTip())
+        ctx.set_facts(rec, 12 * 60)
+        self.assertEqual(ctx.length_pct.text(), "past the main story")
+        self.assertEqual(ctx.bar.value(), 1000)
+
+    def test_no_facts_no_block_no_gap(self):
+        ctx = self._show('nothing-known')
+        self.assertFalse(ctx.isVisible())
+        y_none = self.panel.st_played.mapTo(self.panel.page, QPoint(0, 0)).y()
+        y_play = self.panel.btn_play.mapTo(self.panel.page, QPoint(0, 0)).y()
+        self._show('full')
+        y_full = self.panel.st_played.mapTo(self.panel.page, QPoint(0, 0)).y()
+        self.assertGreater(y_full, y_none)
+        self.assertEqual(self.panel.btn_play.mapTo(self.panel.page, QPoint(0, 0)).y(), y_play)
+
+    def test_release_status_chip(self):
+        self._show('ea')
+        self.assertIn("Early access", self._chips())
+        self._show('full')
+        self.assertFalse(any('access' in c or 'Unreleased' in c for c in self._chips()))
+        self.assertEqual(self.details.status_pill({'status': 'upcoming', 'releaseText': 'Q2 2027'}),
+                         ("Unreleased · Q2 2027", 'muted'))
+
+    def test_store_info_fills_in_for_a_game_the_index_lacks(self):
+        ctx = self._show('steam-only', appid='1')
+        self.assertFalse(ctx.isVisible())
+        self.panel._fill_about({'store': {'blurb': 'A game.', 'developers': ['Dev'],
+                                          'genres': ['RPG'], 'release': '3 Mar, 2021'}})
+        QApplication.processEvents()
+        self.assertTrue(ctx.isVisible())
+        self.assertEqual(ctx.credits.text(), "Dev · 2021")
+        self.assertNotIn('RPG', self.panel.about_text.text())     # the block shows it
+
+
 if __name__ == '__main__':
     unittest.main()
 

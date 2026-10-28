@@ -651,15 +651,18 @@ class TrailerOverlay(QFrame):
         pt.end()
 
 
-def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> str:
+def about_html(store: dict | None, reviews: dict | None, hltb: dict | None,
+               skip: tuple = ()) -> str:
     """Rich text for the details panel's About section; everything escaped,
-    links only to the sites they came from."""
+    links only to the sites they came from. `skip` drops what the game
+    page's context block already shows: 'facts' (genres, release, studio)
+    and 'hltb' (the play length)."""
     st, rv, out = store or {}, reviews or {}, []
     if st.get('blurb'):
         out.append(f"<p>{html.escape(st['blurb'])}</p>")
     facts = [x for x in (', '.join(st.get('genres') or []), st.get('release'),
                          ', '.join(st.get('developers') or [])) if x]
-    if facts:
+    if facts and 'facts' not in skip:
         out.append(f"<p style='color:{P['subtext']}'>{html.escape(' · '.join(facts))}</p>")
     scores = []
     if rv.get('desc'):
@@ -673,7 +676,7 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> s
         scores.append(f"Metacritic {int(mc['score'])}")
     if scores:
         out.append("<p><b>Reviews</b>: " + " · ".join(scores) + "</p>")
-    if hltb and hltb.get('main'):
+    if hltb and hltb.get('main') and 'hltb' not in skip:
         parts = [f"main {hltb['main']:g} h"]
         if hltb.get('plus'):
             parts.append(f"+extras {hltb['plus']:g} h")

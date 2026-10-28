@@ -8,12 +8,12 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QPoint, QPointF, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QLinearGradient, QPainter, QPixmap,
-    QRadialGradient)
+    QRadialGradient, QTextLayout)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from nexus import gamedb
+from nexus import facts, gamedb
 from nexus.features import has
 
 from .common import alive, HOME, MAX_NOTE
@@ -268,6 +268,214 @@ class ElideLabel(QLabel):
                                              self.width())
         pt.drawText(self.rect(), int(self.alignment()) | int(Qt.AlignmentFlag.AlignVCenter), text)
         pt.end()
+
+
+class ClampLabel(QLabel):
+    """Wrapped plain text cut to `lines` lines, the last one ending in …"""
+
+    def __init__(self, lines: int = 3, name=None):
+        super().__init__()
+        if name:
+            self.setObjectName(name)
+        self.full, self.lines = '', lines
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_full(self, text: str):
+        self.full = text or ''
+        self._clamp()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._clamp()
+
+    def _clamp(self):
+        w = self.contentsRect().width()
+        if w <= 10:                          # not laid out yet: the resize comes later
+            self.setText(self.full)
+            return
+        lay = QTextLayout(self.full, self.font())
+        lay.beginLayout()
+        out = []
+        while (ln := lay.createLine()).isValid():
+            ln.setLineWidth(w)
+            out.append(self.full[ln.textStart():ln.textStart() + ln.textLength()])
+        lay.endLayout()
+        if len(out) > self.lines:
+            rest = ''.join(out[self.lines - 1:]).replace('\n', ' ')
+            out = out[:self.lines - 1] + [self.fontMetrics().elidedText(
+                rest, Qt.TextElideMode.ElideRight, w)]
+        text = ''.join(out)
+        if text != self.text():
+            self.setText(text)
+        self.setToolTip(self.full if len(text) < len(self.full) else '')
+
+
+_FACTS: dict = {'mtime': None, 'games': {}}
+
+
+def game_facts(slug: str | None) -> dict | None:
+    """A library game's record in the facts index. The CLI writes the index
+    (--game-facts, the agent); the window only reads it, again when the
+    file changes."""
+    if not slug:
+        return None
+    try:
+        mtime = facts.index_path().stat().st_mtime
+    except OSError:
+        return None
+    if mtime != _FACTS['mtime']:
+        _FACTS.update(mtime=mtime, games=facts.read_index().get('games') or {})
+    rec = _FACTS['games'].get(slug)
+    return rec if isinstance(rec, dict) else None
+
+
+STATUS_PILLS = {'early_access': ("Early access", 'accent'), 'upcoming': ("Unreleased", 'muted'),
+                'delayed': ("Delayed", 'warning'), 'cancelled': ("Cancelled", 'danger')}
+
+
+def status_pill(rec: dict | None) -> tuple[str, str] | None:
+    """(text, role) of the release status chip, or None for a released game."""
+    pill = STATUS_PILLS.get((rec or {}).get('status'))
+    if pill and rec.get('status') == 'upcoming' and rec.get('releaseText'):
+        return f"Unreleased · {rec['releaseText']}", pill[1]
+    return pill
+
+
+class GameContext(QWidget):
+    """What the game is, under the quick buttons: credits, up to three genre
+    tags (+ Co-op), a three-line description and the play length with your
+    progress. Built only from facts that exist: each row hides on its own,
+    and with nothing known the whole block hides, leaving no gap (w-40)."""
+    filter_library = pyqtSignal(str)             # 'genre:<Nexus genre>' or 'smart:coop'
+    open_about = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("GameContext")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(SP['1'], 0, SP['1'], 0)
+        v.setSpacing(SP['2'])
+        self.credits = ElideLabel('', "ContextCredits")
+        v.addWidget(self.credits)
+        self.tags_host = QWidget()
+        self.tags = FlowLayout(self.tags_host, margin=0, spacing=SP['1_5'])
+        v.addWidget(self.tags_host)
+        self.tag_btns: list[QPushButton] = []
+        self._tag_keys: tuple = ()
+        self.desc = ClampLabel(3, "ContextBlurb")
+        v.addWidget(self.desc)
+        self.more = QPushButton("More about the game")
+        self.more.setObjectName("ContextMore")
+        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more.clicked.connect(self.open_about)
+        v.addWidget(self.more, 0, Qt.AlignmentFlag.AlignLeft)
+        self.length = QWidget()
+        ll = QVBoxLayout(self.length)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(SP['1'])
+        lrow = QHBoxLayout()
+        lrow.setSpacing(SP['2'])
+        self.length_text = label("", "ContextLength", wrap=True)
+        lrow.addWidget(self.length_text, 1)
+        self.length_pct = label("", "Muted")
+        lrow.addWidget(self.length_pct, 0, Qt.AlignmentFlag.AlignTop)
+        ll.addLayout(lrow)
+        self.bar = QProgressBar()
+        self.bar.setObjectName("CardProgress")
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        self.bar.setRange(0, 1000)
+        ll.addWidget(self.bar)
+        v.addWidget(self.length)
+        self.shows: set[str] = set()             # what About can leave out: 'facts', 'hltb'
+        self.setVisible(False)
+
+    @staticmethod
+    def credits_text(rec: dict) -> tuple[str, str]:
+        """("FromSoftware · Bandai Namco · 2022", full text for the tooltip);
+        the publisher is dropped when it is the developer."""
+        devs = [d for d in rec.get('developers') or [] if d]
+        pubs = [p for p in rec.get('publishers') or [] if p]
+        dev = devs[0] if devs else ''
+        pub = next((p for p in pubs if p.casefold() not in {d.casefold() for d in devs}), '')
+        year = str(rec['year']) if rec.get('year') else ''
+        short = " · ".join(x for x in (dev, pub, year) if x)
+        full = "\n".join(x for x in (
+            ("Developer: " if len(devs) == 1 else "Developers: ") + ", ".join(devs) if devs else '',
+            ("Publisher: " if len(pubs) == 1 else "Publishers: ") + ", ".join(pubs) if pubs else '',
+            f"Released: {rec.get('releaseText') or rec.get('release')}"
+            if rec.get('releaseText') or rec.get('release') else '') if x)
+        return short, full
+
+    @staticmethod
+    def length_line(length: dict, minutes: int) -> tuple[str, str, float | None, str]:
+        """(text, right-hand note, fraction of the main story or None, tooltip)."""
+        main, done = length.get('main'), (minutes or 0) / 60
+        text = f"Main story about {main:g} h"
+        if length.get('complete'):
+            text += f" · everything {length['complete']:g} h"
+        if length.get('source') == 'igdb':
+            n = length.get('count')
+            tip = "From IGDB" + (f", {int(n)} submission{'s' if n != 1 else ''}" if n else '')
+        else:
+            tip = "From HowLongToBeat"
+        if length.get('plus'):
+            tip += f"\nMain story and extras about {length['plus']:g} h"
+        if done <= 0:
+            return text, '', None, tip
+        frac = done / main
+        note = "past the main story" if frac > 1 else f"{round(100 * frac)} %"
+        return text, note, min(1.0, frac), tip
+
+    def set_facts(self, rec: dict | None, minutes: int = 0) -> bool:
+        """Show what `rec` (a facts index record) knows; True when anything shows."""
+        rec = rec or {}
+        self.shows = set()
+        short, full = self.credits_text(rec)
+        self.credits.setText(short)
+        self.credits.setToolTip(full)
+        self.credits.setVisible(bool(short))
+        if short:
+            self.shows.add('facts')
+        tags = [(f"genre:{g}", g) for g in (rec.get('genres') or [])[:3]]
+        if 'coop' in (rec.get('modes') or []):
+            tags.append(('smart:coop', "Co-op"))
+        keys = tuple(tags)
+        if keys != self._tag_keys:               # rebuilt only when they change: keeps focus
+            clear_layout(self.tags)
+            self._tag_keys, self.tag_btns = keys, []
+            for key, text in tags:
+                b = QPushButton(amp(text))
+                b.setObjectName("TagChip")
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.setToolTip(f"Show {'co-op' if key == 'smart:coop' else text} games "
+                             "in the Library")
+                b.clicked.connect(lambda _=False, k=key: self.filter_library.emit(k))
+                self.tags.addWidget(b)
+                self.tag_btns.append(b)
+        self.tags_host.setVisible(bool(tags))
+        desc = (rec.get('description') or '').strip()
+        self.desc.set_full(desc)
+        self.desc.setVisible(bool(desc))
+        self.more.setVisible(bool(desc))
+        length = rec.get('length') or {}
+        if length.get('main'):
+            text, note, frac, tip = self.length_line(length, minutes)
+            self.length_text.setText(text)
+            self.length_pct.setText(note)
+            self.length_pct.setVisible(bool(note))
+            self.bar.setVisible(frac is not None)
+            self.bar.setValue(int((frac or 0) * 1000))
+            self.length.setToolTip(tip)
+            self.length.setVisible(True)
+            self.shows.add('hltb')
+        else:
+            self.length.setVisible(False)
+        shown = bool(short or tags or desc or length.get('main'))
+        self.setVisible(shown)
+        return shown
 
 
 class AchievementRow(QFrame):
@@ -683,6 +891,7 @@ class DetailsPanel(QFrame):
     trailer = pyqtSignal(dict)                   # play a store trailer
     reveal = pyqtSignal(str)                     # show another library game
     notes_changed = pyqtSignal(str, str)         # (slug, text)
+    filter_library = pyqtSignal(str)             # a context tag: 'genre:RPG', 'smart:coop'
 
     def __init__(self):
         super().__init__()
@@ -757,6 +966,12 @@ class DetailsPanel(QFrame):
         self.quick = QHBoxLayout()
         self.quick.setSpacing(SP['1_5'])
         lay.addLayout(self.quick)
+        # What the game is, from the facts index (below the buttons, so Play
+        # stays at the same height for every game).
+        self.context = GameContext()
+        self.context.filter_library.connect(self.filter_library)
+        self.context.open_about.connect(self._open_about)
+        lay.addWidget(self.context)
 
         # The stats grid.
         grid = QGridLayout()
@@ -780,21 +995,6 @@ class DetailsPanel(QFrame):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
-        # How far through, when Game-db knows how long the game takes.
-        self.progress = QWidget()
-        pl_ = QVBoxLayout(self.progress)
-        pl_.setContentsMargins(SP['1'], 0, SP['1'], 0)
-        pl_.setSpacing(SP['1'])
-        self.progress_text = label("", "Muted", wrap=True)
-        pl_.addWidget(self.progress_text)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setObjectName("CardProgress")
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setRange(0, 1000)
-        pl_.addWidget(self.progress_bar)
-        self.progress.setVisible(False)
-        lay.addWidget(self.progress)
 
         # Inline uninstall confirmation (replaces the old modal message box).
         self.confirm = QFrame()
@@ -854,6 +1054,8 @@ class DetailsPanel(QFrame):
         self.sec_about.toggled.connect(lambda on: on and self._load_achievements())
         self.sec_about.setVisible(False)
         self._store: dict = {}
+        self._tips_hltb = None
+        self._quick_btns: dict = {}
         self._about_parts = {'store': False, 'compat': False, 'deal': False, 'ach': False}
         self._snap_at = (None, 0.0)
         self._ach_for = None
@@ -1252,6 +1454,7 @@ class DetailsPanel(QFrame):
         if not same:
             self.confirm.setVisible(False)
             self.info = {}
+            self._store, self._tips_hltb = {}, None
             self._dirty = set()                 # edits belong to the game they were made on
             self._sent = self._was_busy = False
         # Applied changes wait for their jobs: once the game stops being busy,
@@ -1351,7 +1554,6 @@ class DetailsPanel(QFrame):
                     except RuntimeError:
                         pass
             cli_json(['--store-info', slug, '--json'], got, 60000, ttl=600)
-        self.progress.setVisible(False)
         slug = self.slug
         if not slug:
             return
@@ -1451,19 +1653,9 @@ class DetailsPanel(QFrame):
                                TIER_COLORS.get(t))
         hl = ((info.get('gamedb') or {}).get('hltb') or {}) or (info.get('hltb') or {})
         self._tips_hltb = info.get('hltb') or (hl if hl.get('main') else None)
+        self._fill_context()
         if self._store or self._tips_hltb:
             self._fill_about()
-        main = hl.get('main')
-        played = (self.game.get('playtime_minutes') or 0) / 60
-        if main and (info.get('gamedb') or {}).get('list') != 'wishlist':
-            frac = min(1.0, played / main) if main else 0
-            src = "IGDB" if hl.get('source') == 'igdb' else "HowLongToBeat"
-            self.progress_text.setText(f"{fmt_hours(int(played * 60)) or '0 h'} of about "
-                                       f"{main:g} h to beat the main story ({src})")
-            self.progress_bar.setValue(int(frac * 1000))
-            self.progress.setVisible(True)
-        else:
-            self.progress.setVisible(False)
 
     def _save_notes(self):
         if self._notes_for:
@@ -1477,7 +1669,9 @@ class DetailsPanel(QFrame):
             self._store = info
         info = self._store or {}
         st = info.get('store') or {}
-        self.about_text.setText(about_html(st, info.get('reviews'), self._tips_hltb))
+        self._fill_context()
+        self.about_text.setText(about_html(st, info.get('reviews'), self._tips_hltb,
+                                           skip=tuple(self.context.shows)))
         clear_layout(self.trailer_rows)
         for t in (st.get('trailers') or [])[:3]:
             b = QPushButton(t.get('name') or "Trailer")
@@ -1612,6 +1806,9 @@ class DetailsPanel(QFrame):
                 ("Custom launch options", 'accent', g.get('launch_options'))):
             if on and text:
                 self.chips.addWidget(_pill(text, role or 'muted'))
+        rel = status_pill(self._context_facts())
+        if rel:
+            self.chips.addWidget(_pill(*rel))
         self.chips_host.setVisible(self.chips.count() > 0)
         external = src != 'nexus'
         self._launch_full = not external and has('launch_profiles')
@@ -1626,6 +1823,7 @@ class DetailsPanel(QFrame):
         if external:
             self.confirm.setVisible(False)
         self._fill_quick(g)
+        self._fill_context()
         self.btn_play.setText(play_label(g))
         self.btn_play.setEnabled(play_enabled(g))
         self._fill_stats(g)
@@ -1650,6 +1848,32 @@ class DetailsPanel(QFrame):
             self.ed_opts.setText(g.get('launch_options') or '')
         self.btn_copy_opts.setVisible(bool(self.ed_opts.text()))
         self._update_pending()
+
+    def _context_facts(self) -> dict | None:
+        """The game's facts: the index first; else what --store-info brought
+        (a game the index has not reached yet); the play length from
+        --game-tips (HowLongToBeat or Game-db) when the index has none."""
+        g = self.game
+        rec = game_facts(g.get('slug'))
+        st = (self._store or {}).get('store')
+        if rec is None and st:
+            rec = facts.merge({'appid': g.get('appid'), 'name': g.get('display_name'),
+                               'steam': facts.from_steam(st), 'hltb': None})
+        live = self._tips_hltb or {}
+        if live.get('main') and not (rec or {}).get('length'):
+            rec = {**(rec or {}), 'length': {**live, 'source': live.get('source') or 'hltb'}}
+        return rec
+
+    def _fill_context(self):
+        self.context.set_facts(self._context_facts(), self.game.get('playtime_minutes') or 0)
+        # Tab order: Play, ⋮, the quick buttons, the tags, More, then the rest.
+        prev = self.btn_more
+        for w in [*self._quick_btns.values(), *self.context.tag_btns, self.context.more]:
+            QWidget.setTabOrder(prev, w)
+            prev = w
+
+    def _open_about(self):
+        self.open_section('about')
 
     def _fill_quick(self, g):
         """Round buttons for the handful of things you'd actually do here.
@@ -2091,6 +2315,6 @@ from .gameinfo import (anticheat_warning, compat_facts, is_installed, play_enabl
     play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
-from .widgets import (ask, clear_layout, FlowLayout, icon_button, icon_label, label,
+from .widgets import (amp, ask, clear_layout, FlowLayout, icon_button, icon_label, label,
     NoWheelCombo, plain_label, protongen_code_preview, SegmentedControl, set_glyph_icon,
     soft_wrap)  # noqa: E402

@@ -579,6 +579,17 @@ def build_stylesheet(scale: float = 1.0) -> str:
                               font-size: ${fs_stat_icon}px; padding: 0; }
     QToolButton#QuickAction:hover { background: $accent_22; color: $accent; }
     QToolButton#QuickAction[on="true"] { color: $warning; }
+    /* Game page context block (w-40): credits, genre tags, blurb, length. */
+    QLabel#ContextCredits { color: $subtext; font-size: ${fs_xs}px; font-weight: 500; }
+    QLabel#ContextBlurb { color: $subtext; font-size: ${fs_xs}px; }
+    QLabel#ContextLength { color: $text; font-size: ${fs_xs}px; }
+    QPushButton#TagChip { background: $surface_2; color: $subtext; border: 1px solid $border;
+                          border-radius: ${r_tag}px; padding: 0 ${sp_2_5}px;
+                          font-size: ${fs_xs}px; min-height: 20px; max-height: 20px; }
+    QPushButton#TagChip:hover { background: $accent_22; color: $accent; border-color: $accent_35; }
+    QPushButton#ContextMore { background: transparent; border: none; color: $accent;
+                              padding: 0; font-size: ${fs_xs}px; text-align: left; }
+    QPushButton#ContextMore:hover { text-decoration: underline; }
     #DisclosureHead { background: $surface_1; border: 1px solid $border_card;
                       border-radius: ${r_control}px; }
     #DisclosureHead:hover { background: $surface_2; }
@@ -726,7 +737,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         check_icon=_check_icon_path(),
         grad_dusk=qss_grad('dusk'), grad_dusk_hi=qss_grad('dusk', lighten=1.12),
         grad_dusk_diag=qss_grad('dusk', 1.0, 1.0),
-        r_scroll=pill(SP['2_5']), r_bar=pill(6), r_more=pill(28),
+        r_scroll=pill(SP['2_5']), r_bar=pill(6), r_more=pill(28), r_tag=pill(22),
         r_groove=pill(4), r_knob=pill(12), r_search=pill(36),
         r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,

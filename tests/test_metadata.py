@@ -215,6 +215,12 @@ class Gui(unittest.TestCase):
         self.assertIn('main 6.9 h', out)
         self.assertIn('Mixed', out)
         self.assertEqual(nx.about_html(None, None, None), '')
+        # What the game page's context block shows already is left out (w-40).
+        trimmed = nx.about_html({'blurb': 'B', 'genres': ['RPG'], 'developers': ['D']}, None,
+                                {'main': 6.9}, skip=('facts', 'hltb'))
+        self.assertIn('B', trimmed)
+        self.assertNotIn('RPG', trimmed)
+        self.assertNotIn('6.9', trimmed)
 
     def test_play_history_page(self):
         page = nx.PlayHistoryPage()
