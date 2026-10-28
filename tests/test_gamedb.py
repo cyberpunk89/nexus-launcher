@@ -353,7 +353,7 @@ class V2Base(Base):
         return fake, mock.patch.object(gamedb.urllib.request, 'build_opener',
                                        return_value=fake)
 
-    def paged(self, pages, since_games=None, removed=()):
+    def paged(self, pages, since_games=None, removed=(), removed_keys=()):
         """A games route: `pages` lists of games for a full fetch (cursor
         c1, c2…), one delta page for `?since=`."""
         def route(q):
@@ -364,6 +364,7 @@ class V2Base(Base):
             if 'since' in q:
                 return {'schema': 2, 'full': False, 'since': q['since'],
                         'nextSince': 'S2', 'nextCursor': None, 'removed': list(removed),
+                        'removedKeys': list(removed_keys),
                         'games': since_games or []}
             return {'schema': 2, 'full': True, 'nextSince': 'S1', 'games': pages[0],
                     'nextCursor': 'c1' if len(pages) > 1 else None, 'removed': []}
@@ -1087,7 +1088,7 @@ class OtherStoreLibrary(V2Base):
         self.assertIsNone(gamedb.meta('epic:Sugar'))           # meta() is appids only
         # a delta can remove a store-keyed row
         self.age_games()
-        fake.routes['/api/nexus/v2/games'] = self.paged([rows], removed=['epic:Sugar'])
+        fake.routes['/api/nexus/v2/games'] = self.paged([rows], removed_keys=['epic:Sugar'])
         with p:
             self.assertEqual(gamedb.sync_games()['removed'], 1)
         self.assertIsNone(gamedb.store_meta('epic', 'Sugar'))

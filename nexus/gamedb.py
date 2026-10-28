@@ -563,7 +563,9 @@ def _fetch_games(s: dict, since: str | None) -> dict:
     return {'full': bool(first.get('full')) or not since,
             'nextSince': first.get('nextSince') if isinstance(first.get('nextSince'), str)
             else None,
-            'removed': first.get('removed') or [], 'games': games}
+            # Steam appids in `removed`, "store:storeId" keys in `removedKeys`.
+            'removed': [*(first.get('removed') or []), *(first.get('removedKeys') or [])],
+            'games': games}
 
 
 def sync_games(force: bool = False) -> dict:
