@@ -7,7 +7,8 @@ from datetime import datetime
 from PyQt6.QtCore import pyqtSignal, QEvent, QPoint, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
     QLinearGradient, QPainter, QPainterPath, QPixmap)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
+    QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from nexus import gamedb, hypervisor
@@ -24,6 +25,14 @@ def _pill(text: str, role: str) -> QLabel:
     lab.setStyleSheet(pill_qss(tint, P.get(role, P['subtext'])))
     lab.setFixedHeight(PILL_H)
     return lab
+
+
+def dim(w: QWidget, opacity: float = 0.5) -> None:
+    """Fade a cancelled game's tile or row; it stays clickable."""
+    fx = QGraphicsOpacityEffect(w)
+    fx.setOpacity(opacity)
+    w.setGraphicsEffect(fx)
+    w.setProperty('dimmed', True)
 
 
 def deal_was(price: dict) -> str | None:
@@ -278,8 +287,11 @@ class DealCard(QFrame):
                     (hv, 'danger' if has('proton') and self.repack['hv'] == 'hv' else 'warning'))
         if owned and kind != 'tonight':
             self.art.top_right.append(("Owned", 'glass'))
+        chips = gamedb.release_chips(item) if kind == 'upcoming' else []
         if kind == 'upcoming':
             when = item.get('countdown') or gamedb.release_label(item)
+            if any(t == "Out now" for t, _r in chips):
+                when = None                             # the chip under the title says it
             if when and when != item.get('releaseDateText'):
                 self.art.bottom_left.append((when, 'glass'))
         self.art.set_url(item.get('headerImage'))
@@ -349,6 +361,8 @@ class DealCard(QFrame):
                 why.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 verdict.addWidget(why, 1)
         elif kind == 'upcoming':
+            for text, role in chips:
+                verdict.addWidget(_pill(text, role))
             if item.get('owned'):
                 verdict.addWidget(_pill("Owned", 'accent'))
             elif price:
@@ -400,6 +414,8 @@ class DealCard(QFrame):
             w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         tip = self.primary or ''
         self.setToolTip(f"{self.name}\n{self.primary_label}: {tip}" if tip else self.name)
+        if kind == 'upcoming' and gamedb.is_cancelled(item):
+            dim(self)
 
     def _set_title(self):
         self.title.setText(elide_lines(self.name, self._fm, self.W - 2 * SP['3'] - 8, 2))

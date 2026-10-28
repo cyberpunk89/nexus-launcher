@@ -482,8 +482,10 @@ def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1
         up = data.get('upcoming', [])
         print(f"\nUpcoming — {len(up)} games")
         for g in up:
+            chips = [t for t, _r in gamedb.release_chips(g)]
             print(f"  {gamedb.release_label(g):>14}  {g['title']}"
-                  + ('  (owned)' if g.get('owned') else ''))
+                  + ('  (owned)' if g.get('owned') else '')
+                  + (f"  [{', '.join(chips)}]" if chips else ''))
     if section in ('all', 'backlog'):
         b = data.get('backlog') or {}
         print(f"\nBacklog — {b.get('beaten', 0)} beaten, {b.get('inProgress', 0)} in progress, "

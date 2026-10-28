@@ -914,13 +914,20 @@ class UpcomingWidget(DashWidget):
             when = label(gamedb.release_label(g), None)
             when.setStyleSheet(f"color: {P['accent']}; font-size: {FS['xs']}px; "
                                f"font-weight: 600;")
-            right = [_pill("Pre-order", 'warning')] if preorder else []
+            chips = gamedb.release_chips(g)
+            if any(t == "Out now" for t, _r in chips):
+                when.setVisible(False)                  # the chip says it
+            right = [_pill(t, role) for t, role in chips[:1 if self.size_ == 'small' else 2]]
+            right += [_pill("Pre-order", 'warning')] if preorder else []
             base = hub.dealspage._base()
             url = g.get('steamUrl') or (gamedb.detail_url(base, g['appid'])
                                         if base and g.get('appid') else '')
             row = game_row(g, [when] + right, lambda _=False, u=url: hub.dealspage._open(u),
                            sub=text)
-            row.setToolTip(" · ".join(x for x in (g.get('releaseDateText'), text) if x))
+            row.setToolTip(" · ".join(x for x in (g.get('releaseDateText'), text,
+                                                  *(t for t, _r in chips)) if x))
+            if gamedb.is_cancelled(g):
+                dim(row)
             self.body.addWidget(row)
         if len(items) > n:
             self.body.addWidget(label(f"+{len(items) - n} more on the Deals page", "Muted"))
@@ -1387,7 +1394,7 @@ class Dashboard(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART  # noqa: E402
-from .deals import _pill  # noqa: E402
+from .deals import _pill, dim  # noqa: E402
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

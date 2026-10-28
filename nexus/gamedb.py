@@ -809,6 +809,8 @@ def upcoming(summary: dict | None) -> list[dict]:
             merged[key] = {}
             order.append(key)
         merged[key].update({k: v for k, v in g.items() if v is not None})
+        if any(k in g for k in STATUS_FIELDS):      # null values are dropped just above
+            merged[key]['statusKnown'] = True
 
     def rank(g):
         date = g.get('releaseDate') or ''
@@ -818,6 +820,47 @@ def upcoming(summary: dict | None) -> list[dict]:
             return (1, date or '9999', (g.get('title') or '').lower())
         return (2, '', (g.get('title') or '').lower())
     return sorted((merged[k] for k in order), key=rank)
+
+
+# The v1 summary's additive upcoming fields (IGDB Phase C): an older server
+# sends none of them, and then no chip shows.
+STATUS_FIELDS = ('status', 'previousDate', 'pcDate')
+EARLY_ACCESS = ('early_access', 'alpha', 'beta')
+OUT_NOW_DAYS = 14
+_MONTH_ABBR = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def is_cancelled(item: dict) -> bool:
+    return str(item.get('status') or '').lower() in ('cancelled', 'canceled')
+
+
+def release_chips(item: dict, now: datetime | None = None) -> list[tuple[str, str]]:
+    """(text, role) chips for an upcoming row: Early access, Delayed (the
+    date moved later), Cancelled, PC <date> (when the PC date differs) and
+    Out now for 14 days after a concrete release day. [] for a row from a
+    server that sends none of the status fields (upcoming() marks the rows
+    that had them as statusKnown)."""
+    if not (item.get('statusKnown') or any(item.get(k) for k in STATUS_FIELDS)):
+        return []
+    now = now or datetime.now(timezone.utc)
+    status = str(item.get('status') or '').lower()
+    out = []
+    if status in ('cancelled', 'canceled'):
+        return [("Cancelled", 'danger')]
+    if status in EARLY_ACCESS:
+        out.append(("Early access", 'accent'))
+    rel, prev = parse_iso(item.get('releaseDate')), parse_iso(item.get('previousDate'))
+    if rel and prev and prev.date() < rel.date():
+        out.append(("Delayed", 'warning'))
+    pc = parse_iso(item.get('pcDate'))
+    if pc and (not rel or pc.date() != rel.date()):
+        text = f"PC {pc.day} {_MONTH_ABBR[pc.month - 1]}"
+        out.append((text + (f" {pc.year}" if pc.year != now.year else ''), 'muted'))
+    days = days_until(item.get('releaseDate'), now)
+    pc_later = pc is not None and pc > now                  # out elsewhere, not on PC yet
+    if days is not None and has_day(item) and -OUT_NOW_DAYS < days <= 0 and not pc_later:
+        out.append(("Out now", 'success'))
+    return out
 
 
 def price_line(item: dict) -> tuple[str, bool]:
