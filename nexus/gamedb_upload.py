@@ -290,11 +290,79 @@ def upload_all() -> dict:
     return {'sessions': upload_sessions(s), 'library': upload_library(s)}
 
 
+def heroic_library() -> list[dict]:
+    """[{store, storeId, title}] for every Epic, GOG and Amazon game Heroic's
+    store caches say you own (installed or not), one per game. [] without
+    Heroic. Cache files only, never the network."""
+    from . import steamlib
+    out, seen = [], set()
+    try:
+        games = steamlib.heroic_store_games(steamlib.find_heroic_config(), owned=True)
+    except Exception:                                       # noqa: BLE001 — optional
+        return []
+    for g in games:
+        store = HEROIC_STORES.get(g.get('runner'))
+        app = g.get('app_name')
+        if not store or not isinstance(app, str) or not app or (store, app) in seen:
+            continue
+        seen.add((store, app))
+        out.append({'store': store, 'storeId': app,
+                    'title': store_title(g.get('display_name')) or app})
+    return out
+
+
 def upload_library(s: dict | None = None, games=None, force: bool = False) -> dict:
-    """Placeholder until the library upload lands: never sends anything."""
-    return {'status': 'off', 'sent': 0, 'error': None}
+    """Send Heroic's owned Epic, GOG and Amazon games to Game-db, at most once
+    a day (`force`: now). The last call of the upload says complete, so the
+    server drops games no longer owned. Never raises. {status, sent,
+    resolved, pending, error}: status off | unavailable | read_only |
+    unknown | fresh (sent within a day) | idle (no Heroic games) | uploaded
+    | failed."""
+    s = s or gamedb.settings()
+    out = {'status': 'off', 'sent': 0, 'resolved': 0, 'pending': 0, 'error': None}
+    if not gamedb.configured(s) or not s.get('upload_library'):
+        return out
+    fp = gamedb._fingerprint(s['url'], s['token'])
+    st = _read(_library_state_path())
+    st = st if st.get('fingerprint') == fp else {}
+    now = time.time()
+    if not force and now - (st.get('uploaded_at') or 0) < LIBRARY_AGE:
+        return {**out, 'status': 'fresh'}
+    ready = _ready('library', gamedb.SCOPE_LIBRARY, s)
+    if ready != 'ok':
+        return {**out, 'status': ready}
+    games = heroic_library() if games is None else games
+    if not games:
+        return {**out, 'status': 'idle'}            # never an empty "complete": it would wipe
+    chunks = [games[i:i + LIBRARY_BATCH] for i in range(0, len(games), LIBRARY_BATCH)]
+    error = None
+    for i, chunk in enumerate(chunks[:MAX_CALLS]):
+        try:
+            got = gamedb.write(LIBRARY_ENDPOINT, {'games': chunk,
+                                                  'complete': i == len(chunks) - 1}, s=s)
+        except gamedb.GameDbError as e:
+            error = {'kind': e.kind, 'message': str(e), 'at': now}
+            break
+        out['sent'] += len(chunk)
+        for k in ('resolved', 'pending'):
+            out[k] += got.get(k) if isinstance(got.get(k), int) else 0
+    if error is None and len(chunks) > MAX_CALLS:
+        error = {'kind': 'net', 'message': f"more than {MAX_CALLS * LIBRARY_BATCH} games", 'at': now}
+    gamedb._write_private(_library_state_path(), {
+        'fingerprint': fp, 'uploaded_at': now if error is None else st.get('uploaded_at'),
+        'tried_at': now, 'count': out['sent'] if error is None else st.get('count', 0),
+        'error': error})
+    return {**out, 'status': 'failed' if error else 'uploaded', 'error': error}
 
 
 def library_status(s: dict | None = None) -> dict:
-    """Placeholder until the library upload lands."""
-    return {'on': False, 'ready': 'unknown', 'uploaded_at': None, 'count': 0, 'error': None}
+    """Cache-only, for --doctor: {on, ready, uploaded_at, count, error}."""
+    s = s or gamedb.settings()
+    st = _read(_library_state_path())
+    if gamedb.configured(s) and st.get('fingerprint') != gamedb._fingerprint(s['url'], s['token']):
+        st = {}
+    return {'on': bool(s.get('upload_library')),
+            'ready': gamedb.write_status('library', gamedb.SCOPE_LIBRARY, s)
+            if gamedb.configured(s) else 'unknown',
+            'uploaded_at': st.get('uploaded_at'), 'count': st.get('count', 0),
+            'error': st.get('error')}

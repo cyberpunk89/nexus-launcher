@@ -68,14 +68,17 @@ def cmd_store_info(ident: str, as_json: bool, refresh: bool = False) -> None:
 def _facts_library() -> list[dict]:
     """[{slug, appid, name}] for every library game with a Steam store id:
     repacks by their umu GAMEID, installed Steam games, then owned Steam
-    games Game-db knows (cache only; none when it's off)."""
-    from nexus import compat, gamedb, steamlib
+    games Game-db knows (cache only; none when it's off). Then Heroic's
+    Epic, GOG and Amazon games Game-db has a row for (the library Nexus
+    sends it), with store and store_id, and the Steam appid IGDB links
+    them to when it does."""
+    from nexus import compat, gamedb, gamedb_upload, steamlib
     out, seen = [], set()
 
-    def add(slug, appid, name):
-        if appid and slug not in seen:
+    def add(slug, appid, name, **store):
+        if (appid or store) and slug not in seen:
             seen.add(slug)
-            out.append({'slug': slug, 'appid': appid, 'name': name})
+            out.append({'slug': slug, 'appid': appid, 'name': name, **store})
     for slug, e in load_registry()['games'].items():
         add(slug, compat.store_appid(e), e.get('display_name') or slug)
     for g in steamlib.scan(STEAM_ROOT):
@@ -87,6 +90,17 @@ def _facts_library() -> list[dict]:
     for item in owned:
         add(f"steam-{item['appid']}", compat.store_appid(
             {'source': 'steam', 'appid': item['appid']}), item.get('title'))
+    try:
+        heroic = steamlib.heroic_store_games(steamlib.find_heroic_config(), owned=True)
+    except Exception:                                     # noqa: BLE001 — optional
+        heroic = []
+    for g in heroic:
+        store = gamedb_upload.HEROIC_STORES.get(g.get('runner'))
+        row = gamedb.store_meta(store, g.get('app_name')) if store else None   # cache only
+        if row:
+            appid = row.get('appid') if isinstance(row.get('appid'), int) else None
+            add(g['slug'], appid, g.get('display_name'), store=store,
+                store_id=g['app_name'])
     return out
 
 

@@ -611,17 +611,33 @@ def sync_games(force: bool = False) -> dict:
         return {**out, 'status': 'failed', 'error': err}
     games = {} if got['full'] or not cache else dict(cache['games'])
     for g in got['games']:
-        if isinstance(g, dict) and isinstance(g.get('appid'), int):
-            games[str(g['appid'])] = g
+        if (key := row_key(g)) is not None:
+            games[key] = g
     removed = 0
     for a in got['removed']:
-        removed += games.pop(str(a), None) is not None
+        if isinstance(a, (int, str)):
+            removed += games.pop(str(a), None) is not None
     _write_private(_games_path(), {
         'fingerprint': fp, 'synced_at': now, 'since': got['nextSince'], 'games': games,
         'error': None})
     _games_memo.clear()
     return {**out, 'status': 'synced', 'count': len(games), 'changed': len(got['games']),
             'removed': removed}
+
+
+def row_key(g) -> str | None:
+    """games.json's key for a v2/games row: its Steam appid, else
+    "<store>:<storeId>" of its first store (a game Nexus sent from Heroic
+    that IGDB links to no Steam game). None for a row with neither."""
+    if not isinstance(g, dict):
+        return None
+    if isinstance(g.get('appid'), int) and not isinstance(g.get('appid'), bool):
+        return str(g['appid'])
+    for st in g.get('stores') or ():
+        if isinstance(st, dict) and isinstance(st.get('store'), str) \
+                and isinstance(st.get('storeId'), str) and st['store'] and st['storeId']:
+            return f"{st['store']}:{st['storeId']}"
+    return None
 
 
 _games_memo: dict = {}
@@ -641,6 +657,12 @@ def _games_rows(s: dict) -> tuple[dict, float] | None:
         c = _games_cache(fp)
         _games_memo.clear()
         _games_memo.update(key=key, value=(c['games'], c.get('synced_at') or 0) if c else None)
+        by_store = {}
+        for row in (c or {}).get('games', {}).values():
+            for st in (row.get('stores') or ()) if isinstance(row, dict) else ():
+                if isinstance(st, dict) and st.get('store') and st.get('storeId'):
+                    by_store.setdefault(f"{st['store']}:{st['storeId']}", row)
+        _games_memo['stores'] = by_store
     return _games_memo['value']
 
 
@@ -671,6 +693,27 @@ def meta(appid) -> dict | None:
     if not isinstance(row, dict):
         return None
     return {**row, 'synced_at': got[1], 'url': detail_url(s['url'], appid)}
+
+
+def store_meta(store: str, store_id: str) -> dict | None:
+    """Cache-only, like meta(): Game-db's row for a game of another store
+    (store epic | gog | amazon, its id there), found by the row's key or any
+    of its `stores`. Rows with a Steam appid are found too: a Heroic game
+    IGDB links to Steam. `url` is the Game-db page when the row has an appid."""
+    if not store or not store_id:
+        return None
+    s = settings()
+    if not configured(s) or not s['games'] or games_available(s) is False:
+        return None
+    got = _games_rows(s)
+    if not got:
+        return None
+    key = f"{store}:{store_id}"
+    row = got[0].get(key) or _games_memo.get('stores', {}).get(key)
+    if not isinstance(row, dict):
+        return None
+    appid = row.get('appid') if isinstance(row.get('appid'), int) else None
+    return {**row, 'synced_at': got[1], 'url': detail_url(s['url'], appid) if appid else None}
 
 
 def fresh(stamp, max_age: float, now: float | None = None) -> bool:

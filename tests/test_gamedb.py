@@ -22,7 +22,8 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import facts, gamedb, gamedb_upload, hltb, protondb, storeinfo  # noqa: E402
+from nexus import (facts, gamedb, gamedb_upload, hltb, protondb, steamlib,  # noqa: E402
+                   storeinfo)
 from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
@@ -981,6 +982,162 @@ class SessionsUpload(V2Base):
         self.assertEqual(ct('Hades II - v1.0.4 - DODI Repack'), 'Hades II')
         self.assertIsNone(ct('C:\\Games\\x'))
         self.assertIsNone(ct('[FitGirl Repack]'))
+
+
+def store_game(store, store_id, appid=None, **kw):
+    """A v2/games row for a game Nexus sent from Heroic (Phase 4 fields)."""
+    return game(appid, title=kw.pop('title', f'{store} {store_id}'),
+                stores=[{'store': store, 'storeId': store_id}], igdbId=1000,
+                description='A short summary.', gameModes=['Single player', 'Co-operative'],
+                genres=['Shooter', 'Adventure'], developers=['Studio'], **kw)
+
+
+class OtherStoreLibrary(V2Base):
+    """w-44: Heroic's owned games go to POST v2/library; their rows come
+    back in v2/games keyed by appid or store:storeId."""
+
+    ON = ('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+          f'token = "{TOKEN}"\n')
+
+    def setUp(self):
+        super().setUp()
+        self.got = []
+
+    def post(self, q):
+        self.got.append(q['__body__'])
+        n = len(q['__body__']['games'])
+        return {'accepted': n, 'resolved': n - 1, 'pending': 1}
+
+    def routes(self, meta=SCOPED_META, games=()):
+        return {'/api/nexus/v2/meta': meta, 'POST /api/nexus/v2/library': self.post,
+                '/api/nexus/v2/games': self.paged([list(games)])}
+
+    def heroic(self, n):
+        return [{'store': 'epic', 'storeId': f'app{i}', 'title': f'Game {i}'} for i in range(n)]
+
+    def test_pages_of_1000_complete_only_on_the_last(self):
+        fake, p = self.server(self.routes())
+        with p:
+            res = gamedb_upload.upload_library(games=self.heroic(2300))
+        self.assertEqual((res['status'], res['sent'], res['resolved']), ('uploaded', 2300, 2297))
+        self.assertEqual([(len(b['games']), b['complete']) for b in self.got],
+                         [(1000, False), (1000, False), (300, True)])
+        self.assertEqual(why_not_private(self.cache / 'library-upload.json'), '')
+        # once a day
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=self.heroic(5))['status'],
+                             'fresh')
+        self.assertEqual(len(self.got), 3)
+
+    def test_nothing_without_heroic_or_scope_or_server(self):
+        _fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=[])['status'], 'idle')
+        self.assertEqual(self.got, [])                     # never an empty "complete"
+        for meta, want in (({**SCOPED_META, 'scopes': ['read', 'write:sessions']}, 'read_only'),
+                           (META, 'unavailable')):
+            gamedb.clear_cache()
+            _fake, p = self.server(self.routes(meta=meta))
+            with p:
+                self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'],
+                                 want)
+        self.assertEqual(self.got, [])
+        self.write_config(self.ON + 'upload_library = false\n')
+        self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'], 'off')
+
+    def test_failure_is_retried_on_the_next_tick(self):
+        _fake, p = self.server({**self.routes(), 'POST /api/nexus/v2/library':
+                                urllib.error.URLError('down')})
+        with p:
+            res = gamedb_upload.upload_library(games=self.heroic(3))
+        self.assertEqual(res['status'], 'failed')
+        self.assertNotIn(TOKEN, json.dumps(res))
+        _fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'],
+                             'uploaded')
+
+    def test_heroic_library_reads_the_store_caches(self):
+        owned = [{'runner': 'legendary', 'app_name': 'Fortnite', 'display_name': 'Fortnite',
+                  'install_dir': '/home/me/Games/Fortnite'},
+                 {'runner': 'gog', 'app_name': '1207658924', 'display_name': 'Witcher'},
+                 {'runner': 'nile', 'app_name': 'amzn1.x', 'display_name': 'Amazon'},
+                 {'runner': 'legendary', 'app_name': 'Fortnite', 'display_name': 'Fortnite'},
+                 {'runner': 'sideload', 'app_name': 'x', 'display_name': 'Mine'}]
+        with mock.patch.object(steamlib, 'heroic_store_games', return_value=owned):
+            got = gamedb_upload.heroic_library()
+        self.assertEqual(got, [{'store': 'epic', 'storeId': 'Fortnite', 'title': 'Fortnite'},
+                               {'store': 'gog', 'storeId': '1207658924', 'title': 'Witcher'},
+                               {'store': 'amazon', 'storeId': 'amzn1.x', 'title': 'Amazon'}])
+        self.assertNotIn('/home', json.dumps(got))
+
+    def test_rows_keyed_by_appid_or_store_and_found_both_ways(self):
+        rows = [game(620), store_game('epic', 'Sugar'),
+                store_game('gog', '1207658924', appid=292030, title='The Witcher 3')]
+        fake, p = self.server(self.routes(games=rows))
+        with p:
+            gamedb.sync_games()
+        c = json.loads((self.cache / 'games.json').read_text())
+        self.assertEqual(sorted(c['games']), ['292030', '620', 'epic:Sugar'])
+        self.assertEqual(gamedb.store_meta('epic', 'Sugar')['description'], 'A short summary.')
+        self.assertIsNone(gamedb.store_meta('epic', 'Sugar')['url'])
+        w3 = gamedb.store_meta('gog', '1207658924')
+        self.assertEqual((w3['appid'], w3['url']), (292030, 'https://gdb.example/game/292030'))
+        self.assertIsNone(gamedb.store_meta('epic', 'Nope'))
+        self.assertIsNone(gamedb.meta('epic:Sugar'))           # meta() is appids only
+        # a delta can remove a store-keyed row
+        self.age_games()
+        fake.routes['/api/nexus/v2/games'] = self.paged([rows], removed=['epic:Sugar'])
+        with p:
+            self.assertEqual(gamedb.sync_games()['removed'], 1)
+        self.assertIsNone(gamedb.store_meta('epic', 'Sugar'))
+
+    def test_heroic_game_gets_facts_from_its_row(self):
+        _fake, p = self.server(self.routes(games=[
+            store_game('epic', 'Sugar', title='Sugar Rush', status='early_access',
+                       releaseDate='2024-03-01T00:00:00Z',
+                       playLength={'main': 12, 'mainExtra': 18, 'completionist': 30,
+                                   'source': 'igdb', 'count': 4, 'fetchedAt': iso(60)})]))
+        with p:
+            gamedb.sync_games()
+        lib = [{'slug': 'heroic-legendary-Sugar', 'appid': None, 'name': 'Sugar',
+                'store': 'epic', 'store_id': 'Sugar'},
+               {'slug': 'heroic-gog-1', 'appid': None, 'name': 'Unknown', 'store': 'gog',
+                'store_id': '1'}]
+        boom = AssertionError('network!')
+        with mock.patch.multiple(gamedb.net, get=mock.Mock(side_effect=boom),
+                                 post=mock.Mock(side_effect=boom)):
+            idx = facts.build(lib, facts.gamedb_rows(lib))
+        self.assertEqual(set(idx['games']), {'heroic-legendary-Sugar'})
+        f = idx['games']['heroic-legendary-Sugar']
+        self.assertEqual((f['name'], f['developers'], f['genres'], f['description']),
+                         ('Sugar Rush', ['Studio'], ['Shooter', 'Adventure'], 'A short summary.'))
+        self.assertEqual((f['modes'], f['src']['modes']), (['single', 'coop'], 'gamedb'))
+        self.assertEqual((f['length']['main'], f['length']['source']), (12, 'igdb'))
+        self.assertEqual((f['status'], f['year'], f['appid']), ('early_access', 2024, None))
+        self.assertEqual(idx['missing'], {'steam': 0, 'hltb': 0})
+
+    def test_facts_library_adds_heroic_games_game_db_knows(self):
+        from nexus.cli import info
+        _fake, p = self.server(self.routes(games=[
+            store_game('epic', 'Sugar'),
+            store_game('gog', '1207658924', appid=292030, title='The Witcher 3')]))
+        with p:
+            gamedb.sync_games()
+        owned = [{'slug': 'heroic-legendary-Sugar', 'runner': 'legendary', 'app_name': 'Sugar',
+                  'display_name': 'Sugar'},
+                 {'slug': 'heroic-gog-1207658924', 'runner': 'gog', 'app_name': '1207658924',
+                  'display_name': 'The Witcher 3'},
+                 {'slug': 'heroic-nile-x', 'runner': 'nile', 'app_name': 'x',
+                  'display_name': 'Not resolved yet'}]
+        with mock.patch.object(steamlib, 'heroic_store_games', return_value=owned), \
+                mock.patch.object(steamlib, 'scan', return_value=[]), \
+                mock.patch.object(info, 'load_registry', return_value={'games': {}}):
+            lib = info._facts_library()
+        heroic = {r['slug']: r for r in lib if r['slug'].startswith('heroic-')}
+        self.assertEqual(set(heroic), {'heroic-legendary-Sugar', 'heroic-gog-1207658924'})
+        self.assertEqual(heroic['heroic-legendary-Sugar']['appid'], None)
+        self.assertEqual(heroic['heroic-gog-1207658924']['appid'], 292030)   # IGDB's link
 
 
 class Helpers(unittest.TestCase):
