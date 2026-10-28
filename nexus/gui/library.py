@@ -1,5 +1,6 @@
 """Library views: the grid, the list, the Home shelves and hero carousel."""
 
+import html
 import time
 from datetime import datetime
 from pathlib import Path
@@ -227,11 +228,14 @@ class _ShelfScroll(QScrollArea):
 class ShelfRow(QWidget):
     """A titled row of tiles that pages sideways with ‹ › buttons instead of
     a scrollbar. Keyboard/controller focus moving along the row scrolls it
-    smoothly so the focused tile is always in view."""
+    smoothly so the focused tile is always in view. With `menu`, a round ⋮
+    sits before "See all" (so "See all" lines up on every row) and asks for
+    the row's menu at a global point."""
     see_all = pyqtSignal()
+    menu_asked = pyqtSignal(QPoint)
 
     def __init__(self, title: str, tile_w: int, kind: str = 'cover', count: int | None = None,
-                 see_all: bool = False):
+                 see_all: bool = False, menu: bool = False, tip: str = ''):
         super().__init__()
         self.title = title
         self._want: int | None = None             # an offset to come back to (KeepPlace)
@@ -242,11 +246,19 @@ class ShelfRow(QWidget):
         lay.setSpacing(SP['2'])
         head = QHBoxLayout()
         head.setSpacing(SP['2'])
-        head.addWidget(label(title, "ShelfTitle"))
+        name = label(title, "ShelfTitle")
+        name.setToolTip(tip)
+        head.addWidget(name)
         if count:
             c = label(str(count), "ShelfCount")
             head.addWidget(c, 0, Qt.AlignmentFlag.AlignBottom)
         head.addStretch()
+        if menu:
+            m = icon_button(G['more'], "Shelf options", 28, "Ghost", round_=True)
+            m.clicked.connect(lambda: self.menu_asked.emit(
+                m.mapToGlobal(QPoint(0, m.height()))))
+            self.btn_menu = m
+            head.addWidget(m)
         if see_all:
             b = QPushButton("See all")
             b.setObjectName("Ghost")
@@ -350,6 +362,45 @@ class ShelfRow(QWidget):
             self.scroll_to(max(0, x0 - margin))
         elif x1 > v + vw - margin:
             self.scroll_to(min(self.bar.maximum(), x1 - vw + margin))
+
+
+class SmartDivider(QWidget):
+    """The line between the source rows and the smart shelves: a glyph,
+    "Smart shelves" and a muted note on one baseline (one rich-text label),
+    and "N hidden" on the right while shelves are hidden."""
+    hidden_menu = pyqtSignal(QPoint)
+
+    def __init__(self, note: str, hidden: int = 0):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, SP['2'], 0, 0)
+        lay.setSpacing(SP['3'])
+        rule = QFrame()
+        rule.setObjectName("SmartRule")
+        rule.setFixedHeight(1)
+        lay.addWidget(rule)
+        head = QHBoxLayout()
+        head.setSpacing(SP['2'])
+        head.addWidget(icon_label(G['sparkles'], 16, P['accent']), 0,
+                       Qt.AlignmentFlag.AlignVCenter)
+        self.text = label("", "SmartHead", wrap=True)
+        self.text.setTextFormat(Qt.TextFormat.RichText)
+        self.text.setText(
+            "Smart shelves" + (f"&nbsp;&nbsp;<span style='color:{P['muted']}; font-size:"
+                               f"{FS['xs']}px; font-weight:400'>{html.escape(note)}</span>"
+                               if note else ''))
+        head.addWidget(self.text, 1)
+        self.btn_hidden = None
+        if hidden:
+            b = QPushButton(f"{hidden} hidden")
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Bring back a shelf you hid")
+            b.clicked.connect(lambda: self.hidden_menu.emit(
+                b.mapToGlobal(QPoint(0, b.height()))))
+            self.btn_hidden = b
+            head.addWidget(b)
+        lay.addLayout(head)
 
 
 class HeroCarousel(QWidget):
@@ -787,6 +838,9 @@ class HomeView(QScrollArea, _TileSignals):
     double = pyqtSignal(dict)
     pending_clicked = pyqtSignal(object)
     see_all = pyqtSignal(str, str)         # (chip, sort) for the Library
+    show_filter = pyqtSignal(str)          # a smart shelf's "See all": its filter key
+    shelf_menu = pyqtSignal(str, QPoint)   # a smart shelf's ⋮ (key, where)
+    hidden_menu = pyqtSignal(QPoint)       # the divider's "N hidden"
     tint = pyqtSignal(object)
 
     SHELF_TILE = 150
@@ -816,6 +870,7 @@ class HomeView(QScrollArea, _TileSignals):
         self.lay.addStretch()
         self.setWidget(host)
         self.tiles: dict[str, list[GameTile]] = {}
+        self._smart: list[QWidget] = []
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -824,6 +879,7 @@ class HomeView(QScrollArea, _TileSignals):
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
         clear_layout(self.rows)
+        self._smart = []
         self.tiles = {}             # the dashboard re-adds its shelves' tiles after this
         if self.mode == 'home':
             feat = featured_games(games)
@@ -847,15 +903,45 @@ class HomeView(QScrollArea, _TileSignals):
         if not games and not pending_jobs:
             self.rows.addWidget(EmptyState(G['library'], *empty_state_text(empty_text)))
 
-    def make_shelf(self, title, games, kind='cover', link=None) -> 'ShelfRow':
-        """A ShelfRow whose tiles are wired to this view (for the dashboard)."""
-        return self._shelf(title, games, (), kind, link, add=False)
+    def set_smart(self, shelves: list[dict], note: str = '', hidden: int = 0):
+        """The smart shelves after the source rows (Shelves view): a divider,
+        then one row per shelf ({key, title, tip, games}) with a ⋮ menu.
+        Nothing at all with no shelf and none hidden. Replaces the last ones."""
+        for w in self._smart:
+            for t in w.findChildren(GameTile):
+                ts = self.tiles.get(t.game.get('slug'), [])
+                if t in ts:
+                    ts.remove(t)
+            self.rows.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+        self._smart = []
+        if not shelves and not hidden:
+            return
+        div = SmartDivider(note, hidden)
+        div.hidden_menu.connect(self.hidden_menu)
+        self.rows.addWidget(div)
+        self._smart.append(div)
+        for s in shelves:
+            row = self.make_shelf(s['title'], s['games'], smart=s['key'], tip=s.get('tip', ''))
+            self.rows.addWidget(row)
+            self._smart.append(row)
 
-    def _shelf(self, title, games, jobs, kind, link, add=True):
+    def make_shelf(self, title, games, kind='cover', link=None, smart: str | None = None,
+                   tip: str = '') -> 'ShelfRow':
+        """A ShelfRow whose tiles are wired to this view (for the dashboard).
+        `smart` makes it a smart shelf: "See all" asks for that filter and a
+        ⋮ asks for the shelf's menu."""
+        return self._shelf(title, games, (), kind, link, add=False, smart=smart, tip=tip)
+
+    def _shelf(self, title, games, jobs, kind, link, add=True, smart=None, tip=''):
         w = self.WIDE_TILE if kind == 'wide' else self.SHELF_TILE
-        row = ShelfRow(title, w, kind, count=len(games) if link else None,
-                       see_all=bool(link))
-        if link:
+        row = ShelfRow(title, w, kind, count=len(games) if link or smart else None,
+                       see_all=bool(link or smart), menu=bool(smart), tip=tip)
+        if smart:
+            row.see_all.connect(lambda k=smart: self.show_filter.emit(k))
+            row.menu_asked.connect(lambda pos, k=smart: self.shelf_menu.emit(k, pos))
+        elif link:
             row.see_all.connect(lambda c=link[0], s=link[1]: self.see_all.emit(c, s))
         for job in jobs:
             t = GameTile({'slug': f'__pending_{id(job)}', 'display_name': job.name},
@@ -1113,4 +1199,4 @@ from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, empty_state_text, EmptyState, FlowLayout, icon_button,
-    label, set_glyph_icon)  # noqa: E402
+    icon_label, label, set_glyph_icon)  # noqa: E402

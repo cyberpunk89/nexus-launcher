@@ -557,6 +557,8 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#TabItem:checked { color: $text; }
     #ShelfTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     #ShelfCount { color: $muted; font-size: ${fs_xs}px; padding-bottom: 2px; }
+    #SmartRule { background: $border; border: none; }
+    #SmartHead { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     QToolButton#ShelfArrow, QToolButton#GlassIcon {
         background: $glass_hi; color: $on_art; border: 1px solid $glass;
         font-size: ${fs_sm}px; padding: 0;

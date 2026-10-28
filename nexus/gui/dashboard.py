@@ -10,7 +10,7 @@ from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPain
 from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar,
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from nexus import achievements as A, gamedb
+from nexus import achievements as A, gamedb, smart
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
@@ -26,6 +26,7 @@ DASH_KINDS = [                       # default order packs evenly in 3 columns
     ('system',     ('small', 'wide'),          'wide',  False),
     ('news',       ('small', 'wide', 'full'),  'small', False),
     ('installed',  ('full',),                  'full',  False),
+    ('smart',      ('full',),                  'full',  False),
     ('deals',      ('small', 'wide', 'full'),  'wide',  False),
     ('upcoming',   ('small', 'wide', 'full'),  'small', False),
     ('favourites', ('full',),                  'full',  False),
@@ -42,11 +43,19 @@ DASH_DEFAULT_SIZE = {k: d for k, _s, d, _h in DASH_KINDS}
 DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
                'proton': 'system'}
 # Widgets added later that belong next to a related one rather than last.
-DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'jump', 'collections': 'favourites'}
+DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'jump', 'collections': 'favourites',
+                    'smart': 'installed'}
+
+
+def _dash_shelf(value) -> str:
+    """The smart shelf the Home widget shows (an item's `shelf` key)."""
+    return value if value in smart.WIDGET_RULES else smart.WIDGET_DEFAULT
 
 
 def dash_default() -> list[dict]:
-    return [{'id': k, 'size': d, 'hidden': h} for k, _s, d, h in DASH_KINDS]
+    return [{'id': k, 'size': d, 'hidden': h, **({'shelf': _dash_shelf(None)} if k == 'smart'
+                                                 else {})}
+            for k, _s, d, h in DASH_KINDS]
 
 
 def dash_normalize(items) -> list[dict]:
@@ -75,6 +84,8 @@ def dash_normalize(items) -> list[dict]:
         out.append({'id': wid,
                     'size': size if size in DASH_SIZES[wid] else DASH_DEFAULT_SIZE[wid],
                     'hidden': bool(it.get('hidden'))})
+        if wid == 'smart':
+            out[-1]['shelf'] = _dash_shelf(it.get('shelf'))
     for d in dash_default():
         if d['id'] in seen:
             continue
@@ -342,16 +353,25 @@ class DashWidget(QFrame):
         self.btn_size.setToolTip("Change size")
         self.btn_size.clicked.connect(lambda: self.edit.emit(self.KIND, 'size'))
         bl.addWidget(self.btn_size)
+        self.btn_shelf = QPushButton()            # the smart widget: which shelf it shows
+        self.btn_shelf.setObjectName("Ghost")
+        self.btn_shelf.setToolTip("Change which smart shelf this shows")
+        self.btn_shelf.clicked.connect(lambda: self.edit.emit(self.KIND, 'shelf'))
+        self.btn_shelf.setVisible(False)
+        bl.addWidget(self.btn_shelf)
         hide = icon_button(G['eye_off'], "Hide this widget", 28, "Ghost", round_=True)
         hide.clicked.connect(lambda: self.edit.emit(self.KIND, 'hide'))
         bl.addWidget(hide)
         return bar
 
-    def set_editing(self, on: bool, size: str):
+    def set_editing(self, on: bool, size: str, shelf: str | None = None):
         self.size_ = size
         self.editbar.setVisible(on)
         sizes = DASH_SIZES.get(self.KIND, ('small',))
         self.btn_size.setVisible(len(sizes) > 1)
+        self.btn_shelf.setVisible(shelf is not None)
+        if shelf is not None:
+            self.btn_shelf.setText(f"Shelf: {smart.label(shelf)}")
         self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width"}[size])
         self.setProperty('editing', on)
         self.style().unpolish(self)
@@ -564,6 +584,38 @@ class CollectionsWidget(ShelfWidget):
                 row = view.make_shelf(name, items, self.KIND_TILE, (f'col:{name}', 'name'))
                 self._tiles += row.tiles
                 self.body.addWidget(row)
+
+
+class SmartShelfWidget(ShelfWidget):
+    """One smart shelf on Home (nexus/smart.py), "Unfinished" unless chosen
+    otherwise in Customise. Gone while that shelf is empty."""
+    KIND, TITLE = 'smart', "Smart shelf"
+
+    def rule(self, hub) -> str:
+        it = next((i for i in hub.prefs.dashboard if i['id'] == self.KIND), None)
+        return _dash_shelf((it or {}).get('shelf'))
+
+    def games(self, hub):
+        get = getattr(hub, '_smart_facts', None)
+        return smart.games_for(f'smart:{self.rule(hub)}', _visible_games(hub),
+                               get() if get else {}, linux=has('proton'))[:24]
+
+    def fill(self, hub):
+        view = hub.homeview
+        for t in getattr(self, '_tiles', ()):
+            ts = view.tiles.get(t.game.get('slug'), [])
+            if t in ts:
+                ts.remove(t)
+        self.clear()
+        self._tiles = []
+        games = self.games(hub)
+        if games:
+            key = f'smart:{self.rule(hub)}'
+            row = view.make_shelf(smart.label(key), games, self.KIND_TILE, smart=key,
+                                  tip=smart.tip(key))
+            row.btn_menu.hide()                # hide/save live in the Library; Customise here
+            self._tiles = row.tiles
+            self.body.addWidget(row)
 
 
 class SurpriseWidget(DashWidget):
@@ -1161,7 +1213,8 @@ class AchievementsWidget(DashWidget):
 
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
-    JumpWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, DealsWidget,
+    JumpWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
+    DealsWidget,
     UpcomingWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget, PlaytimeWidget,
     AchievementsWidget, OwnedWidget)}
 
@@ -1233,8 +1286,8 @@ class Dashboard(QWidget):
                 w.size_ = it['size'] if it else 'small'
                 if it and not it['hidden']:
                     w.fill(self.hub)
-        if kinds is None or {'jump', 'installed', 'favourites', 'collections', 'updates',
-                             'upcoming', 'owned'} & set(kinds or ()):
+        if kinds is None or {'jump', 'installed', 'smart', 'favourites', 'collections',
+                             'updates', 'upcoming', 'owned'} & set(kinds or ()):
             self.relayout(force=True)
 
     # ---- layout ----
@@ -1254,7 +1307,7 @@ class Dashboard(QWidget):
         on = {k for k, *_ in placed}
         for k, r, c, span in placed:
             it = next(i for i in self.items if i['id'] == k)
-            self.widgets[k].set_editing(self.editing, it['size'])
+            self.widgets[k].set_editing(self.editing, it['size'], it.get('shelf'))
             self.grid.addWidget(self.widgets[k], r, c, 1, span)
         for k, w in self.widgets.items():
             w.setVisible(k in on)
@@ -1305,12 +1358,17 @@ class Dashboard(QWidget):
             if action == 'size':
                 sizes = DASH_SIZES[kind]
                 it['size'] = sizes[(sizes.index(it['size']) + 1) % len(sizes)]
+            elif action == 'shelf':
+                rules = [r for r in smart.WIDGET_RULES if r != 'linux' or has('proton')]
+                cur = _dash_shelf(it.get('shelf'))
+                it['shelf'] = rules[(rules.index(cur) + 1) % len(rules)] if cur in rules \
+                    else rules[0]
             elif action == 'hide':
                 it['hidden'] = True
             elif action == 'show':
                 it['hidden'] = False
         self.hub.prefs.dashboard = new
-        self.refresh([kind]) if action in ('size', 'show') else None
+        self.refresh([kind]) if action in ('size', 'show', 'shelf') else None
         self.relayout(force=True)
         self.hub.prefs.save()
         # Keep the controller's focus on the widget that moved.
