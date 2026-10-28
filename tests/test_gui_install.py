@@ -18,7 +18,7 @@ from tests.patching import set_gui  # noqa: E402
 from nexus import features, platform  # noqa: E402
 
 if nx is not None:
-    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
+    from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QPushButton
 
 
 def feed(job, *lines):
@@ -505,6 +505,45 @@ class Followups(unittest.TestCase):
                  if b.text() == "Open Windows Security").click()
         op.assert_called_once_with('windowsdefender://threat')
         self.assertTrue(sheet.isHidden())
+
+    def test_whats_new_cards_grouped_with_the_buttons_pinned(self):
+        sheet = self.win.sheet
+        self.addCleanup(sheet.close_sheet)
+        shown = lambda cls, name: [w for w in sheet.findChildren(cls, name)   # noqa: E731
+                                   if not w.isHidden()]     # cleared ones wait for deleteLater
+        got = []
+        sheet.notes("What's new", [
+            {'text': "Odd", 'title': '', 'icon': None, 'kind': None},
+            {'text': "Fixed it", 'title': "Fix", 'icon': 'play', 'kind': 'fixed'},
+            {'text': "Ten sites", 'title': "News", 'icon': 'news', 'kind': 'new'}],
+            [("Got it", "", lambda: got.append(1)), ("Notes", "", lambda: None)])
+        self.assertTrue(sheet.isVisible())
+        self.assertFalse(sheet.sub.isVisible())
+        heads = [lab.text() for lab in shown(QLabel, "SheetSection")]
+        self.assertEqual(heads, ["NEW", "FIXED"])                 # untyped last, no header
+        cards = shown(QFrame, "NoteCard")
+        self.assertEqual(len(cards), 3)
+        self.assertEqual(len(shown(QFrame, "NoteIcon")), 2)
+        self.assertEqual([lab.text() for lab in shown(QLabel, "NoteLine")], ["Odd"])
+        buttons = [w for w in sheet.foot.findChildren(QPushButton, "SheetRow") if not w.isHidden()]
+        self.assertEqual([b.text() for b in buttons], ["Got it", "Notes"])
+        self.assertFalse(sheet.foot.isHidden())
+        buttons[0].click()
+        self.assertEqual(got, [1])
+        self.assertTrue(sheet.isHidden())
+        sheet.choose("Other", [("One", "", lambda: None)])        # the next use is clean
+        self.assertTrue(sheet.foot.isHidden())
+        self.assertEqual(shown(QFrame, "NoteCard"), [])
+        self.assertEqual(self.sheet_rows(), ["One"])
+
+    def test_whats_new_without_notes_says_so(self):
+        sheet = self.win.sheet
+        self.addCleanup(sheet.close_sheet)
+        shown = lambda cls, name: [w for w in sheet.findChildren(cls, name)   # noqa: E731
+                                   if not w.isHidden()]
+        sheet.notes("What's new", [], [("Got it", "", lambda: None)], empty="Nothing here.")
+        self.assertIn("Nothing here.", [lab.text() for lab in shown(QLabel, None)])
+        self.assertEqual(shown(QFrame, "NoteCard"), [])
 
     def test_uac_note_before_the_first_install_only(self):
         prefs = self.win.prefs

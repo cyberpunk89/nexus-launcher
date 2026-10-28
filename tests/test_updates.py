@@ -219,18 +219,61 @@ class WhatsNew(unittest.TestCase):
     def test_bundled_file_is_valid(self):
         data = json.loads(updates.NOTES.read_text(encoding='utf-8'))
         self.assertIsInstance(data, dict)
-        for ver, lines in data.items():
+        from nexus.icons import ICONS
+        for ver, notes in data.items():
             self.assertTrue(updates.parse(ver), ver)
-            self.assertTrue(lines and all(isinstance(x, str) for x in lines), ver)
+            self.assertTrue(notes, ver)
+            for n in notes:
+                if isinstance(n, str):
+                    continue
+                self.assertTrue(n.get('text'), (ver, n))
+                self.assertLessEqual(len(n['text']), updates.NOTE_LEN, (ver, n))
+                self.assertLessEqual(len(n.get('title', '')), updates.TITLE_LEN, (ver, n))
+                self.assertIn(n.get('icon', 'news'), ICONS, (ver, n))
+                self.assertIn(n.get('kind', 'new'), updates.KINDS, (ver, n))
+                self.assertIn(n.get('platform', 'linux'), ('linux', 'windows'), (ver, n))
+            for here in ('linux', 'windows'):                # nothing cut off on either
+                shown = [n for n in notes if isinstance(n, str) or n.get('platform', here) == here]
+                self.assertLessEqual(len(shown), updates.NOTES_MAX, (ver, here))
 
     def test_lines_are_short_plain_and_capped(self):
         self.notes({'1.2.0': ["  Faster   start ", "", 7, "x" * 300, *[f"n{i}" for i in range(9)]]})
         got = updates.whats_new('1.2.0')
-        self.assertEqual(got[0], "Faster start")
-        self.assertEqual(len(got[1]), updates.NOTE_LEN)
-        self.assertTrue(got[1].endswith('…'))
+        self.assertEqual(got[0], {'text': "Faster start", 'title': '', 'icon': None, 'kind': None})
+        self.assertEqual(len(got[1]['text']), updates.NOTE_LEN)
+        self.assertTrue(got[1]['text'].endswith('…'))
         self.assertEqual(len(got), updates.NOTES_MAX)
         self.assertEqual(updates.whats_new('9.9.9'), [])
+
+    def test_cards_keep_known_icons_and_kinds_only(self):
+        self.notes({'1.2.0': [
+            {'kind': 'new', 'icon': 'news', 'title': "  Pick   sites ", 'text': "Ten of them."},
+            {'kind': 'shiny', 'icon': 'no-such-icon', 'title': "t" * 99, 'text': "Odd one."},
+            {'kind': 'fixed', 'title': "No text"},
+            "A plain line"]})
+        got = updates.whats_new('1.2.0')
+        self.assertEqual(got[0], {'text': "Ten of them.", 'title': "Pick sites",
+                                  'icon': 'news', 'kind': 'new'})
+        self.assertEqual((got[1]['icon'], got[1]['kind']), (None, None))
+        self.assertEqual(len(got[1]['title']), updates.TITLE_LEN)
+        self.assertEqual(got[2], {'text': "A plain line", 'title': '', 'icon': None, 'kind': None})
+        self.assertEqual(len(got), 3)                         # the one without text is dropped
+
+    def test_platform_entries_show_on_their_platform_only(self):
+        self.notes({'1.2.0': [{'text': "Both"}, {'text': "Linux", 'platform': 'linux'},
+                              {'text': "Windows", 'platform': 'windows'},
+                              {'text': "Mac", 'platform': 'mac'}]})
+        texts = lambda: [n['text'] for n in updates.whats_new('1.2.0')]   # noqa: E731
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            self.assertEqual(texts(), ["Both", "Linux"])
+        with mock.patch.object(features, 'FEATURES', features.WINDOWS):
+            self.assertEqual(texts(), ["Both", "Windows"])
+
+    def test_platform_filter_runs_before_the_cap(self):
+        self.notes({'1.2.0': [*({'text': f"w{i}", 'platform': 'windows'} for i in range(8)),
+                              {'text': "linux one", 'platform': 'linux'}]})
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            self.assertEqual([n['text'] for n in updates.whats_new('1.2.0')], ["linux one"])
 
     def test_missing_or_broken_file_means_no_notes(self):
         for bad in ('not json', '[1, 2]'):
@@ -251,7 +294,7 @@ class WhatsNew(unittest.TestCase):
         win = mock.Mock(_first_run=False)
         win.prefs.last_seen_version = '0.0.1'
         shots = []
-        with mock.patch.object(window.updates, 'whats_new', return_value=["A"]), \
+        with mock.patch.object(window.updates, 'whats_new', return_value=[{'text': "A"}]), \
                 mock.patch.dict(os.environ, {'NEXUS_NO_SETUP': ''}), \
                 mock.patch.object(window.QTimer, 'singleShot', lambda _ms, fn: shots.append(fn)):
             window.MainWindow._note_version(win, True)
@@ -268,13 +311,14 @@ class WhatsNew(unittest.TestCase):
         from nexus.gui import window
         win = mock.Mock()
         opened = []
-        with mock.patch.object(window.updates, 'whats_new', return_value=["One", "Two"]), \
+        notes = [{'text': "One"}, {'text': "Two"}]
+        with mock.patch.object(window.updates, 'whats_new', return_value=notes), \
                 mock.patch.object(window.QDesktopServices, 'openUrl', opened.append):
             window.MainWindow.show_whats_new(win)
-            title, items = win.sheet.choose.call_args.args
-            text = win.sheet.choose.call_args.kwargs['text']
+            title, entries, items = win.sheet.notes.call_args.args
             self.assertIn(window.__version__, title)
-            self.assertEqual(text, "•  One\n•  Two")
+            self.assertEqual(entries, notes)
+            self.assertTrue(win.sheet.notes.call_args.kwargs['empty'])
             self.assertEqual([i[0] for i in items], ["Got it", "Full release notes"])
             items[1][2]()
         self.assertTrue(opened[0].toString().endswith(f"/releases/tag/v{window.__version__}"))

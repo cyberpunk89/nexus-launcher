@@ -645,6 +645,12 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#SheetRow:hover, QPushButton#SheetRow:focus { background: $accent_16; }
     QPushButton#SheetRow:disabled { color: $muted; }
     QPushButton#SheetRow[danger="true"] { color: $danger; }
+    #SheetFoot { border-top: 1px solid $border; }
+    #NoteCard { background: $surface_1; border: 1px solid $border; border-radius: ${r_xl}px; }
+    #NoteIcon { background: $accent_16; border-radius: ${r_control}px; }
+    QLabel#NoteTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
+    QLabel#NoteText { color: $subtext; font-size: ${fs_xs}px; }
+    QLabel#NoteLine { color: $text; font-size: ${fs_command}px; }
 
     /* ---- Menus, tabs, tables ------------------------------------------- */
     QMenu { background: $surface_solid; border: 1px solid $border;

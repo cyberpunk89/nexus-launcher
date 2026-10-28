@@ -1,4 +1,52 @@
 {
+  "0.4.2": [
+    {
+      "kind": "new",
+      "icon": "news",
+      "title": "Pick your news sites",
+      "text": "Choose which sites News follows, from a list of ten."
+    },
+    {
+      "kind": "new",
+      "icon": "info",
+      "title": "Game facts on Windows",
+      "platform": "windows",
+      "text": "Game pages show facts from PCGamingWiki, Game-db and HowLongToBeat."
+    },
+    {
+      "kind": "improved",
+      "icon": "tune",
+      "title": "Clearer game pages",
+      "text": "Five sections, and every launch option in one place with a single Apply."
+    },
+    {
+      "kind": "improved",
+      "icon": "trophy",
+      "title": "Richer Home widgets",
+      "text": "Play time and Achievements on Home show more at a glance."
+    },
+    {
+      "kind": "improved",
+      "icon": "trash",
+      "title": "Safer uninstall",
+      "platform": "linux",
+      "text": "Uninstall won't remove a game that is running, and can delete its old snapshots too."
+    },
+    {
+      "kind": "improved",
+      "icon": "trash",
+      "title": "Safer uninstall",
+      "platform": "windows",
+      "text": "Uninstall won't remove a game that is still running."
+    },
+    {
+      "kind": "fixed",
+      "icon": "play",
+      "title": "Epic games",
+      "platform": "windows",
+      "text": "They start from Play and show as Playing."
+    }
+  ],
   "0.4.1": [
     "Add a game from any other launcher: pick its .exe and it stays where it is.",
     "The Install page has two clear tabs and shows each step of an install.",

@@ -13,6 +13,9 @@ from .common import COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import G, P, SP
 
 
+NOTE_KINDS = {'new': "New", 'improved': "Improved", 'fixed': "Fixed"}   # What's new groups
+
+
 class GameAction(NamedTuple):
     """One per-game action, rendered as a QMenu item (mouse/keyboard) or an
     ActionSheet row (controller, Theatre). `key` is what on_game_action runs."""
@@ -262,6 +265,13 @@ class ActionSheet(QFrame):
         self.rows.setSpacing(int(SP['0_5'] * scale))
         self.scroll.setWidget(host)
         lay.addWidget(self.scroll, 1)
+        self.foot = QFrame()                     # buttons that stay in view (What's new)
+        self.foot.setObjectName("SheetFoot")
+        self.foot_rows = QVBoxLayout(self.foot)
+        self.foot_rows.setContentsMargins(0, int(SP['3'] * scale), 0, 0)
+        self.foot_rows.setSpacing(int(SP['0_5'] * scale))
+        self.foot.hide()
+        lay.addWidget(self.foot)
         parent.installEventFilter(self)          # follow the parent's size
         self.hide()
 
@@ -269,7 +279,7 @@ class ActionSheet(QFrame):
         self.game = game
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
-        clear_layout(self.rows)
+        self._reset()
         self.title.setText(game.get('display_name', ''))
         self.sub.setText(SOURCE_LABEL.get(game.get('source', 'nexus'), ''))
         last, last_sub, first = None, '', None
@@ -309,7 +319,7 @@ class ActionSheet(QFrame):
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
-        clear_layout(self.rows)
+        self._reset()
         self.title.setText(title)
         self.sub.setText("")
         self.rows.addWidget(label(text, "Muted", wrap=True))
@@ -343,7 +353,7 @@ class ActionSheet(QFrame):
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
-        clear_layout(self.rows)
+        self._reset()
         self.title.setText(title)
         self.sub.setText(sub)
         if text:
@@ -374,7 +384,7 @@ class ActionSheet(QFrame):
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
-        clear_layout(self.rows)
+        self._reset()
         self.title.setText(title)
         self.sub.setText("")
         if text:
@@ -411,6 +421,87 @@ class ActionSheet(QFrame):
         ed.selectAll()
         ed.setFocus(Qt.FocusReason.TabFocusReason)
 
+    def notes(self, title: str, entries: list[dict], items: list, empty: str = ''):
+        """The sheet as release notes (What's new): cards from
+        updates.whats_new() grouped New / Improved / Fixed, untyped ones last,
+        and `items` ((text, glyph, fn)) pinned below them so the first, which
+        has the focus, never scrolls away. `empty` stands in for no entries."""
+        f = QApplication.focusWidget()
+        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
+        self.game = {}
+        self._reset()
+        self.title.setText(title)
+        self.sub.hide()
+        sc = lambda v: int(v * self.scale)       # noqa: E731
+        if not entries and empty:
+            self.rows.addWidget(plain_label(empty, "Muted", wrap=True))
+        for kind in (*NOTE_KINDS, None):
+            group = [e for e in entries if e.get('kind') == kind]
+            if not group:
+                continue
+            if kind:
+                if self.rows.count():
+                    self.rows.addSpacing(sc(SP['3']))
+                self.rows.addWidget(label(NOTE_KINDS[kind].upper(), "SheetSection"))
+                self.rows.addSpacing(sc(SP['1']))
+            for e in group:
+                self.rows.addWidget(self._note_card(e))
+                self.rows.addSpacing(sc(SP['1']))
+        self.rows.addStretch()
+        first = None
+        for text, glyph, fn in items:
+            b = QPushButton(amp(text))
+            b.setObjectName("SheetRow")
+            set_glyph_icon(b, glyph, sc(18), 'subtext' if first else 'accent', hover_role=None)
+            b.setMinimumHeight(sc(44))
+            b.clicked.connect(lambda _=False, fn=fn: (self.close_sheet(), fn()))
+            self.foot_rows.addWidget(b)
+            first = first or b
+        self.foot.setVisible(first is not None)
+        self.setGeometry(self.parentWidget().rect())
+        self.raise_()
+        self.show()
+        if first is not None:
+            first.setFocus(Qt.FocusReason.TabFocusReason)
+
+    def _note_card(self, n: dict) -> QFrame:
+        """One What's new card: an accent icon tile, a title and its line. A
+        plain line (no title, no icon) is just the text."""
+        sc = lambda v: int(v * self.scale)       # noqa: E731
+        card = QFrame()
+        card.setObjectName("NoteCard")
+        lay = QHBoxLayout(card)
+        lay.setContentsMargins(sc(SP['3']), sc(SP['3']), sc(SP['3']), sc(SP['3']))
+        lay.setSpacing(sc(SP['3']))
+        if not n.get('title') and not n.get('icon'):
+            lay.addWidget(plain_label(n['text'], "NoteLine", wrap=True), 1)
+            return card
+        tile = QFrame()
+        tile.setObjectName("NoteIcon")
+        tile.setFixedSize(sc(32), sc(32))
+        tl = QHBoxLayout(tile)
+        tl.setContentsMargins(0, 0, 0, 0)
+        ic = icon_label(G.get(n.get('icon') or '', G['check']), sc(16), P['accent'])
+        ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tl.addWidget(ic)
+        lay.addWidget(tile, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(sc(SP['0_5']))
+        if n.get('title'):
+            col.addWidget(plain_label(n['title'], "NoteTitle", wrap=True))
+            col.addWidget(plain_label(n['text'], "NoteText", wrap=True))
+        else:
+            col.addWidget(plain_label(n['text'], "NoteLine", wrap=True))
+        lay.addLayout(col, 1)
+        return card
+
+    def _reset(self):
+        """Empty the sheet for the next use: rows, pinned buttons, subtitle."""
+        clear_layout(self.rows)
+        clear_layout(self.foot_rows)
+        self.foot.hide()
+        self.sub.show()
+
     def default_focus(self):
         return next((w for w in self.findChildren(QPushButton)
                      if w.isEnabled() and not w.isHidden()), None)
@@ -435,6 +526,10 @@ class ActionSheet(QFrame):
     def keyPressEvent(self, ev):
         if ev.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Menu, Qt.Key.Key_Back):
             self.close_sheet()
+        elif ev.key() in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+            bar = self.scroll.verticalScrollBar()      # cards take no focus: page them
+            step = bar.pageStep() if ev.key() == Qt.Key.Key_PageDown else -bar.pageStep()
+            bar.setValue(bar.value() + step)
         else:
             super().keyPressEvent(ev)
 
@@ -597,5 +692,5 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None) -> s
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .widgets import (amp, clear_layout, icon_button, label, plain_label,  # noqa: E402
-    set_glyph_icon)
+from .widgets import (amp, clear_layout, icon_button, icon_label, label,  # noqa: E402
+    plain_label, set_glyph_icon)

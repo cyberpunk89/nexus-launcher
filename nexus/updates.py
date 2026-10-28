@@ -12,7 +12,7 @@ page (Windows: straight to the installer) and people install the new build
 themselves.
 
 After an update, the window shows that version's "What's new" once: a few
-short lines bundled in nexus/data/whats_new.json (the release writes them),
+short cards bundled in nexus/data/whats_new.json (the release writes them),
 so it needs no request and works offline."""
 
 import json
@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import __version__, net
 from .features import has
+from .icons import ICONS
 from .paths import CACHE_DIR, CONFIG_PATH
 
 REPO = 'cyberpunk89/nexus-launcher'
@@ -30,7 +31,8 @@ CACHE = CACHE_DIR / 'update-check.json'
 MAX_AGE = 24 * 3600
 INSTALLER = re.compile(r'-Setup-[0-9][^/]*\.exe$')    # what build-windows.yml uploads
 NOTES = Path(__file__).parent / 'data' / 'whats_new.json'
-NOTES_MAX, NOTE_LEN = 6, 140
+NOTES_MAX, NOTE_LEN, TITLE_LEN = 6, 140, 40
+KINDS = ('new', 'improved', 'fixed')            # the What's new groups, in order
 
 
 def _settings() -> dict:
@@ -122,18 +124,32 @@ def available(current: str = __version__, force: bool = False) -> dict | None:
     return {'version': r['version'], 'url': r['url']} if r['state'] == 'available' else None
 
 
-def whats_new(version: str = __version__) -> list[str]:
-    """The short "What's new" lines bundled for `version` ([] when none):
-    at most NOTES_MAX, each one plain line of at most NOTE_LEN characters."""
+def _clip(s, n: int) -> str:
+    s = ' '.join(s.split()) if isinstance(s, str) else ''
+    return s if len(s) <= n else s[:n - 1].rstrip() + '…'
+
+
+def whats_new(version: str = __version__) -> list[dict]:
+    """The "What's new" cards bundled for `version` ([] when none), at most
+    NOTES_MAX: {'text', 'title', 'icon', 'kind'}, plain and short. An entry
+    is a plain line (0.4.1) or {"text", "title", "icon", "kind", "platform"}:
+    icon a name in nexus.icons, kind new|improved|fixed, platform linux|
+    windows (has('proton'), never sys.platform); anything unknown is dropped."""
     try:
         notes = json.loads(NOTES.read_text(encoding='utf-8')).get(version)
     except (OSError, ValueError, AttributeError):
         return []
+    here = 'linux' if has('proton') else 'windows'
     out = []
-    for line in notes if isinstance(notes, list) else []:
-        line = ' '.join(str(line).split()) if isinstance(line, str) else ''
-        if line:
-            out.append(line if len(line) <= NOTE_LEN else line[:NOTE_LEN - 1].rstrip() + '…')
+    for n in notes if isinstance(notes, list) else []:
+        n = {'text': n} if isinstance(n, str) else n if isinstance(n, dict) else {}
+        if n.get('platform', here) != here:
+            continue
+        text = _clip(n.get('text'), NOTE_LEN)
+        if text:
+            out.append({'text': text, 'title': _clip(n.get('title'), TITLE_LEN),
+                        'icon': n['icon'] if n.get('icon') in ICONS else None,
+                        'kind': n['kind'] if n.get('kind') in KINDS else None})
     return out[:NOTES_MAX]
 
 

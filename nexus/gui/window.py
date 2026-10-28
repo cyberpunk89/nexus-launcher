@@ -662,16 +662,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             QTimer.singleShot(1200, lambda: alive(self) and self.show_whats_new())
 
     def show_whats_new(self):
-        """This version's short notes in the sheet, with the full release notes
-        a click away."""
-        notes = updates.whats_new()
-        text = "\n".join(f"•  {n}" for n in notes) if notes else \
-            "No notes for this version here. The release page has them all."
+        """This version's notes as cards in the sheet, with the full release
+        notes a click away."""
         url = updates.release_url()
-        self.sheet.choose(f"What's new in Nexus {__version__}", [
+        self.sheet.notes(f"What's new in Nexus {__version__}", updates.whats_new(), [
             ("Got it", G['check'], lambda: None),
             ("Full release notes", G['external'],
-             lambda: QDesktopServices.openUrl(QUrl(url)))], text=text)
+             lambda: QDesktopServices.openUrl(QUrl(url)))],
+            empty="No notes for this version here. The release page has them all.")
 
     def open_setup(self):
         self.setup.open(load_config(), self.prefs.appearance)
