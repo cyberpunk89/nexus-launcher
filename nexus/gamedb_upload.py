@@ -330,7 +330,9 @@ def upload_library(s: dict | None = None, games=None, force: bool = False) -> di
         return {**out, 'status': 'fresh'}
     ready = _ready('library', gamedb.SCOPE_LIBRARY, s)
     if ready != 'ok':
-        return {**out, 'status': ready}
+        return {**out, 'status': ready,
+                'error': {'kind': 'scope', 'message': gamedb.SCOPE_HINT[gamedb.SCOPE_LIBRARY]}
+                if ready == 'read_only' else None}
     games = heroic_library() if games is None else games
     if not games:
         return {**out, 'status': 'idle'}            # never an empty "complete": it would wipe

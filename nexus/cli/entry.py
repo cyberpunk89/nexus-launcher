@@ -656,7 +656,10 @@ def _cmd_gamedb_sync(args, install_base):
     for what, r in ups.items() if not args.json else ():
         if r['status'] == 'uploaded':
             print(f"Game-db {what}: sent {r['sent']}")
-        elif r['status'] in ('failed', 'read_only'):
+        # The library upload is on by default: a read-only token just skips
+        # it quietly. Sessions are opt-in, so their scope hint is shown.
+        elif (r['status'] == 'failed' or r['status'] == 'read_only' and what != 'library') \
+                and r.get('error'):
             print(f"Game-db {what}: {r['error']['message']}", file=sys.stderr)
     sys.exit(1 if res['status'] == 'failed' else 0)
 

@@ -1217,6 +1217,30 @@ class Helpers(unittest.TestCase):
                          'http://localhost:3000/game/1')
 
 
+class SyncCommand(unittest.TestCase):
+    """--gamedb-sync's text output with a read-only token: the sessions hint
+    shows, the library upload (on by default) skips quietly, no crash
+    (found in the live run against Game-db dev, 2026-10-28)."""
+
+    def test_read_only_token_prints_the_hint_and_does_not_crash(self):
+        from types import SimpleNamespace
+        from nexus.cli import entry
+        hint = gamedb.SCOPE_HINT[gamedb.SCOPE_SESSIONS]
+        ups = {'sessions': {'status': 'read_only', 'sent': 0,
+                            'error': {'kind': 'scope', 'message': hint}},
+               'library': {'status': 'read_only', 'sent': 0, 'error': None}}
+        err = io.StringIO()
+        with mock.patch.object(gamedb, 'sync_games', return_value={
+                'status': 'synced', 'count': 3, 'changed': 3, 'removed': 0, 'error': None}), \
+                mock.patch.object(gamedb_upload, 'upload_all', return_value=ups), \
+                mock.patch('sys.stdout', io.StringIO()), mock.patch('sys.stderr', err), \
+                self.assertRaises(SystemExit) as cm:
+            entry._cmd_gamedb_sync(SimpleNamespace(refresh=False, json=False), None)
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn(hint, err.getvalue())
+        self.assertNotIn('library', err.getvalue())
+
+
 class Cli(unittest.TestCase):
     """The real CLI against a fake HOME with a pre-seeded cache: proves the
     lookup/deals paths work offline and never need the network."""
