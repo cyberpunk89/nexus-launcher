@@ -14,6 +14,12 @@ wishlist), kept in games.json and synced with `?since=` deltas at most every
 storeinfo can skip their own fetch for games Game-db already knows. An old
 server (404) or one without `games` simply leaves the feature off.
 
+v2 writes (play sessions, the other-store library) need a token minted with
+that scope: a 403 `{"error": "scope"}` is GameDbError kind `scope`, and
+meta's `scopes` tells Settings beforehand. Writes have their own rate limit
+on the server, so a 429 on a write holds back writes only, until its
+Retry-After.
+
 Every call says which Nexus is asking (`X-Nexus-Client`, `X-Nexus-Device`),
 which Game-db shows next to the token on /account.
 
@@ -54,12 +60,27 @@ TOKEN_RE = re.compile(r'^gdb_[A-Za-z0-9_-]{43}$')
 
 class GameDbError(net.NetError):
     """kind: config | auth | rate | net | schema | missing (404: the server
-    has no such endpoint, e.g. an older Game-db without v2)."""
+    has no such endpoint, e.g. an older Game-db without v2) | scope (403:
+    the token may not do this write; `need` names the scope) | invalid (400
+    on a write: the server refused the body, nothing was written)."""
 
-    def __init__(self, kind: str, message: str, retry_after: float | None = None):
+    def __init__(self, kind: str, message: str, retry_after: float | None = None,
+                 need: str | None = None):
         super().__init__(message)
         self.kind = kind
         self.retry_after = retry_after
+        self.need = need
+
+
+# The scope each v2 write needs, and what Settings says when the token lacks it.
+SCOPE_SESSIONS = 'write:sessions'
+SCOPE_LIBRARY = 'write:library'
+SCOPE_HINT = {
+    SCOPE_SESSIONS: "This token can only read. On Game-db's Account page, make one with "
+                    "'Upload play sessions'.",
+    SCOPE_LIBRARY: "This token can't send your library. On Game-db's Account page, make one "
+                   "with 'Send my other-store library'.",
+}
 
 
 # ---- settings -------------------------------------------------------------
@@ -156,24 +177,57 @@ def _headers(token: str, device: str | None = None) -> dict:
     }
 
 
+def _error_body(e) -> dict:
+    """The JSON object in an HTTP error's body, or {} (read capped, never raises)."""
+    try:
+        got = json.loads(e.read(4096) or b'{}')
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
 def _get(base: str, token: str, endpoint: str, schema: int, query: dict | None = None,
          timeout: float = 20, device: str | None = None) -> dict:
     """One authenticated GET of a Game-db JSON endpoint; GameDbError on
     anything but a JSON object of the expected schema. The token is only
     ever in the Authorization header, never in a message."""
+    return _request(base, token, endpoint, schema=schema, query=query, timeout=timeout,
+                    device=device)
+
+
+def _request(base: str, token: str, endpoint: str, method: str = 'GET',
+             schema: int | None = None, query: dict | None = None, body=None,
+             timeout: float = 20, device: str | None = None) -> dict:
+    """One authenticated request; `body` is sent as JSON. Writes answer
+    without a `schema` (schema=None), reads must carry the expected one."""
     import urllib.error
     import urllib.request
     url = base + endpoint + ('?' + urllib.parse.urlencode(query) if query else '')
-    req = urllib.request.Request(url, headers=_headers(token, device))
+    headers = _headers(token, device)
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     opener = urllib.request.build_opener(_no_redirect())
     try:
         with opener.open(req, timeout=timeout) as r:
             raw = r.read(LIMIT + 1)
     except urllib.error.HTTPError as e:
+        detail = _error_body(e) if e.code in (400, 403) else {}
         e.close()
+        if e.code == 403 and detail.get('error') == 'scope':
+            need = detail.get('need') if isinstance(detail.get('need'), str) else None
+            raise GameDbError('scope', SCOPE_HINT.get(need) or
+                              "This token may not do that; make one with more rights on "
+                              f"{base}/account", need=need) from None
         if e.code in (401, 403):
             raise GameDbError('auth', "Game-db rejected the token — create a new one on "
                                       f"{base}/account") from None
+        if e.code == 400 and method != 'GET':
+            why = detail.get('detail') if isinstance(detail.get('detail'), str) else ''
+            raise GameDbError('invalid', f"{endpoint}: Game-db refused the upload"
+                                         + (f" ({why[:200]})" if why else '')) from None
         if e.code == 429:
             try:
                 retry = float(e.headers.get('Retry-After') or 600)
@@ -194,8 +248,10 @@ def _get(base: str, token: str, endpoint: str, schema: int, query: dict | None =
         data = json.loads(raw)
     except ValueError:
         raise GameDbError('schema', f"{endpoint}: not JSON") from None
-    if not isinstance(data, dict) or data.get('schema') != schema:
-        got = data.get('schema') if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        raise GameDbError('schema', f"{endpoint}: not a JSON object")
+    if schema is not None and data.get('schema') != schema:
+        got = data.get('schema')
         raise GameDbError('schema', f"Game-db API schema {got!r}, this Nexus understands "
                                     f"{schema} — update one of them")
     return data
@@ -249,9 +305,14 @@ def _cached(fp: str):
 
 
 def last_state() -> dict:
-    """{error: {kind, message, at}|None, retry_at: float|None}."""
+    """{error: {kind, message, at}|None, retry_at: float|None (reads),
+    write_retry_at: float|None (writes)}."""
     s = _read_json(_state_path())
     return s if isinstance(s, dict) else {}
+
+
+def _save_state(**changes) -> None:
+    _write_private(_state_path(), {**last_state(), **changes})
 
 
 def clear_cache() -> None:
@@ -260,13 +321,13 @@ def clear_cache() -> None:
     _games_memo.clear()
 
 
-def _note_rate(e: GameDbError, now: float) -> None:
-    """v1 and v2 share one rate-limit budget on the server, so a 429 from
-    either holds both back (summary() checks the same retry_at)."""
+def _note_rate(e: GameDbError, now: float, write: bool = False) -> None:
+    """v1 and v2 reads share one rate-limit budget on the server, so a 429
+    from either holds both back (summary() checks the same retry_at). Writes
+    have their own budget (write_retry_at)."""
     if e.kind != 'rate' or not e.retry_after:
         return
-    st = last_state()
-    _write_private(_state_path(), {'error': st.get('error'), 'retry_at': now + e.retry_after})
+    _save_state(**{'write_retry_at' if write else 'retry_at': now + e.retry_after})
 
 
 def summary(refresh: bool = False, cache_only: bool = False) -> dict:
@@ -304,13 +365,10 @@ def summary(refresh: bool = False, cache_only: bool = False) -> dict:
         data = _fetch(s['url'], s['token'], device=s['device'])
     except GameDbError as e:
         err = {'kind': e.kind, 'message': str(e), 'at': now}
-        _write_private(_state_path(), {
-            'error': err,
-            'retry_at': now + e.retry_after if e.retry_after else None,
-        })
+        _save_state(error=err, retry_at=now + e.retry_after if e.retry_after else None)
         return stale(err)
     _write_private(_summary_path(), {'fingerprint': fp, 'fetched_at': now, 'data': data})
-    _write_private(_state_path(), {'error': None, 'retry_at': None})
+    _save_state(error=None, retry_at=None)
     return {'data': data, 'fetched_at': now, 'stale': False, 'error': None}
 
 
@@ -387,20 +445,90 @@ def server_meta(refresh: bool = False, s: dict | None = None) -> dict | None:
     return data
 
 
+def _offers(m: dict | None, feature: str) -> bool:
+    return isinstance(m, dict) and not m.get('off') and feature in (m.get('features') or ())
+
+
 def _offers_games(m: dict | None) -> bool:
-    return isinstance(m, dict) and not m.get('off') and 'games' in (m.get('features') or ())
+    return _offers(m, 'games')
 
 
-def games_available(s: dict | None = None) -> bool | None:
-    """Cache-only: True/False once the server answered v2/meta, None while
-    unknown. For Settings, which never asks the server itself."""
-    s = s or settings()
+def _cached_meta(s: dict) -> dict | None:
+    """meta.json's answer for this url and token, or None (never asked)."""
     if not configured(s):
         return None
     c = _read_json(_meta_path())
     if not (isinstance(c, dict) and c.get('fingerprint') == _fingerprint(s['url'], s['token'])):
         return None
-    return _offers_games(c.get('data'))
+    return c.get('data') if isinstance(c.get('data'), dict) else None
+
+
+def offers(feature: str, s: dict | None = None) -> bool | None:
+    """Cache-only: whether the server offers a v2 feature ('games',
+    'sessions', 'library'); None while unknown. For Settings, which never
+    asks the server itself."""
+    m = _cached_meta(s or settings())
+    return None if m is None else _offers(m, feature)
+
+
+def games_available(s: dict | None = None) -> bool | None:
+    return offers('games', s)
+
+
+def token_scopes(s: dict | None = None) -> list[str] | None:
+    """Cache-only: this token's scopes as v2/meta listed them (a server from
+    before scopes means read only); None while unknown."""
+    m = _cached_meta(s or settings())
+    if m is None or m.get('off'):
+        return None
+    got = m.get('scopes')
+    return [x for x in got if isinstance(x, str)] if isinstance(got, list) else ['read']
+
+
+def write_status(feature: str, scope: str, s: dict | None = None) -> str:
+    """Cache-only, for Settings and --doctor: 'unknown' (not asked yet),
+    'unavailable' (the server lacks the feature), 'read_only' (the token
+    lacks the scope) or 'ok'."""
+    s = s or settings()
+    m = _cached_meta(s)
+    if m is None:
+        return 'unknown'
+    if not _offers(m, feature):
+        return 'unavailable'
+    return 'ok' if scope in (token_scopes(s) or ()) else 'read_only'
+
+
+def _forget_scope(s: dict, need: str | None) -> None:
+    """A 403 scope: drop it from the cached meta, so Settings shows the hint
+    at once (a token's scopes never grow; a new token is a new fingerprint)."""
+    c = _read_json(_meta_path())
+    if not need or not isinstance(c, dict) or not isinstance(c.get('data'), dict) \
+            or c.get('fingerprint') != _fingerprint(s['url'], s['token']):
+        return
+    scopes = [x for x in (token_scopes(s) or ['read']) if x != need]
+    _write_private(_meta_path(), {**c, 'data': {**c['data'], 'scopes': scopes}})
+
+
+def write(endpoint: str, body, method: str = 'POST', s: dict | None = None) -> dict:
+    """One v2 write (the answer's JSON object). GameDbError as for reads, plus
+    kind `scope` (the token lacks the write's scope; remembered in meta.json)
+    and `rate` without a request while an earlier write's Retry-After runs."""
+    s = s or settings()
+    if not configured(s):
+        raise GameDbError('config', "Game-db is not set up")
+    now = time.time()
+    wait = (last_state().get('write_retry_at') or 0) - now
+    if wait > 0:
+        raise GameDbError('rate', f"Game-db asked us to slow down; retry in {int(wait)}s",
+                          retry_after=wait)
+    try:
+        return _request(s['url'], s['token'], endpoint, method=method, body=body, timeout=30,
+                        device=s['device'])
+    except GameDbError as e:
+        _note_rate(e, now, write=True)
+        if e.kind == 'scope':
+            _forget_scope(s, e.need)
+        raise
 
 
 def _games_cache(fp: str):

@@ -94,11 +94,12 @@ class FakeOpener:
         return FakeResponse(json.dumps(self.result).encode())
 
 
-def http_error(code, headers=None):
+def http_error(code, headers=None, body=None):
     h = email.message.Message()
     for k, v in (headers or {}).items():
         h[k] = v
-    return urllib.error.HTTPError('https://x/api', code, 'err', h, io.BytesIO(b''))
+    raw = json.dumps(body).encode() if body is not None else b''
+    return urllib.error.HTTPError('https://x/api', code, 'err', h, io.BytesIO(raw))
 
 
 class Base(unittest.TestCase):
@@ -306,8 +307,9 @@ def game(appid, **kw):
 
 
 class FakeServer:
-    """urllib's opener, routed by path: `routes[path]` is a dict (JSON 200),
-    an exception, or a callable(query) returning either."""
+    """urllib's opener, routed by `"METHOD path"`, then by path: a route is a
+    dict (JSON 200), an exception, or a callable(query) returning either; a
+    request's JSON body is in query['__body__']."""
 
     def __init__(self, routes):
         self.routes = routes
@@ -317,7 +319,11 @@ class FakeServer:
         self.requests.append(req)
         u = urllib.parse.urlsplit(req.full_url)
         q = dict(urllib.parse.parse_qsl(u.query))
-        r = self.routes[u.path] if u.path in self.routes else http_error(404)
+        if req.data is not None:
+            q['__body__'] = json.loads(req.data)
+        r = self.routes.get(f"{req.get_method()} {u.path}", self.routes.get(u.path))
+        if r is None:
+            r = http_error(404)
         if callable(r):
             r = r(q)
         if isinstance(r, Exception):
@@ -326,6 +332,10 @@ class FakeServer:
 
     def paths(self):
         return [urllib.parse.urlsplit(r.full_url).path for r in self.requests]
+
+    def bodies(self, method, path):
+        return [json.loads(r.data) for r in self.requests
+                if r.get_method() == method and urllib.parse.urlsplit(r.full_url).path == path]
 
     def queries(self, path):
         return [dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.full_url).query))
@@ -640,6 +650,108 @@ class CacheFirst(V2Base):
             'fingerprint': gamedb._fingerprint('https://gdb.example', TOKEN),
             'fetched_at': time.time(), 'data': {'off': True}}))
         self.assertIsNone(gamedb.meta(620))                 # the server dropped v2
+
+
+SCOPED_META = {**META, 'features': ['summary', 'games', 'sessions', 'library'],
+               'scopes': ['read', 'write:sessions', 'write:library']}
+
+
+class Writes(V2Base):
+    """Phase 2: scopes, the scope error, and the write backoff."""
+
+    def test_scope_403_is_its_own_kind_and_never_leaks_the_token(self):
+        _fake, p = self.server({
+            '/api/nexus/v2/meta': SCOPED_META,
+            'POST /api/nexus/v2/sessions': http_error(
+                403, body={'error': 'scope', 'need': 'write:sessions'})})
+        with p:
+            gamedb.server_meta()
+            self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'ok')
+            with self.assertRaises(gamedb.GameDbError) as cm:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual((cm.exception.kind, cm.exception.need), ('scope', 'write:sessions'))
+        self.assertIn("can only read", str(cm.exception))
+        self.assertNotIn(TOKEN, str(cm.exception))
+        # remembered without asking the server again
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'read_only')
+        self.assertEqual(gamedb.write_status('library', gamedb.SCOPE_LIBRARY), 'ok')
+
+    def test_plain_403_stays_auth(self):
+        _fake, p = self.server({'POST /api/nexus/v2/sessions': http_error(403)})
+        with p, self.assertRaises(gamedb.GameDbError) as cm:
+            gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(cm.exception.kind, 'auth')
+
+    def test_400_on_a_write_is_invalid(self):
+        _fake, p = self.server({'POST /api/nexus/v2/sessions': http_error(
+            400, body={'error': 'invalid', 'detail': 'minutes out of range'})})
+        with p, self.assertRaises(gamedb.GameDbError) as cm:
+            gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(cm.exception.kind, 'invalid')
+        self.assertIn('minutes out of range', str(cm.exception))
+
+    def test_write_sends_json_with_the_bearer(self):
+        fake, p = self.server({'POST /api/nexus/v2/sessions': {'accepted': 1, 'duplicate': 0}})
+        with p:
+            got = gamedb.write('/api/nexus/v2/sessions', {'sessions': [{'id': 'x'}]})
+        self.assertEqual(got, {'accepted': 1, 'duplicate': 0})
+        req = fake.requests[0]
+        self.assertEqual(req.get_method(), 'POST')
+        self.assertEqual(req.get_header('Content-type'), 'application/json')
+        self.assertEqual(req.get_header('Authorization'), f'Bearer {TOKEN}')
+        self.assertEqual(fake.bodies('POST', '/api/nexus/v2/sessions'),
+                         [{'sessions': [{'id': 'x'}]}])
+
+    def test_429_on_a_write_backs_off_writes_only(self):
+        fake, p = self.server({
+            'POST /api/nexus/v2/sessions': http_error(429, {'Retry-After': '120'}),
+            '/api/nexus/v1/summary': SUMMARY})
+        with p:
+            with self.assertRaises(gamedb.GameDbError) as cm:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+            self.assertEqual(cm.exception.kind, 'rate')
+            n = len(fake.requests)
+            with self.assertRaises(gamedb.GameDbError) as cm2:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+            self.assertEqual(len(fake.requests), n)            # not sent while waiting
+            self.assertEqual(cm2.exception.kind, 'rate')
+            self.assertFalse(gamedb.summary()['stale'])        # reads are not held back
+        st = gamedb.last_state()
+        self.assertGreater(st['write_retry_at'], time.time() + 100)
+        self.assertFalse(st.get('retry_at'))
+        with mock.patch.object(gamedb.time, 'time', return_value=time.time() + 130), p:
+            with self.assertRaises(gamedb.GameDbError):
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(len(fake.requests), n + 2)            # after Retry-After: asked again
+
+    def test_meta_scopes_and_features(self):
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'unknown')
+        self.assertIsNone(gamedb.token_scopes())
+        _fake, p = self.server({'/api/nexus/v2/meta': META})       # read-only, no sessions
+        with p:
+            gamedb.server_meta()
+        self.assertEqual(gamedb.token_scopes(), ['read'])
+        self.assertIs(gamedb.offers('sessions'), False)
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'unavailable')
+        _fake, p = self.server({'/api/nexus/v2/meta': {**SCOPED_META, 'scopes': ['read']}})
+        with p:
+            gamedb.server_meta(refresh=True)
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'read_only')
+
+    def test_old_server_means_every_write_feature_off(self):
+        _fake, p = self.server({'/api/nexus/v1/summary': SUMMARY})    # v1 only
+        with p:
+            gamedb.server_meta()
+        for feature, scope in (('sessions', gamedb.SCOPE_SESSIONS),
+                               ('library', gamedb.SCOPE_LIBRARY)):
+            self.assertEqual(gamedb.write_status(feature, scope), 'unavailable')
+        self.assertIsNone(gamedb.token_scopes())
+        # a server from before scopes (no `scopes` in meta) is read-only
+        meta = {k: v for k, v in SCOPED_META.items() if k != 'scopes'}
+        _fake, p = self.server({'/api/nexus/v2/meta': meta})
+        with p:
+            gamedb.server_meta(refresh=True)
+        self.assertEqual(gamedb.token_scopes(), ['read'])
 
 
 class Helpers(unittest.TestCase):

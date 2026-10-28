@@ -425,6 +425,21 @@ def _combo(items, min_w: int = 260) -> 'NoWheelCombo':
     return box
 
 
+TOKEN_NOTE = "Kept in config.toml, readable only by you; data is cached 45 minutes."
+
+
+def token_note(scopes) -> str:
+    """The token row's description: what this token may do, as Game-db's
+    v2/meta last said (meta.json; None = not asked yet)."""
+    if scopes is None:
+        return TOKEN_NOTE
+    can = [what for scope, what in ((gamedb.SCOPE_SESSIONS, "upload play sessions"),
+                                    (gamedb.SCOPE_LIBRARY, "send your library"))
+           if scope in scopes]
+    return ("Can read" + ''.join(f", {c}" for c in can[:-1])
+            + (f" and {can[-1]}" if can else " only") + ". " + TOKEN_NOTE)
+
+
 class SettingsPage(QWidget):
     """Edits the config.toml keys the GUI owns; everything else in the file
     (comments, unknown keys) is preserved by save_config(). Library
@@ -757,8 +772,8 @@ class SettingsPage(QWidget):
         get.setToolTip("Opens your Game-db account page in the browser")
         get.clicked.connect(self._open_gamedb_account)
         self.gdb_token_row = self._field_row(
-            sec, "Desktop app token", "Read-only. Kept in config.toml, readable only by you; "
-            "data is cached 45 minutes.", self.gdb_token, extra=(get,), keywords="key")
+            sec, "Desktop app token", TOKEN_NOTE, self.gdb_token, extra=(get,),
+            keywords="key scope")
         self.gdb_games = Switch()
         self.gdb_games_row = self._row(
             sec, "Game details from Game-db", "", self.gdb_games,
@@ -1296,6 +1311,7 @@ class SettingsPage(QWidget):
         self.gdb_token.setPlaceholderText("set by NEXUS_GAMEDB_TOKEN" if env_token else "gdb_…")
         self.gdb_games.setChecked(c.get('gamedb_games', True))
         self.gdb_device.setText(c.get('gamedb_device') or "")
+        self.gdb_token_row.set_description(token_note(gamedb.token_scopes()))
         offered = gamedb.games_available()          # meta.json only; the GUI never asks Game-db
         self.gdb_games.setEnabled(offered is not False)
         self.gdb_games_row.set_description(
