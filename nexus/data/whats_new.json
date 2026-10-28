@@ -1,4 +1,42 @@
 {
+  "0.5.0": [
+    {
+      "kind": "new",
+      "icon": "info",
+      "title": "Know the game at a glance",
+      "text": "Game pages show the studio, year, genres, a short description and how long it takes to beat, with your progress."
+    },
+    {
+      "kind": "new",
+      "icon": "shelves",
+      "title": "Smart shelves",
+      "text": "The Library groups your games into Continue playing, Unfinished, Almost done, top genres and more. Home has a Smart shelf too."
+    },
+    {
+      "kind": "new",
+      "icon": "search",
+      "title": "Browse by genre",
+      "text": "Click a genre on a game page to see every game you have in that genre."
+    },
+    {
+      "kind": "new",
+      "icon": "calendar",
+      "title": "Release status on Upcoming",
+      "text": "Upcoming releases show Early access, Delayed, Cancelled, the PC date and Out now."
+    },
+    {
+      "kind": "improved",
+      "icon": "library",
+      "title": "Details for Heroic games",
+      "text": "Epic, GOG and Amazon games from Heroic get the same game details as Steam games when Game-db is set up."
+    },
+    {
+      "kind": "new",
+      "icon": "timer",
+      "title": "Play time to Game-db",
+      "text": "Nexus can send your play time to Game-db. It is off by default; Settings says when a token can only read."
+    }
+  ],
   "0.4.2": [
     {
       "kind": "new",
