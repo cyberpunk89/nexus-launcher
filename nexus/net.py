@@ -176,12 +176,14 @@ def _age(path: Path) -> float:
 
 
 def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
-                errors_: tuple = (NetError, ValueError, KeyError, TypeError)):
+                errors_: tuple = (NetError, ValueError, KeyError, TypeError), valid=None):
     """fetch() through a JSON file cache at `path` (for per-game lookups:
     ProtonDB, PCGamingWiki, Steam store pages...). Fresh for `max_age`
     seconds. A failed fetch serves the last good copy (or None) and is
     remembered for FAIL_TTL, so offline the next lookups don't each wait out
-    a timeout. None from fetch() is a real "nothing here" and is cached."""
+    a timeout. None from fetch() is a real "nothing here" and is cached.
+    `valid(value)` false (an older schema) makes a cached copy stale, but it
+    is still served when the refetch fails."""
     path = Path(path)
     _corrupt = object()
 
@@ -197,7 +199,7 @@ def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
     try:
         if not refresh and _age(path) < max_age:
             hit = read()
-            if hit is not _corrupt:
+            if hit is not _corrupt and (valid is None or valid(hit)):
                 return hit
     except OSError:
         pass
@@ -218,6 +220,19 @@ def cached_json(path: Path, max_age: float, fetch, refresh: bool = False,
     if save_json(path, value):
         failed.unlink(missing_ok=True)
     return value
+
+
+def peek_json(path: Path, max_age: float, valid=None) -> tuple[bool, object]:
+    """What cached_json would serve from `path` without fetching: (fresh,
+    value). fresh is False when the file is missing, older than `max_age` or
+    fails `valid`; value is the copy at any age (None when there's none)."""
+    path = Path(path)
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+        age = _age(path)
+    except (OSError, ValueError):
+        return False, None
+    return age < max_age and (valid is None or valid(value)), value
 
 
 def cached(url: str, name: str, max_age: float, refresh: bool = False,

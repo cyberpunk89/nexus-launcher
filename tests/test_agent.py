@@ -271,13 +271,39 @@ class AgentTasks(unittest.TestCase):
             ag.stop = True
             raise RuntimeError("nope")
         ag.task_torrents = boom
-        for t in ('scan', 'feed', 'index', 'deals', 'proton', 'art'):
+        for t in ('scan', 'feed', 'index', 'deals', 'proton', 'art', 'facts'):
             setattr(ag, 'task_' + t, lambda: 60)
         with mock.patch.object(A, 'TICK', 0), mock.patch.object(A.time, 'monotonic',
                                                                side_effect=iter(range(0, 10**6, 100)).__next__), \
                 mock.patch.object(A, '_say'):
             ag.run()
         self.assertEqual(calls, [1])
+
+    def _facts(self, out=b'{}', wait=0.0, play=False):
+        from nexus import facts
+        runs = []
+        with mock.patch.object(A, 'playing', return_value=play), \
+                mock.patch.object(facts, 'wait_seconds', return_value=wait), \
+                mock.patch.object(A.subprocess, 'run', side_effect=lambda cmd, **k:
+                                  runs.append(cmd) or mock.Mock(stdout=out)):
+            return self.agent.task_facts(), runs
+
+    def test_facts_runs_a_batch_in_its_own_process(self):
+        delay, runs = self._facts(json.dumps({'fill': {'left': 7}}).encode())
+        cli = NX.cli_command()
+        self.assertEqual(runs, [[*cli, '--game-facts', '--fill', str(A.FACTS_BATCH), '--json']])
+        self.assertEqual(delay, A.EVERY['facts'])
+        self.assertLessEqual(A.FACTS_BATCH * 3600 / A.EVERY['facts'], 40)    # the hourly budget
+
+    def test_facts_waits_while_playing_or_rate_limited(self):
+        self.assertEqual(self._facts(play=True), (600, []))
+        self.assertEqual(self._facts(wait=1800.0), (1800.0, []))
+        self.assertEqual(self._facts(wait=5.0), (60, []))
+
+    def test_facts_idles_when_nothing_is_missing(self):
+        self.assertEqual(self._facts(json.dumps({'fill': {'left': 0}}).encode())[0],
+                         A.EVERY['facts_idle'])
+        self.assertEqual(self._facts(b'not json')[0], A.EVERY['facts'])
 
     def test_scan_announces_through_the_window_or_the_desktop(self):
         watch.STATE.unlink(missing_ok=True)

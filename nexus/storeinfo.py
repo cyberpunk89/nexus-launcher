@@ -32,10 +32,37 @@ def _text(s: str | None, limit: int = 600) -> str:
     return t if len(t) <= limit else t[:limit - 1].rsplit(' ', 1)[0] + '…'
 
 
-def details(appid: int, refresh: bool = False) -> dict | None:
+# Bumped when details() keeps more fields: older cache files are refetched
+# (and still served while offline).
+STORE_V = 2
+
+
+def _current(v) -> bool:
+    return v is None or (isinstance(v, dict) and v.get('v') == STORE_V)
+
+
+DETAILS_AGE = 7 * DAY
+
+
+def _details_path(appid: int):
+    return CACHE_DIR / 'store' / f"{appid}.json"
+
+
+def details(appid: int, refresh: bool = False, errors: list | None = None) -> dict | None:
+    """The store page's facts, or None when Steam has no such app. A failed
+    fetch is appended to `errors` (when given) before the cache serves the
+    last good copy, so a caller can tell fresh from stale and see a 429."""
     def fetch():
-        raw = json.loads(net.get(DETAILS.format(appid=appid), timeout=15, limit=8 << 20))
-        d = ((raw or {}).get(str(appid)) or {})
+        try:
+            raw = json.loads(net.get(DETAILS.format(appid=appid), timeout=15, limit=8 << 20))
+            if not isinstance(raw, dict) or not isinstance(raw.get(str(appid)), dict):
+                # Throttled, Steam answers `null`: not "no such app".
+                raise net.NetError("appdetails gave no answer")
+        except (net.NetError, ValueError) as e:
+            if errors is not None:
+                errors.append(e)
+            raise
+        d = raw[str(appid)]
         if not d.get('success'):
             return None
         d = d.get('data') or {}
@@ -50,11 +77,16 @@ def details(appid: int, refresh: bool = False) -> dict | None:
         trailers.sort(key=lambda t: not t['highlight'])
         mc = d.get('metacritic') or {}
         return {
+            'v': STORE_V,
             'name': d.get('name'),
             'blurb': _text(d.get('short_description')),
             'genres': [g.get('description') for g in d.get('genres') or [] if g.get('description')],
             'developers': list(d.get('developers') or [])[:3],
+            'publishers': list(d.get('publishers') or [])[:3],
+            'categories': [{'id': c.get('id'), 'name': c.get('description')}
+                           for c in d.get('categories') or [] if isinstance(c, dict)],
             'release': (d.get('release_date') or {}).get('date'),
+            'coming_soon': bool((d.get('release_date') or {}).get('coming_soon')),
             'metacritic': ({'score': mc['score'], 'url': mc.get('url') if str(
                 mc.get('url', '')).startswith('https://www.metacritic.com/') else None}
                 if isinstance(mc.get('score'), int) else None),
@@ -63,7 +95,12 @@ def details(appid: int, refresh: bool = False) -> dict | None:
                             if (u := _https_steam(s.get('path_full')))],
             'url': STORE_PAGE.format(appid=appid),
         }
-    return net.cached_json(CACHE_DIR / 'store' / f"{appid}.json", 7 * DAY, fetch, refresh)
+    return net.cached_json(_details_path(appid), DETAILS_AGE, fetch, refresh, valid=_current)
+
+
+def cached_details(appid: int) -> tuple[bool, dict | None]:
+    """details() from the cache only: (fresh, value at any age)."""
+    return net.peek_json(_details_path(appid), DETAILS_AGE, _current)
 
 
 def reviews(appid: int, refresh: bool = False) -> dict | None:

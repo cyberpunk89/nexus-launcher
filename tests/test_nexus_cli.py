@@ -376,6 +376,8 @@ class CommandTable(unittest.TestCase):
             # the Windows feature set must let it through (w-11).
             for flag in ('--agent-enable', '--agent-disable'):
                 entry._refuse_unavailable(parser, parser.parse_args([flag]))
+            # The facts index is the same everywhere (the window fills it on Windows).
+            entry._refuse_unavailable(parser, parser.parse_args(['--game-facts', '--fill', '5']))
         with mock.patch.object(features, 'FEATURES', features.ALL):
             self.assertIn('--proton-install', fi.build_parser().format_help())
 
@@ -1028,6 +1030,46 @@ class Sandbox(unittest.TestCase):
         data = json.loads(self.cli('--library', '--json').stdout)
         self.assertEqual([g['source'] for g in data['games']], ['nexus'])
         self.assertTrue(data['disks'])
+
+    def test_game_facts_json_from_cache_with_gamedb_off(self):
+        sys.path.insert(0, str(REPO))
+        from nexus import hltb
+        apps = self.steam / 'steamapps'
+        apps.mkdir(parents=True, exist_ok=True)
+        (apps / 'appmanifest_10.acf').write_text(
+            '"AppState"\n{\n"appid" "10"\n"name" "Ten"\n"StateFlags" "4"\n'
+            '"installdir" "Ten"\n}\n')
+        reg = tests.sandbox.data_dir(self.home) / 'games.json'
+        data = json.loads(reg.read_text())
+        data['games']['test-game']['umu_gameid'] = 'umu-20'
+        data['games']['sideloaded'] = {**data['games']['test-game'], 'slug': 'sideloaded',
+                                       'display_name': 'Sideloaded', 'umu_gameid': None}
+        reg.write_text(json.dumps(data))
+        cache = tests.sandbox.cache_dir(self.home)
+        (cache / 'store').mkdir(parents=True)
+        for appid, name, cats, soon, genres in (
+                (10, 'Ten', [{'id': 2, 'name': 'Single-player'}], False, ['Action', 'RPG']),
+                (20, 'Twenty', [{'id': 9, 'name': 'Co-op'}], False, ['Indie', 'Early Access'])):
+            (cache / 'store' / f'{appid}.json').write_text(json.dumps({
+                'v': 2, 'name': name, 'blurb': 'b', 'genres': genres,
+                'developers': [f'{name} Studio'], 'publishers': ['Pub'],
+                'categories': cats, 'release': 'Sep 17, 2020', 'coming_soon': soon}))
+        hit = cache / 'hltb' / f"{hltb.title_key('Ten')}.json"
+        hit.parent.mkdir()
+        hit.write_text(json.dumps({'hit': {'main': 12.5, 'plus': 20, 'complete': 30}}))
+        out = json.loads(self.cli('--game-facts', '--json').stdout)
+        self.assertEqual(set(out['games']), {'steam-10', 'test-game'})
+        ten, rep = out['games']['steam-10'], out['games']['test-game']
+        self.assertEqual((ten['developers'], ten['year'], ten['genres'], ten['modes'],
+                          ten['status'], ten['length']['main'], ten['length']['source']),
+                         (['Ten Studio'], 2020, ['Action', 'RPG'], ['single'], 'released',
+                          12.5, 'hltb'))
+        self.assertEqual((rep['appid'], rep['genres'], rep['modes'], rep['status'],
+                          rep['length'], rep['igdbSlug']),
+                         (20, ['Indie'], ['coop'], 'early_access', None, None))
+        self.assertIsNone(out['fill'])
+        self.assertEqual(json.loads((cache / 'facts.json').read_text())['games'], out['games'])
+        self.assertIn('2 of 2 games', self.cli('--game-facts').stdout)
 
     def test_library_owned_adds_uninstalled_and_installing_games(self):
         sys.path.insert(0, str(REPO))

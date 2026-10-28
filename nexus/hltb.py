@@ -80,21 +80,42 @@ def _hours(seconds) -> float | None:
     return round(s / 3600, 1) if s > 0 else None
 
 
-def lookup(name: str, year: int | None = None, refresh: bool = False) -> dict | None:
-    """{main, plus, complete (hours), id, url, name} or None."""
+def _path(key: str):
+    return CACHE_DIR / 'hltb' / (re.sub(r'\s+', '-', key)[:120] + '.json')
+
+
+def _read(path) -> tuple[dict | None, bool]:
+    """The cached record and whether it is still fresh."""
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        age = max(0.0, time.time() - path.stat().st_mtime)
+        limit = (HIT_AGE if record.get('hit') else
+                 FAIL_AGE if record.get('failed') else MISS_AGE)
+        return record, age < limit
+    except (OSError, ValueError, AttributeError):
+        return None, False
+
+
+def cached(name: str) -> tuple[bool, dict | None]:
+    """lookup() from the cache only: (fresh, the hit at any age or None)."""
+    key = title_key(name)
+    if not key:
+        return True, None                  # nothing to look up, ever
+    record, fresh = _read(_path(key))
+    return fresh, (record or {}).get('hit')
+
+
+def lookup(name: str, year: int | None = None, refresh: bool = False,
+           errors: list | None = None) -> dict | None:
+    """{main, plus, complete (hours), id, url, name} or None. A failed
+    search is appended to `errors` (when given)."""
     key = title_key(name)
     if not key:
         return None
-    path = CACHE_DIR / 'hltb' / (re.sub(r'\s+', '-', key)[:120] + '.json')
-    try:
-        cached = json.loads(path.read_text(encoding='utf-8'))
-        age = time.time() - path.stat().st_mtime
-        limit = (HIT_AGE if cached.get('hit') else
-                 FAIL_AGE if cached.get('failed') else MISS_AGE)
-        if not refresh and age < limit:
-            return cached.get('hit')
-    except (OSError, ValueError, AttributeError):
-        cached = None
+    path = _path(key)
+    old, fresh = _read(path)
+    if old is not None and not refresh and fresh:
+        return old.get('hit')
     try:
         row = best_match(name, search(name), year)
         hit = None if row is None else {
@@ -105,8 +126,10 @@ def lookup(name: str, year: int | None = None, refresh: bool = False) -> dict | 
                 row.get('game_id', '')).isdigit() else None}
         record = {'hit': hit}
     except (net.NetError, ValueError, KeyError, TypeError) as e:
-        if cached and cached.get('hit'):
-            return cached['hit']                    # keep serving the old answer
+        if errors is not None:
+            errors.append(e)
+        if old and old.get('hit'):
+            return old['hit']                    # keep serving the old answer
         hit, record = None, {'failed': str(e)[:200]}
     net.save_json(path, record)
     return hit

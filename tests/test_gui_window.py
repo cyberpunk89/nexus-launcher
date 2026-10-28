@@ -859,6 +859,8 @@ class Window(unittest.TestCase):
                 self.assertEqual(asked.count('--fill-art'), 1)       # every 6 h
                 self.assertEqual(asked.count('--check-alerts'),
                                  win_downloads.STANDIN_ART_EVERY)
+                self.assertEqual(asked.count('--game-facts'),
+                                 win_downloads.STANDIN_ART_EVERY)        # every check
             with mock.patch.object(features, 'FEATURES', features.ALL):
                 w._check_repack_feed()
                 self.assertEqual(w._feed_timer.interval(), 6 * 3600 * 1000)   # Linux as before
@@ -871,6 +873,21 @@ class Window(unittest.TestCase):
             w._alerts_checked({'alerts': alerts}, '')
             w.show()
         self.assertEqual(said, ["Nexus", "Nexus"])
+
+    def test_facts_fill_skips_with_an_agent_or_a_game(self):
+        from nexus import instance
+        w = self.win
+        w.config = {**w.config, 'gamedb_enabled': False}
+        for agent, playing, want in ((False, False, 1), (True, False, 0), (False, True, 0)):
+            asked = []
+            with mock.patch.object(instance, 'agent_running', return_value=agent), \
+                    mock.patch.object(w, '_playing', playing), \
+                    patch_gui('cli_json', lambda args, cb, *_a: asked.append(args)):
+                w._check_repack_feed()
+            facts = [a for a in asked if a[0] == '--game-facts']
+            self.assertEqual(len(facts), want, (agent, playing))
+            if facts:
+                self.assertEqual(facts[0], ['--game-facts', '--fill', '30', '--json'])
 
     def test_shift_click_selects_a_range_and_batch_is_gated(self):
         w = self.win

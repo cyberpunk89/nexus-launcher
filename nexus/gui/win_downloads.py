@@ -22,9 +22,11 @@ UAC_NOTE = ("FitGirl's setup runs as administrator, so Windows asks first whethe
             "not from Nexus. Choose Yes to install. No cancels it and nothing is installed.")
 
 # Standing in for the background agent (Windows, see _check_repack_feed):
-# its alerts pace, and artwork every this many checks (6 h).
+# its alerts pace, artwork every this many checks (6 h), and this many game
+# facts per site per check (the CLI keeps to 40 an hour).
 STANDIN_MS = 45 * 60 * 1000
 STANDIN_ART_EVERY = 8
+STANDIN_FACTS = 30
 
 
 class DownloadsMixin:
@@ -277,8 +279,9 @@ class DownloadsMixin:
 
         On Windows there's no agent service: Start with Windows opens this
         window in the tray instead, so with no console agent running the
-        window keeps the agent's pace here (alerts every 45 min, artwork
-        every 6 h). The torrent and folder watchers run all the time anyway."""
+        window keeps the agent's pace here (alerts and game facts every 45
+        min, artwork every 6 h). The torrent and folder watchers run all the
+        time anyway."""
         agent = instance.agent_running()
         standin = not agent and not has('systemd_agent')
         self._feed_timer.start(STANDIN_MS if standin else 6 * 3600 * 1000)
@@ -292,6 +295,9 @@ class DownloadsMixin:
             # The first fill ran when the library loaded; the CLI stamps it
             # and skips it when it already ran today.
             cli_json(['--fill-art', '--if-stale', '--json'], self._art_fill_done, 600000)
+        if not agent and not self._playing:
+            cli_json(['--game-facts', '--fill', str(STANDIN_FACTS), '--json'],
+                     lambda *_: None, 600000)
         if not self.repacks_on() or \
                 not any(g.get('source', 'nexus') == 'nexus' for g in self._games):
             return

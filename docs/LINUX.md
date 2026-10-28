@@ -887,6 +887,7 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 |---|---|
 | `--game-tips GAME` | protongen tuning, ProtonDB tier, Steam Deck / anti-cheat / PCGamingWiki facts and fitting recipes (a slug, `steam-<appid>` or a Heroic slug) |
 | `--protondb APPID…` | ProtonDB tiers for Steam app ids (cached a day) |
+| `--game-facts [--refresh]` | Studio, year, genres, modes, release status and play length for every library game with a Steam store id (repacks by their umu id), from cached data; `--refresh` first fetches what's missing, at most 40 per hour. The agent fills it in the background |
 | `--apply-recipe SLUG RECIPE` | Merge one of protongen's recipes into a game's launch options |
 | `--explain-log SLUG` | Explain the game's latest log with protongen's local AI, if enabled |
 

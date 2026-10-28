@@ -65,6 +65,63 @@ def cmd_store_info(ident: str, as_json: bool, refresh: bool = False) -> None:
             s_['name'] + (' (yours)' if s_.get('owned_slug') else '') for s_ in info['similar'][:8]))
 
 
+def _facts_library() -> list[dict]:
+    """[{slug, appid, name}] for every library game with a Steam store id:
+    repacks by their umu GAMEID, installed Steam games, then owned Steam
+    games Game-db knows (cache only; none when it's off)."""
+    from nexus import compat, gamedb, steamlib
+    out, seen = [], set()
+
+    def add(slug, appid, name):
+        if appid and slug not in seen:
+            seen.add(slug)
+            out.append({'slug': slug, 'appid': appid, 'name': name})
+    for slug, e in load_registry()['games'].items():
+        add(slug, compat.store_appid(e), e.get('display_name') or slug)
+    for g in steamlib.scan(STEAM_ROOT):
+        add(g['slug'], compat.store_appid(g), g.get('display_name'))
+    try:
+        owned = gamedb.owned_library()                    # cache only
+    except Exception:                                     # noqa: BLE001 — optional
+        owned = []
+    for item in owned:
+        add(f"steam-{item['appid']}", compat.store_appid(
+            {'source': 'steam', 'appid': item['appid']}), item.get('title'))
+    return out
+
+
+def cmd_game_facts(refresh: bool, as_json: bool, fill_n: int | None = None) -> None:
+    """Rebuild the facts index (~/.cache/nexus/facts.json) from cached store
+    and HowLongToBeat data. --refresh, or the app's --fill N, first fetches
+    what's missing within the hourly budget (nexus/facts.py)."""
+    from nexus import facts
+    lib = _facts_library()
+    res = None
+    if refresh or fill_n is not None:
+        n = facts.BUDGET if fill_n is None else max(0, min(fill_n, facts.BUDGET))
+        res = facts.fill(lib, n)
+    idx = facts.build(lib)
+    facts.write_index(idx)
+    if as_json:
+        print(json.dumps({'built': idx['built'], 'games': idx['games'],
+                          'missing': idx['missing'], 'fill': res}))
+        return
+    for slug, f in sorted(idx['games'].items(), key=lambda kv: (kv[1]['name'] or '').lower()):
+        bits = [', '.join((f['developers'] or [])[:2]), str(f['year'] or ''),
+                ', '.join(f['genres']), ', '.join(f['modes'] or []),
+                (f['status'] or '').replace('_', ' '),
+                f"main {f['length']['main']:g} h" if (f['length'] or {}).get('main') else '']
+        print(f"{f['name'] or slug}  " + ' · '.join(b for b in bits if b))
+    m = idx['missing']
+    print(f"{len(idx['games'])} of {len(lib)} games with a store id have facts"
+          + (f"; still to fetch: {m['steam']} store pages, {m['hltb']} play lengths"
+             if m['steam'] or m['hltb'] else '')
+          + ('' if refresh else ' (--refresh fetches them)' if m['steam'] or m['hltb'] else ''))
+    if res and res['stopped']:
+        print(f"  Stopped for now ({', '.join(res['stopped'])}): the hourly limit or a "
+              "rate limit was reached; Nexus carries on later.", file=sys.stderr)
+
+
 def compat_lines(info: dict) -> list[str]:
     """Plain-text anti-cheat / Steam Deck / PCGamingWiki lines for --game-tips."""
     out = []
@@ -483,5 +540,6 @@ from .downloads import _owned_store_ids  # noqa: E402
 from .launchprofile import (empty_profile, format_launch_options, parse_launch_options,
     profile_from_protongen_config, protongen_memory_for, PROTONGEN_STATE, split_wrappers)  # noqa: E402
 from .manage import _game_by_id, _protongen_id  # noqa: E402
+from .registry import load_registry  # noqa: E402
 from .steam import resolve_steam_account  # noqa: E402
 from .sunshine import launch_log_path  # noqa: E402

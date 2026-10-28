@@ -407,6 +407,14 @@ def build_parser() -> argparse.ArgumentParser:
     g5.add_argument('--store-info', metavar='GAME', dest='store_info',
                     help='Steam store facts for a game: trailers, reviews, metacritic, '
                          'similar games (cached)')
+    g5.add_argument('--game-facts', action='store_true', dest='game_facts',
+                    help="Studio, year, genres, modes, release status and play length for "
+                         "every library game with a Steam store id, from cached store and "
+                         "HowLongToBeat data (--refresh also fetches what's missing, at most "
+                         "40 per hour)")
+    g5.add_argument('--fill', type=int, metavar='N', dest='facts_fill',
+                    help='Internal (used by the app): with --game-facts, fetch at most N '
+                         'missing facts per site first')
     g5.add_argument('--torrent-add', metavar='MAGNET|FILE', dest='torrent_add',
                     help='Hand a magnet link or .torrent to your torrent client '
                          '(config [torrent]); --auto-install installs it once downloaded')
@@ -753,6 +761,7 @@ COMMANDS = (
     ('check_repack', lambda a, base: cmd_check_repack(a.check_repack, a.json, a.clamav)),
     ('history', lambda a, base: cmd_history(a.json)),
     ('store_info', lambda a, base: cmd_store_info(a.store_info, a.json, a.refresh)),
+    ('game_facts', lambda a, base: cmd_game_facts(a.refresh, a.json, a.facts_fill)),
     ('notify_test', _cmd_notify_test),
     ('agent', lambda a, base: sys.exit(cmd_agent(base))),
     ('agent_enable', lambda a, base: sys.exit(cmd_agent_enable(True, a.json))),
@@ -850,8 +859,8 @@ from .gamecmds import (add_existing_to_steam, cmd_achievements, cmd_add_heroic, 
     cmd_detect, cmd_discard_incomplete, cmd_prefix_tool, cmd_refetch_art, cmd_reindex,
     cmd_rename, cmd_repair_launchers, cmd_scan, cmd_set_exe, cmd_trash_repack)  # noqa: E402
 from .heroic import remove_heroic_entry  # noqa: E402
-from .info import (cmd_apply_recipe, cmd_explain_log, cmd_game_tips, cmd_gamedb, cmd_history,
-    cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402
+from .info import (cmd_apply_recipe, cmd_explain_log, cmd_game_facts, cmd_game_tips, cmd_gamedb,
+    cmd_history, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402
 from .manage import cmd_library, cmd_list, cmd_running  # noqa: E402
 from .protoncmds import (cmd_list_protons, cmd_proton_install, cmd_proton_migrate,
     cmd_proton_releases, cmd_proton_remove, cmd_protondb, cmd_protons)  # noqa: E402

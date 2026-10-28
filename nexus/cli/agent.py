@@ -2,7 +2,8 @@
 its timers, for when no window is open. It watches the repack folders and
 the torrent client (and installs a finished download that asked for it),
 keeps the FitGirl feed and catalogue fresh, fills missing artwork once a
-day, and sends alerts (nexus/alerts.py). Meant to run as a systemd user
+day, fills the game facts index a few games at a time (nexus/facts.py), and
+sends alerts (nexus/alerts.py). Meant to run as a systemd user
 service (`--agent-enable`); one at a time (an flock on DATA_DIR/agent.lock).
 
 With a Nexus window open, the agent hands it what it finds: a finished
@@ -40,7 +41,8 @@ UNIT_DIR = NX.CONFIG_DIR.parent / 'systemd' / 'user'
 
 # Seconds between runs of each task (torrents set their own pace).
 EVERY = {'scan': 60, 'scan_waiting': 30, 'scan_full': 600, 'feed': 1800, 'index': 1800,
-         'deals': 2700, 'proton': 6 * 3600, 'art': 6 * 3600}
+         'deals': 2700, 'proton': 6 * 3600, 'art': 6 * 3600, 'facts': 900, 'facts_idle': 3600}
+FACTS_BATCH = 10          # per site per run: 40 an hour at EVERY['facts']
 TICK = 1.0
 
 
@@ -110,7 +112,7 @@ class Agent:
         now = time.monotonic()
         # Staggered first runs, like the window's startup timers.
         for i, task in enumerate(('torrents', 'scan', 'feed', 'index', 'deals', 'proton',
-                                  'art')):
+                                  'art', 'facts')):
             self.due[task] = now + 5 + 10 * i
         last_state = 0.0
         while not self.stop:
@@ -271,6 +273,23 @@ class Agent:
         subprocess.run([*NX.cli_command(), '--fill-art', '--if-stale', '--json'],
                        stdin=subprocess.DEVNULL, capture_output=True, timeout=1800)
         return EVERY['art']
+
+    def task_facts(self) -> float:
+        from nexus import facts
+        if playing():
+            return 600
+        wait = facts.wait_seconds('steam')
+        if wait:
+            return max(wait, 60)
+        # Its own process, like the art fill: a batch is a minute of requests.
+        r = subprocess.run([*NX.cli_command(), '--game-facts', '--fill', str(FACTS_BATCH),
+                            '--json'], stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=900)
+        try:
+            left = (json.loads(r.stdout).get('fill') or {}).get('left')
+        except (ValueError, AttributeError):
+            left = None
+        return EVERY['facts_idle'] if left == 0 else EVERY['facts']
 
 
 def cmd_agent(base: Path) -> int:
