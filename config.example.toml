@@ -51,6 +51,12 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # enabled = false
 # url = "https://gamedb.example.com"   # your Game-db server; there is no default
 # token = ""              # a desktop app token from that server's /account page
+# games = true            # game details (ProtonDB, play length, reviews) from Game-db
+# device = ""             # this PC's name on Game-db's account page (default: hostname)
+# upload_sessions = false # send play sessions (needs a token made with "Upload play sessions")
+# upload_other = false    # ...repacks and other games too, as their title only
+# upload_library = true   # send Heroic's owned Epic/GOG/Amazon games once a day (needs a
+                          # token made with "Send my other-store library")
 
 [updates]
 # check = true            # once a day, ask GitHub whether a newer Nexus release is out and

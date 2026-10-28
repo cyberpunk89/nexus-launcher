@@ -499,7 +499,12 @@ def build_parser() -> argparse.ArgumentParser:
                          'never hits the network')
     g7.add_argument('--gamedb-sync', action='store_true', dest='gamedb_sync',
                     help='Sync game details (ProtonDB, play length, reviews) for your library '
-                         'and wishlist from Game-db, at most every 6 h (--refresh: now)')
+                         'and wishlist from Game-db, at most every 6 h (--refresh: now); '
+                         'also uploads play sessions and your Heroic library when those '
+                         'are switched on')
+    g7.add_argument('--gamedb-delete-sessions', action='store_true',
+                    dest='gamedb_delete_sessions',
+                    help='Delete every play session this Game-db account got from Nexus')
     _hide_unavailable(parser)
     return parser
 
@@ -634,10 +639,11 @@ def _cmd_gamedb_lookup(args, install_base):
 
 
 def _cmd_gamedb_sync(args, install_base):
-    from nexus import gamedb
+    from nexus import gamedb, gamedb_upload
     res = gamedb.sync_games(force=args.refresh)
+    ups = gamedb_upload.upload_all()
     if args.json:
-        print(json.dumps(res))
+        print(json.dumps({**res, 'uploads': ups}))
     elif res['status'] == 'failed':
         print(f"Game-db: {res['error']['message']}", file=sys.stderr)
     elif res['status'] == 'off':
@@ -647,7 +653,33 @@ def _cmd_gamedb_sync(args, install_base):
         print(f"Game-db: {res['count']} games ({res['status']}"
               + (f", {res['changed']} changed, {res['removed']} removed"
                  if res['status'] == 'synced' else '') + ")")
+    for what, r in ups.items() if not args.json else ():
+        if r['status'] == 'uploaded':
+            print(f"Game-db {what}: sent {r['sent']}")
+        # The library upload is on by default: a read-only token just skips
+        # it quietly. Sessions are opt-in, so their scope hint is shown.
+        elif (r['status'] == 'failed' or r['status'] == 'read_only' and what != 'library') \
+                and r.get('error'):
+            print(f"Game-db {what}: {r['error']['message']}", file=sys.stderr)
     sys.exit(1 if res['status'] == 'failed' else 0)
+
+
+def _cmd_gamedb_delete_sessions(args, install_base):
+    from nexus import gamedb, gamedb_upload
+    try:
+        res = gamedb_upload.delete_sessions()
+    except gamedb.GameDbError as e:
+        if args.json:
+            print(json.dumps({'error': {'kind': e.kind, 'message': str(e)}}))
+        else:
+            print(f"Game-db: {e}", file=sys.stderr)
+        sys.exit(2 if e.kind == 'config' else 1)
+    if args.json:
+        print(json.dumps(res))
+    else:
+        print(f"Deleted {res['deleted']} play session{'s' * (res['deleted'] != 1)} "
+              "from Game-db.")
+    sys.exit(0)
 
 
 def _cmd_move_targets(args, install_base):
@@ -765,6 +797,7 @@ COMMANDS = (
     ('backlog', lambda a, base: cmd_gamedb('backlog', a.refresh, a.json, a.time)),
     ('gamedb_lookup', _cmd_gamedb_lookup),
     ('gamedb_sync', _cmd_gamedb_sync),
+    ('gamedb_delete_sessions', _cmd_gamedb_delete_sessions),
     ('protondb', lambda a, base: cmd_protondb(a.protondb, a.refresh, a.json)),
     ('game_tips', lambda a, base: cmd_game_tips(a.game_tips, a.json)),
     ('perf',

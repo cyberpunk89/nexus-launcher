@@ -476,9 +476,25 @@ Details:
   says which Nexus asks (`X-Nexus-Client: nexus/<version> <os>`) and from which PC
   (`X-Nexus-Device`: Settings → This PC's name, default the hostname, never a path);
   Game-db shows both next to the token on its account page.
+- **Play sessions** (off by default; a Game-db that offers `sessions` and a token made with
+  "Upload play sessions"): Settings → Game-db → Upload play sessions sends what Nexus
+  records in `sessions.jsonl` (store, store id, title, start, end, minutes) on the agent's
+  deals tick (on Windows, the window's). Steam games go as their appid, Heroic's Epic, GOG
+  and Amazon games as their app name. Repacks and other games stay on the PC unless
+  "Include games not from a store" is on too; then they go as a cleaned title only, never a
+  folder, store id or repack name. Each session has an id, so a retried upload adds nothing
+  twice; `~/.cache/nexus/gamedb/sessions-upload.json` (0600) remembers how far the file was
+  sent. A read-only token gets a hint in Settings instead of uploads.
+  `--gamedb-delete-sessions [--json]` deletes every session Nexus sent to this account.
+- **Your Heroic library** (a Game-db that offers `library` and a token made with "Send my
+  other-store library"): once a day the agent sends the Epic, GOG and Amazon games Heroic
+  says you own (store, app name, title). Game-db finds them on IGDB, and their game page
+  in Nexus then shows studio, genres, description and play length too. Settings → Game-db →
+  Send my Heroic library switches it off.
 - CLI: `--gamedb` (everything), `--deals`, `--upcoming`, `--backlog [--time
   lt1h|1to3|3plus|long]`, each with `--json`; `--gamedb-lookup APPID…`; `--gamedb-sync
-  [--refresh] [--json]` (game details now; normally the agent's job). `--doctor` reports
+  [--refresh] [--json]` (game details now, then the uploads that are switched on; normally
+  the agent's job); `--gamedb-delete-sessions`. `--doctor` reports
   the sync state of both, a config.toml that holds the token but isn't 0600, and a Steam
   account mismatch between Game-db and Nexus.
 

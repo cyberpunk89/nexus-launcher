@@ -261,6 +261,10 @@ class Agent:
             res = gamedb.sync_games()                   # itself at most every 6 h
             if res['status'] == 'failed':
                 _say(f"[!] Game-db games: {res['error']['message']}")
+            from nexus import gamedb_upload
+            for what, r in gamedb_upload.upload_all().items():   # opt-in; never raises
+                if r['status'] == 'failed':
+                    _say(f"[!] Game-db {what} upload: {r['error']['message']}")
         return EVERY['deals']
 
     def task_proton(self) -> float:
@@ -465,7 +469,8 @@ def cmd_agent_status(as_json: bool) -> None:
 def cmd_check_alerts(as_json: bool, dry_run: bool) -> None:
     """Check the deal and Proton alerts now (the agent does this on its own
     schedule; the window does it when no agent runs, so on Windows this is
-    also where Game-db's game details sync, at most every 6 h). FitGirl and
+    also where Game-db's game details sync, at most every 6 h, and play
+    sessions and the Heroic library go up when switched on). FitGirl and
     repack update alerts ride on --repack-index and the feed."""
     from nexus import alerts as A, gamedb, repackfeed
     s = A.settings()
@@ -479,7 +484,9 @@ def cmd_check_alerts(as_json: bool, dry_run: bool) -> None:
                                    s).values():
             found += items
         if not dry_run:
+            from nexus import gamedb_upload
             gamedb.sync_games()
+            gamedb_upload.upload_all()          # play sessions and library, when switched on
     found += A.update_alerts(repackfeed.updates(load_registry()['games'].values()))
     found += A.proton_alerts(*ge_update())
     if dry_run:

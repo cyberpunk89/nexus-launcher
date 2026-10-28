@@ -425,6 +425,25 @@ def _combo(items, min_w: int = 260) -> 'NoWheelCombo':
     return box
 
 
+SESSIONS_NOTE = ("What you play in Nexus, with the store and title, goes to Game-db, where "
+                 "your group sees it.")
+LIBRARY_NOTE = ("Once a day, the Epic, GOG and Amazon games Heroic says you own, so Game-db "
+                "can fill in their game pages here too.")
+TOKEN_NOTE = "Kept in config.toml, readable only by you; data is cached 45 minutes."
+
+
+def token_note(scopes) -> str:
+    """The token row's description: what this token may do, as Game-db's
+    v2/meta last said (meta.json; None = not asked yet)."""
+    if scopes is None:
+        return TOKEN_NOTE
+    can = [what for scope, what in ((gamedb.SCOPE_SESSIONS, "upload play sessions"),
+                                    (gamedb.SCOPE_LIBRARY, "send your library"))
+           if scope in scopes]
+    return ("Can read" + ''.join(f", {c}" for c in can[:-1])
+            + (f" and {can[-1]}" if can else " only") + ". " + TOKEN_NOTE)
+
+
 class SettingsPage(QWidget):
     """Edits the config.toml keys the GUI owns; everything else in the file
     (comments, unknown keys) is preserved by save_config(). Library
@@ -757,12 +776,26 @@ class SettingsPage(QWidget):
         get.setToolTip("Opens your Game-db account page in the browser")
         get.clicked.connect(self._open_gamedb_account)
         self.gdb_token_row = self._field_row(
-            sec, "Desktop app token", "Read-only. Kept in config.toml, readable only by you; "
-            "data is cached 45 minutes.", self.gdb_token, extra=(get,), keywords="key")
+            sec, "Desktop app token", TOKEN_NOTE, self.gdb_token, extra=(get,),
+            keywords="key scope")
         self.gdb_games = Switch()
         self.gdb_games_row = self._row(
             sec, "Game details from Game-db", "", self.gdb_games,
             keywords="protondb howlongtobeat hltb igdb reviews early access")
+        self.gdb_sessions = Switch()
+        self.gdb_sessions_row = self._row(
+            sec, "Upload play sessions", SESSIONS_NOTE, self.gdb_sessions,
+            keywords="play time history upload share group")
+        self.gdb_other = Switch()
+        self.gdb_other_row = self._row(
+            sec, "Include games not from a store", "Repacks and other games too, as their "
+            "title only: never a folder or a repack name.", self.gdb_other,
+            keywords="repack play sessions upload")
+        self.gdb_sessions.toggled.connect(self.gdb_other.setEnabled)
+        self.gdb_library = Switch()
+        self.gdb_library_row = self._row(
+            sec, "Send my Heroic library", LIBRARY_NOTE, self.gdb_library,
+            keywords="epic gog amazon heroic library igdb upload")
         self.gdb_device = QLineEdit()
         self.gdb_device.setMaxLength(64)
         self.gdb_device.setPlaceholderText(gamedb.device_label())
@@ -966,13 +999,14 @@ class SettingsPage(QWidget):
         """Switches and menus save when they change; text fields when you
         leave them (or press Enter). Library preferences go out as signals."""
         for e in (self.key, self.base, self.scan_dir, self.scan_more, self.account,
-                  self.gdb_url, self.gdb_token, self.tor_url, self.tor_user, self.tor_pass,
+                  self.gdb_url, self.gdb_token, self.gdb_device, self.tor_url, self.tor_user, self.tor_pass,
                   self.tor_dir, self.tor_ratio):
             e.textChanged.connect(self._edited)
             e.editingFinished.connect(self.commit)
         self.repacks.toggled.connect(self._show_repacks)
         for c in (self.repacks, self.steam, self.desktop, self.heroic, self.news, self.unattended,
-                  self.trash_repack, self.gdb_enabled, self.al_atl, self.al_fitgirl,
+                  self.trash_repack, self.gdb_enabled, self.gdb_games, self.gdb_sessions,
+                  self.gdb_other, self.gdb_library, self.al_atl, self.al_fitgirl,
                   self.al_updates, self.al_proton):
             c.toggled.connect(self.commit)
         for cb in (self.runner, self.proton, self.al_sale):
@@ -1296,6 +1330,22 @@ class SettingsPage(QWidget):
         self.gdb_token.setPlaceholderText("set by NEXUS_GAMEDB_TOKEN" if env_token else "gdb_…")
         self.gdb_games.setChecked(c.get('gamedb_games', True))
         self.gdb_device.setText(c.get('gamedb_device') or "")
+        self.gdb_token_row.set_description(token_note(gamedb.token_scopes()))
+        self.gdb_sessions.setChecked(c.get('gamedb_upload_sessions', False))
+        self.gdb_other.setChecked(c.get('gamedb_upload_other', False))
+        self.gdb_other.setEnabled(self.gdb_sessions.isChecked())
+        # Hidden when the server can't take sessions (meta.json; unknown shows them).
+        ready = gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS)
+        for row in (self.gdb_sessions_row, self.gdb_other_row):
+            row.set_available(ready != 'unavailable')
+        self.gdb_sessions_row.set_description(
+            gamedb.SCOPE_HINT[gamedb.SCOPE_SESSIONS] if ready == 'read_only' else SESSIONS_NOTE)
+        self.gdb_library.setChecked(c.get('gamedb_upload_library', True))
+        ready = gamedb.write_status('library', gamedb.SCOPE_LIBRARY)
+        self.gdb_library_row.set_available(ready != 'unavailable' and has('heroic'))
+        self.gdb_library_row.set_description(
+            gamedb.SCOPE_HINT[gamedb.SCOPE_LIBRARY] if ready == 'read_only' else LIBRARY_NOTE)
+        self.sections['gamedb'].relayout()
         offered = gamedb.games_available()          # meta.json only; the GUI never asks Game-db
         self.gdb_games.setEnabled(offered is not False)
         self.gdb_games_row.set_description(
@@ -1390,6 +1440,12 @@ class SettingsPage(QWidget):
             put('gamedb', 'token', gtok, c.get('gamedb_token'))
         put('gamedb', 'enabled', self.gdb_enabled.isChecked(), c.get('gamedb_cfg_enabled'))
         put('gamedb', 'games', self.gdb_games.isChecked(), c.get('gamedb_games', True))
+        put('gamedb', 'upload_sessions', self.gdb_sessions.isChecked(),
+            c.get('gamedb_upload_sessions', False))
+        put('gamedb', 'upload_other', self.gdb_other.isChecked(),
+            c.get('gamedb_upload_other', False))
+        put('gamedb', 'upload_library', self.gdb_library.isChecked(),
+            c.get('gamedb_upload_library', True))
         dev = self.gdb_device.text().strip() or None
         if self._check(self.gdb_device, not dev or gamedb.device_label(dev) == dev,
                        "A name without / or \\ and only plain letters, digits and "

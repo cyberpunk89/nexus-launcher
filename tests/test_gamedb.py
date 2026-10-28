@@ -22,7 +22,8 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import facts, gamedb, hltb, protondb, storeinfo  # noqa: E402
+from nexus import (facts, gamedb, gamedb_upload, hltb, protondb, steamlib,  # noqa: E402
+                   storeinfo)
 from tests.oskind import why_not_private  # noqa: E402
 
 TOKEN = 'gdb_' + 'A' * 43
@@ -94,11 +95,12 @@ class FakeOpener:
         return FakeResponse(json.dumps(self.result).encode())
 
 
-def http_error(code, headers=None):
+def http_error(code, headers=None, body=None):
     h = email.message.Message()
     for k, v in (headers or {}).items():
         h[k] = v
-    return urllib.error.HTTPError('https://x/api', code, 'err', h, io.BytesIO(b''))
+    raw = json.dumps(body).encode() if body is not None else b''
+    return urllib.error.HTTPError('https://x/api', code, 'err', h, io.BytesIO(raw))
 
 
 class Base(unittest.TestCase):
@@ -306,8 +308,9 @@ def game(appid, **kw):
 
 
 class FakeServer:
-    """urllib's opener, routed by path: `routes[path]` is a dict (JSON 200),
-    an exception, or a callable(query) returning either."""
+    """urllib's opener, routed by `"METHOD path"`, then by path: a route is a
+    dict (JSON 200), an exception, or a callable(query) returning either; a
+    request's JSON body is in query['__body__']."""
 
     def __init__(self, routes):
         self.routes = routes
@@ -317,7 +320,11 @@ class FakeServer:
         self.requests.append(req)
         u = urllib.parse.urlsplit(req.full_url)
         q = dict(urllib.parse.parse_qsl(u.query))
-        r = self.routes[u.path] if u.path in self.routes else http_error(404)
+        if req.data is not None:
+            q['__body__'] = json.loads(req.data)
+        r = self.routes.get(f"{req.get_method()} {u.path}", self.routes.get(u.path))
+        if r is None:
+            r = http_error(404)
         if callable(r):
             r = r(q)
         if isinstance(r, Exception):
@@ -326,6 +333,10 @@ class FakeServer:
 
     def paths(self):
         return [urllib.parse.urlsplit(r.full_url).path for r in self.requests]
+
+    def bodies(self, method, path):
+        return [json.loads(r.data) for r in self.requests
+                if r.get_method() == method and urllib.parse.urlsplit(r.full_url).path == path]
 
     def queries(self, path):
         return [dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.full_url).query))
@@ -342,7 +353,7 @@ class V2Base(Base):
         return fake, mock.patch.object(gamedb.urllib.request, 'build_opener',
                                        return_value=fake)
 
-    def paged(self, pages, since_games=None, removed=()):
+    def paged(self, pages, since_games=None, removed=(), removed_keys=()):
         """A games route: `pages` lists of games for a full fetch (cursor
         c1, c2…), one delta page for `?since=`."""
         def route(q):
@@ -353,6 +364,7 @@ class V2Base(Base):
             if 'since' in q:
                 return {'schema': 2, 'full': False, 'since': q['since'],
                         'nextSince': 'S2', 'nextCursor': None, 'removed': list(removed),
+                        'removedKeys': list(removed_keys),
                         'games': since_games or []}
             return {'schema': 2, 'full': True, 'nextSince': 'S1', 'games': pages[0],
                     'nextCursor': 'c1' if len(pages) > 1 else None, 'removed': []}
@@ -642,6 +654,493 @@ class CacheFirst(V2Base):
         self.assertIsNone(gamedb.meta(620))                 # the server dropped v2
 
 
+SCOPED_META = {**META, 'features': ['summary', 'games', 'sessions', 'library'],
+               'scopes': ['read', 'write:sessions', 'write:library']}
+
+
+class Writes(V2Base):
+    """Phase 2: scopes, the scope error, and the write backoff."""
+
+    def test_scope_403_is_its_own_kind_and_never_leaks_the_token(self):
+        _fake, p = self.server({
+            '/api/nexus/v2/meta': SCOPED_META,
+            'POST /api/nexus/v2/sessions': http_error(
+                403, body={'error': 'scope', 'need': 'write:sessions'})})
+        with p:
+            gamedb.server_meta()
+            self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'ok')
+            with self.assertRaises(gamedb.GameDbError) as cm:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual((cm.exception.kind, cm.exception.need), ('scope', 'write:sessions'))
+        self.assertIn("can only read", str(cm.exception))
+        self.assertNotIn(TOKEN, str(cm.exception))
+        # remembered without asking the server again
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'read_only')
+        self.assertEqual(gamedb.write_status('library', gamedb.SCOPE_LIBRARY), 'ok')
+
+    def test_plain_403_stays_auth(self):
+        _fake, p = self.server({'POST /api/nexus/v2/sessions': http_error(403)})
+        with p, self.assertRaises(gamedb.GameDbError) as cm:
+            gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(cm.exception.kind, 'auth')
+
+    def test_400_on_a_write_is_invalid(self):
+        _fake, p = self.server({'POST /api/nexus/v2/sessions': http_error(
+            400, body={'error': 'invalid', 'detail': 'minutes out of range'})})
+        with p, self.assertRaises(gamedb.GameDbError) as cm:
+            gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(cm.exception.kind, 'invalid')
+        self.assertIn('minutes out of range', str(cm.exception))
+
+    def test_write_sends_json_with_the_bearer(self):
+        fake, p = self.server({'POST /api/nexus/v2/sessions': {'accepted': 1, 'duplicate': 0}})
+        with p:
+            got = gamedb.write('/api/nexus/v2/sessions', {'sessions': [{'id': 'x'}]})
+        self.assertEqual(got, {'accepted': 1, 'duplicate': 0})
+        req = fake.requests[0]
+        self.assertEqual(req.get_method(), 'POST')
+        self.assertEqual(req.get_header('Content-type'), 'application/json')
+        self.assertEqual(req.get_header('Authorization'), f'Bearer {TOKEN}')
+        self.assertEqual(fake.bodies('POST', '/api/nexus/v2/sessions'),
+                         [{'sessions': [{'id': 'x'}]}])
+
+    def test_429_on_a_write_backs_off_writes_only(self):
+        fake, p = self.server({
+            'POST /api/nexus/v2/sessions': http_error(429, {'Retry-After': '120'}),
+            '/api/nexus/v1/summary': SUMMARY})
+        with p:
+            with self.assertRaises(gamedb.GameDbError) as cm:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+            self.assertEqual(cm.exception.kind, 'rate')
+            n = len(fake.requests)
+            with self.assertRaises(gamedb.GameDbError) as cm2:
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+            self.assertEqual(len(fake.requests), n)            # not sent while waiting
+            self.assertEqual(cm2.exception.kind, 'rate')
+            self.assertFalse(gamedb.summary()['stale'])        # reads are not held back
+        st = gamedb.last_state()
+        self.assertGreater(st['write_retry_at'], time.time() + 100)
+        self.assertFalse(st.get('retry_at'))
+        with mock.patch.object(gamedb.time, 'time', return_value=time.time() + 130), p:
+            with self.assertRaises(gamedb.GameDbError):
+                gamedb.write('/api/nexus/v2/sessions', {'sessions': []})
+        self.assertEqual(len(fake.requests), n + 2)            # after Retry-After: asked again
+
+    def test_meta_scopes_and_features(self):
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'unknown')
+        self.assertIsNone(gamedb.token_scopes())
+        _fake, p = self.server({'/api/nexus/v2/meta': META})       # read-only, no sessions
+        with p:
+            gamedb.server_meta()
+        self.assertEqual(gamedb.token_scopes(), ['read'])
+        self.assertIs(gamedb.offers('sessions'), False)
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'unavailable')
+        _fake, p = self.server({'/api/nexus/v2/meta': {**SCOPED_META, 'scopes': ['read']}})
+        with p:
+            gamedb.server_meta(refresh=True)
+        self.assertEqual(gamedb.write_status('sessions', gamedb.SCOPE_SESSIONS), 'read_only')
+
+    def test_old_server_means_every_write_feature_off(self):
+        _fake, p = self.server({'/api/nexus/v1/summary': SUMMARY})    # v1 only
+        with p:
+            gamedb.server_meta()
+        for feature, scope in (('sessions', gamedb.SCOPE_SESSIONS),
+                               ('library', gamedb.SCOPE_LIBRARY)):
+            self.assertEqual(gamedb.write_status(feature, scope), 'unavailable')
+        self.assertIsNone(gamedb.token_scopes())
+        # a server from before scopes (no `scopes` in meta) is read-only
+        meta = {k: v for k, v in SCOPED_META.items() if k != 'scopes'}
+        _fake, p = self.server({'/api/nexus/v2/meta': meta})
+        with p:
+            gamedb.server_meta(refresh=True)
+        self.assertEqual(gamedb.token_scopes(), ['read'])
+
+
+def session_line(slug, source, name, start='2026-10-20T20:00:00', minutes=30.0):
+    end = datetime.fromisoformat(start).timestamp() + minutes * 60
+    return json.dumps({'slug': slug, 'source': source, 'name': name, 'start': start,
+                       'end': datetime.fromtimestamp(end).isoformat(timespec='seconds'),
+                       'minutes': minutes}) + '\n'
+
+
+class SessionsServer:
+    """POST/DELETE v2/sessions the way Game-db answers them: upsert-ignore
+    on the session id, so a resend counts as duplicate."""
+
+    def __init__(self):
+        self.ids = {}
+        self.fail_after = None          # fail every POST after this many
+
+    def post(self, q):
+        if self.fail_after is not None:
+            if self.fail_after <= 0:
+                return urllib.error.URLError('dropped')
+            self.fail_after -= 1
+        new = dup = 0
+        for it in q['__body__']['sessions']:
+            if it['id'] in self.ids:
+                dup += 1
+            else:
+                self.ids[it['id']] = it
+                new += 1
+        return {'accepted': new, 'duplicate': dup}
+
+    def delete(self, q):
+        n, self.ids = len(self.ids), {}
+        return {'deleted': n}
+
+
+class SessionsUpload(V2Base):
+    """Phase 3: the opt-in play-session upload queue."""
+
+    ON = ('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+          f'token = "{TOKEN}"\nupload_sessions = true\n')
+
+    def setUp(self):
+        super().setUp()
+        self.data = Path(self.tmp.name) / 'data'
+        p = mock.patch.object(gamedb.paths, 'DATA_DIR', self.data)
+        p.start()
+        self.addCleanup(p.stop)
+        self.file = self.data / 'sessions.jsonl'
+        self.data.mkdir()
+        self.srv = SessionsServer()
+
+    def routes(self, meta=SCOPED_META):
+        return {'/api/nexus/v2/meta': meta,
+                'POST /api/nexus/v2/sessions': self.srv.post,
+                'DELETE /api/nexus/v2/sessions': self.srv.delete}
+
+    def add(self, *lines):
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.writelines(lines)
+
+    def upload(self, routes=None):
+        fake, p = self.server(routes or self.routes())
+        with p:
+            return gamedb_upload.upload_sessions(path=self.file), fake
+
+    def test_off_by_default_sends_nothing(self):
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'off')
+        self.assertEqual(fake.requests, [])
+        self.assertFalse(gamedb.settings()['upload_other'])
+
+    def test_store_games_go_up_with_ids_repacks_stay_home(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'),
+                 session_line('heroic-legendary-Fortnite', 'heroic', 'Fortnite',
+                              start='2026-10-21T10:00:00'),
+                 session_line('heroic-nile-amzn1.adg.product.x', 'heroic', 'Amazon Game',
+                              start='2026-10-21T11:00:00'),
+                 session_line('elden-ring', 'nexus',
+                              'ELDEN RING (v1.12 + DLC, MULTi14) [FitGirl Repack]',
+                              start='2026-10-22T10:00:00'),
+                 session_line('epic-Sugar', 'epic', 'Sugar', start='2026-10-22T12:00:00'))
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['sent'], res['accepted']), ('uploaded', 4, 4))
+        sent = fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions']
+        self.assertEqual([(i['store'], i['storeId']) for i in sent],
+                         [('steam', '620'), ('epic', 'Fortnite'),
+                          ('amazon', 'amzn1.adg.product.x'), ('epic', 'Sugar')])
+        body = json.dumps(sent)
+        self.assertNotIn('FitGirl', body)
+        self.assertNotIn('elden', body.lower())
+        for i in sent:
+            self.assertRegex(i['id'], r'^[0-9a-f]{32}$')
+            self.assertEqual(i['minutes'], 30)
+            self.assertTrue(i['start'].endswith('+00:00'))
+        self.assertEqual(why_not_private(self.cache / 'sessions-upload.json'), '')
+        self.assertNotIn(TOKEN, (self.cache / 'sessions-upload.json').read_text())
+        # nothing new: no request
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'idle')
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+
+    def test_other_games_only_with_the_switch_and_title_only(self):
+        self.write_config(self.ON + 'upload_other = true\n')
+        self.add(session_line('elden-ring', 'nexus',
+                              'ELDEN RING (v1.12 + DLC, MULTi14) [FitGirl Repack]'),
+                 session_line('odd', 'desktop', '/home/me/Games/odd/run.sh',
+                              start='2026-10-22T10:00:00'))
+        res, fake = self.upload()
+        sent = fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions']
+        self.assertEqual(res['sent'], 1)                       # a path is never a title
+        self.assertEqual(sent[0]['store'], 'other')
+        self.assertIsNone(sent[0]['storeId'])
+        self.assertEqual(sent[0]['title'], 'ELDEN RING')
+        self.assertNotIn('/home', json.dumps(sent))
+
+    def test_retry_adds_nothing_twice(self):
+        self.write_config(self.ON)
+        self.add(*[session_line(f'steam-{i}', 'steam', f'Game {i}',
+                                start=f'2026-10-01T{i // 60:02d}:{i % 60:02d}:00')
+                   for i in range(1, 451)])
+        self.srv.fail_after = 1                     # the 2nd batch of 200 fails
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['accepted']), ('failed', 200))
+        self.assertNotIn(TOKEN, json.dumps(res))
+        self.srv.fail_after = None
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['accepted'], res['duplicate']), ('uploaded', 250, 0))
+        self.assertEqual(len(self.srv.ids), 450)
+        self.assertEqual([len(b['sessions']) for b in fake.bodies(
+            'POST', '/api/nexus/v2/sessions')], [200, 50])
+        # A lost mark (cache cleared) or a new token resends; the ids keep it harmless.
+        (self.cache / 'sessions-upload.json').unlink()
+        res, _fake = self.upload()
+        self.assertEqual((res['accepted'], res['duplicate']), (0, 450))
+        self.assertEqual(len(self.srv.ids), 450)
+
+    def test_a_half_written_line_waits(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.write('{"slug": "steam-70", "sou')
+        res, _fake = self.upload()
+        self.assertEqual(res['sent'], 1)
+        with open(self.file, 'a', encoding='utf-8') as f:
+            f.write('rce": "steam", "name": "Half-Life", "start": "2026-10-23T10:00:00", '
+                    '"end": "2026-10-23T11:00:00", "minutes": 60.0}\n')
+        res, fake = self.upload()
+        self.assertEqual(res['sent'], 1)
+        self.assertEqual(fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions'][0][
+            'storeId'], '70')
+
+    def test_read_only_token_or_old_server_sends_nothing(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, fake = self.upload({**self.routes(), '/api/nexus/v2/meta': META})
+        self.assertEqual(res['status'], 'unavailable')        # META has no sessions
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        gamedb.clear_cache()
+        res, fake = self.upload({**self.routes(), '/api/nexus/v2/meta': {
+            **SCOPED_META, 'scopes': ['read']}})
+        self.assertEqual(res['status'], 'read_only')
+        self.assertIn("can only read", res['error']['message'])
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        gamedb.clear_cache()
+        res, fake = self.upload({'/api/nexus/v1/summary': SUMMARY})     # no v2 at all
+        self.assertEqual(res['status'], 'unavailable')
+
+    def test_scope_403_mid_upload_turns_into_the_hint(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({**self.routes(), 'POST /api/nexus/v2/sessions': http_error(
+            403, body={'error': 'scope', 'need': 'write:sessions'})})
+        self.assertEqual((res['status'], res['error']['kind']), ('failed', 'scope'))
+        res, fake = self.upload()
+        self.assertEqual(res['status'], 'read_only')            # no second try
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+
+    def test_429_waits_for_retry_after(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({**self.routes(), 'POST /api/nexus/v2/sessions': http_error(
+            429, {'Retry-After': '300'})})
+        self.assertEqual(res['error']['kind'], 'rate')
+        res, fake = self.upload()
+        self.assertEqual(res['error']['kind'], 'rate')
+        self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
+        later = time.time() + 400
+        with mock.patch.object(gamedb.time, 'time', return_value=later), \
+                mock.patch.object(gamedb_upload.time, 'time', return_value=later):
+            res, _fake = self.upload()
+        self.assertEqual(res['status'], 'uploaded')
+
+    def test_offline_fails_soft(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        res, _fake = self.upload({'/api/nexus/v2/meta': urllib.error.URLError('down')})
+        self.assertEqual(res['status'], 'unknown')
+
+    def test_delete_and_the_device_id_stays(self):
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        self.upload()
+        dev = gamedb_upload.device_id()
+        self.assertEqual(why_not_private(self.data / 'device-id'), '')
+        fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.delete_sessions(), {'deleted': 1})
+        self.assertEqual(fake.requests[-1].get_method(), 'DELETE')
+        self.assertEqual(self.srv.ids, {})
+        gamedb.clear_cache()
+        self.assertEqual(gamedb_upload.device_id(), dev)
+        self.assertEqual(gamedb_upload.session_id(dev, 'steam-620', '2026-10-20T20:00:00'),
+                         gamedb_upload.session_id(dev, 'steam-620', '2026-10-20T20:00:00'))
+
+    def test_helpers(self):
+        st = gamedb_upload.store_of
+        self.assertEqual(st('steam-620', 'steam'), ('steam', '620'))
+        self.assertEqual(st('heroic-gog-1207658924', 'heroic'), ('gog', '1207658924'))
+        self.assertIsNone(st('heroic-legendary-', 'heroic'))
+        self.assertIsNone(st('steam-620', 'nexus'))
+        ct = gamedb_upload.clean_title
+        self.assertEqual(ct('Cyberpunk 2077: Ultimate Edition (v2.13 + All DLCs) '
+                            '[FitGirl Repack]'), 'Cyberpunk 2077: Ultimate Edition')
+        self.assertEqual(ct('Hades II - v1.0.4 - DODI Repack'), 'Hades II')
+        self.assertIsNone(ct('C:\\Games\\x'))
+        self.assertIsNone(ct('[FitGirl Repack]'))
+
+
+def store_game(store, store_id, appid=None, **kw):
+    """A v2/games row for a game Nexus sent from Heroic (Phase 4 fields)."""
+    return game(appid, title=kw.pop('title', f'{store} {store_id}'),
+                stores=[{'store': store, 'storeId': store_id}], igdbId=1000,
+                description='A short summary.', gameModes=['Single player', 'Co-operative'],
+                genres=['Shooter', 'Adventure'], developers=['Studio'], **kw)
+
+
+class OtherStoreLibrary(V2Base):
+    """w-44: Heroic's owned games go to POST v2/library; their rows come
+    back in v2/games keyed by appid or store:storeId."""
+
+    ON = ('[gamedb]\nenabled = true\nurl = "https://gdb.example"\n'
+          f'token = "{TOKEN}"\n')
+
+    def setUp(self):
+        super().setUp()
+        self.got = []
+
+    def post(self, q):
+        self.got.append(q['__body__'])
+        n = len(q['__body__']['games'])
+        return {'accepted': n, 'resolved': n - 1, 'pending': 1}
+
+    def routes(self, meta=SCOPED_META, games=()):
+        return {'/api/nexus/v2/meta': meta, 'POST /api/nexus/v2/library': self.post,
+                '/api/nexus/v2/games': self.paged([list(games)])}
+
+    def heroic(self, n):
+        return [{'store': 'epic', 'storeId': f'app{i}', 'title': f'Game {i}'} for i in range(n)]
+
+    def test_pages_of_1000_complete_only_on_the_last(self):
+        fake, p = self.server(self.routes())
+        with p:
+            res = gamedb_upload.upload_library(games=self.heroic(2300))
+        self.assertEqual((res['status'], res['sent'], res['resolved']), ('uploaded', 2300, 2297))
+        self.assertEqual([(len(b['games']), b['complete']) for b in self.got],
+                         [(1000, False), (1000, False), (300, True)])
+        self.assertEqual(why_not_private(self.cache / 'library-upload.json'), '')
+        # once a day
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=self.heroic(5))['status'],
+                             'fresh')
+        self.assertEqual(len(self.got), 3)
+
+    def test_nothing_without_heroic_or_scope_or_server(self):
+        _fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=[])['status'], 'idle')
+        self.assertEqual(self.got, [])                     # never an empty "complete"
+        for meta, want in (({**SCOPED_META, 'scopes': ['read', 'write:sessions']}, 'read_only'),
+                           (META, 'unavailable')):
+            gamedb.clear_cache()
+            _fake, p = self.server(self.routes(meta=meta))
+            with p:
+                self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'],
+                                 want)
+        self.assertEqual(self.got, [])
+        self.write_config(self.ON + 'upload_library = false\n')
+        self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'], 'off')
+
+    def test_failure_is_retried_on_the_next_tick(self):
+        _fake, p = self.server({**self.routes(), 'POST /api/nexus/v2/library':
+                                urllib.error.URLError('down')})
+        with p:
+            res = gamedb_upload.upload_library(games=self.heroic(3))
+        self.assertEqual(res['status'], 'failed')
+        self.assertNotIn(TOKEN, json.dumps(res))
+        _fake, p = self.server(self.routes())
+        with p:
+            self.assertEqual(gamedb_upload.upload_library(games=self.heroic(3))['status'],
+                             'uploaded')
+
+    def test_heroic_library_reads_the_store_caches(self):
+        owned = [{'runner': 'legendary', 'app_name': 'Fortnite', 'display_name': 'Fortnite',
+                  'install_dir': '/home/me/Games/Fortnite'},
+                 {'runner': 'gog', 'app_name': '1207658924', 'display_name': 'Witcher'},
+                 {'runner': 'nile', 'app_name': 'amzn1.x', 'display_name': 'Amazon'},
+                 {'runner': 'legendary', 'app_name': 'Fortnite', 'display_name': 'Fortnite'},
+                 {'runner': 'sideload', 'app_name': 'x', 'display_name': 'Mine'}]
+        with mock.patch.object(steamlib, 'heroic_store_games', return_value=owned):
+            got = gamedb_upload.heroic_library()
+        self.assertEqual(got, [{'store': 'epic', 'storeId': 'Fortnite', 'title': 'Fortnite'},
+                               {'store': 'gog', 'storeId': '1207658924', 'title': 'Witcher'},
+                               {'store': 'amazon', 'storeId': 'amzn1.x', 'title': 'Amazon'}])
+        self.assertNotIn('/home', json.dumps(got))
+
+    def test_rows_keyed_by_appid_or_store_and_found_both_ways(self):
+        rows = [game(620), store_game('epic', 'Sugar'),
+                store_game('gog', '1207658924', appid=292030, title='The Witcher 3')]
+        fake, p = self.server(self.routes(games=rows))
+        with p:
+            gamedb.sync_games()
+        c = json.loads((self.cache / 'games.json').read_text())
+        self.assertEqual(sorted(c['games']), ['292030', '620', 'epic:Sugar'])
+        self.assertEqual(gamedb.store_meta('epic', 'Sugar')['description'], 'A short summary.')
+        self.assertIsNone(gamedb.store_meta('epic', 'Sugar')['url'])
+        w3 = gamedb.store_meta('gog', '1207658924')
+        self.assertEqual((w3['appid'], w3['url']), (292030, 'https://gdb.example/game/292030'))
+        self.assertIsNone(gamedb.store_meta('epic', 'Nope'))
+        self.assertIsNone(gamedb.meta('epic:Sugar'))           # meta() is appids only
+        # a delta can remove a store-keyed row
+        self.age_games()
+        fake.routes['/api/nexus/v2/games'] = self.paged([rows], removed_keys=['epic:Sugar'])
+        with p:
+            self.assertEqual(gamedb.sync_games()['removed'], 1)
+        self.assertIsNone(gamedb.store_meta('epic', 'Sugar'))
+
+    def test_heroic_game_gets_facts_from_its_row(self):
+        _fake, p = self.server(self.routes(games=[
+            store_game('epic', 'Sugar', title='Sugar Rush', status='early_access',
+                       releaseDate='2024-03-01T00:00:00Z',
+                       playLength={'main': 12, 'mainExtra': 18, 'completionist': 30,
+                                   'source': 'igdb', 'count': 4, 'fetchedAt': iso(60)})]))
+        with p:
+            gamedb.sync_games()
+        lib = [{'slug': 'heroic-legendary-Sugar', 'appid': None, 'name': 'Sugar',
+                'store': 'epic', 'store_id': 'Sugar'},
+               {'slug': 'heroic-gog-1', 'appid': None, 'name': 'Unknown', 'store': 'gog',
+                'store_id': '1'}]
+        boom = AssertionError('network!')
+        with mock.patch.multiple(gamedb.net, get=mock.Mock(side_effect=boom),
+                                 post=mock.Mock(side_effect=boom)):
+            idx = facts.build(lib, facts.gamedb_rows(lib))
+        self.assertEqual(set(idx['games']), {'heroic-legendary-Sugar'})
+        f = idx['games']['heroic-legendary-Sugar']
+        self.assertEqual((f['name'], f['developers'], f['genres'], f['description']),
+                         ('Sugar Rush', ['Studio'], ['Shooter', 'Adventure'], 'A short summary.'))
+        self.assertEqual((f['modes'], f['src']['modes']), (['single', 'coop'], 'gamedb'))
+        self.assertEqual((f['length']['main'], f['length']['source']), (12, 'igdb'))
+        self.assertEqual((f['status'], f['year'], f['appid']), ('early_access', 2024, None))
+        self.assertEqual(idx['missing'], {'steam': 0, 'hltb': 0})
+
+    def test_facts_library_adds_heroic_games_game_db_knows(self):
+        from nexus.cli import info
+        _fake, p = self.server(self.routes(games=[
+            store_game('epic', 'Sugar'),
+            store_game('gog', '1207658924', appid=292030, title='The Witcher 3')]))
+        with p:
+            gamedb.sync_games()
+        owned = [{'slug': 'heroic-legendary-Sugar', 'runner': 'legendary', 'app_name': 'Sugar',
+                  'display_name': 'Sugar'},
+                 {'slug': 'heroic-gog-1207658924', 'runner': 'gog', 'app_name': '1207658924',
+                  'display_name': 'The Witcher 3'},
+                 {'slug': 'heroic-nile-x', 'runner': 'nile', 'app_name': 'x',
+                  'display_name': 'Not resolved yet'}]
+        with mock.patch.object(steamlib, 'heroic_store_games', return_value=owned), \
+                mock.patch.object(steamlib, 'scan', return_value=[]), \
+                mock.patch.object(info, 'load_registry', return_value={'games': {}}):
+            lib = info._facts_library()
+        heroic = {r['slug']: r for r in lib if r['slug'].startswith('heroic-')}
+        self.assertEqual(set(heroic), {'heroic-legendary-Sugar', 'heroic-gog-1207658924'})
+        self.assertEqual(heroic['heroic-legendary-Sugar']['appid'], None)
+        self.assertEqual(heroic['heroic-gog-1207658924']['appid'], 292030)   # IGDB's link
+
+
 class Helpers(unittest.TestCase):
     NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 
@@ -716,6 +1215,30 @@ class Helpers(unittest.TestCase):
         self.assertEqual(gamedb.safe_url('http://localhost:3000/game/1',
                                          'http://localhost:3000'),
                          'http://localhost:3000/game/1')
+
+
+class SyncCommand(unittest.TestCase):
+    """--gamedb-sync's text output with a read-only token: the sessions hint
+    shows, the library upload (on by default) skips quietly, no crash
+    (found in the live run against Game-db dev, 2026-10-28)."""
+
+    def test_read_only_token_prints_the_hint_and_does_not_crash(self):
+        from types import SimpleNamespace
+        from nexus.cli import entry
+        hint = gamedb.SCOPE_HINT[gamedb.SCOPE_SESSIONS]
+        ups = {'sessions': {'status': 'read_only', 'sent': 0,
+                            'error': {'kind': 'scope', 'message': hint}},
+               'library': {'status': 'read_only', 'sent': 0, 'error': None}}
+        err = io.StringIO()
+        with mock.patch.object(gamedb, 'sync_games', return_value={
+                'status': 'synced', 'count': 3, 'changed': 3, 'removed': 0, 'error': None}), \
+                mock.patch.object(gamedb_upload, 'upload_all', return_value=ups), \
+                mock.patch('sys.stdout', io.StringIO()), mock.patch('sys.stderr', err), \
+                self.assertRaises(SystemExit) as cm:
+            entry._cmd_gamedb_sync(SimpleNamespace(refresh=False, json=False), None)
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn(hint, err.getvalue())
+        self.assertNotIn('library', err.getvalue())
 
 
 class Cli(unittest.TestCase):
@@ -796,6 +1319,14 @@ class Cli(unittest.TestCase):
         res = json.loads(r.stdout)
         self.assertEqual(res['status'], 'failed')
         self.assertNotIn(TOKEN, r.stdout + r.stderr)
+
+    def test_delete_sessions_offline_and_unconfigured(self):
+        r = self.cli('--gamedb-delete-sessions', '--json')   # gdb.invalid never resolves
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['error']['kind'], 'net')
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
+        (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')
+        self.assertEqual(self.cli('--gamedb-delete-sessions').returncode, 2)
 
     def test_not_configured_exits_2(self):
         (tests.sandbox.config_dir(Path(self.env['HOME'])) / 'config.toml').write_text('')

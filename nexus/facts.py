@@ -3,8 +3,11 @@ local caches into one file (~/.cache/nexus/facts.json) that the Library
 and the game page read without waiting on the network.
 
 Sources, best first per fact: the Steam store (storeinfo, by store appid,
-so repacks with a umu id are covered), HowLongToBeat (hltb), and later a
-Game-db `v2/games` row. A game with no store id has no entry.
+so repacks with a umu id are covered), HowLongToBeat (hltb), and Game-db's
+`v2/games` row. Heroic's Epic, GOG and Amazon games are found by their
+store id in Game-db's rows (Nexus sends them that library), so they get a
+record too once Game-db has resolved them; a game with neither a Steam
+appid nor such a row has no entry.
 
 build() is cache-only. fill() spends a small hourly budget per site
 (Steam appdetails, HowLongToBeat) on what is missing or stale, and stops
@@ -73,6 +76,20 @@ def nexus_genres(names) -> list[str]:
         if g and g not in out:
             out.append(g)
     return out
+
+
+# IGDB game mode names (lowercase), as Game-db's v2/games `gameModes` sends them.
+IGDB_MODES = {'single player': ('single',), 'co-operative': ('coop',),
+              'split screen': ('local',), 'multiplayer': ('online',),
+              'massively multiplayer online (mmo)': ('online',), 'battle royale': ('online',)}
+
+
+def igdb_modes(names) -> list[str] | None:
+    """Modes from IGDB game mode names; None when there are none."""
+    if not names:
+        return None
+    got = {m for n in names for m in IGDB_MODES.get(str(n).strip().lower(), ())}
+    return [m for m in MODES if m in got] or None
 
 
 def modes(categories) -> list[str] | None:
@@ -203,7 +220,9 @@ def from_gamedb(row: dict | None) -> dict | None:
     status = IGDB_STATUS.get(str(row.get('status') or '').lower())
     if status is None and row.get('comingSoon'):
         status = 'upcoming'
-    return {'name': row.get('title'), 'genres': list(row.get('genres') or []),
+    return {'name': row.get('title'), 'description': row.get('description') or None,
+            'modes': igdb_modes(row.get('gameModes')),
+            'genres': list(row.get('genres') or []),
             'developers': list(row.get('developers') or []),
             'publishers': list(row.get('publishers') or []),
             'releaseText': row.get('releaseDateText'), 'year': year, 'release': release,
@@ -253,6 +272,9 @@ def merge(local: dict, gamedb_row: dict | None = None) -> dict:
     rec['modes'] = modes((steam or {}).get('categories'))
     if rec['modes'] is not None:
         src['modes'] = 'steam'
+    elif (gdb or {}).get('modes') is not None:
+        rec['modes'] = gdb['modes']
+        src['modes'] = 'gamedb'
     pick('status', ('gamedb', gdb), ('steam', {'status': status_from_steam(steam)}))
     lengths = []
     if hl:
@@ -281,15 +303,26 @@ def hltb_name(row: dict, steam: dict | None) -> str:
     return (steam or {}).get('name') or row.get('name') or ''
 
 
+def store_key(row: dict) -> str | None:
+    """'epic:<app>' for a library row of another store, else None."""
+    return f"{row['store']}:{row['store_id']}" if row.get('store') and row.get('store_id') \
+        else None
+
+
 def gamedb_rows(library: list[dict]) -> dict:
     """{appid: v2/games row} for the library's games that Game-db's synced
-    copy knows (gamedb.meta: cache only, {} when Game-db is off or old)."""
+    copy knows, and {'<store>:<id>': row} for its Heroic games (gamedb.meta
+    and store_meta: cache only, {} when Game-db is off or old)."""
     from . import gamedb
     out = {}
     try:
         for appid in {r['appid'] for r in library if r.get('appid')}:
             if (row := gamedb.meta(appid)) is not None:
                 out[appid] = row
+        for r in library:
+            if (key := store_key(r)) and (row := gamedb.store_meta(r['store'],
+                                                                    r['store_id'])):
+                out[key] = row
     except Exception:                                           # noqa: BLE001 — optional
         return {}
     return out
@@ -297,13 +330,18 @@ def gamedb_rows(library: list[dict]) -> dict:
 
 def build(library: list[dict], gamedb_rows: dict | None = None) -> dict:
     """The index from caches alone (no network): {v, built, games: {slug:
-    record}, missing: {steam, hltb}}. `library` is [{slug, appid, name}];
-    rows without a store appid are left out. `gamedb_rows` ({appid: v2 row},
-    see gamedb_rows()) adds what Game-db knows about your own games."""
+    record}, missing: {steam, hltb}}. `library` is [{slug, appid, name}]
+    (a Heroic game adds store and store_id); rows with neither a Steam appid
+    nor a Game-db row are left out. `gamedb_rows` (see gamedb_rows()) adds
+    what Game-db knows about your own games."""
     games, missing = {}, {'steam': 0, 'hltb': 0}
     for row in library:
         appid = row.get('appid')
         if not appid:
+            row_g = (gamedb_rows or {}).get(store_key(row))
+            if row_g is not None:                   # Heroic: Game-db's row is all there is
+                games[row['slug']] = merge({'appid': None, 'name': row.get('name'),
+                                            'steam': None, 'hltb': None}, row_g)
             continue
         fresh, d = storeinfo.cached_details(appid)
         steam = from_steam(d)
@@ -313,7 +351,7 @@ def build(library: list[dict], gamedb_rows: dict | None = None) -> dict:
         missing['hltb'] += not h_fresh
         local = {'appid': appid, 'name': row.get('name'), 'steam': steam,
                  'hltb': from_hltb(hit)}
-        row_g = (gamedb_rows or {}).get(appid)
+        row_g = (gamedb_rows or {}).get(appid) or (gamedb_rows or {}).get(store_key(row))
         if steam is None and local['hltb'] is None and row_g is None:
             continue                            # nothing known yet
         games[row['slug']] = merge(local, row_g)

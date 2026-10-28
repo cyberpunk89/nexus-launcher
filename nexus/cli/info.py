@@ -68,14 +68,17 @@ def cmd_store_info(ident: str, as_json: bool, refresh: bool = False) -> None:
 def _facts_library() -> list[dict]:
     """[{slug, appid, name}] for every library game with a Steam store id:
     repacks by their umu GAMEID, installed Steam games, then owned Steam
-    games Game-db knows (cache only; none when it's off)."""
-    from nexus import compat, gamedb, steamlib
+    games Game-db knows (cache only; none when it's off). Then Heroic's
+    Epic, GOG and Amazon games Game-db has a row for (the library Nexus
+    sends it), with store and store_id, and the Steam appid IGDB links
+    them to when it does."""
+    from nexus import compat, gamedb, gamedb_upload, steamlib
     out, seen = [], set()
 
-    def add(slug, appid, name):
-        if appid and slug not in seen:
+    def add(slug, appid, name, **store):
+        if (appid or store) and slug not in seen:
             seen.add(slug)
-            out.append({'slug': slug, 'appid': appid, 'name': name})
+            out.append({'slug': slug, 'appid': appid, 'name': name, **store})
     for slug, e in load_registry()['games'].items():
         add(slug, compat.store_appid(e), e.get('display_name') or slug)
     for g in steamlib.scan(STEAM_ROOT):
@@ -87,6 +90,17 @@ def _facts_library() -> list[dict]:
     for item in owned:
         add(f"steam-{item['appid']}", compat.store_appid(
             {'source': 'steam', 'appid': item['appid']}), item.get('title'))
+    try:
+        heroic = steamlib.heroic_store_games(steamlib.find_heroic_config(), owned=True)
+    except Exception:                                     # noqa: BLE001 — optional
+        heroic = []
+    for g in heroic:
+        store = gamedb_upload.HEROIC_STORES.get(g.get('runner'))
+        row = gamedb.store_meta(store, g.get('app_name')) if store else None   # cache only
+        if row:
+            appid = row.get('appid') if isinstance(row.get('appid'), int) else None
+            add(g['slug'], appid, g.get('display_name'), store=store,
+                store_id=g['app_name'])
     return out
 
 
@@ -468,8 +482,10 @@ def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1
         up = data.get('upcoming', [])
         print(f"\nUpcoming — {len(up)} games")
         for g in up:
+            chips = [t for t, _r in gamedb.release_chips(g)]
             print(f"  {gamedb.release_label(g):>14}  {g['title']}"
-                  + ('  (owned)' if g.get('owned') else ''))
+                  + ('  (owned)' if g.get('owned') else '')
+                  + (f"  [{', '.join(chips)}]" if chips else ''))
     if section in ('all', 'backlog'):
         b = data.get('backlog') or {}
         print(f"\nBacklog — {b.get('beaten', 0)} beaten, {b.get('inProgress', 0)} in progress, "
@@ -552,6 +568,7 @@ def gamedb_doctor(add, group: str) -> None:
             else:
                 add(group, 'info', 'Game-db game details', 'not synced yet',
                     'nexus-cli --gamedb-sync')
+        _gamedb_uploads_doctor(add, group, s)
         mine = (resolve_steam_account()[0] or {}).get('accountid')
         theirs = (d.get('user') or {}).get('steamId64')
         if mine and theirs and gamedb.steamid64(mine) != str(theirs):
@@ -561,6 +578,37 @@ def gamedb_doctor(add, group: str) -> None:
         add(group, 'ok' if not err else 'warn', 'Game-db',
             f"{s['url']} — not fetched yet" + (f" ({err['message']})" if err else ''),
             'Open the Deals page or run nexus-cli --deals')
+
+
+def _gamedb_uploads_doctor(add, group: str, s: dict) -> None:
+    """--doctor lines for what goes up to Game-db; cache-only."""
+    from nexus import gamedb, gamedb_upload
+    st = gamedb_upload.sessions_status(s)
+    if not st['on']:
+        add(group, 'info', 'Game-db play sessions', 'not uploaded (off in Settings)')
+    elif st['ready'] == 'unavailable':
+        add(group, 'info', 'Game-db play sessions',
+            "switched on, but this Game-db doesn't take them (an older server)")
+    elif st['ready'] == 'read_only':
+        add(group, 'warn', 'Game-db play sessions', 'switched on, but the token can only read',
+            gamedb.SCOPE_HINT[gamedb.SCOPE_SESSIONS])
+    elif st['error']:
+        add(group, 'warn', 'Game-db play sessions', f"last upload failed: "
+                                                     f"{st['error']['message']}")
+    elif st['uploaded_at']:
+        add(group, 'ok', 'Game-db play sessions',
+            f"{st['accepted']} uploaded, last checked {_ago(st['uploaded_at'])}")
+    else:
+        add(group, 'info', 'Game-db play sessions', 'switched on, nothing uploaded yet',
+            'nexus-cli --gamedb-sync')
+    lib = gamedb_upload.library_status(s)
+    if lib['ready'] == 'ok' and lib['on']:
+        if lib['error']:
+            add(group, 'warn', 'Game-db Heroic library',
+                f"last upload failed: {lib['error']['message']}")
+        elif lib['uploaded_at']:
+            add(group, 'ok', 'Game-db Heroic library',
+                f"{lib['count']} games sent {_ago(lib['uploaded_at'])}")
 
 
 # Siblings, imported last: they import this module too, and every use
