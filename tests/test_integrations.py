@@ -437,6 +437,26 @@ class RepackFeed(unittest.TestCase):
         renamed = {**old, 'slug': 'ride6'}
         self.assertIn('ride6', repackfeed.updates([renamed], data))
 
+    def test_updates_index_titles_once(self):
+        # --library matches every installed repack: post titles are keyed once
+        # per call, not once per game, and the first post with a title wins.
+        posts = {f'p{i}': {'slug': f'p{i}', 'title': f'Game {i} – v1.{i}', 'kind': 'repack',
+                           'date': '2026-10-20T00:00:00+00:00', 'url': f'u{i}'}
+                 for i in range(50)}
+        posts['dup'] = {**posts['p7'], 'slug': 'dup', 'url': 'later'}
+        games = [{'slug': f'g{i}', 'display_name': f'Game {i}',
+                  'repack_installed_at': '2026-09-01T00:00:00'} for i in range(50)]
+        with mock.patch.object(repackfeed, 'base_title', wraps=repackfeed.base_title) as bt:
+            got = repackfeed.updates(games, {'posts': posts})
+        self.assertEqual(bt.call_count, len(posts))
+        self.assertEqual(len(got), 50)
+        self.assertEqual(got['g7']['url'], 'u7')
+        # A slug hit for every game never builds the index.
+        with mock.patch.object(repackfeed, 'base_title') as bt:
+            repackfeed.updates([{**g, 'slug': f'p{i}'} for i, g in enumerate(games)],
+                               {'posts': posts})
+        bt.assert_not_called()
+
     def test_refresh_merges_and_keeps_old_posts(self):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(repackfeed, 'STORE', Path(d, 'feed.json')):

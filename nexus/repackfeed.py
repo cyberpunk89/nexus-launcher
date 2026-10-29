@@ -154,29 +154,40 @@ def installed_at(entry: dict) -> datetime | None:
     return None
 
 
-def match(entry: dict, posts: dict) -> dict | None:
+def by_title(posts: dict) -> dict[str, dict]:
+    """{title key: post} for match(); the first post with a key wins, as a
+    scan in feed order would find it."""
+    out = {}
+    for p in posts.values():
+        out.setdefault(title_key(base_title(p['title'])), p)
+    return out
+
+
+def match(entry: dict, posts: dict, titles: dict | None = None) -> dict | None:
     """The post for this registry entry: its slug is the repack page's slug
-    (Nexus slugs are made the same way), else the titles agree."""
+    (Nexus slugs are made the same way), else the titles agree. Pass
+    `titles` (by_title(posts)) when matching many entries: building it is
+    the slow part, and --library matches every installed repack."""
     hit = posts.get(entry.get('slug') or '')
     if hit:
         return hit
     key = title_key(entry.get('display_name') or '')
     if not key:
         return None
-    for p in posts.values():
-        if title_key(base_title(p['title'])) == key:
-            return p
-    return None
+    return (titles if titles is not None else by_title(posts)).get(key)
 
 
 def updates(entries, data: dict | None = None) -> dict[str, dict]:
     """{slug: post} for the installed repacks that have a newer post."""
     posts = (data or load())['posts']
+    titles = None                         # built on the first slug miss
     out = {}
     for e in entries:
         if not e.get('repack_source') and not e.get('repack_installed_at'):
             continue                      # not installed from a repack
-        p = match(e, posts)
+        if titles is None and not posts.get(e.get('slug') or ''):
+            titles = by_title(posts)
+        p = match(e, posts, titles)
         base = installed_at(e) if p else None
         if base is None:
             continue
