@@ -5,6 +5,9 @@ name: tests
 
 on:
   push:
+    # Not tags: a release tag points at a commit main already tested (release.py
+    # waits for that run), so a tag push only repeated it.
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 

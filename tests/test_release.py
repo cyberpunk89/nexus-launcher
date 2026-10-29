@@ -2,7 +2,12 @@
 directly; the whole dry run against throwaway git repos, with `gh` faked, to
 prove it never pushes, tags or releases."""
 
-import sandbox  # noqa: F401  (first, like every test module)
+try:
+    import sandbox  # noqa: F401  (first, like every test module)
+    from oskind import linux_only
+except ImportError:             # run as tests.<module>
+    from tests import sandbox  # noqa: F401
+    from tests.oskind import linux_only
 
 import importlib.util
 import io
@@ -15,7 +20,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from oskind import linux_only
 
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location('nexus_release', ROOT / 'packaging' / 'release.py')
