@@ -227,11 +227,12 @@ class ControllerInput(QObject):
     them into navigation: D-pad / left stick = arrows (with repeat), A = select,
     B = back, X = menu, Y = search, LB/RB = previous/next page, triggers = page
     scroll, right stick = scroll, View/Share = switch library view, Menu/Options
-    = TV mode (fullscreen)."""
+    (Start) and Guide (Xbox / PS button) = the window decides: Theatre's quick
+    menu, or into Theatre from the desktop."""
     connected = pyqtSignal(str, str)       # name, kind
     disconnected = pyqtSignal(str)
     used = pyqtSignal()
-    action = pyqtSignal(str)               # page-prev/next, view, tv, search
+    action = pyqtSignal(str)               # page-prev/next, view, start, quick, search
 
     REPEAT_DELAY, REPEAT_RATE = 0.38, 0.085
     DIRS = {'up': Qt.Key.Key_Up, 'down': Qt.Key.Key_Down,
@@ -402,7 +403,9 @@ class ControllerInput(QObject):
         elif name == 'back':
             self.action.emit('view')
         elif name == 'start':
-            self.action.emit('tv')
+            self.action.emit('start')
+        elif name == 'guide':
+            self.action.emit('quick')
 
     def _scroll(self, amount, pages=False):
         w = QApplication.focusWidget()

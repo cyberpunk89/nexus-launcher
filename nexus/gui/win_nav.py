@@ -28,6 +28,9 @@ class NavigationMixin:
             self._shown_games if self._showing(self.LIBRARY) and not self._theatre else None),
            theatre=True)
         sc(["F11"], self._toggle_tv, theatre=True)
+        # Theatre's quick menu from a keyboard or a TV remote (Guide / Start
+        # on a pad).
+        sc(["F10", QKeySequence(Qt.Key.Key_HomePage)], self.toggle_quick, theatre=True)
         sc(["Ctrl+N"], self.open_install)
         sc(["Ctrl+`"], lambda: (self.go(self.ACTIVITY), self.activity.show_debug(True)))
         sc(["Escape"], self._escape, theatre=True)
@@ -167,7 +170,11 @@ class NavigationMixin:
     def _escape(self):
         """Back, one step at a time: leave the details panel (focus returns
         to the game), then close it; leave the search; leave full screen;
-        from other pages, go back to the library."""
+        from other pages, go back to the library. In Theatre the quick menu
+        comes first: its question, then the menu."""
+        if self._theatre and self.quick.back():
+            self._update_hints()
+            return
         if self.palette.isVisible():
             self.palette.escape()
             return
@@ -178,7 +185,7 @@ class NavigationMixin:
         focus = QApplication.focusWidget()
         in_details = focus is not None and self.details.isAncestorOf(focus)
         if self._theatre:
-            self.theatre.back()               # Start / F11 leave Theatre, not B
+            self.theatre.back()               # F11 or the quick menu leave Theatre, not B
             return
         if self.desk_search.isVisible():
             self.desk_search.close_search()
@@ -229,6 +236,8 @@ class NavigationMixin:
     def nav_scope(self) -> QWidget:
         """Where the D-pad may go: an overlay on top keeps focus inside it
         (Theatre's game page covers tiles that are still "visible")."""
+        if self._theatre and self.quick.isVisible():
+            return self.quick
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet
@@ -248,6 +257,8 @@ class NavigationMixin:
 
     def default_focus(self) -> QWidget | None:
         """Where focus lands when nothing in the window has it."""
+        if self._theatre and self.quick.isVisible():
+            return self.quick.default_focus()
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet.default_focus()

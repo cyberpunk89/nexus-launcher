@@ -190,6 +190,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre_sheet.chosen.connect(self._theatre_action)
         for sh in (self.sheet, self.theatre_sheet):
             sh.closed.connect(self._update_hints)
+        # Theatre's system menu (Guide / Start / F10), on the left.
+        self.quick = QuickMenu(self.theatre, THEATRE_SCALE)
+        self.quick.chosen.connect(self._quick_chosen)
+        self.quick.closed.connect(self._update_hints)
         # Y on the desktop without Steam's on-screen keyboard: Theatre's
         # D-pad keyboard, over the desk.
         self.palette = CommandPalette(
@@ -843,12 +847,21 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                                "It's in the tray. Quit it from the tray menu.")
             return
         self._tray_quit = False
-        active = self.jobs.active()
-        waiting = [p[0] for p in self.gate.pending]
-        if self._quitting or (not active and not waiting):
+        parts = self._quit_reasons()
+        if self._quitting or not parts:
             ev.accept()
             return
         ev.ignore()
+        self.raise_()
+        self.activateWindow()
+        self.confirm("Still working", "\n\n".join(parts), "Quit anyway",
+                     self.quit_after_jobs)
+
+    def _quit_reasons(self) -> list[str]:
+        """Why quitting now would lose work (running jobs, games waiting for
+        Steam to close), one paragraph each; [] when nothing would."""
+        active = self.jobs.active()
+        waiting = [p[0] for p in self.gate.pending]
         parts = []
         if active:
             parts.append(f"{len(active)} job(s) are still running ({active[0].title}). "
@@ -856,10 +869,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if waiting:
             parts.append(f"Waiting for Steam to close: {', '.join(waiting)}. New games are "
                          f"added to Steam next time Nexus starts; anything else is dropped.")
-        self.raise_()
-        self.activateWindow()
-        self.confirm("Still working", "\n\n".join(parts), "Quit anyway",
-                     self.quit_after_jobs)
+        return parts
 
     def show_from_tray(self, page: str | None = None):
         self.show()
@@ -932,6 +942,7 @@ from .library import HomeView  # noqa: E402
 from .newspage import NewsPage  # noqa: E402
 from .prefs import LibraryPrefs  # noqa: E402
 from .protonpage import ProtonPage  # noqa: E402
+from .quickmenu import QuickMenu  # noqa: E402
 from .settings import SettingsPage  # noqa: E402
 from .storage import StoragePage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402

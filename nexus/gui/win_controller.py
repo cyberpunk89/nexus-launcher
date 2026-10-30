@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication, QLineEdit
 from nexus import winfocus
 
 from .common import alive
-from .theme import build_stylesheet, GLYPHS
+from .theme import build_stylesheet, G, GLYPHS
 
 
 class ControllerMixin:
@@ -93,6 +93,16 @@ class ControllerMixin:
         return [p for p in self.TABS if not self.nav[p].isHidden()]
 
     def _pad_action(self, act):
+        if act in ('start', 'quick'):
+            # Start and Guide: Theatre's quick menu, from any screen; on the
+            # desktop, into Theatre (F11 is the way straight out).
+            if self._theatre:
+                self.toggle_quick()
+            else:
+                self.set_theatre(True)
+            return
+        if self._theatre and self.quick.isVisible():
+            return                                  # LB / RB / View / Y: not under the menu
         if self._theatre and act in ('page-prev', 'page-next') \
                 and self.theatre.details.isVisible():
             # The game page: LB / RB switch the drawer's sections.
@@ -120,8 +130,6 @@ class ControllerMixin:
             views = ['home', 'grid', 'list']
             self.set_view(views[(views.index(self._view) + 1) % 3])
             QTimer.singleShot(50, self._focus_view)
-        elif act == 'tv':
-            self._toggle_tv()
         elif act == 'search':
             if self.desk_search.isVisible():
                 self.desk_search.type(' ')           # Y on the keyboard: a space
@@ -151,6 +159,58 @@ class ControllerMixin:
 
     def _toggle_tv(self):
         self.set_theatre(not self._theatre)
+
+    # ---- the quick menu: Theatre's system panel ----
+    def toggle_quick(self):
+        """Guide, Start, F10 or a remote's Home key in Theatre: open or close
+        the quick menu. It replaces an open Options sheet."""
+        if not self._theatre:
+            return
+        if self.attract.running:                        # the press ends the screensaver
+            self.attract.stop()
+            self._on_activity()
+            return
+        if self.quick.isVisible():
+            self.quick.close_menu()
+            return
+        self.theatre_sheet.close_sheet()
+        self.quick.open(self._quick_rows(), self._quick_pads(), focus='exit-theatre')
+        self._update_hints()
+
+    def _quick_rows(self) -> list:
+        """The menu's rows, top to bottom. Rows with a section (POWER) sit
+        at the bottom of the panel."""
+        return [QuickRow('exit-theatre', "Exit Theatre", G['log_out']),
+                QuickRow('quit', "Quit Nexus", G['close'])]
+
+    def _quick_pads(self) -> list[dict]:
+        """The connected pads for the menu's strip (Steam's virtual copy of
+        a real one left out). sysfs can't tell which pad a battery is, so a
+        battery shows only when there's one pad."""
+        ctrl = getattr(self, 'ctrl', None)
+        if ctrl is None:
+            return []
+        from nexus import gamepad
+        g = ctrl.pads
+        names = [n for iid, (_h, n, _k) in g.pads.items() if not g.shadowed(iid)]
+        batt = gamepad.battery() if len(names) == 1 else []
+        return [{'name': n, 'percent': batt[0]['percent'] if batt else None,
+                 'charging': bool(batt and batt[0]['charging'])} for n in names]
+
+    def _quick_chosen(self, key: str):
+        if key == 'exit-theatre':
+            self.quick.close_menu(restore=False)
+            self.set_theatre(False)
+        elif key == 'quit':
+            reasons = self._quit_reasons()
+            if reasons:                                 # asks only with work to lose
+                self.quick.ask("Quit Nexus?", "\n\n".join(reasons), "Quit anyway",
+                               G['close'], self.quit_after_jobs)
+                self._update_hints()
+                return
+            self.quick.close_menu(restore=False)
+            self._tray_quit = True                      # quit for real, not to the tray
+            self.close()
 
     def handle_remote(self, argv: list):
         """Another `nexus` launch handed us its arguments (see InstanceServer),
@@ -207,6 +267,7 @@ class ControllerMixin:
             self.attract.stop()
             self.cursor_hider.stop()
             self.theatre_sheet.close_sheet(restore=False)
+            self.quick.close_menu(restore=False)
             self.theatre.trailer.stop()
             self.theatre.search.setVisible(False)
             self.theatre.details.setVisible(False)
@@ -306,6 +367,7 @@ from .deals import DealCard, DealSpotlight  # noqa: E402
 from .gameinfo import can_quick_play  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
+from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
 from .theatre import THEATRE_SCALE  # noqa: E402
 from .tiles import GameTile  # noqa: E402
