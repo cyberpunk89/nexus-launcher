@@ -581,12 +581,13 @@ class Behaviour(unittest.TestCase):
             QApplication.processEvents()
             th.hero.btn.setFocus()
             self.assertEqual(shown(), ['Play', 'Options', 'Your games', 'Search',
-                                       'Home / Library', 'Exit Theatre'])
+                                       'Home / Library', 'Quick menu'])
             th.open_game(w.game('steam-1'))
             d = th.details
             d.set_info(news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes'}])
             d.btn_play.setFocus()
-            self.assertEqual(shown(), ['Play', 'Options', 'More about this game', 'Back'])
+            self.assertEqual(shown(), ['Play', 'Options', 'More about this game', 'Back',
+                                       'Quick menu'])
             d.cycle_section(1)
             self.assertEqual(shown(), ['Select', 'Section', 'Play', 'Back to game'])
             d.band_play.setFocus()
@@ -600,8 +601,28 @@ class Behaviour(unittest.TestCase):
             th.trailer.show()
             self.assertEqual(shown(), ['Close'])
             th.trailer.hide()
+            # The quick menu: its list, then its question.
+            w.toggle_quick()
+            self.assertEqual(shown(), ['Select', 'Close', 'Close'])
+            with mock.patch.object(w, '_quit_reasons', return_value=["busy"]):
+                w.quick.buttons['quit'].click()
+            self.assertEqual(shown(), ['Select', 'Cancel'])
+            w._escape()
+            self.assertEqual(shown(), ['Select', 'Close', 'Close'])
         finally:
             w.set_theatre(False)
+
+    def test_guide_and_start_buttons(self):
+        """The pad's Guide and Start reach the window as 'quick' and 'start';
+        the window decides what they do (Theatre: the quick menu)."""
+        from nexus.gui.input import ControllerInput
+        ctrl = ControllerInput(self.win)            # not the window's: nothing acts on it
+        got = []
+        ctrl.action.connect(got.append)
+        for name in ('guide', 'start', 'y'):
+            ctrl._button(name)
+        self.assertEqual(got, ['quick', 'start', 'search'])
+        ctrl.deleteLater()
 
     def test_install_cancel_asks_first(self):
         job = nx.Job(['x'], "Installing T", 't', 'install', 'T')

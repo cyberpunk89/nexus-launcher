@@ -15,7 +15,7 @@ from tests.oskind import linux_only  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtCore import Qt, QPoint
-    from PyQt6.QtGui import QFont, QFontMetrics
+    from PyQt6.QtGui import QFont, QFontMetrics, QShortcut
     from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
     from nexus import features, winfocus
 
@@ -1235,8 +1235,19 @@ class Window(unittest.TestCase):
         w._escape()                                     # B: back to Home, still in Theatre
         self.assertEqual(w.theatre.tabs.current(), 'home')
         self.assertTrue(w._theatre)
-        w._pad_action('tv')                             # Start leaves
+        w._pad_action('start')                          # Start: the quick menu, not out
+        self.assertTrue(w._theatre)
+        self.assertTrue(w.quick.isVisible())
+        w._escape()
+        w._toggle_tv()                                  # F11 leaves
         self.assertIs(w.shell.currentWidget(), w.desk)
+        w._pad_action('quick')                          # Guide on the desktop: into Theatre
+        self.assertTrue(w._theatre)
+        self.assertFalse(w.quick.isVisible())
+        w.set_theatre(False)
+        w._pad_action('start')                          # so does Start
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
         self.assertFalse(w.cursor_hider.hidden)
 
     def test_focus_ring_only_for_keyboard(self):
@@ -1587,6 +1598,7 @@ class Window(unittest.TestCase):
                 {'name': f'r{i}', 'launch_options': 'X=1 %command%'} for i in range(7)]})
             w.set_theatre(True)
             w.theatre.open_game(w._games[0])
+            w.toggle_quick()
             w.set_theatre(False)
             QApplication.processEvents()
             w.jobs.jobs.clear()
@@ -1638,6 +1650,163 @@ class Window(unittest.TestCase):
         self.assertTrue(w.theatre_sheet.isVisible())
         w._escape()
         self.assertTrue(w.theatre.details.isVisible())         # still on the game page
+        w.set_theatre(False)
+
+    def _quick_scope(self, w):
+        """The menu is open, the D-pad stays in it, focus on Exit Theatre."""
+        QApplication.processEvents()
+        self.assertTrue(w.quick.isVisible())
+        self.assertEqual(w.quick.state, 'list')
+        self.assertIs(w.nav_scope(), w.quick)
+        self.assertIs(QApplication.focusWidget(), w.quick.buttons['exit-theatre'])
+
+    def test_quick_menu_from_every_theatre_screen(self):
+        """Guide / Start / F10 open the quick menu over Home, Library, the
+        game page (stage and drawer), search and an Options sheet; B closes
+        it and leaves that screen as it was, still in Theatre."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        th = w.theatre
+        th.hero.btn.setFocus()
+        w._pad_action('quick')                                  # Guide, on Home
+        self._quick_scope(w)
+        self.assertEqual([b.text() for b in w.quick.default_focus().parent().findChildren(
+            QPushButton)], ["Exit Theatre", "Quit Nexus"])
+        self.assertFalse(w.quick.pads.isVisibleTo(w.quick))     # no pad, no strip
+        w._escape()                                             # B closes it
+        self.assertFalse(w.quick.isVisible())
+        self.assertIs(QApplication.focusWidget(), th.hero.btn)  # back where it was
+        w._pad_action('page-next')                              # Library
+        QApplication.processEvents()                            # its first tile takes focus
+        self.assertEqual(th.tabs.current(), 'library')
+        w._pad_action('start')                                  # Start
+        self._quick_scope(w)
+        w._pad_action('page-prev')                              # LB waits under the menu
+        self.assertEqual(th.tabs.current(), 'library')
+        w._pad_action('search')                                 # so does Y
+        self.assertFalse(th.search.isVisible())
+        w._pad_action('start')                                  # Start again closes it
+        self.assertFalse(w.quick.isVisible())
+        th.open_game(w._games[1])                               # the stage
+        QApplication.processEvents()
+        w.toggle_quick()                                        # F10
+        self._quick_scope(w)
+        w._escape()
+        self.assertTrue(th.details.isVisible())
+        th.details.cycle_section(1)                             # the drawer
+        self.assertTrue(th.details.expanded())
+        w._pad_action('quick')
+        self._quick_scope(w)
+        w._escape()
+        self.assertTrue(th.details.expanded())                  # the drawer stays open
+        th.details.btn_opts.click()                             # X Options
+        self.assertTrue(w.theatre_sheet.isVisible())
+        w._pad_action('quick')                                  # the menu replaces it
+        self.assertFalse(w.theatre_sheet.isVisible())
+        self._quick_scope(w)
+        w._escape()
+        th.close_game()
+        th.open_search()                                        # search
+        QApplication.processEvents()
+        w._pad_action('quick')
+        self._quick_scope(w)
+        w._escape()
+        self.assertTrue(th.search.isVisible())
+        self.assertTrue(w._theatre)
+        # F10 and the remote's Home key are shortcuts of the window.
+        keys = {s.key().toString(): s for s in w.findChildren(QShortcut)}
+        keys['F10'].activated.emit()
+        self.assertTrue(w.quick.isVisible())
+        keys['Home Page'].activated.emit()
+        self.assertFalse(w.quick.isVisible())
+        w.set_theatre(False)
+
+    def test_quick_menu_b_order_and_confirms(self):
+        """B: the question, then the list (focus back on its row), then the
+        menu, then Theatre's own order; never out of Theatre. Quit Nexus
+        asks only with jobs running, Cancel focused."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        th.open_game(w._games[0])
+        QApplication.processEvents()
+        w.toggle_quick()
+        q = w.quick
+        quit_row = q.buttons['quit']
+        quit_row.setFocus()
+        with mock.patch.object(w, '_quit_reasons', return_value=["1 job(s) are running."]), \
+                mock.patch.object(w, 'quit_after_jobs') as quit_jobs, \
+                mock.patch.object(w, 'close') as close:
+            quit_row.click()
+            self.assertEqual(q.state, 'confirm')
+            self.assertEqual(QApplication.focusWidget().text(), "Cancel")
+            self.assertTrue(any("1 job(s)" in lab.text() for lab in q.findChildren(QLabel)))
+            w._escape()                                         # B: back to the list
+            self.assertEqual(q.state, 'list')
+            self.assertIs(QApplication.focusWidget(), q.buttons['quit'])
+            q.buttons['quit'].click()
+            next(b for b in q.findChildren(QPushButton) if b.text() == "Cancel").click()
+            self.assertEqual(q.state, 'list')                   # Cancel: the same
+            q.buttons['quit'].click()
+            next(b for b in q.findChildren(QPushButton)
+                 if b.text() == "Quit anyway" and b.isVisible()).click()
+            quit_jobs.assert_called_once_with()
+            self.assertFalse(q.isVisible())
+            close.assert_not_called()
+        with mock.patch.object(w, '_quit_reasons', return_value=[]), \
+                mock.patch.object(w, 'close') as close:
+            w.toggle_quick()
+            q.buttons['quit'].click()                           # nothing running: no question
+            close.assert_called_once_with()
+            self.assertTrue(w._tray_quit)
+            w._tray_quit = False
+        self.assertFalse(q.isVisible())
+        w.toggle_quick()
+        w._escape()                                             # B: the list closes
+        self.assertFalse(q.isVisible())
+        self.assertTrue(th.details.isVisible())
+        w._escape()                                             # then Theatre's order
+        self.assertFalse(th.details.isVisible())
+        for _ in range(3):
+            w._escape()
+        self.assertTrue(w._theatre)                             # B never leaves
+        w.toggle_quick()
+        w.set_theatre(False)                                    # leaving closes it
+        self.assertFalse(q.isVisible())
+        w.set_theatre(True)
+        w.toggle_quick()
+        q.buttons['exit-theatre'].click()                       # Exit Theatre: no question
+        self.assertFalse(w._theatre)
+        self.assertFalse(q.isVisible())
+        self.assertIs(w.shell.currentWidget(), w.desk)
+
+    def test_quick_menu_holds_off_the_screensaver(self):
+        w = self.win
+        w.set_theatre(True)
+        with mock.patch.object(w, 'isActiveWindow', return_value=True), \
+                mock.patch.object(w.attract, 'start') as start:
+            w._maybe_attract()
+            self.assertEqual(start.call_count, 1)               # nothing open: it starts
+            w.toggle_quick()
+            w._maybe_attract()
+            self.assertEqual(start.call_count, 1)               # menu open: it waits
+        w.set_theatre(False)
+
+    def test_quick_menu_pad_strip(self):
+        w = self.win
+        w.set_theatre(True)
+        w.quick.open(w._quick_rows(), [{'name': 'Wireless Controller', 'percent': 64,
+                                        'charging': False}])
+        self.assertTrue(w.quick.pads.isVisibleTo(w.quick))
+        texts = [lab.text() for lab in w.quick.pads.findChildren(QLabel)]
+        self.assertIn('Wireless Controller', texts)
+        self.assertIn('64%', texts)
+        w.quick.open(w._quick_rows(), [{'name': 'Pad', 'percent': None, 'charging': False}])
+        self.assertNotIn('64%', [lab.text() for lab in w.quick.pads.findChildren(QLabel)
+                                 if not lab.isHidden()])
         w.set_theatre(False)
 
     def test_theatre_drawer_sections_and_reader(self):
