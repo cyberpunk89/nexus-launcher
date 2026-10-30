@@ -53,6 +53,7 @@ class Prefs(unittest.TestCase):
 
     def test_theatre_library_defaults_bad_values_and_round_trip(self):
         self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'name', 'show': 'installed'})
+        self.assertFalse(nx.LibraryPrefs().theatre_hide_gamedb)
         self.path.write_text(json.dumps({'theatre_library': {'sort': 'nope', 'show': 'all'},
                                          'library_state': {'sort': 'most'}}))
         p = nx.LibraryPrefs()

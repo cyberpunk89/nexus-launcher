@@ -762,6 +762,14 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#TheatreSub { color: $on_art; font-size: ${fs_sm}px; }
     QLabel#TheatreBig { color: $on_art; font-size: ${fs_big}px; font-weight: 600; }
     QLabel#TheatreLabel { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    /* Theatre Discover (w-62) */
+    #Theatre #TheatreCard { background: $glass; border: 1px solid $glass_hi;
+                            border-radius: ${r_card}px; }
+    #Theatre #TheatreCard:hover { background: $glass_hi; }
+    #Theatre #SetupCard { background: $glass; border: 1px solid $glass_hi;
+                          border-radius: ${r_card}px; }
+    #Theatre #TheatreReaderScrim { background: rgba(0, 0, 0, 0.55); }
+    #Theatre #TheatreReaderPanel { background: $bg; border-left: 1px solid $glass_hi; }
     /* Theatre Downloads rows and the ready banner (w-61) */
     #Theatre #TheatreMoment { background: $glass_hi; border: 1px solid $glass;
                               border-radius: ${r_card}px; }

@@ -13,7 +13,7 @@ from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
-from nexus import __version__, paths as NX, platform
+from nexus import __version__, gamedb, paths as NX, platform
 from nexus.features import has
 
 from .. import updates
@@ -202,6 +202,11 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.quick.closed.connect(self._update_hints)
         self.quick.closed.connect(self._show_session)
         self.theatre.library_sheet.connect(self._open_library_sheet)
+        self.theatre.discover_shown.connect(self._discover_shown)
+        self.theatre.deal_asked.connect(self._theatre_deal)
+        self.theatre.reader_options.connect(self._reader_options)
+        self.theatre.open_settings.connect(lambda: self._open_settings('gamedb'))
+        self.theatre.hide_gamedb.connect(self._hide_theatre_gamedb)
         self.theatre.download_action.connect(self._theatre_download)
         self.theatre.moment_changed.connect(self._update_hints)
         self.theatre.library_changed.connect(self._save_theatre_library)
@@ -313,6 +318,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage.toast.connect(self.toast)
         self.dealspage.counts.connect(self._deals_count)
         self.dealspage.loaded.connect(lambda: self.dash_update('deals', 'upcoming'))
+        self.newspage.loaded.connect(self._feed_theatre_discover)
+        self.dealspage.loaded.connect(self._feed_theatre_discover)
         self.dealspage.open_settings.connect(lambda: self._open_settings('gamedb'))
         self.dealspage.repack.connect(self._deal_repack)
         self._add_page(self.DEALS, self.dealspage)
@@ -713,6 +720,69 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                 bool(self.config.get('news', True) or self.config.get('gamedb_enabled', False)),
                 self.repacks_on() or bool(getattr(self, '_theatre_rows', None)))
 
+    # ---- Theatre's Discover tab ----
+    def _discover_shown(self):
+        """The tab came up: fetch what it shows (both pages skip a second
+        fetch while loaded or busy), and draw what is already here."""
+        if self.config.get('news', True):
+            self.newspage.refresh()
+        if self.config.get('gamedb_enabled'):
+            self.dealspage.refresh()
+        self._feed_theatre_discover(loading=True)
+
+    def _feed_theatre_discover(self, loading: bool = False):
+        if not hasattr(self, 'theatre'):
+            return
+        loading = loading is True
+        news_on = bool(self.config.get('news', True))
+        gamedb_on = bool(self.config.get('gamedb_enabled'))
+        items = (getattr(self.newspage, 'data', None) or {}).get('items') or [] if news_on else []
+        self.theatre.discover.set_data(items, getattr(self.dealspage, 'res', None) or {}, {
+            'owned_appids': {g['appid'] for g in self._games if g.get('appid')},
+            'news_on': news_on, 'gamedb_on': gamedb_on, 'repacks_on': self.repacks_on(),
+            'hide_setup': self.prefs.theatre_hide_gamedb, 'images': self.newspage._image_for,
+            'loading': loading or not (items or getattr(self.dealspage, 'res', None)),
+            'error': str(getattr(self.newspage, 'error', '') or '')})
+
+    def _hide_theatre_gamedb(self):
+        self.prefs.theatre_hide_gamedb = True
+        self.prefs.save()
+        self._feed_theatre_discover()
+        QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.theatre.default_focus()))
+
+    def _theatre_deal(self, item: dict, kind: str):
+        """A on a deal or an upcoming game: what to do with it, in the sheet."""
+        appid = item.get('appid')
+        price = item.get('price') or {}
+        title = item.get('title') or "Game"
+        sub = (f"-{int(price['cutPct'])}% · {price.get('currentStr')}"
+               if kind == 'deal' and price.get('cutPct') and price.get('currentStr') else '')
+        rows = []
+        if isinstance(appid, int):
+            rows.append(("Open in Steam · leaves Theatre", G['external'],
+                         lambda: self.dealspage._open(f"steam://store/{appid}")))
+        match = self.dealspage.repacks().get(str(appid)) if appid else None
+        if match and self.repacks_on():
+            rows.append(("Grab the FitGirl repack", G['download'],
+                         lambda: self._deal_repack('grab', item, match)))
+        if appid and any(g.get('appid') == appid for g in self._games):
+            rows.append(("Show game", G['play'], lambda: self.theatre.show_game_for(appid)))
+        if rows:
+            self.theatre_sheet.choose(title, rows, sub=sub)
+
+    def _reader_options(self, item: dict):
+        """X on a story: the article in the browser (leaves Theatre on), or
+        its link copied. https only."""
+        url = gamedb.safe_url(item.get('link') or item.get('url'))
+        rows = []
+        if url:
+            rows.append(("Open the article · leaves Theatre", G['external'],
+                         lambda: QDesktopServices.openUrl(QUrl(url))))
+            rows.append(("Copy link", G['copy'] if 'copy' in G else G['check'],
+                         lambda: QApplication.clipboard().setText(url)))
+        if rows:
+            self.theatre_sheet.choose(item.get('title') or "Story", rows)
+
     def _open_library_sheet(self):
         if self._theatre and not self.theatre.details.isVisible():
             self.theatre.open_library_sheet(self.theatre_sheet)
@@ -962,7 +1032,8 @@ from .deals import DealsPage  # noqa: E402
 from .details import DetailsPanel  # noqa: E402
 from .downloads import DownloadsPage  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
-from .input import (ControllerInput, FocusRing, HintBar, install_input_mode, SpatialNav)  # noqa: E402
+from .input import (ControllerInput, focus_and_reveal, FocusRing, HintBar,  # noqa: E402
+    install_input_mode, SpatialNav)
 from .install import InstallPage, RepackWatcher  # noqa: E402
 from .jobs import cli_json, in_thread, JobManager  # noqa: E402
 from .setup import SetupPage  # noqa: E402

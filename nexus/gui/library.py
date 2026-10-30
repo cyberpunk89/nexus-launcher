@@ -432,13 +432,13 @@ class ShelfRow(QWidget):
 
     def __init__(self, title: str, tile_w: int, kind: str = 'cover', count: int | None = None,
                  see_all: bool = False, menu: bool = False, tip: str = '',
-                 look: tuple | None = None):
+                 look: tuple | None = None, tile_h: int | None = None):
         super().__init__()
         self.title = title
         self.smart: str | None = None             # a smart shelf's key (HomeView sets it)
         self._want: int | None = None             # an offset to come back to (KeepPlace)
         self.tile_w, self.kind = tile_w, kind
-        tile_h = int(tile_w * 9 / 16) if kind == 'wide' else int(tile_w * 3 / 2)
+        tile_h = tile_h or (int(tile_w * 9 / 16) if kind == 'wide' else int(tile_w * 3 / 2))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['2'])

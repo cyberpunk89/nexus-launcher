@@ -114,6 +114,8 @@ from .theatre import (
     _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
     THEATRE_SCALE, TheatreDownloadRow, TheatreDownloads, TheatreMoment, TheatreSearch,
     TheatreSpotlight, TheatreView)  # noqa: F401
+from .theatre_discover import (  # noqa: F401
+    TheatreCard, TheatreDiscover, TheatreReader, TheatreSetupCard)
 from .theatre_game import (_news_html, fact_text, SECTIONS, TheatreDetails, TheatreDrawer,
     TheatreRow, TheatreShot)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401

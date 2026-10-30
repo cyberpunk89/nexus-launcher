@@ -373,6 +373,11 @@ main action, X opens its options: pause, stop, move up or down in the install qu
 download or install finishes, a banner under the clock says so for ten seconds instead of a
 toast; View jumps to the game or the row.
 
+The **Discover** tab has shelves of news for your games, sales from your Game-db wishlist,
+coming-soon games and the latest news. A opens a story in a reader (LB/RB step through the
+shelf, X opens the article in the browser or copies its link) or a deal's options (open in
+Steam, grab the FitGirl repack, show the game). Without Game-db a card says so and X hides it.
+
 **Theatre search** (Y, or the search button by the clock) is full screen: the query, an
 on-screen keyboard driven with the D-pad (A types, X deletes, Y adds a space, B closes) and
 the matching games as big tiles — installed first, then games you own. A real keyboard

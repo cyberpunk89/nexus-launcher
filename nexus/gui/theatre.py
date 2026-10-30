@@ -697,6 +697,11 @@ class TheatreView(QWidget):
     library_changed = pyqtSignal(dict)           # a pick in that sheet: save it
     download_action = pyqtSignal(str, dict)      # a Downloads row: its action key, its row
     moment_changed = pyqtSignal()                # the banner came or went (the hints follow)
+    discover_shown = pyqtSignal()                # the Discover tab came up: the window fetches
+    deal_asked = pyqtSignal(dict, str)           # A on a deal card: its item, its kind
+    reader_options = pyqtSignal(dict)            # X on a story: open the article, copy the link
+    open_settings = pyqtSignal()                 # the Game-db setup card
+    hide_gamedb = pyqtSignal()                   # ... and X on it
 
     TILE = 230
     WIDE = 440
@@ -792,15 +797,21 @@ class TheatreView(QWidget):
         lp.addWidget(self.lib, 1)
         self.pages.addWidget(self.lib_page)
         # Discover and Downloads: stubs until their cards (w-62, w-61) fill them.
-        self.discover_page = EmptyState(G['news'], "Discover",
-                                        "News and deals are coming to Theatre")
-        self.discover_page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # the pad needs somewhere to land
+        self.discover = self.discover_page = TheatreDiscover()
+        self.discover.news_opened.connect(self._open_reader)
+        self.discover.news_options.connect(self.reader_options)
+        self.discover.deal_asked.connect(self.deal_asked)
+        self.discover.open_settings.connect(self.open_settings)
+        self.discover.hide_gamedb.connect(self.hide_gamedb)
         self.pages.addWidget(self.discover_page)
         self.downloads_page = TheatreDownloads()
         self.downloads_page.action.connect(self.download_action)
         self.pages.addWidget(self.downloads_page)
         self._pages = {'home': self.home, 'library': self.lib_page,
                        'discover': self.discover_page, 'downloads': self.downloads_page}
+        self.reader = TheatreReader(self)
+        self.reader.options.connect(self.reader_options)
+        self.reader.show_game.connect(self._reader_show_game)
         self.moment_banner = TheatreMoment(self)
         self.moment_banner.changed.connect(self.moment_changed)
         self.search = TheatreSearch(self)
@@ -1097,8 +1108,35 @@ class TheatreView(QWidget):
         pt.end()
 
     # ---- navigation ----
+    def _open_reader(self, items: list, index: int, card):
+        self.reader.open(items, index, card, self._news_game_name)
+
+    def _news_game(self, item: dict) -> dict | None:
+        appid = item.get('appid')
+        if item.get('kind') != 'steam' or not appid:
+            return None
+        return next((g for g in self.everything if g.get('appid') == appid), None)
+
+    def _news_game_name(self, item: dict) -> str | None:
+        g = self._news_game(item)
+        return g.get('display_name') if g else None
+
+    def show_game_for(self, appid) -> bool:
+        """Open the game page of the library game with this Steam appid."""
+        g = next((x for x in self.everything if appid and x.get('appid') == appid), None)
+        if g is None:
+            return False
+        self.reader.close_reader()
+        self.open_game(g)
+        return True
+
+    def _reader_show_game(self, appid):
+        self.show_game_for(appid)
+
     def _tab(self, key):
         self.pages.setCurrentWidget(self._pages[key])
+        if key == 'discover':
+            self.discover_shown.emit()
         self._sync_art()
         QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
@@ -1224,6 +1262,9 @@ class TheatreView(QWidget):
         if self.trailer.isVisible():
             self.trailer.stop()
             return True
+        if self.reader.isVisible():
+            self.reader.close_reader()
+            return True
         if self.search.isVisible():
             self.search.close_search()
             return True
@@ -1255,6 +1296,8 @@ class TheatreView(QWidget):
     def default_focus(self):
         if self.trailer.isVisible():
             return self.trailer
+        if self.reader.isVisible():
+            return self.reader.btn_game if self.reader.btn_game.isVisible() else self.reader.body
         if self.search.isVisible():
             return self.search.default_focus()
         if self.details.isVisible():
@@ -1265,6 +1308,8 @@ class TheatreView(QWidget):
         page = self.pages.currentWidget()
         if page is self.downloads_page:
             return page.first_row() or page.empty
+        if page is self.discover_page:
+            return page.first_focus()
         tile = next((t for t in page.findChildren(GameTile) if not t.isHidden()), None)
         if tile is None and page is self.lib_page:
             return self.lib_chip
@@ -1355,6 +1400,7 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
+from .theatre_discover import TheatreDiscover, TheatreReader  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, EmptyState, FlowLayout, glyph_pixmap, icon_button,  # noqa: E402

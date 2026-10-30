@@ -2310,6 +2310,143 @@ class Window(unittest.TestCase):
         w._feed_theatre_downloads()
         self.assertTrue(w.theatre.tabs.item('downloads').isHidden())
 
+    NEWS = [
+        {'kind': 'steam', 'appid': 1, 'title': "Beta patch", 'source': "Steam", 'link': "https://s/1",
+         'summary': "Fixes."},
+        {'kind': 'feed', 'title': "Industry news", 'source': "Site", 'link': "https://n/1"},
+        {'kind': 'steam', 'appid': 99, 'title': "Not yours", 'source': "Steam",
+         'link': "javascript:alert(1)"}]
+    DEALS = {'summary': {
+        'wishlist': [
+            {'appid': 5, 'title': "On sale", 'price': {'cutPct': 50, 'currentStr': "$10"}},
+            {'appid': 6, 'title': "Full price", 'price': {'cutPct': 0, 'currentStr': "$20"}},
+            {'appid': 1, 'title': "Beta owned", 'price': {'cutPct': 20, 'currentStr': "$8"}}],
+        'upcoming': [{'appid': 7, 'title': "Soon", 'releaseDateText': "Q2 2027"}]},
+        'repacks': {'5': {'slug': 'on-sale', 'title': "On sale repack", 'confidence': 'exact'}}}
+
+    def _feed(self, w):
+        from PyQt6.QtCore import QEvent
+        w._feed_theatre_discover()
+        QApplication.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)  # old shelves go
+
+    def _discover(self, w, news=None, deals=None, **cfg):
+        w.config = {**w.config, 'news': True, 'gamedb_enabled': True, 'repacks': True, **cfg}
+        w.newspage.data = {'items': self.NEWS if news is None else news}
+        w.dealspage.res = self.DEALS if deals is None else deals
+        self._feed(w)
+        d = w.theatre.discover
+        return d, lambda: [(r.title, [c.item['title'] for c in r.tiles])
+                           for r in d.findChildren(nx.ShelfRow)]
+
+    def test_theatre_discover_shelves_order_and_gates(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        d, shelves = self._discover(w)
+        self.assertEqual(shelves(), [
+            ("News for your games", ["Beta patch"]),
+            ("On sale from your wishlist", ["On sale", "Beta owned"]),   # biggest cut first
+            ("Coming soon", ["Soon"]),
+            ("Latest news", ["Industry news", "Not yours"])])
+        self.assertIsNone(d.setup)
+        d, shelves = self._discover(w, deals={})                         # news only, no Game-db data
+        self.assertEqual([t for t, _ in shelves()], ["News for your games", "Latest news"])
+        d, shelves = self._discover(w, news=[], gamedb_enabled=False)    # no Game-db: the setup card
+        self.assertIsNotNone(d.setup)
+        self.assertEqual(shelves(), [])
+        w.prefs.theatre_hide_gamedb = False
+        with mock.patch.object(w.prefs, 'save'):
+            d.hide_gamedb.emit()
+        QApplication.processEvents()
+        self.assertTrue(w.prefs.theatre_hide_gamedb)
+        self.assertIsNone(w.theatre.discover.setup)                     # hidden, and stays so
+        w.prefs.theatre_hide_gamedb = False
+        d, shelves = self._discover(w, news=self.NEWS)
+        w.config = {**w.config, 'news': False, 'gamedb_enabled': True}
+        self._feed(w)                                                   # news off: deals only
+        self.assertEqual([t for t, _ in shelves()],
+                         ["On sale from your wishlist", "Coming soon"])
+        w.set_theatre(False)
+
+    def test_theatre_discover_first_show_refreshes(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        w.config = {**w.config, 'news': True, 'gamedb_enabled': True}
+        with mock.patch.object(w.newspage, 'refresh') as nr, \
+                mock.patch.object(w.dealspage, 'refresh') as dr:
+            w.theatre.sync_tabs(True, True)
+            w.theatre.tabs.set_current('discover', emit=True)
+            nr.assert_called_once()
+            dr.assert_called_once()
+            w.theatre.tabs.set_current('home', emit=True)
+            w.config = {**w.config, 'news': False, 'gamedb_enabled': False}
+            w.theatre.tabs.set_current('discover', emit=True)
+            self.assertEqual((nr.call_count, dr.call_count), (1, 1))       # off: nothing fetched
+        w.set_theatre(False)
+
+    def test_theatre_reader_steps_b_order_and_options(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        w.theatre.set_games(w._games)
+        d, _ = self._discover(w)
+        th.tabs.set_current('discover', emit=True)
+        card = next(c for c in d.cards if c.kind == 'news' and c.item['title'] == "Beta patch")
+        card.setFocus()
+        card.activated.emit(card)                                # A: the reader
+        QApplication.processEvents()
+        r = th.reader
+        self.assertTrue(r.isVisible())
+        self.assertEqual(r.title.text(), "Beta patch")
+        self.assertTrue(r.btn_game.isVisible())                  # a game you have
+        self.assertEqual(r.btn_game.text(), "Show Beta")
+        w._pad_action('page-next')                               # LB/RB step this shelf
+        self.assertTrue(r.isVisible())
+        self.assertEqual(r.index, 0)                             # a shelf of one wraps
+        card2 = next(c for c in d.cards if c.item['title'] == "Industry news")
+        card2.activated.emit(card2)
+        w._pad_action('page-next')
+        self.assertEqual(r.title.text(), "Not yours")
+        self.assertFalse(r.btn_game.isVisible())                 # not in your library
+        # X: https only; the javascript: link offers nothing.
+        with mock.patch.object(w.theatre_sheet, 'choose') as ch:
+            r.options.emit(r.item)
+            ch.assert_not_called()
+            w.theatre.reader_options.emit(self.NEWS[0])
+            self.assertEqual([x[0] for x in ch.call_args[0][1]],
+                             ["Open the article · leaves Theatre", "Copy link"])
+        self.assertTrue(th.back())                               # B: the reader, before Home
+        self.assertFalse(r.isVisible())
+        self.assertEqual(th.tabs.current(), 'discover')
+        card.activated.emit(card)
+        r.btn_game.click()                                       # Show game: its page
+        self.assertFalse(r.isVisible())
+        self.assertEqual(th.details.game.get('appid'), 1)
+        th.close_game()
+        w.set_theatre(False)
+
+    def test_theatre_deal_sheet_rows(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        rows = lambda item, kind='deal': ([x[0] for x in ch.call_args[0][1]]                # noqa: E731
+                                          if (w._theatre_deal(item, kind) or True) else None)
+        with mock.patch.object(w.theatre_sheet, 'choose') as ch:
+            w.dealspage.res = self.DEALS
+            w.config = {**w.config, 'repacks': True}
+            self.assertEqual(rows(self.DEALS['summary']['wishlist'][0]),
+                             ["Open in Steam · leaves Theatre", "Grab the FitGirl repack"])
+            self.assertEqual(ch.call_args[1]['sub'], "-50% · $10")
+            owned = self.DEALS['summary']['wishlist'][2]                     # appid 1: in the library
+            self.assertEqual(rows(owned), ["Open in Steam · leaves Theatre", "Show game"])
+            w.config = {**w.config, 'repacks': False}
+            self.assertEqual(rows(self.DEALS['summary']['wishlist'][0]),
+                             ["Open in Steam · leaves Theatre"])
+        w.set_theatre(False)
+
     def test_theatre_library_sort_filter_and_group(self):
         w = self.win
         w.activateWindow()

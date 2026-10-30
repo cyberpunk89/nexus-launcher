@@ -119,6 +119,10 @@ class ControllerMixin:
             self._update_hints()
             return
         if self._theatre and act in ('page-prev', 'page-next'):
+            if self.theatre.reader.isVisible():
+                if self._open_sheet() is None:
+                    self.theatre.reader.step(-1 if act == 'page-prev' else 1)
+                return
             self.theatre.cycle_tab(-1 if act == 'page-prev' else 1)
             return
         if self._theatre and act == 'search':
@@ -325,6 +329,7 @@ class ControllerMixin:
             self.theatre_sheet.close_sheet(restore=False)
             self.quick.close_menu(restore=False)
             self.theatre.trailer.stop()
+            self.theatre.reader.hide()
             self.theatre.search.setVisible(False)
             self.theatre.details.setVisible(False)
             self.theatre.pages.setEnabled(True)
@@ -399,6 +404,12 @@ class ControllerMixin:
             if th.trailer.isVisible():
                 self.hints.show_hints([('b', 'Close')])
                 return
+            if th.reader.isVisible():
+                r = th.reader
+                hints = ([('a', 'Show game')] if r.btn_game.isVisible() else []) \
+                    + [('x', 'Options'), ('LB RB', 'Previous / next'), ('b', 'Close')]
+                self.hints.show_hints(hints)
+                return
             if th.search.isVisible():
                 hints = ([('a', 'Open')] if isinstance(f, GameTile) else [('a', 'Type')]) \
                     + [('x', 'Delete'), ('y', 'Space'), ('b', 'Close')]
@@ -418,8 +429,12 @@ class ControllerMixin:
                          ('x', 'Options'), ('↓', 'Your games')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
+            elif th.tabs.current() == 'discover' and isinstance(f, (TheatreCard, TheatreSetupCard)):
+                hints = [('a', 'Read' if isinstance(f, TheatreCard) and f.kind == 'news'
+                          else 'Options' if isinstance(f, TheatreCard) else 'Open Settings'),
+                         ('x', 'Options' if isinstance(f, TheatreCard) else 'Hide'), ('b', 'Home')]
             elif th.tabs.current() in ('discover', 'downloads'):
-                hints = [('b', 'Home')]                 # a page with nothing to act on yet
+                hints = [('b', 'Home')]                 # nothing here to act on
             else:
                 hints = [('a', 'Select'), ('b', 'Home')]
             if th.tabs.current() == 'downloads':
@@ -467,4 +482,5 @@ from .jobs import in_thread  # noqa: E402
 from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
 from .theatre import THEATRE_SCALE, TheatreDownloadRow  # noqa: E402
+from .theatre_discover import TheatreCard, TheatreSetupCard  # noqa: E402
 from .tiles import GameTile  # noqa: E402

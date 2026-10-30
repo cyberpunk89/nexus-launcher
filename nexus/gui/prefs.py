@@ -118,6 +118,8 @@ class LibraryPrefs:
                 'name', 'played', 'most', 'added', 'collection') else 'name',
             'show': tl.get('show') if isinstance(tl, dict) and tl.get('show') in (
                 'installed', 'missing', 'all') else 'installed'}
+        # Theatre's Discover: the Game-db setup card, hidden with X.
+        self.theatre_hide_gamedb = bool(self._data.get('theatre_hide_gamedb', False))
         # Smart shelves you hid (keys like 'smart:never', 'genre:RPG', 'user:<id>').
         sh = self._data.get('smart_hidden')
         self.smart_hidden = list(dict.fromkeys(
@@ -155,6 +157,7 @@ class LibraryPrefs:
                     'owned_view': self.owned_view, 'controls': self.controls,
                     'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
                     'theatre_library': self.theatre_library,
+                    'theatre_hide_gamedb': self.theatre_hide_gamedb,
                     'smart_shelves': self.smart_shelves,
                     'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,

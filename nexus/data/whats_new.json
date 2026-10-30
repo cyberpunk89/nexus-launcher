@@ -33,8 +33,8 @@
     {
       "kind": "new",
       "icon": "download",
-      "title": "Downloads in Theatre",
-      "text": "A Downloads tab lists your repack downloads, installs and Steam downloads. A banner tells you when one is ready."
+      "title": "Downloads and Discover in Theatre",
+      "text": "New tabs: Downloads, with a banner when something is ready, and Discover, with news and deals from your wishlist."
     }
   ],
   "0.5.1": [
