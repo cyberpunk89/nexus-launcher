@@ -1792,6 +1792,38 @@ class Window(unittest.TestCase):
         self.assertEqual(th.tabs.current(), 'home')
         w.set_theatre(False)
 
+    def test_theatre_spotlight_follows_jump_back_in(self):
+        w = self.win
+        w.set_theatre(True)
+        w.activateWindow()
+        QApplication.processEvents()
+        th = w.theatre
+        spot = th.hero
+        self.assertIsInstance(spot, nx.TheatreSpotlight)
+        self.assertFalse(spot.timer.isActive())                # no rotation
+        for x in (spot.btn_prev, spot.btn_next, spot.dots, spot.btn_more):
+            self.assertTrue(x.isHidden())
+        self.assertEqual(spot.game['slug'], 'alpha')            # the last played
+        self.assertIn("2.0 h played", spot.fact.text())         # one line, no pills
+        row = th.findChildren(nx.ShelfRow)[0]
+        self.assertEqual(row.title, "Jump back in")
+        tile = row.tiles[1]
+        tile.setFocus()
+        QApplication.processEvents()
+        self.assertEqual(spot.game['slug'], tile.game['slug'])  # follows focus
+        th.findChildren(nx.ShelfRow)[1].tiles[0].setFocus()     # another shelf: stays
+        QApplication.processEvents()
+        self.assertEqual(spot.game['slug'], tile.game['slug'])
+        spot.btn.setFocus()
+        self._key(spot.btn, Qt.Key.Key_Menu)                    # X: the sheet
+        self.assertTrue(w.theatre_sheet.isVisible())
+        w._escape()
+        spot.btn_details.click()                                # Details: the game page
+        self.assertTrue(th.details.isVisible())
+        self.assertEqual(th.details.game['slug'], tile.game['slug'])
+        w._escape()
+        w.set_theatre(False)
+
     def test_theatre_favourite_label_follows_the_state(self):
         w = self.win
         w.set_theatre(True)

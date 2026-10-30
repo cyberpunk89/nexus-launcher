@@ -111,7 +111,7 @@ from .input import (
     InputMode, install_input_mode, NAV_KEYS, SpatialNav)  # noqa: F401
 from .theatre import (
     _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
-    THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: F401
+    THEATRE_SCALE, TheatreSearch, TheatreSpotlight, TheatreView)  # noqa: F401
 from .theatre_game import (_news_html, fact_text, SECTIONS, TheatreDetails, TheatreDrawer,
     TheatreRow, TheatreShot)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401

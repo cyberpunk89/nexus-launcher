@@ -13,6 +13,9 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QPu
 
 from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, SP
+# The spotlight subclasses Home's carousel, so this one is needed up front
+# (library.py imports nothing from here).
+from .library import HeroCarousel
 
 
 THEATRE_SCALE = 1.4
@@ -388,6 +391,69 @@ class AttractOverlay(QWidget):
         return False
 
 
+class TheatreSpotlight(HeroCarousel):
+    """Theatre Home's spotlight: one game, full screen behind the top bar
+    (kicker, logo, its line of facts, Play and Details). It follows focus
+    in the first shelf, "Jump back in": no arrows, no dots, no rotation.
+    TheatreView paints the art edge to edge; this widget paints nothing."""
+    art_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__(scale=THEATRE_SCALE)
+        self.timer.stop()
+        for w in (self.btn_prev, self.btn_next, self.dots, self.btn_more):
+            w.hide()
+            w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.layout().setContentsMargins(0, 0, 0, SP['2'])
+        self.fact = fact_line()
+        self.facts.addWidget(self.fact)
+        self.btn.setFixedSize(336, 84)
+        set_glyph_icon(self.btn, G['play'], 30, 'on_accent', hover_role=None)
+        self.btn_details.setFixedHeight(84)
+        self.btn_details.setMinimumWidth(200)
+
+    def set_games(self, games: list[dict]):
+        """The game to show first (the fresh copy of the one shown, if it's
+        still there); focus in "Jump back in" moves it from then on."""
+        keep = self.game.get('slug')
+        cur = next((g for g in games if g.get('slug') == keep), None) or \
+            (games[0] if games else None)
+        self.games, self.i = ([cur] if cur else []), 0
+        if self.games:
+            self._show(animate=False)
+
+    def show_game(self, g: dict):
+        if g.get('slug') != self.game.get('slug'):
+            self.games, self.i = [g], 0
+            self._show(animate=True)
+
+    def step(self, d: int):
+        pass                                     # no rotation
+
+    def wheelEvent(self, ev):
+        ev.ignore()
+
+    def _fill_facts(self, g: dict):
+        self.fact.setText(fact_text(g))
+
+    def _show(self, animate: bool):
+        super()._show(animate)
+        self.art_changed.emit()
+
+    def _faded(self, v):
+        super()._faded(v)
+        self.art_changed.emit()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Menu and self.game:      # X: the options sheet
+            self.menu.emit(self.game, QPoint())
+        else:
+            super().keyPressEvent(ev)
+
+    def paintEvent(self, ev):
+        pass
+
+
 class TheatreView(QWidget):
     """Theatre mode: one big hero, rows of big tiles, a clock, and nothing
     that needs a mouse. LB/RB switch Home and Library, A opens a game, B goes
@@ -440,13 +506,17 @@ class TheatreView(QWidget):
         self.home_lay = QVBoxLayout(host)
         self.home_lay.setContentsMargins(0, 0, 0, SP['8'])
         self.home_lay.setSpacing(SP['6'])
-        self.hero = HeroCarousel(scale=THEATRE_SCALE)
+        self.hero = TheatreSpotlight()
         self.hero.play.connect(self.play)
         self.hero.open.connect(self.open_game)
         self.hero.menu.connect(self.menu)
-        # No ⋮ here: the game page's Options (or X) opens the controller sheet.
-        self.hero.btn_more.hide()
-        self.hero.btn_more.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.hero.art_changed.connect(self.update)
+        self.home.verticalScrollBar().valueChanged.connect(self._home_scrolled)
+        # Focus in "Jump back in" moves the spotlight (once it settles there).
+        self._spot_next: dict | None = None
+        self._spot_timer = QTimer(self)
+        self._spot_timer.setSingleShot(True)
+        self._spot_timer.timeout.connect(self._spot_follow)
         self.home_lay.addWidget(self.hero)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['6'])
@@ -496,6 +566,7 @@ class TheatreView(QWidget):
         self.everything = everything
         self.hero.set_games(featured_games(games))
         self.hero.setVisible(bool(games))
+        self._sync_art()
         clear_layout(self.rows)
         played = sorted((g for g in games if g.get('last_played')),
                         key=lambda g: g['last_played'], reverse=True)
@@ -505,7 +576,7 @@ class TheatreView(QWidget):
         cols = [(n, [g for g in games if n in (g.get('collections') or ())], 'cover',
                  (*looks[n], int(16 * THEATRE_SCALE)) if looks[n] else None)
                 for n in COLLECTION_NAMES]
-        for title, items, kind, look in (("Continue playing", played[:12], 'wide', None),
+        for title, items, kind, look in (("Jump back in", played[:12], 'wide', None),
                                          ("Favourites", [g for g in games if g.get('favorite')],
                                           'cover', None),
                                          *cols,
@@ -521,6 +592,8 @@ class TheatreView(QWidget):
             for g in items:
                 row.add(self._tile(g, w, kind))
             row.finish()
+            if title == "Jump back in":
+                row.focused.connect(self._spot_focus)
             self.rows.addWidget(row)
         spare: dict[str, GameTile] = {}
         while self.lib_flow.count():
@@ -569,9 +642,70 @@ class TheatreView(QWidget):
         t.menu.connect(self.menu)
         return t
 
+    # ---- the spotlight ----
+    def _spot_focus(self, tile):
+        self._spot_next = tile.game
+        self._spot_timer.start(anim_ms(140))
+
+    def _spot_follow(self):
+        g = self._spot_next
+        if g is not None and not self.hero.isHidden():
+            self.hero.show_game(g)
+
+    def _home_scrolled(self, _v):
+        if self._art_on():
+            self.update()
+
+    def _art_on(self) -> bool:
+        return self.pages.currentWidget() is self.home and not self.hero.isHidden() \
+            and self.hero._cur is not None
+
+    def _sync_art(self):
+        """Over the spotlight's art the top bar's tabs are on_art (theme.py)."""
+        on = self._art_on()
+        if self.property('art') != on:
+            self.setProperty('art', on)
+            for b in self.tabs._items.values():
+                b.style().unpolish(b)
+                b.style().polish(b)
+        self.update()
+
+    def paintEvent(self, ev):
+        """Home: the spotlight's art edge to edge, behind the top bar, moving
+        up with the page and fading into it before the shelves."""
+        if not self._art_on() or self.details.isVisible():
+            return
+        h = self.hero
+        w, ht = self.width(), self.height()
+        prev, cur = h._frame(h._prev, (w, ht)), h._frame(h._cur, (w, ht))
+        if cur is None and prev is None:
+            return
+        pt = QPainter(self)
+        y = -self.home.verticalScrollBar().value()
+        r = QRectF(0, y, w, ht)
+        if prev is not None and h._fade < 1.0:
+            pt.drawPixmap(0, y, prev)
+        if cur is not None:
+            pt.setOpacity(h._fade if prev is not None else 1.0)
+            pt.drawPixmap(0, y, cur)
+            pt.setOpacity(1.0)
+        base, bg = QColor(P['scrim']), QColor(P['bg'])
+        g = QLinearGradient(0.0, 0.0, float(w), 0.0)
+        for at, a in ((0.0, 0.90), (0.45, 0.45), (0.75, 0.05), (1.0, 0.0)):
+            c = QColor(base); c.setAlphaF(a); g.setColorAt(at, c)
+        pt.fillRect(r, QBrush(g))
+        g = QLinearGradient(0.0, r.bottom(), 0.0, r.top())
+        for at, a in ((0.0, 1.0), (0.35, 0.55), (0.6, 0.0)):
+            c = QColor(bg); c.setAlphaF(a); g.setColorAt(at, c)
+        pt.fillRect(r, QBrush(g))
+        if r.bottom() < ht:
+            pt.fillRect(QRectF(0, r.bottom(), w, ht - r.bottom()), bg)
+        pt.end()
+
     # ---- navigation ----
     def _tab(self, key):
         self.pages.setCurrentWidget(self.home if key == 'home' else self.lib)
+        self._sync_art()
         QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
     def cycle_tab(self, d):
@@ -715,7 +849,7 @@ class TheatreView(QWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        self.hero.setFixedHeight(int(max(420, min(720, self.height() * 0.55))))
+        self.hero.setFixedHeight(int(max(400, min(680, self.height() * 0.48))))
         if self.details.isVisible():
             self.details.setGeometry(self.rect())
         if self.search.isVisible():
@@ -769,14 +903,14 @@ class CursorHider(QObject):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .art import ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
+from .art import anim_ms, ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
-from .library import featured_games, HeroCarousel, ShelfRow, surprise_pick  # noqa: E402
+from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
-from .theatre_game import TheatreDetails  # noqa: E402
+from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label,
-    SegmentedControl)  # noqa: E402
+    SegmentedControl, set_glyph_icon)  # noqa: E402
 from .topbar import Wordmark  # noqa: E402
