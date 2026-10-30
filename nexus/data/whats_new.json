@@ -1,4 +1,42 @@
 {
+  "0.5.1": [
+    {
+      "kind": "new",
+      "icon": "shelves",
+      "title": "Build your own shelves",
+      "text": "Make a smart shelf from simple rules like play time, store, genre or last played. It fills itself and can sit on Home."
+    },
+    {
+      "kind": "new",
+      "icon": "pin",
+      "title": "Collections with style",
+      "text": "Give a collection an icon and a colour, put them in your own order, and pin up to three to the top bar."
+    },
+    {
+      "kind": "new",
+      "icon": "palette",
+      "title": "More looks",
+      "text": "Six new themes including High contrast, four new accents, and one-click Looks in Settings > Appearance."
+    },
+    {
+      "kind": "new",
+      "icon": "trash",
+      "title": "Uninstall from Storage",
+      "text": "Free space from the Storage page: pick one or several games and uninstall them, with the same save backup choice."
+    },
+    {
+      "kind": "improved",
+      "icon": "sparkles",
+      "title": "Faster and lighter",
+      "text": "Nexus starts faster, big libraries open almost instantly and use far less memory, and pages you revisit load at once."
+    },
+    {
+      "kind": "fixed",
+      "icon": "info",
+      "title": "Small fixes",
+      "text": "Fewer false save files, readable deal counters in light themes, and a button to accept changed game files."
+    }
+  ],
   "0.5.0": [
     {
       "kind": "new",
