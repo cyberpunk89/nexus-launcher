@@ -16,6 +16,7 @@ from nexus.features import has
 from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_hours, fmt_relative, fmt_size
 from .theme import FONTS, FS, G, GRAD, P, R, SP
+from .theme import collection_look
 
 
 DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99}
@@ -581,7 +582,8 @@ class CollectionsWidget(ShelfWidget):
         for name in COLLECTION_NAMES:
             items = [g for g in games if name in (g.get('collections') or ())]
             if items:
-                row = view.make_shelf(name, items, self.KIND_TILE, (f'col:{name}', 'name'))
+                row = view.make_shelf(name, items, self.KIND_TILE, (f'col:{name}', 'name'),
+                                      look=collection_look(name))
                 self._tiles += row.tiles
                 self.body.addWidget(row)
 

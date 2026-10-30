@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QMenu, QPushButton, QSlider
 
 from nexus import facts, net, paths as NX, smart
 
-from .common import alive, COLLECTION_NAMES
+from .common import alive, COLLECTION_LOOK, COLLECTION_NAMES
 from .theme import G, SP
 
 
@@ -234,18 +234,27 @@ class LibraryMixin:
         self.apply_filter()
 
     def _rebuild_collection_chips(self):
-        for key in [k for k in self.chips if k.startswith('col:')]:
-            c = self.chips.pop(key)
+        """One chip per collection, in their order. A chip that's still
+        wanted is kept (re-added in place, its look refreshed), so focus and
+        a sheet's way back to it survive a move or a recolour."""
+        old = {k: self.chips.pop(k) for k in [k for k in self.chips if k.startswith('col:')]}
+        for c in old.values():
             self._col_chips.removeWidget(c)
+        for name in self.prefs.collections:
+            c = old.pop(f'col:{name}', None)
+            if c is None:
+                c = CollectionChip(name)
+                c.clicked.connect(lambda _=False, k=f'col:{name}': self._set_chip(k))
+                c.manage.connect(self._manage_collection)
+                c.move.connect(self._move_collection)
+            else:
+                c.set_look()
+            c.setChecked(self._chip == f'col:{name}')
+            self._col_chips.addWidget(c)               # (re)added, so in order
+            self.chips[f'col:{name}'] = c
+        for c in old.values():
             c.hide()
             c.deleteLater()
-        for name in self.prefs.collections:
-            c = CollectionChip(name)
-            c.clicked.connect(lambda _=False, k=f'col:{name}': self._set_chip(k))
-            c.manage.connect(self._manage_collection)
-            c.setChecked(self._chip == f'col:{name}')
-            self._col_chips.addWidget(c)
-            self.chips[f'col:{name}'] = c
 
     def _store_chips(self):
         """Show a store source's chip only when the library has its games
@@ -267,6 +276,7 @@ class LibraryMixin:
         self._store_chips()
         self._save_library_state()
         self.apply_filter()
+        self._sync_pins()
 
     def _restore_library_state(self):
         st = self.prefs.library_state
@@ -402,13 +412,23 @@ class LibraryMixin:
 
     # ---- library ----
     # ---- collections ----
-    def _collections_changed(self):
-        """After a collection was made, renamed, deleted or a game moved in
-        or out: game dicts, chips, Home, Theatre and the details panel."""
+    def _mirror_collections(self):
+        """The names (in order) and looks, for what can't see prefs: menus,
+        Home, Theatre."""
         COLLECTION_NAMES[:] = list(self.prefs.collections)
+        COLLECTION_LOOK.clear()
+        COLLECTION_LOOK.update({n: dict(v) for n, v in self.prefs.collection_look.items()})
+
+    def _collections_changed(self):
+        """After a collection was made, renamed, deleted, moved, recoloured,
+        pinned or a game moved in or out: game dicts, chips, top-bar pins,
+        Home, Theatre and the details panel."""
+        self._mirror_collections()
         for g in self._games:
             g['collections'] = self.prefs.collections_of(g['slug'])
         self._rebuild_collection_chips()
+        self.topbar.set_pins(self.prefs.pinned_collections())
+        self._home_sig = None                   # a new look or order redraws Home's rows
         if not self._chip.startswith('col:') or self._chip in self.chips:
             self.apply_filter()
         else:
@@ -416,6 +436,25 @@ class LibraryMixin:
         if self._theatre:
             self.theatre.set_games([g for g in self._games if not g.get('hidden')])
         self._sync_selection()
+        self._sync_pins()
+
+    def _sync_pins(self):
+        """Light the pin of the collection the Library is showing."""
+        chip = getattr(self, '_chip', 'all')           # go() can run before the Library is built
+        on = self.current() == self.LIBRARY and chip.startswith('col:')
+        self.topbar.mark_pin(chip[4:] if on else None)
+
+    def _open_pinned(self, cname):
+        """A top-bar pin: its collection in the Library, like a shelf's "See
+        all" (no search or status filter narrowing it, as a grid)."""
+        if cname not in self.prefs.collections:
+            return
+        self.go(self.LIBRARY)
+        self.search.clear()
+        self.filter.setCurrentIndex(0)
+        if self._view == 'home':
+            self.set_view('grid', save=False)
+        self._set_chip(f'col:{cname}')
 
     def ask_collection_name(self, title: str, initial: str, on_done):
         """A name: the on-screen keyboard for a controller (and in Theatre),
@@ -439,17 +478,63 @@ class LibraryMixin:
         self.toast(f"Added {g['display_name']} to “{made}”." if g else
                    f"Made the collection “{made}”.", 'success', None, 2500)
 
-    def _manage_collection(self, cname):
+    def _manage_collection(self, cname, focus: str = ''):
+        """A collection's sheet: rename, pin, move up / down, its colour and
+        icon (picked inline, applied at once), delete. `focus` is the row to
+        start on (Move up again after a move, for a run of presses)."""
+        if cname not in self.prefs.collections:
+            return
         sheet = self.theatre_sheet if self._theatre else self.sheet
-        sheet.choose(cname, [
-            ("Rename…", G['pencil'], lambda: self.ask_collection_name(
-                "Rename collection", cname, lambda new: self._rename_collection(cname, new))),
-            ("Delete collection", G['trash'], lambda: self.confirm(
-                f"Delete “{cname}”?", "Its games stay in your library — only the "
-                "collection goes.", "Delete collection",
-                lambda: self._delete_collection(cname)))],
-            sub=f"{len(self.prefs.collections.get(cname, []))} games")
+        names = list(self.prefs.collections)
+        i = names.index(cname)
+        pinned = bool(self.prefs.look_of(cname).get('pinned'))
+        rows = [("Rename…", G['pencil'], lambda: self.ask_collection_name(
+                    "Rename collection", cname, lambda new: self._rename_collection(cname, new))),
+                ("Unpin from the top bar" if pinned else "Pin to the top bar",
+                 G['pin_off' if pinned else 'pin'], lambda: self._pin_collection(cname, not pinned))]
+        if i > 0:
+            rows.append(("Move up", G['arrow_up'],
+                         lambda: self._move_collection(cname, -1, sheet=True)))
+        if i < len(names) - 1:
+            rows.append(("Move down", G['arrow_down'],
+                         lambda: self._move_collection(cname, 1, sheet=True)))
+        picker = CollectionLookPicker(self.prefs.look_of(cname), sheet.scale)
+        picker.picked.connect(lambda what, key: self._set_collection_look(cname, what, key))
+        rows += [picker,
+                 ("Delete collection", G['trash'], lambda: self.confirm(
+                     f"Delete “{cname}”?", "Its games stay in your library — only the "
+                     "collection goes.", "Delete collection",
+                     lambda: self._delete_collection(cname)), 'danger')]
+        texts = [r[0] for r in rows if isinstance(r, tuple)]
+        n = len(self.prefs.collections.get(cname, []))
+        sheet.choose(cname, rows, sub=f"{n} game{'s' if n != 1 else ''}",
+                     focus=texts.index(focus) if focus in texts else 0)
         self._update_hints()
+
+    def _move_collection(self, cname, delta, sheet=False):
+        """Up (-1) or down (+1) one place: chips, menus, Home and Theatre
+        follow. From the sheet it opens again on the same row, so A moves it
+        on; at an end it lands on the other direction."""
+        if self.prefs.move_collection(cname, delta):
+            self._collections_changed()
+        if sheet:
+            names = list(self.prefs.collections)
+            i = names.index(cname)
+            up = delta < 0 and i > 0 or delta > 0 and i == len(names) - 1
+            self._manage_collection(cname, "Move up" if up else "Move down")
+
+    def _set_collection_look(self, cname, what, key):
+        if self.prefs.set_collection_look(cname, **{what: key}):
+            self._collections_changed()
+
+    def _pin_collection(self, cname, on):
+        if not self.prefs.set_collection_look(cname, pinned=on):
+            self.toast(f"Up to {MAX_PINNED} collections fit in the top bar — unpin one first.",
+                       'warn', None, 4000)
+            return
+        self._collections_changed()
+        self.toast(f"Pinned “{cname}” to the top bar." if on else
+                   f"Unpinned “{cname}”.", 'success' if on else 'info', None, 2500)
 
     def _rename_collection(self, old, new):
         made = self.prefs.rename_collection(old, new)
@@ -983,4 +1068,5 @@ from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import amp, icon_button, label, SegmentedControl, WrapRow  # noqa: E402
-from .topbar import CollectionChip  # noqa: E402
+from .topbar import CollectionChip, CollectionLookPicker  # noqa: E402
+from .prefs import MAX_PINNED  # noqa: E402

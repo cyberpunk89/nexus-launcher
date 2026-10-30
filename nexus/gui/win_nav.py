@@ -75,6 +75,7 @@ class NavigationMixin:
         self.tabs.set_current(page if page in self.TABS else None)
         for p, b in self.icons.items():
             b.setChecked(p == page)
+        self._sync_pins()
         if page == self.LIBRARY and self._filter_dirty:
             self.apply_filter()
         # The details panel belongs to the game pages.

@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen, QPixmap
 
-from nexus.icons import ICONS
+from nexus.icons import COLLECTION_ICONS, ICONS
 
-from .common import _REPO, DATA_DIR
+from .common import _REPO, COLLECTION_LOOK, DATA_DIR
 
 
 # --- Fonts -----------------------------------------------------------------
@@ -178,6 +178,9 @@ THEMES = {
 SCALES = (0.9, 1.0, 1.1, 1.25, 1.5)   # Settings → Appearance → Size
 ACCENTS = {'iris': '#c4a7e7', 'rose': '#ebbcba', 'love': '#eb6f92', 'gold': '#f6c177',
            'foam': '#9ccfd8', 'sky': '#89b4fa', 'mint': '#a6e3a1', 'pine': '#31748f'}
+# A collection's colour is one of these too (w-52), as the role 'col_<key>';
+# apply_appearance deepens the pastel ones on a light theme, like the accent.
+P.update({f'col_{k}': v for k, v in ACCENTS.items()})
 APPEARANCE_DEFAULT = {'theme': 'rose-pine', 'accent': 'iris', 'partner': 'love',
                       'glow': 'subtle', 'corners': 'default', 'art_tint': True, 'scale': 1.0}
 GLOW = {'off': 0.0, 'subtle': 1.0, 'vivid': 1.9}
@@ -295,6 +298,11 @@ def apply_appearance(ap: dict) -> dict:
         'warning_18': _rgba(PAL['gold'], 0.18),
         **surf,
     })
+    for key, v in ACCENTS.items():
+        c = QColor(v)
+        P[f'col_{key}'] = QColor.fromHslF(
+            c.hslHueF(), min(1.0, c.hslSaturationF() * 0.9 + 0.1), 0.42).name() \
+            if light_theme and c.lightnessF() > 0.62 else v
     GRAD['dusk'] = (accent, partner)
     GRAD['aurora'] = (accent, PAL['foam'])
     SRC_HUE['nexus'] = accent
@@ -307,6 +315,18 @@ def apply_appearance(ap: dict) -> dict:
     _ICON_CACHE.clear()
     _TINTS.clear()
     return ap
+
+
+def collection_look(name: str) -> tuple[str, str] | None:
+    """A collection's (glyph, colour role) for chips, shelves, menus and the
+    top bar; None when it has neither an icon nor a colour (it looks as it
+    always did). A colour alone wears the bookmark."""
+    look = COLLECTION_LOOK.get(name) or {}
+    icon, color = look.get('icon'), look.get('color')
+    if icon not in COLLECTION_ICONS and color not in ACCENTS:
+        return None
+    return (COLLECTION_ICONS.get(icon, COLLECTION_ICONS['bookmark']),
+            f'col_{color}' if color in ACCENTS else 'subtext')
 
 
 def pill(h: int) -> int:
@@ -502,6 +522,16 @@ def build_stylesheet(scale: float = 1.0) -> str:
                           font-size: ${fs_icon}px; padding: 0; }
     QToolButton#TopIcon:hover { background: $surface_2; color: $text; }
     QToolButton#TopIcon:checked { background: $accent_16; color: $accent; }
+    QPushButton#TopPin { background: transparent; border: none; color: $subtext;
+                         padding: 0 ${sp_3}px; font-size: ${fs_xs}px; font-weight: 500; }
+    QPushButton#TopPin:hover { background: $surface_2; color: $text; }
+    QPushButton#TopPin:checked { background: $accent_16; color: $text; }
+    #TopSep { background: $border; }
+    QToolButton#IconPick { background: transparent; border: 1px solid transparent; color: $subtext;
+                           font-size: ${fs_icon}px; padding: 0; }
+    QToolButton#IconPick:hover, QToolButton#IconPick:focus { background: $surface_2;
+                                                             color: $text; }
+    QToolButton#IconPick:checked { background: $accent_16; border-color: $accent_35; }
     QLineEdit#TopSearch { background: $surface_1; border: 1px solid $border;
                           border-radius: ${r_search}px; padding: 0 ${sp_3}px; font-size: ${fs_xs}px; }
     QLineEdit#TopSearch:focus { border: 1px solid $accent; background: $surface_2; }

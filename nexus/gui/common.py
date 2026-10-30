@@ -68,6 +68,10 @@ INSTALL_BASE_DEFAULT = str(platform.default_install_base(HOME))
 # The user's collections, in their order: set by MainWindow whenever they
 # change, read by game_actions() (which only gets a game) and Theatre's rows.
 COLLECTION_NAMES: list[str] = []
+# Each one's icon, colour and top-bar pin (LibraryPrefs.collection_look), set
+# with COLLECTION_NAMES: {name: {'icon': lucide name, 'color': accent key,
+# 'pinned': True}}, only what was chosen.
+COLLECTION_LOOK: dict[str, dict] = {}
 MAX_COLLECTION_NAME = 40
 MAX_TITLE = 120
 ATTRACT_MINUTES = (0, 3, 5, 10, 20)

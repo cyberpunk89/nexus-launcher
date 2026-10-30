@@ -1,14 +1,17 @@
-"""The window's top bar: the wordmark, page tabs, icon buttons, and the
-collection chips under the library toolbar."""
+"""The window's top bar: the wordmark, page tabs, pinned collections, icon
+buttons; the collection chips under the library toolbar and the collection
+sheet's colour and icon picker."""
 
 from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt
-from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient,
+from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient,
     QPainter, QPainterPath, QPen)
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QToolButton, QWidget
+from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLineEdit, QPushButton,
+    QToolButton, QVBoxLayout, QWidget)
 
+from nexus.icons import COLLECTION_ICONS
 from ..features import has
 from .common import WORDMARK_SVG
-from .theme import FONTS, FS, G, GRAD, P, pill, SP
+from .theme import ACCENTS, collection_look, FONTS, FS, G, GRAD, P, pill, SP
 
 
 class Wordmark(QWidget):
@@ -171,7 +174,9 @@ ICON_NEEDS = {G['proton']: 'proton'}
 class TopBar(QFrame):
     """The app's navigation: wordmark, the four content tabs, then search,
     the system pages as icons, and Install. A faint gradient hairline sits
-    under it."""
+    under it. Pinned collections (w-52) sit after the tabs: one click shows
+    that collection in the Library (`pin_clicked`)."""
+    pin_clicked = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -185,6 +190,17 @@ class TopBar(QFrame):
         lay.addSpacing(SP['4'])
         self.tabs = SegmentedControl('underline', 44)
         lay.addWidget(self.tabs)
+        self.pin_sep = QFrame()                   # a hairline between tabs and pins
+        self.pin_sep.setObjectName("TopSep")
+        self.pin_sep.setFixedSize(1, 20)
+        self.pin_sep.hide()
+        lay.addSpacing(SP['1'])
+        lay.addWidget(self.pin_sep)
+        self.pins_lay = QHBoxLayout()
+        self.pins_lay.setSpacing(SP['1'])
+        lay.addLayout(self.pins_lay)
+        self.pins: list[PinButton] = []
+        self._pins_wide = True
         lay.addStretch(1)
         self.search = QLineEdit()
         self.search.setObjectName("TopSearch")
@@ -246,6 +262,37 @@ class TopBar(QFrame):
             b.hide()
         return b
 
+    def set_pins(self, names: list[str]):
+        """The pinned collections, in order; reuses the buttons it has."""
+        have = {b.name: b for b in self.pins}
+        for b in self.pins:
+            self.pins_lay.removeWidget(b)
+        self.pins = []
+        for name in names:
+            b = have.pop(name, None)
+            if b is None:
+                b = PinButton(name)
+                b.clicked.connect(lambda _=False, b=b: self.pin_clicked.emit(b.name))
+            b.set_look()
+            b.set_wide(self._pins_wide)
+            self.pins_lay.addWidget(b)            # (re)added, so in order
+            self.pins.append(b)
+        for b in have.values():
+            b.hide()
+            b.deleteLater()
+        self.pin_sep.setVisible(bool(self.pins))
+
+    def set_pins_wide(self, on: bool):
+        """Pins with their names (a roomy window) or icons only."""
+        self._pins_wide = on
+        for b in self.pins:
+            b.set_wide(on)
+
+    def mark_pin(self, name: str | None):
+        """Light the pin whose collection the Library is showing."""
+        for b in self.pins:
+            b.setChecked(b.name == name)
+
     def set_compact(self, on: bool):
         self.tabs.set_compact(on)
         self.install.setText("" if on else "Install")
@@ -265,27 +312,171 @@ class TopBar(QFrame):
 
 
 class CollectionChip(QPushButton):
-    """A Library chip for one collection: click filters; right-click or the
-    Menu key (X on a pad) offers rename / delete."""
+    """A Library chip for one collection, with its icon in its colour when it
+    has them: click filters; right-click or the Menu key (X on a pad) opens
+    its sheet (rename, pin, order, colour, icon, delete); Ctrl+← / → moves it."""
     manage = pyqtSignal(str)
+    move = pyqtSignal(str, int)
 
     def __init__(self, name: str):
         super().__init__(amp(name))
         self.name = name
         self.setObjectName("Chip")
         self.setCheckable(True)
-        self.setToolTip("Right-click to rename or delete")
+        self.setToolTip("Right-click to rename, pin, move, colour or delete")
+        self.set_look()
+
+    def set_look(self):
+        look = collection_look(self.name)
+        if look:
+            set_glyph_icon(self, look[0], 14, look[1], hover_role=None)
+        else:
+            self._glyph_spec = None
+            self.setIcon(QIcon())
 
     def contextMenuEvent(self, ev):
         self.manage.emit(self.name)
 
     def keyPressEvent(self, ev):
+        ctrl = ev.modifiers() & Qt.KeyboardModifier.ControlModifier
         if ev.key() == Qt.Key.Key_Menu:
             self.manage.emit(self.name)
+        elif ctrl and ev.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self.move.emit(self.name, -1 if ev.key() == Qt.Key.Key_Left else 1)
         else:
             super().keyPressEvent(ev)
 
 
+class PinButton(QPushButton):
+    """A collection pinned to the top bar: its icon in its colour, and its
+    name while the window is wide enough."""
+    H = 36
+    NAME_MAX = 16                     # longer names are cut with an ellipsis
+
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+        self.setObjectName("TopPin")
+        self.setCheckable(True)
+        self.setFixedHeight(self.H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(f"{name} — show this collection")
+        self.setAccessibleName(name)
+        self.setStyleSheet(f"border-radius: {pill(self.H)}px;")
+
+    def set_look(self):
+        glyph, role = collection_look(self.name) or (G['collection'], 'subtext')
+        set_glyph_icon(self, glyph, 16, role, hover_role=None)
+
+    def set_wide(self, on: bool):
+        name = self.name if len(self.name) <= self.NAME_MAX else \
+            self.name[:self.NAME_MAX - 1].rstrip() + "…"
+        self.setText(amp(name) if on else "")
+        self.setStyleSheet(f"border-radius: {pill(self.H)}px;" + ("" if on else " padding: 0;"))
+        if on:
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
+        else:
+            self.setFixedWidth(self.H)
+
+
+class _NoColour(QToolButton):
+    """The colour row's first choice: no colour of its own (a hollow ring)."""
+
+    def __init__(self, size: int):
+        super().__init__()
+        self.setCheckable(True)
+        self.setFixedSize(size, size)
+        self.setToolTip("No colour")
+        self.setAccessibleName("No colour")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def paintEvent(self, ev):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        inner = r.adjusted(5, 5, -5, -5)
+        pt.setPen(QPen(QColor(P['muted']), 1.5))
+        pt.drawEllipse(inner)
+        d = inner.width() * 0.15
+        pt.drawLine(QPointF(inner.left() + d, inner.bottom() - d),
+                    QPointF(inner.right() - d, inner.top() + d))
+        if self.isChecked():
+            pt.setPen(QPen(QColor(P['text']), 2.0))
+            pt.drawEllipse(r)
+        pt.end()
+
+
+class CollectionLookPicker(QWidget):
+    """A collection's colour and icon, chosen inline in its sheet (no
+    dialog): a row of swatches (the theme's accent presets) and a grid of
+    Lucide icons. Every piece takes focus, so the D-pad walks it like any
+    other row; a pick applies at once (`picked`) and the sheet stays open."""
+    picked = pyqtSignal(str, object)            # 'color' | 'icon', key or None
+    COLS = 6
+
+    def __init__(self, look: dict, scale: float = 1.0):
+        super().__init__()
+        self.color, self.icon = look.get('color'), look.get('icon')
+        sc = lambda v: int(v * scale)             # noqa: E731
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, sc(SP['2']), 0, sc(SP['2']))
+        lay.setSpacing(sc(SP['1_5']))
+        lay.addWidget(label("COLOUR", "SheetSection"))
+        row = QHBoxLayout()
+        row.setSpacing(sc(SP['1']))
+        self.swatches: dict[str | None, QWidget] = {None: _NoColour(sc(32))}
+        for key in ACCENTS:
+            self.swatches[key] = Swatch('color', P[f'col_{key}'], key.capitalize(),
+                                        (sc(32), sc(32)))
+        for key, sw in self.swatches.items():
+            sw.clicked.connect(lambda _=False, k=key: self._pick('color', k))
+            row.addWidget(sw)
+        row.addStretch()
+        lay.addLayout(row)
+        lay.addSpacing(sc(SP['2']))
+        lay.addWidget(label("ICON", "SheetSection"))
+        grid = QGridLayout()
+        grid.setSpacing(sc(SP['1']))
+        self.icons: dict[str, QToolButton] = {}
+        for i, (key, glyph) in enumerate(COLLECTION_ICONS.items()):
+            b = QToolButton()
+            b.setObjectName("IconPick")
+            b.setText(glyph)
+            b.setCheckable(True)
+            b.setFixedSize(sc(44), sc(44))
+            b.setToolTip(key.split('-')[0].capitalize())
+            b.setAccessibleName(b.toolTip())
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.clicked.connect(lambda _=False, k=key: self._pick('icon', k))
+            grid.addWidget(b, i // self.COLS, i % self.COLS)
+            self.icons[key] = b
+        grid.setColumnStretch(self.COLS, 1)
+        lay.addLayout(grid)
+        self._sync()
+
+    def _pick(self, what: str, key):
+        if what == 'icon' and key == 'bookmark':
+            key = None                            # the bookmark is the default icon
+        setattr(self, what, key)
+        self._sync()
+        self.picked.emit(what, key)
+
+    def _sync(self):
+        for key, sw in self.swatches.items():
+            sw.setChecked(key == self.color)
+        role = f'col_{self.color}' if self.color in ACCENTS else 'accent'
+        for key, b in self.icons.items():
+            on = key == (self.icon or 'bookmark')
+            b.setChecked(on)
+            # The chosen icon in the chosen colour: the pick, previewed.
+            b.setStyleSheet(f"border-radius: {pill(b.height())}px;"
+                            + (f" color: {P[role]};" if on else ""))
+
+
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
+from .settings import Swatch  # noqa: E402
 from .widgets import amp, icon_label, label, SegmentedControl, set_glyph_icon  # noqa: E402
