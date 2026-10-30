@@ -145,6 +145,98 @@ class NtfyTest(unittest.TestCase):
             release.ntfy_url('http://ntfy.sh/topic', {})
 
 
+CARDS = [{'kind': 'new', 'icon': 'pin', 'title': 'Pins', 'text': 'Pin things.'},
+         {'kind': 'fixed', 'icon': 'info', 'title': 'Fixes', 'text': 'Fewer bugs.',
+          'platform': 'windows'}]
+
+
+class DiscordTest(unittest.TestCase):
+    HOOK = 'https://discord.com/api/webhooks/1234/tok-EN_x'
+
+    def test_flag_beats_env_beats_file_and_unset_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'hook'
+            f.write_text(self.HOOK.replace('1234', '9999') + '\n')
+            env = {release.DISCORD_ENV: self.HOOK.replace('1234', '5555')}
+            self.assertEqual(release.discord_url(self.HOOK, env, f), self.HOOK)
+            self.assertIn('5555', release.discord_url(None, env, f))
+            self.assertIn('9999', release.discord_url(None, {}, f))
+            self.assertIsNone(release.discord_url(None, {}, Path(d) / 'missing'))
+
+    def test_other_urls_refused_without_quoting_them(self):
+        for bad in ('http://discord.com/api/webhooks/1/tok', 'https://evil.example/api/webhooks/1/tok',
+                    'https://discord.com/api/webhooks/1/tok/extra'):
+            with self.assertRaises(release.ReleaseError) as cm:
+                release.discord_url(bad, {}, None)
+            self.assertNotIn('tok', str(cm.exception).replace('<token>', ''))
+
+    def test_payload_lists_the_cards_and_pings_nobody(self):
+        body = release.discord_payload('0.5.2', 'https://x/rel', CARDS)
+        self.assertEqual(body['allowed_mentions'], {'parse': []})
+        embed = body['embeds'][0]
+        self.assertEqual((embed['title'], embed['url']), ('Nexus 0.5.2 is out', 'https://x/rel'))
+        self.assertIn('**New** · Pins\nPin things.', embed['description'])
+        self.assertIn('**Fixed** · Fixes (Windows only)', embed['description'])
+
+    def test_long_payload_is_cut_under_the_cap(self):
+        cards = [{'title': f'T{i}', 'text': 'x' * 300} for i in range(30)]
+        desc = release.discord_payload('1', 'l', cards)['embeds'][0]['description']
+        self.assertLessEqual(len(desc), 4096)
+        self.assertTrue(desc.endswith('…'))
+
+    def test_post_sends_json_and_hides_the_url_on_error(self):
+        seen = []
+
+        class Ok:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake(req, timeout):
+            seen.append(req)
+            return Ok()
+        with mock.patch.object(release.urllib.request, 'urlopen', fake):
+            release.post_discord(self.HOOK, {'a': 1})
+        self.assertEqual(json.loads(seen[0].data), {'a': 1})
+        self.assertEqual(seen[0].get_header('Content-type'), 'application/json')
+        self.assertTrue(seen[0].get_header('User-agent').startswith('nexus-release'))
+
+        def refuse(req, timeout):
+            raise release.urllib.error.HTTPError(self.HOOK, 404, 'Not Found', {}, None)
+        with mock.patch.object(release.urllib.request, 'urlopen', refuse):
+            with self.assertRaises(OSError) as cm:
+                release.post_discord(self.HOOK, {})
+        self.assertEqual(str(cm.exception), 'HTTP 404 Not Found')
+
+    def test_discord_test_needs_a_hook(self):
+        out = []
+        with mock.patch.object(release, 'DISCORD_DEFAULT', '/nonexistent/hook'), \
+                mock.patch.dict(os.environ, {}, clear=False) as env:
+            env.pop(release.DISCORD_ENV, None)
+            self.assertEqual(release.main(['--discord-test'], out=out.append), release.FAILED)
+        self.assertIn('no Discord webhook', '\n'.join(out))
+
+
+class WhatsNewTest(unittest.TestCase):
+    def test_cards_for_the_version_or_none(self):
+        text = json.dumps({'1.0.0': CARDS})
+        self.assertEqual(release.whats_new_cards(text, '1.0.0'), CARDS)
+        self.assertEqual(release.whats_new_cards(text, '2.0.0'), [])
+
+    def test_card_without_text_refused(self):
+        with self.assertRaises(release.ReleaseError):
+            release.whats_new_cards(json.dumps({'1': [{'title': 'x'}]}), '1')
+
+    def test_markdown_section(self):
+        md = release.whats_new_markdown(CARDS)
+        self.assertTrue(md.startswith("## What's new\n\n- **New** · Pins: Pin things.\n"))
+        self.assertIn('(Windows only): Fewer bugs.', md)
+
+    def test_this_checkout_has_cards_for_its_version(self):
+        version = release.read_version((ROOT / 'nexus' / '__init__.py').read_text())
+        text = (ROOT / release.WHATS_NEW).read_text(encoding='utf-8')
+        self.assertTrue(release.whats_new_cards(text, version))
+
+
 class CiTest(unittest.TestCase):
     def test_latest_run_of_the_workflow_for_the_commit(self):
         runs = [tests_run(id_=1, created='2026-10-23T09:00:00Z'),
@@ -216,7 +308,9 @@ class NotesTest(unittest.TestCase):
         text = release.render_notes(
             release.NOTES_TEMPLATE.read_text(encoding='utf-8'), version='0.3.0', tag='v0.3.0',
             app='nexus-launcher', setup='S.exe', portable='P.zip', repo='o/r',
-            guide='https://github.com/o/r/blob/v0.3.0/docs/WINDOWS.md', checksums='    abc  S.exe')
+            guide='https://github.com/o/r/blob/v0.3.0/docs/WINDOWS.md', checksums='    abc  S.exe',
+            whats_new="## What's new\n\n- one\n")
+        self.assertTrue(text.startswith("## What's new"))
         for want in ('More info', 'Run anyway', 'code-signed', 'S.exe', 'P.zip',
                      'nexus-launcher.exe', '(https://github.com/o/r/blob/v0.3.0/docs/WINDOWS.md)',
                      'abc  S.exe'):
@@ -335,6 +429,8 @@ class DryRunTest(unittest.TestCase):
         self.target_head = git(self.target, 'rev-parse', 'main')
         # what's new since that export
         (src / 'nexus' / 'new.py').write_text('X = 1\n')
+        (src / 'nexus' / 'data').mkdir()
+        (src / 'nexus' / 'data' / 'whats_new.json').write_text(json.dumps({'0.3.0': CARDS}))
         git(src, 'add', '-A')
         git(src, 'commit', '-qm', 'second')
         self.rev = git(src, 'rev-parse', 'HEAD')
@@ -367,12 +463,13 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(git(clone, 'log', '-1', '--format=%an <%ae>|%cn <%ce>'),
                          '{0} <{1}>|{0} <{1}>'.format(*release.IDENTITY))
         self.assertEqual(git(clone, 'log', '-1', '--format=%s'), 'Nexus 0.3.0')
-        for want in ('identical', 'clean (5 files)', 'OK', '--publish would go ahead',
+        for want in ('identical', 'clean (6 files)', 'OK', '--publish would go ahead',
                      'push origin HEAD:refs/heads/main', 'gh release create v0.3.0',
                      'nexus-launcher-Setup-0.3.0.exe'):
             self.assertIn(want, text)
         notes = (self.work / 'release-notes.md').read_text()
         self.assertIn('Run anyway', notes)
+        self.assertTrue(notes.startswith("## What's new\n\n- **New** · Pins: Pin things."))
         self.assertIn('nexus-launcher-0.3.0-portable.zip', notes)
         self.assertIn('blob/v0.3.0/docs/WINDOWS.md', notes)
         self.assertNotIn('zebra', text + notes)
@@ -381,6 +478,15 @@ class DryRunTest(unittest.TestCase):
                          list(release.asset_names('nexus-launcher', '0.3.0')))
         self.assertIn(sums[0].split()[0], notes)
         self.assertIn('SHA256SUMS', text)
+
+    def test_no_whats_new_cards_means_not_ready(self):
+        (self.src / 'nexus' / 'data' / 'whats_new.json').write_text('{"0.2.0": []}')
+        git(self.src, 'commit', '-qam', 'no cards')
+        self.rev = git(self.src, 'rev-parse', 'HEAD')
+        rc = self.dry_run()
+        self.assertEqual(rc, release.NOT_READY)
+        self.assertIn("no What's new cards for 0.3.0", '\n'.join(self.out))
+        self.assert_nothing_published()
 
     def test_red_ci_means_not_ready(self):
         rc = self.dry_run(fake=FakeGh(self.rev, tests='failure'))

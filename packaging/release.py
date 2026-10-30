@@ -31,8 +31,13 @@ A dry run stops there and prints what --publish would do. --publish goes on:
   8. push main, push tag v<version>, create the release with the assets
      (the two Windows builds and their SHA256SUMS);
   9. verify from a fresh clone;
- 10. announce it on an ntfy topic, if one is set (--ntfy, else
-     $NEXUS_RELEASE_NTFY): best-effort, a failed push doesn't undo anything.
+ 10. announce it on an ntfy topic and a Discord channel webhook, each if set
+     (--ntfy / $NEXUS_RELEASE_NTFY; --discord / $NEXUS_RELEASE_DISCORD /
+     ~/.config/nexus-release/discord_webhook): best-effort, a failed post
+     doesn't undo anything. --discord-test posts a test message and stops.
+
+The notes open with the version's "What's new" cards from
+nexus/data/whats_new.json; a version without cards can't be published.
 
 The gate's patterns live OUTSIDE the repo (an exported tree that held them
 would fail its own gate): one regex per line, case-insensitive, '#' comments
@@ -55,6 +60,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -65,6 +71,10 @@ IDENTITY = ('cyberpunk89', '25316058+cyberpunk89@users.noreply.github.com')
 
 GATE_ENV = 'NEXUS_RELEASE_GATE'
 NTFY_ENV = 'NEXUS_RELEASE_NTFY'     # e.g. https://ntfy.sh/<the friends' topic>
+DISCORD_ENV = 'NEXUS_RELEASE_DISCORD'   # a channel webhook URL: a secret, never printed
+DISCORD_DEFAULT = '~/.config/nexus-release/discord_webhook'
+DISCORD_RE = re.compile(r'^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$')
+DISCORD_COLOR = 0xc4a7e7                # the default 'iris' accent
 GATE_DEFAULT = '~/.config/nexus-release/gate.txt'
 
 TESTS_WORKFLOW = 'tests'            # the `name:` of .github/workflows/tests.yml
@@ -74,6 +84,9 @@ SUITE_ENV = {'QT_QPA_PLATFORM': 'offscreen', 'NEXUS_NO_GAMEPAD': '1',
              'PYTHONDONTWRITEBYTECODE': '1'}    # leave the clone as it was
 
 NOTES_TEMPLATE = Path(__file__).with_name('release-notes.md')
+WHATS_NEW = 'nexus/data/whats_new.json'
+KIND_LABELS = {'new': 'New', 'improved': 'Improved', 'fixed': 'Fixed'}
+PLATFORM_LABELS = {'linux': 'Linux', 'windows': 'Windows'}
 VERSION_RE = re.compile(r'^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?$')
 
 READY, FAILED, NOT_READY = 0, 1, 3      # exit codes
@@ -140,6 +153,75 @@ def ntfy_url(arg=None, environ=os.environ):
     if url and not url.startswith('https://'):
         raise ReleaseError(f"the ntfy URL must start with https:// (from --ntfy or ${NTFY_ENV})")
     return url or None
+
+
+def discord_url(arg=None, environ=os.environ, default=DISCORD_DEFAULT):
+    """--discord, else $NEXUS_RELEASE_DISCORD, else the default file's first
+    line; None when none is set. Errors never quote the URL: its token lets
+    anyone post as the hook."""
+    url = (arg or environ.get(DISCORD_ENV) or '').strip()
+    if not url and default:
+        try:
+            url = Path(default).expanduser().read_text(encoding='utf-8').strip().split('\n')[0]
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            raise ReleaseError(f"can't read the Discord webhook file {default}: {e.strerror}")
+    if url and not DISCORD_RE.match(url):
+        raise ReleaseError(f"the Discord webhook isn't https://discord.com/api/webhooks/<id>/<token> "
+                           f"(from --discord, ${DISCORD_ENV} or {default})")
+    return url or None
+
+
+def whats_new_cards(text: str, version: str) -> list:
+    """The cards for `version` in whats_new.json's text ([] when it has none)."""
+    try:
+        cards = json.loads(text).get(version) or []
+    except (ValueError, AttributeError):
+        raise ReleaseError(f"{WHATS_NEW} isn't a JSON object")
+    if not all(isinstance(c, dict) and c.get('title') and c.get('text') for c in cards):
+        raise ReleaseError(f"{WHATS_NEW}: a {version} card lacks a title or text")
+    return cards
+
+
+def _card_head(card) -> str:
+    head = f"**{KIND_LABELS.get(card.get('kind'), 'New')}** · {card['title']}"
+    platform = PLATFORM_LABELS.get(card.get('platform'))
+    return f"{head} ({platform} only)" if platform else head
+
+
+def whats_new_markdown(cards) -> str:
+    """The "What's new" section the release notes open with."""
+    lines = [f"- {_card_head(c)}: {c['text']}" for c in cards]
+    return "## What's new\n\n" + '\n'.join(lines) + '\n'
+
+
+def discord_payload(version: str, link: str, cards) -> dict:
+    """One embed: the cards, linked to the release. Nobody is pinged."""
+    desc = '\n\n'.join(f"{_card_head(c)}\n{c['text']}" for c in cards)
+    if len(desc) > 4000:            # Discord's cap is 4096
+        desc = desc[:3990].rsplit('\n', 1)[0] + '\n…'
+    return {'username': 'Nexus', 'allowed_mentions': {'parse': []},
+            'embeds': [{'title': f"Nexus {version} is out", 'url': link, 'color': DISCORD_COLOR,
+                        'description': desc or 'A new release is out.',
+                        'footer': {'text': 'Downloads and the full notes are on GitHub'}}]}
+
+
+def post_discord(url: str, payload: dict):
+    """POST `payload` to the webhook; raises OSError on failure, with the
+    reason and never the URL."""
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), method='POST',
+        # Discord's edge refuses urllib's default user agent
+        headers={'Content-Type': 'application/json',
+                 'User-Agent': f"nexus-release (https://github.com/{TARGET_REPO}, 1)"})
+    try:
+        with urllib.request.urlopen(req, timeout=15):
+            pass
+    except urllib.error.HTTPError as e:
+        raise OSError(f"HTTP {e.code} {e.reason}") from None
+    except urllib.error.URLError as e:
+        raise OSError(str(e.reason)) from None
 
 
 def read_version(init_text: str) -> str:
@@ -370,7 +452,10 @@ class Release:
         self.tag = check_version(self.version)
         self.app = read_app_name(show('nexus/platform/windows.py'))
         self.message = a.message or f"Nexus {self.version}"
-        self.ntfy = ntfy_url(a.ntfy)
+        self.ntfy = None if a.no_announce else ntfy_url(a.ntfy)
+        self.discord = None if a.no_announce else discord_url(a.discord)
+        has = self.git('cat-file', '-e', f"{self.rev}:{WHATS_NEW}", check=False).returncode == 0
+        self.cards = whats_new_cards(show(WHATS_NEW), self.version) if has else []
         self.work = Path(a.workdir or tempfile.mkdtemp(prefix='nexus-release-')).resolve()
         self.work.mkdir(parents=True, exist_ok=True)
         if any(self.work.iterdir()):
@@ -569,7 +654,10 @@ class Release:
             NOTES_TEMPLATE.read_text(encoding='utf-8'), version=self.version, tag=self.tag,
             app=self.app, setup=setup, portable=portable, repo=self.a.target,
             guide=f"https://github.com/{self.a.target}/blob/{self.tag}/docs/WINDOWS.md",
-            checksums=sums)
+            checksums=sums,
+            whats_new=whats_new_markdown(self.cards) if self.cards else '')
+        if not self.cards:
+            self.block(f"no What's new cards for {self.version} in {WHATS_NEW}")
         hits = gate_hits([('release notes', text.encode())], self.patterns)
         if hits:
             raise ReleaseError("the gate matched the release notes:\n    " + '\n    '.join(hits))
@@ -587,7 +675,8 @@ class Release:
                 + ' '.join(p.name for p in self.assets),
                 f"then: fresh clone == {self.rev[:12]}, {self.tag} -> {self.new_head[:12]}, "
                 f"release lists every asset",
-                f"announce on ntfy ({'set' if self.ntfy else f'not set: --ntfy or ${NTFY_ENV}'})"]
+                f"announce on ntfy ({'set' if self.ntfy else f'not set: --ntfy or ${NTFY_ENV}'})",
+                f"announce on Discord ({'set' if self.discord else f'not set: --discord, ${DISCORD_ENV} or {DISCORD_DEFAULT}'})"]
         return cmds
 
     # 8 and 9
@@ -629,11 +718,31 @@ class Release:
                  f"{self.tag} released with {len(self.assets)} assets")
 
     def announce(self):
+        link = f"https://github.com/{self.a.target}/releases/tag/{self.tag}"
+        self.announce_ntfy(link)
+        self.announce_discord(link)
+
+    def announce_discord(self, link):
+        if not self.discord:
+            self.say(f"[10] no Discord webhook (--discord, ${DISCORD_ENV} or {DISCORD_DEFAULT})")
+            return
+        self.step(10, "announce on Discord")
+        payload = discord_payload(self.version, link, self.cards)
+        if gate_hits([('discord post', json.dumps(payload).encode())], self.patterns):
+            self.say("    ✗ the gate matched the Discord post; not sent")
+            return
+        try:
+            post_discord(self.discord, payload)
+        except OSError as e:
+            self.say(f"    ✗ Discord post failed ({e}); the release itself is done")
+            return
+        self.say("    ✓ sent")
+
+    def announce_ntfy(self, link):
         if not self.ntfy:
             self.say(f"[10] no ntfy topic (--ntfy or ${NTFY_ENV}): nobody was told")
             return
         self.step(10, "announce on ntfy")
-        link = f"https://github.com/{self.a.target}/releases/tag/{self.tag}"
         req = urllib.request.Request(
             self.ntfy, data=f"Nexus {self.version} is out: {link}".encode(), method='POST',
             headers={'Title': f"Nexus {self.version} released", 'Tags': 'package',
@@ -698,6 +807,12 @@ def parse_args(argv=None):
     p.add_argument('--yes', action='store_true', help="don't ask before publishing")
     p.add_argument('--ntfy', metavar='URL',
                    help=f"announce a published release on this ntfy topic (else ${NTFY_ENV})")
+    p.add_argument('--discord', metavar='URL',
+                   help=f"announce a published release on this Discord channel webhook "
+                        f"(else ${DISCORD_ENV}, else {DISCORD_DEFAULT})")
+    p.add_argument('--no-announce', action='store_true', help="tell neither ntfy nor Discord")
+    p.add_argument('--discord-test', action='store_true',
+                   help="post a test message to the Discord webhook and stop")
     p.add_argument('--source', default=str(Path(__file__).resolve().parent.parent),
                    help=argparse.SUPPRESS)
     p.add_argument('--source-repo', default=SOURCE_REPO, help=f"for CI and assets (default {SOURCE_REPO})")
@@ -706,9 +821,27 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def discord_test(args, out=print) -> int:
+    url = discord_url(args.discord)
+    if not url:
+        raise ReleaseError(f"no Discord webhook: --discord, ${DISCORD_ENV} or {DISCORD_DEFAULT}")
+    cards = [{'kind': 'new', 'title': 'Release announcements',
+              'text': 'New Nexus releases will be posted in this channel.'}]
+    payload = discord_payload('test', f"https://github.com/{args.target}/releases", cards)
+    payload['embeds'][0]['title'] = 'Nexus release announcements are set up'
+    try:
+        post_discord(url, payload)
+    except OSError as e:
+        raise ReleaseError(f"Discord test post failed ({e})")
+    out("Discord test post sent")
+    return READY
+
+
 def main(argv=None, run=None, out=print) -> int:
     args = parse_args(argv)
     try:
+        if args.discord_test:
+            return discord_test(args, out)
         return Release(args, run=run, out=out).main()
     except ReleaseError as e:
         out(f"\nrelease: {e}")

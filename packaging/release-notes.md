@@ -1,3 +1,4 @@
+$whats_new
 **Linux:** take the source code below (zip or tar.gz) and follow the README (docs/LINUX.md has the full Linux guide).
 
 **Windows:** download one of these:
