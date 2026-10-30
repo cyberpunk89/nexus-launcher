@@ -387,7 +387,8 @@ class TheatreDetails(QWidget):
         return False
 
     def _set_logo(self, path):
-        pm = QPixmap(path) if path else QPixmap()
+        img = fit_image(path, 640, 220, cover=False) if path else None    # at shown size
+        pm = QPixmap.fromImage(img) if img is not None else QPixmap()
         if not pm.isNull():
             self.logo.setPixmap(pm.scaled(640, 220, Qt.AspectRatioMode.KeepAspectRatio,
                                           Qt.TransformationMode.SmoothTransformation))
@@ -396,7 +397,7 @@ class TheatreDetails(QWidget):
         self.title.setVisible(pm.isNull())
 
     def _set_hero(self, path):
-        self._pm = QPixmap(path) if path else None
+        self._pm = screen_pixmap(path, self)
         self._scaled = None
         self.update()
 
@@ -699,8 +700,8 @@ class AttractOverlay(QWidget):
 
     def _set_pix(self, path: str, slug: str):
         if slug == self.game.get('slug') and not self.isHidden():
-            pm = QPixmap(path)
-            if not pm.isNull():
+            pm = screen_pixmap(path, self)
+            if pm is not None and not pm.isNull():
                 self._pix = pm
                 self.update()
 
@@ -1147,7 +1148,8 @@ class CursorHider(QObject):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .art import ART, art_source, HERO_KINDS, LOGO_KINDS  # noqa: E402
+from .art import (ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS,
+    screen_pixmap)  # noqa: E402
 from .gameinfo import (can_quick_play, compat_facts, is_installed, play_enabled, play_label,
     SOURCE_LABEL, TIER_COLORS)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

@@ -23,7 +23,7 @@ os.environ['NEXUS_NO_GAMEPAD'] = '1'
 REPO = Path(__file__).resolve().parent.parent
 
 try:
-    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtCore import QPoint, QRect, Qt
     from PyQt6.QtWidgets import QApplication, QWidget, QWidgetItem
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
@@ -195,6 +195,35 @@ class HiDpiArt(unittest.TestCase):
                 self.assertAlmostEqual(size.height(), round(150 * dpr) / dpr, delta=0.01)
         ph = nx.placeholder_pixmap('Some Game', 100, 150)
         self.assertEqual(ph.devicePixelRatio(), dpr)
+
+    def test_hero_art_is_sized_in_screen_pixels(self):
+        """The game page's hero and the Theatre art are decoded and scaled
+        to the pixels they cover: sharp at 125 %, and no bigger (w-46)."""
+        import tempfile
+        from PyQt6.QtGui import QImage, QColor, QPixmap
+        dpr = _app.devicePixelRatio()
+        hb = nx.HeroBanner()
+        self.addCleanup(hb.deleteLater)
+        hb.resize(400, 200)
+        frame = hb._scaled('art', QPixmap(1600, 800), 400, 200,
+                           Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        self.assertEqual(frame.width(), round(400 * dpr))
+        self.assertAlmostEqual(frame.deviceIndependentSize().width(), 400, delta=1)
+        self.assertEqual(hb._box('art'), (round(nx.HeroBanner.DECODE_W * dpr),
+                                          round(200 * dpr)))
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/hero.png"
+            img = QImage(8000, 2000, QImage.Format.Format_RGB32)
+            img.fill(QColor(10, 20, 30))
+            img.save(src)
+            host = QWidget()
+            self.addCleanup(host.deleteLater)
+            pm = nx.screen_pixmap(src, host)
+            screen = _app.primaryScreen().size()
+            self.assertLess(pm.width(), 8000)                  # not decoded at full size…
+            self.assertGreaterEqual(pm.width(), round(screen.width() * dpr))   # …but covers
+            self.assertGreaterEqual(pm.height(), round(screen.height() * dpr))
+            self.assertIsNone(nx.screen_pixmap(None, host))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -430,11 +459,129 @@ class Caching(unittest.TestCase):
         self.assertIsNot(view.tiles['g1'][0], first['g1'])
         view.deleteLater()
 
+    def test_big_library_stays_within_the_art_budget(self):
+        """3,000 games used to cost about 1 GB: every tile kept its own
+        decoded pixmap, so the cache's cap capped nothing (w-46). Tiles now
+        keep a cache key; the art lives in ART under its byte budget, is
+        decoded ahead only while that fits, and a tile on screen asks for
+        its own when it paints."""
+        import shutil
+        import tempfile
+        from PyQt6.QtGui import QColor, QImage, QPixmap
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QVBoxLayout
+        dpr = _app.devicePixelRatio()
+        cache = nx.ArtCache()
+        one = round(100 * dpr) * round(150 * dpr) * 4      # a 100 px tile's art
+        cache.budget = 20 * one
+
+        def settle():
+            for _ in range(500):
+                if not cache.queue:
+                    break
+                QTest.qWait(10)
+            QApplication.processEvents()
+
+        def centre(tile):
+            img = tile.grab().toImage()
+            return img.pixelColor(img.width() // 2, img.height() // 2).name()
+
+        with tempfile.TemporaryDirectory() as d, patch_gui('ART', cache):
+            colours = ['#c82828', '#28c828', '#2828c8']
+            srcs = []
+            for i, c in enumerate(colours):
+                img = QImage(120, 180, QImage.Format.Format_RGB32)
+                img.fill(QColor(c))
+                srcs.append(f"{d}/src{i}.png")
+                img.save(srcs[-1])
+            games = []
+            for i in range(600):
+                p = f"{d}/g{i}.png"
+                shutil.copyfile(srcs[i % 3], p)
+                games.append({'slug': f'g{i}', 'display_name': f'Game {i}', 'source': 'steam',
+                              'installed': True, 'cover': p})
+            host = QWidget()
+            self.addCleanup(host.deleteLater)
+            host.resize(700, 500)
+            view = nx.LibraryView()
+            view.tile_width = 100
+            QVBoxLayout(host).addWidget(view)
+            host.show()
+            view.set_games(games)
+            settle()
+            self.assertLessEqual(cache.used, cache.budget)
+            self.assertLess(len(cache.pix), 30)                # not 600
+            tiles = [t for ts in view.tiles.values() for t in ts]
+            self.assertEqual(len(tiles), 600)
+            for t in tiles:                                    # nothing outside the budget
+                self.assertFalse([k for k, v in vars(t).items() if isinstance(v, QPixmap)])
+            self.assertEqual(centre(view.tiles['g0'][0]), colours[0])
+            # The bottom of the grid was never decoded ahead: it decodes
+            # when it comes on screen, pushing out the oldest art.
+            bar = view.verticalScrollBar()
+            bar.setValue(bar.maximum())
+            last = view.tiles['g599'][0]
+            centre(last)                                       # painted: asks for it
+            settle()
+            self.assertEqual(centre(last), colours[599 % 3])
+            self.assertLessEqual(cache.used, cache.budget)
+            view.deleteLater()
+
+    def test_placeholders_are_shared_and_capped(self):
+        a = nx.placeholder_pixmap('Alpha Beta', 100, 150)
+        self.assertIs(nx.placeholder_pixmap('Another Book', 100, 150), a)   # same initials
+        self.assertIsNot(nx.placeholder_pixmap('Gamma', 100, 150), a)
+        with patch_gui('PLACEHOLDER_BYTES', 5 * nx.pixmap_bytes(a)):
+            for i in range(40):
+                nx.placeholder_pixmap(f"Z{i}", 100, 150)
+            used = sum(nx.pixmap_bytes(p) for p in nx._PLACEHOLDERS.values())
+            self.assertLessEqual(used, 5 * nx.pixmap_bytes(a))
+            self.assertIn(nx.placeholder_pixmap('Z39', 100, 150), nx._PLACEHOLDERS.values())
+
+    def test_art_cache_budget_evicts_oldest_first(self):
+        import tempfile
+        from PyQt6.QtGui import QImage, QColor
+        cache = nx.ArtCache()
+        with tempfile.TemporaryDirectory() as d:
+            paths = []
+            for i in range(6):
+                img = QImage(60, 90, QImage.Format.Format_RGB32)
+                img.fill(QColor(40 * i, 0, 0))
+                p = f"{d}/{i}.png"
+                img.save(p)
+                paths.append(p)
+            one = nx.pixmap_bytes(cache.pixmap(paths[0], 30, 45))
+            self.assertGreater(one, 0)
+            cache.pix.clear()
+            cache.used = 0
+            cache.budget = 3 * one                       # room for three
+            for p in paths[:5]:
+                self.assertIsNotNone(cache.pixmap(p, 30, 45))
+            self.assertEqual(len(cache.pix), 3)
+            self.assertEqual(cache.used, 3 * one)
+            self.assertIsNone(cache.peek(paths[0], 30, 45))    # oldest evicted
+            self.assertIsNone(cache.peek(paths[1], 30, 45))
+            self.assertIsNotNone(cache.peek(paths[2], 30, 45))  # used: now the newest
+            cache.pixmap(paths[5], 30, 45)
+            self.assertIsNone(cache.peek(paths[3], 30, 45))    # so 3 went instead
+            self.assertIsNotNone(cache.peek(paths[2], 30, 45))
+            # Bytes, not count: one big image pushes out several small ones,
+            # and an image bigger than the whole budget still stays (alone).
+            big = cache.pixmap(paths[0], 60, 90)
+            self.assertGreater(nx.pixmap_bytes(big), cache.budget)
+            self.assertEqual(list(cache.pix.values()), [big])
+            self.assertEqual(cache.used, nx.pixmap_bytes(big))
+            cache.pixmap(paths[1], 30, 45)
+            self.assertEqual(len(cache.pix), 1)
+            self.assertEqual(cache.used, one)
+            self.assertTrue(cache.has_room())
+            cache.used = cache.budget
+            self.assertFalse(cache.has_room())
+
     def test_art_cache_is_bounded_and_async(self):
         import tempfile
         from PyQt6.QtGui import QImage, QColor
         cache = nx.ArtCache()
-        cache.MAX_PIX = 3
         with tempfile.TemporaryDirectory() as d:
             paths = []
             for i in range(5):
@@ -443,6 +590,7 @@ class Caching(unittest.TestCase):
                 p = f"{d}/{i}.png"
                 img.save(p)
                 paths.append(p)
+            cache.budget = 3 * nx.pixmap_bytes(cache.pixmap(paths[0], 30, 45))
             for p in paths:
                 self.assertIsNotNone(cache.pixmap(p, 30, 45))
             self.assertEqual(len(cache.pix), 3)

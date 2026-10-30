@@ -76,13 +76,14 @@ class HeroBanner(QWidget):
 
     Art and logo are decoded at about the size they're shown at, not full
     size: a 3840x1240 SteamGridDB hero cost ~30 ms on every selection (too
-    big for Qt's pixmap cache, so even re-showing a game decoded it again).
+    big for Qt's pixmap cache, so even re-showing a game decoded it again),
+    and kept at screen pixels (sharp at 125 %, no bigger than that).
     Big files decode on a worker; small ones (most) stay synchronous so the
     banner doesn't flash a placeholder; the last few stay decoded."""
     logo_changed = pyqtSignal(bool)            # a logo is (not) shown now
     tint_changed = pyqtSignal(object)          # the art's average QColor, or None
 
-    DECODE_W = 1600                            # wider than any details panel
+    DECODE_W = 440                             # the details panel's widest (DetailsPanel)
     SYNC_BYTES = 1_500_000                     # smaller decodes faster than a frame
     _RECENT: dict[tuple, QPixmap] = {}         # shared by every banner, oldest first
     RECENT_MAX = 8
@@ -106,7 +107,7 @@ class HeroBanner(QWidget):
 
     def _box(self, which: str) -> tuple[int, int]:
         dpr = self.devicePixelRatioF()
-        w = max(self.DECODE_W, round(self.width() * dpr))
+        w = round(max(self.DECODE_W, self.width()) * dpr)
         if which == 'art':
             return w, round(self.height() * dpr)
         return round(w * 0.62), round(self.height() * 0.42 * dpr)
@@ -184,9 +185,15 @@ class HeroBanner(QWidget):
         self._want('art', path)
 
     def _scaled(self, which: str, pm: QPixmap, w: int, h: int, mode) -> QPixmap:
+        """pm scaled to w x h logical px, at the screen's pixels (its
+        deviceIndependentSize() is the logical size)."""
+        dpr = self.devicePixelRatioF()
         hit = self._frames.get(which)
-        if hit is None or hit[0] != (w, h):
-            hit = ((w, h), pm.scaled(w, h, mode, Qt.TransformationMode.SmoothTransformation))
+        if hit is None or hit[0] != (w, h, dpr):
+            s = pm.scaled(round(w * dpr), round(h * dpr), mode,
+                          Qt.TransformationMode.SmoothTransformation)
+            s.setDevicePixelRatio(dpr)
+            hit = ((w, h, dpr), s)
             self._frames[which] = hit
         return hit[1]
 
@@ -206,7 +213,7 @@ class HeroBanner(QWidget):
         if self._pm is not None:
             s = self._scaled('art', self._pm, w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
             # Hero art keeps the top (logos / faces); covers look best centred.
-            pt.drawPixmap(0, -(s.height() - h) // 3, s)
+            pt.drawPixmap(0, -round(s.deviceIndependentSize().height() - h) // 3, s)
         else:
             pt.drawPixmap(0, 0, placeholder_pixmap(self._name, w, h))
         pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
@@ -239,10 +246,11 @@ class HeroBanner(QWidget):
         if self._logo is not None:
             lg = self._scaled('logo', self._logo, int(self.width() * 0.62),
                               int(self.height() * 0.42), Qt.AspectRatioMode.KeepAspectRatio)
-            x, y = SP['4'], self.height() - lg.height() - SP['3']
+            size = lg.deviceIndependentSize()
+            x, y = SP['4'], round(self.height() - size.height() - SP['3'])
             if LOOK['light']:                   # light logos on a light fade: shade them
-                c = QPointF(x + lg.width() / 2, y + lg.height() / 2)
-                shade = QRadialGradient(c, max(lg.width(), lg.height()) * 0.75)
+                c = QPointF(x + size.width() / 2, y + size.height() / 2)
+                shade = QRadialGradient(c, max(size.width(), size.height()) * 0.75)
                 shade.setColorAt(0.0, QColor(0, 0, 0, 110))
                 shade.setColorAt(1.0, QColor(0, 0, 0, 0))
                 pt.fillRect(self.rect(), QBrush(shade))

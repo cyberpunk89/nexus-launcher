@@ -30,7 +30,6 @@ class GameTile(QFrame):
     menu = pyqtSignal(dict, QPoint)
     activated = pyqtSignal(dict)            # Enter / controller A (Settings → Controls)
     double = pyqtSignal(dict)               # a double click (Settings → Controls)
-    _loading: dict[tuple, QPixmap] = {}     # shared "art on its way" fills, per size
 
     def __init__(self, game: dict, pending: bool = False, width: int = TILE_W,
                  kind: str = 'cover', theatre: bool = False):
@@ -50,7 +49,6 @@ class GameTile(QFrame):
         self.mark_new = False                   # "New" pill: installed, never played
         self._spin = 0
 
-        self._art = None
         art_path, url, self._art_kind = art_lookup(game, WIDE_KINDS if kind == 'wide'
                                                    else COVER_KINDS)
         self._art_sig = self._sig_of(game, art_path, url)
@@ -110,34 +108,42 @@ class GameTile(QFrame):
         return self._buttons
 
     def _set_art(self, art_path):
+        """Point the tile at its art. The tile keeps only the cache key: the
+        pixmap lives in ART, under its byte budget, and paintEvent asks for
+        it (see _pixmap). A tile holding its own pixmap is what made 3,000
+        games cost about a gigabyte."""
         # Not installed: the art in grey, so the library reads at a glance.
         grey = not is_installed(self.game)
-        pm = ART.peek(art_path, self.tw, self.th, grey) if art_path else None
-        if pm is None and art_path:
-            # Decoded in the background: a plain card until it's there.
-            self._art_for = art_path
-            key = (self.tw, self.th, P['surface_2'])
-            if key not in GameTile._loading:
-                fill = GameTile._loading[key] = QPixmap(self.tw, self.th)
-                fill.fill(QColor(P['surface_2']))
-            self._art = GameTile._loading[key]
-            ART.request(art_path, self.tw, self.th,
-                        lambda pm, p=art_path: self._art_decoded(p, pm), grey)
-            return
-        self._art_for = None
-        self._apply_art(pm)
+        self._art_key = ART.key(art_path, self.tw, self.th, grey) if art_path else None
+        self._art_asked = None                  # a decode on its way for this key
+        self._art_bad = False                   # the file didn't decode: initials
+        if self._art_key is not None and ART.get(self._art_key) is None and ART.has_room():
+            self._ask_art()                     # decode ahead, while it fits the budget
 
-    def _art_decoded(self, path, pm):
-        if getattr(self, '_art_for', None) == path:
-            self._apply_art(pm)
-            self.update()
+    def _ask_art(self):
+        key = self._art_asked = self._art_key
+        ART.request_key(key, lambda pm, k=key: self._art_decoded(k, pm))
 
-    def _apply_art(self, pm):
-        if pm is None and self.pending:
-            pm = QPixmap(self.tw, self.th)       # no initials under the progress ring
-            pm.fill(QColor(P['surface_2']))
-        self._art = pm if pm is not None else placeholder_pixmap(
-            self.game.get('display_name', '?'), self.tw, self.th)
+    def _art_decoded(self, key, pm):
+        if key != self._art_key:
+            return                              # the art changed meanwhile
+        self._art_asked = None
+        self._art_bad = pm is None
+        self.update()
+
+    def _pixmap(self) -> QPixmap | None:
+        """The art to paint now: decoded art from the cache, the initials
+        placeholder, or None (a plain card) while it decodes. Art that was
+        dropped from the cache is decoded again; only tiles that paint (the
+        ones on screen) ask."""
+        if self._art_key is not None and not self._art_bad:
+            pm = ART.get(self._art_key)
+            if pm is None and self._art_asked != self._art_key:
+                self._ask_art()
+            return pm
+        if self.pending:
+            return None                          # no initials under the progress ring
+        return placeholder_pixmap(self.game.get('display_name', '?'), self.tw, self.th)
 
     ART_KEYS = ('cover', 'cover_url', 'wide', 'wide_url', 'hero', 'hero_url', 'artwork_dir',
                 'installed', 'display_name')
@@ -356,10 +362,14 @@ class GameTile(QFrame):
         pt.save()
         pt.setClipPath(clip)
 
-        scale = 1.0 + 0.04 * self._hover
-        aw, ah = self.tw * scale, self.th * scale
-        pt.drawPixmap(QRectF(body.center().x() - aw / 2, body.center().y() - ah / 2, aw, ah),
-                      self._art, QRectF(self._art.rect()))
+        art = self._pixmap()
+        if art is None:                           # on its way: a plain card
+            pt.fillRect(body, QColor(P['surface_2']))
+        else:
+            scale = 1.0 + 0.04 * self._hover
+            aw, ah = self.tw * scale, self.th * scale
+            pt.drawPixmap(QRectF(body.center().x() - aw / 2, body.center().y() - ah / 2,
+                                 aw, ah), art, QRectF(art.rect()))
         owned = not is_installed(self.game)
         if self.pending or self._hover > 0.01 or (self.job and self.job.active) or owned:
             # A light scrim so the Play button / progress ring reads on any art.
