@@ -90,5 +90,37 @@ ICONS = {
     'bell':           '\ue059',  # bell
     'magnet':         '\ue2b5',  # magnet
     'power':          '\ue140',  # power
+    'pin':            '\ue259',  # pin
+    'pin_off':        '\ue2b6',  # pin-off
+}
+
+# What a collection can wear (w-52), by Lucide name, which is what
+# library.json stores. In the picker's order, six to a row, bookmark (the
+# collection icon everywhere else) first.
+COLLECTION_ICONS = {
+    'bookmark':  '\ue060',
+    'heart':     '\ue0f2',
+    'star':      '\ue176',
+    'trophy':    '\ue373',
+    'gamepad-2': '\ue0df',
+    'users':     '\ue1a4',
+    'sofa':      '\ue2c4',
+    'swords':    '\ue2b4',
+    'crosshair': '\ue0ac',
+    'rocket':    '\ue286',
+    'ghost':     '\ue20e',
+    'skull':     '\ue221',
+    'castle':    '\ue3e0',
+    'map':       '\ue110',
+    'puzzle':    '\ue29c',
+    'brain':     '\ue3c6',
+    'flame':     '\ue0d2',
+    'zap':       '\ue1b4',
+    'car':       '\ue1d5',
+    'music':     '\ue122',
+    'hourglass': '\ue296',
+    'coffee':    '\ue096',
+    'moon':      '\ue11e',
+    'baby':      '\ue2ce',
 }
 
