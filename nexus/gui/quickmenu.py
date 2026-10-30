@@ -37,7 +37,7 @@ class QuickMenu(QFrame):
         self.scale = scale
         self.state = 'closed'                    # closed | list | confirm
         self._back_to = None                     # focus before the menu opened
-        self._row_from = None                    # the row a question came from
+        self._row_from: str | None = None        # the row a question came from
         self._rows: list[QuickRow] = []
         self.buttons: dict[str, QPushButton] = {}
         sc = lambda v: int(v * scale)            # noqa: E731
@@ -101,29 +101,28 @@ class QuickMenu(QFrame):
         out of habit never confirms anything. B or Cancel go back to the
         list, to the row it came from."""
         f = QApplication.focusWidget()
-        self._row_from = f if f is not None and self.isAncestorOf(f) else None
+        self._row_from = next((k for k, b in self.buttons.items() if b is f), None)
         self.state = 'confirm'
         self._clear()
         sc = lambda v: int(v * self.scale)       # noqa: E731
-        self.body.addWidget(label(title, "SheetTitle", wrap=True))
+        self._add(self.body, label(title, "SheetTitle", wrap=True))
         if text:
             self.body.addSpacing(sc(SP['1']))
-            self.body.addWidget(plain_label(text, "Muted", wrap=True))
+            self._add(self.body, plain_label(text, "Muted", wrap=True))
         self.body.addSpacing(sc(SP['3']))
         ok = self._button(yes, glyph, danger)
         ok.clicked.connect(lambda: (self.close_menu(restore=False), on_yes()))
         no = self._button("Cancel", G['close'])
         no.clicked.connect(self.back)
-        self.body.addWidget(ok)
-        self.body.addWidget(no)
+        self._add(self.body, ok)
+        self._add(self.body, no)
         self._focus(no)
 
     def back(self) -> bool:
         """B: a question goes back to the list, the list closes. True if
         the menu was open."""
         if self.state == 'confirm':
-            came = self._row_from
-            key = next((k for k, b in self.buttons.items() if b is came), None)
+            key = self._row_from
             self._show_list(key)
             self._focus(self.buttons.get(key) or self.default_focus())
             return True
@@ -161,14 +160,23 @@ class QuickMenu(QFrame):
             b.clicked.connect(lambda _=False, k=r.key: self._run(k))
             self.buttons[r.key] = b
             if not r.section:
-                self.body.addWidget(b)
+                self._add(self.body, b)
                 continue
             if r.section != section:
                 if section is not None:
                     self.foot.addSpacing(sc(SP['2']))
-                self.foot.addWidget(label(r.section.upper(), "SheetSection"))
+                self._add(self.foot, label(r.section.upper(), "SheetSection"))
                 section = r.section
-            self.foot.addWidget(b)
+            self._add(self.foot, b)
+
+    @staticmethod
+    def _add(lay, w):
+        """Into the panel and shown now: the rows change while the menu is
+        open, and a widget added to a shown layout only appears on the next
+        event-loop pass, too late to take focus. (Shown after it has a
+        parent, so never a window of its own.)"""
+        lay.addWidget(w)
+        w.show()
 
     def _button(self, text: str, glyph: str, danger: bool = False) -> QPushButton:
         b = QPushButton(amp(text))

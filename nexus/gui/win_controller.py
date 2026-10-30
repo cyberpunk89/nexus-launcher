@@ -20,7 +20,8 @@ class ControllerMixin:
         """Start the screensaver, unless a game runs or something's open."""
         if not self._theatre or self._playing or self._launching \
                 or not self.isActiveWindow() or self.trailer_view.isVisible() \
-                or self.theatre.trailer.isVisible() or self.theatre_sheet.isVisible() or self.attract.running:
+                or self.theatre.trailer.isVisible() or self.theatre_sheet.isVisible() \
+                or self.quick.isVisible() or self.attract.running:
             self._on_activity()                         # look again later
             return
         self.attract.start(self._games)
@@ -308,6 +309,11 @@ class ControllerMixin:
         if not self.hints.isVisible():
             return
         f = QApplication.focusWidget()
+        if self._theatre and self.quick.isVisible():
+            self.hints.show_hints([('a', 'Select'), ('b', 'Cancel')]
+                                  if self.quick.state == 'confirm' else
+                                  [('a', 'Select'), ('b', 'Close'), ('Menu', 'Close')])
+            return
         if self._open_sheet() is not None:
             self.hints.show_hints([('a', 'Select'), ('b', 'Close')])
             return
@@ -327,7 +333,10 @@ class ControllerMixin:
                 self.hints.show_hints(hints)
                 return
             if th.details.isVisible():                  # stage, drawer or reader
-                self.hints.show_hints(th.details.hints(f))
+                hints = th.details.hints(f)
+                if not th.details.expanded():
+                    hints.append(('Menu', 'Quick menu'))
+                self.hints.show_hints(hints)
                 return
             if f is not None and th.hero.isAncestorOf(f):
                 # The spotlight on Home: the game that has focus in "Jump back in".
@@ -337,7 +346,7 @@ class ControllerMixin:
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
             else:
                 hints = [('a', 'Select'), ('b', 'Home')]
-            hints += [('y', 'Search'), ('LB RB', 'Home / Library'), ('Menu', 'Exit Theatre')]
+            hints += [('y', 'Search'), ('LB RB', 'Home / Library'), ('Menu', 'Quick menu')]
             self.hints.show_hints(hints)
             return
         if isinstance(f, GameTile) or isinstance(f, ListView):
