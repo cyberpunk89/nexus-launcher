@@ -428,6 +428,7 @@ class ShelfRow(QWidget):
     a collection's icon before the title."""
     see_all = pyqtSignal()
     menu_asked = pyqtSignal(QPoint)
+    focused = pyqtSignal(object)              # a tile of this row got focus
 
     def __init__(self, title: str, tile_w: int, kind: str = 'cover', count: int | None = None,
                  see_all: bool = False, menu: bool = False, tip: str = '',
@@ -590,6 +591,7 @@ class ShelfRow(QWidget):
             self._sync_arrows()
         elif ev.type() == QEvent.Type.FocusIn and obj in self.tiles:
             self._reveal(obj)
+            self.focused.emit(obj)
         return False
 
     def _reveal(self, tile):
@@ -791,7 +793,6 @@ class HeroCarousel(QWidget):
     def _show(self, animate: bool):
         g = self.game
         playing = bool(g.get('playing'))
-        last = fmt_relative(g.get('last_played'))
         self.kicker.setText(("Now playing" if playing else
                              "Starting…" if g.get('launching') else
                              "Continue playing" if g.get('last_played') else
@@ -810,6 +811,25 @@ class HeroCarousel(QWidget):
         self.logo.setVisible(not pm.isNull())
         self.title.setText(g.get('display_name', ''))
         self.title.setVisible(pm.isNull())
+        self._fill_facts(g)
+        path, url = art_source(g, HERO_KINDS)
+        if not path and url:
+            ART.fetch(url, lambda _p, slug=g.get('slug'): self._arrived(slug))
+        nxt = (path, self._is_portrait(path)) if path else None
+        if animate and self._cur is not None and MOTION:
+            self._prev, self._cur, self._fade = self._cur, nxt, 0.0
+            self._anim.stop()
+            self._anim.setDuration(450)
+            self._anim.start()
+        else:
+            self._prev, self._cur, self._fade = None, nxt, 1.0
+        self.tint.emit(dominant_color(path))
+        self.dots.update()
+        self.update()
+
+    def _fill_facts(self, g: dict):
+        """The pills under the logo (Theatre's spotlight shows one line)."""
+        last = fmt_relative(g.get('last_played'))
         clear_layout(self.facts)
         tier = g.get('protondb') if has('proton') else None
         facts = [(SOURCE_LABEL.get(g.get('source', 'nexus'), ''), None),
@@ -828,20 +848,6 @@ class HeroCarousel(QWidget):
                 lab.setFixedHeight(h)
                 self.facts.addWidget(lab)
         self.facts.addStretch()
-        path, url = art_source(g, HERO_KINDS)
-        if not path and url:
-            ART.fetch(url, lambda _p, slug=g.get('slug'): self._arrived(slug))
-        nxt = (path, self._is_portrait(path)) if path else None
-        if animate and self._cur is not None and MOTION:
-            self._prev, self._cur, self._fade = self._cur, nxt, 0.0
-            self._anim.stop()
-            self._anim.setDuration(450)
-            self._anim.start()
-        else:
-            self._prev, self._cur, self._fade = None, nxt, 1.0
-        self.tint.emit(dominant_color(path))
-        self.dots.update()
-        self.update()
 
     def _arrived(self, slug):
         try:
@@ -903,8 +909,9 @@ class HeroCarousel(QWidget):
         return img
 
     # ---- paint ----
-    def _frame(self, src) -> QPixmap | None:
-        """The art scaled to fill this banner (cached per size)."""
+    def _frame(self, src, size: tuple[int, int] | None = None) -> QPixmap | None:
+        """The art scaled to fill this banner, or `size` (Theatre paints the
+        spotlight's art full screen); cached per size."""
         if src is None:
             return None
         path, portrait = src
@@ -912,7 +919,7 @@ class HeroCarousel(QWidget):
             mtime = Path(path).stat().st_mtime
         except OSError:
             return None
-        w, h = self.width(), self.height()
+        w, h = size or (self.width(), self.height())
         key = (path, mtime, w, h)
         if key in self._frames:
             return self._frames[key]
