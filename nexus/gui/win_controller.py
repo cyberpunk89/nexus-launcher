@@ -266,6 +266,8 @@ class ControllerMixin:
             hints = [('a', self._a_label(f)), ('x', 'Menu'), ('y', 'Search'), ('b', 'Back')]
         elif isinstance(f, DealCard):
             hints = [('a', f.primary_label), ('x', 'Links'), ('b', 'Back')]
+        elif isinstance(f, DealSpotlight):
+            hints = [('a', "Open deal"), ('x', 'Options'), ('b', 'Back')]
         elif f is not None and self.details.isAncestorOf(f):
             hints = [('a', 'Select'), ('b', 'Back to game'), ('x', 'Menu')]
         elif isinstance(f, QLineEdit):
@@ -283,7 +285,7 @@ class ControllerMixin:
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
 from .dashboard import mark_duplicates  # noqa: E402
-from .deals import DealCard  # noqa: E402
+from .deals import DealCard, DealSpotlight  # noqa: E402
 from .gameinfo import can_quick_play  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
