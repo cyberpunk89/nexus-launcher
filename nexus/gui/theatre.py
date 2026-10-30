@@ -457,7 +457,8 @@ class TheatreSpotlight(HeroCarousel):
 class TheatreView(QWidget):
     """Theatre mode: one big hero, rows of big tiles, a clock, and nothing
     that needs a mouse. LB/RB switch Home and Library, A opens a game, B goes
-    back, Start leaves. Styled with the same tokens at THEATRE_SCALE."""
+    back, Start opens the quick menu (the window's). Styled with the same
+    tokens at THEATRE_SCALE."""
     play = pyqtSignal(dict)
     action = pyqtSignal(str, dict)
     menu = pyqtSignal(dict, QPoint)

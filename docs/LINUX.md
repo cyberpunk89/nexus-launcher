@@ -345,13 +345,18 @@ Deck/Controller via Steam, most generic pads; no extra Python packages):
 | LB / RB | previous / next tab (Home · Library · Deals · News) |
 | LT / RT, right stick | scroll |
 | View / Share | switch Shelves · Grid · List |
-| Menu / Options, or F11 | **Theatre mode** on / off |
+| Menu / Options, or Guide (Xbox / PS button) | on the desktop: **Theatre mode**; in Theatre: the **quick menu** |
+| F11 | **Theatre mode** on / off |
 
 **Theatre mode** is Nexus for the TV: full screen, a big hero, rows of large tiles (plus
 *Ready to install* for games you own), a full Library grid, a clock, bigger type and focus
 glow, and the pointer hidden until the mouse moves. LB/RB switch Home and Library, A opens a
-game, B goes back, Start (or F11) leaves. Start it directly with `nexus --theatre` or the
-desktop entry's *Theatre mode (TV)* action.
+game, B goes back (never out of Theatre), F11 leaves. Start it directly with `nexus --theatre`
+or the desktop entry's *Theatre mode (TV)* action.
+
+The **quick menu** (Start or Guide on a pad, F10 or a remote's Home key) opens on the left from
+any Theatre screen: the time and date, your controllers and their battery, **Exit Theatre**
+and **Quit Nexus** (which asks first only while a job is running). B closes it.
 
 **Theatre search** (Y, or the search button by the clock) is full screen: the query, an
 on-screen keyboard driven with the D-pad (A types, X deletes, Y adds a space, B closes) and
