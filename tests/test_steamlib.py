@@ -1,6 +1,7 @@
 """Tests for nexus/steamlib.py against a fake Steam/Heroic layout."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -215,6 +216,39 @@ class SteamScanWindowsShaped(unittest.TestCase):
         self.assertTrue(g['logo'].endswith('400_logo.png'))
         self.assertEqual(g['install_url'], 'steam://install/400')
         self.assertEqual(steamlib.manifest_appids(self.root), {228980, 400})
+
+
+class ArtLookup(unittest.TestCase):
+    def test_one_listing_of_the_cache_finds_both_layouts(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cache = root / 'appcache' / 'librarycache'
+            (cache / '10' / 'aa' / 'bb').mkdir(parents=True)
+            (cache / '10' / 'aa' / 'library_capsule.jpg').write_bytes(b'x')
+            (cache / '10' / 'aa' / 'bb' / 'library_hero.jpg').write_bytes(b'x')
+            (cache / '20_library_600x900.jpg').write_bytes(b'x')
+            (cache / '20_header.jpg').write_bytes(b'x')
+            (cache / '30').write_bytes(b'')            # a file named like an appid
+            steamlib._ART_INDEX.clear()
+            with mock.patch.object(steamlib, '_files_under',
+                                   wraps=steamlib._files_under) as walk:
+                a10, a20, a30, a99 = (steamlib.art(root, a) for a in (10, 20, 30, 99))
+            # Only 10 has a folder (walked with its two subfolders); no stat
+            # or listing for the rest.
+            self.assertEqual({Path(c.args[0]).relative_to(cache).parts[0]
+                              for c in walk.call_args_list}, {'10'})
+            self.assertTrue(a10['cover'].endswith('library_capsule.jpg'))
+            self.assertTrue(a10['hero'].endswith('library_hero.jpg'))
+            self.assertTrue(a20['cover'].endswith('20_library_600x900.jpg'))
+            self.assertTrue(a20['header'].endswith('20_header.jpg'))
+            self.assertEqual((a30, a99), ({}, {}))
+            # A game whose art arrives later is found: the folder's mtime moved.
+            (cache / '99' / 'cc').mkdir(parents=True)
+            (cache / '99' / 'cc' / 'logo.png').write_bytes(b'x')
+            st = cache.stat()
+            os.utime(cache, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            self.assertTrue(steamlib.art(root, 99)['logo'].endswith('logo.png'))
 
 
 class HeroicStore(unittest.TestCase):
