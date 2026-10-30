@@ -299,6 +299,11 @@ class ShelfRow(QWidget):
     def pitch(self) -> int:
         return self.tile_w + self.row.spacing()
 
+    def set_empty(self, text: str):
+        """No tiles: a muted line instead of a tile-high gap."""
+        self.body.hide()
+        self.layout().addWidget(label(text, "Muted"))
+
     def add(self, tile: 'GameTile'):
         self.row.addWidget(tile)
         tile.installEventFilter(self)
@@ -369,8 +374,9 @@ class SmartDivider(QWidget):
     "Smart shelves" and a muted note on one baseline (one rich-text label),
     and "N hidden" on the right while shelves are hidden."""
     hidden_menu = pyqtSignal(QPoint)
+    new_shelf = pyqtSignal()
 
-    def __init__(self, note: str, hidden: int = 0):
+    def __init__(self, note: str, hidden: int = 0, can_add: bool = False):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, SP['2'], 0, 0)
@@ -399,6 +405,16 @@ class SmartDivider(QWidget):
             b.clicked.connect(lambda: self.hidden_menu.emit(
                 b.mapToGlobal(QPoint(0, b.height()))))
             self.btn_hidden = b
+            head.addWidget(b)
+        self.btn_new = None
+        if can_add:                               # w-51: a shelf you build from rules
+            b = QPushButton("New shelf")
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Make your own shelf from rules")
+            set_glyph_icon(b, G['plus'], 15, 'subtext', hover_role='text')
+            b.clicked.connect(self.new_shelf)
+            self.btn_new = b
             head.addWidget(b)
         lay.addLayout(head)
 
@@ -841,6 +857,7 @@ class HomeView(QScrollArea, _TileSignals):
     show_filter = pyqtSignal(str)          # a smart shelf's "See all": its filter key
     shelf_menu = pyqtSignal(str, QPoint)   # a smart shelf's ⋮ (key, where)
     hidden_menu = pyqtSignal(QPoint)       # the divider's "N hidden"
+    new_shelf = pyqtSignal()               # the divider's "New shelf"
     tint = pyqtSignal(object)
 
     SHELF_TILE = 150
@@ -903,10 +920,13 @@ class HomeView(QScrollArea, _TileSignals):
         if not games and not pending_jobs:
             self.rows.addWidget(EmptyState(G['library'], *empty_state_text(empty_text)))
 
-    def set_smart(self, shelves: list[dict], note: str = '', hidden: int = 0):
+    def set_smart(self, shelves: list[dict], note: str = '', hidden: int = 0,
+                  can_add: bool = False):
         """The smart shelves after the source rows (Shelves view): a divider,
         then one row per shelf ({key, title, tip, games}) with a ⋮ menu.
-        Nothing at all with no shelf and none hidden. Replaces the last ones."""
+        A shelf you built shows even with no game, saying so. Nothing at all
+        with no shelf, none hidden and no `can_add` ("New shelf" on the
+        divider). Replaces the last ones."""
         for w in self._smart:
             for t in w.findChildren(GameTile):
                 ts = self.tiles.get(t.game.get('slug'), [])
@@ -916,14 +936,17 @@ class HomeView(QScrollArea, _TileSignals):
             w.hide()
             w.deleteLater()
         self._smart = []
-        if not shelves and not hidden:
+        if not shelves and not hidden and not can_add:
             return
-        div = SmartDivider(note, hidden)
+        div = SmartDivider(note, hidden, can_add)
         div.hidden_menu.connect(self.hidden_menu)
+        div.new_shelf.connect(self.new_shelf)
         self.rows.addWidget(div)
         self._smart.append(div)
         for s in shelves:
             row = self.make_shelf(s['title'], s['games'], smart=s['key'], tip=s.get('tip', ''))
+            if not s['games']:
+                row.set_empty("No games match these rules yet")
             self.rows.addWidget(row)
             self._smart.append(row)
 

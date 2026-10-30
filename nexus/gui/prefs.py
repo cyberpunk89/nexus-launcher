@@ -2,8 +2,9 @@
 
 import json
 import sys
+import uuid
 
-from nexus import net, paths as NX
+from nexus import net, paths as NX, smart
 
 from .common import ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE
 from .theme import normalize_appearance, TILE_W
@@ -79,11 +80,14 @@ class LibraryPrefs:
         # and how wide the details panel was dragged.
         lib = self._data.get('library_state')
         self.library_state = lib if isinstance(lib, dict) else {}
-        # Smart shelves you hid (keys like 'smart:never', 'genre:RPG').
+        # Smart shelves you hid (keys like 'smart:never', 'genre:RPG', 'user:<id>').
         sh = self._data.get('smart_hidden')
-        self.smart_hidden = list(dict.fromkeys(k for k in sh if isinstance(k, str)
-                                               and k.startswith(('smart:', 'genre:'))))[:50] \
+        self.smart_hidden = list(dict.fromkeys(
+            k for k in sh if isinstance(k, str)
+            and (k.startswith(('smart:', 'genre:')) or smart.is_user(k))))[:50] \
             if isinstance(sh, list) else []
+        # Shelves you built from rules (w-51, nexus/smart.py); removed ones are kept.
+        self.smart_shelves = smart.clean_shelves(self._data.get('smart_shelves'))
         # The Deals page as it was left: section, filter, sort, hide owned.
         ds = self._data.get('deals_state')
         self.deals_state = ds if isinstance(ds, dict) else {}
@@ -112,6 +116,7 @@ class LibraryPrefs:
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view, 'controls': self.controls,
                     'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
+                    'smart_shelves': self.smart_shelves,
                     'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
@@ -175,6 +180,48 @@ class LibraryPrefs:
 
     def delete_collection(self, name: str):
         if self.collections.pop(name, None) is not None:
+            self.save()
+
+    # ---- shelves you build (w-51) ----
+    def user_shelves(self) -> list[dict]:
+        """Your shelves that weren't removed, in the order they were made."""
+        return [s for s in self.smart_shelves if not s['removed']]
+
+    def find_shelf(self, sid: str) -> dict | None:
+        return next((s for s in self.smart_shelves if s['id'] == sid), None)
+
+    def new_shelf(self, fields=('playtime',)) -> dict | None:
+        """Make a shelf with one starting rule; None when there are already
+        MAX_USER_SHELVES (removed ones count: they're kept)."""
+        if len(self.smart_shelves) >= smart.MAX_USER_SHELVES:
+            return None
+        taken = {s['id'] for s in self.smart_shelves}
+        sid = uuid.uuid4().hex[:8]
+        while sid in taken:
+            sid = uuid.uuid4().hex[:8]
+        shelf = smart.new_shelf(sid, fields)
+        self.smart_shelves.append(shelf)
+        self.save()
+        return shelf
+
+    def update_shelf(self, shelf: dict, save: bool = True) -> dict | None:
+        """Put an edited shelf back in place (cleaned); the window saves a
+        burst of edits once."""
+        clean = smart.clean_shelf(shelf)
+        i = next((i for i, s in enumerate(self.smart_shelves)
+                  if clean and s['id'] == clean['id']), None)
+        if i is None:
+            return None
+        self.smart_shelves[i] = clean
+        if save:
+            self.save()
+        return clean
+
+    def set_shelf_removed(self, sid: str, removed: bool):
+        """Remove (or bring back) a shelf: it stays in the file either way."""
+        s = self.find_shelf(sid)
+        if s is not None and s['removed'] != removed:
+            s['removed'] = removed
             self.save()
 
 

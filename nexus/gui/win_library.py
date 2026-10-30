@@ -41,6 +41,7 @@ class LibraryMixin:
             v.show_filter.connect(self._show_filter)
             v.shelf_menu.connect(self._smart_menu)
             v.hidden_menu.connect(self._smart_hidden_menu)
+            v.new_shelf.connect(self._new_shelf)
 
     def _see_all(self, chip, sort):
         self.go(self.LIBRARY)
@@ -85,6 +86,12 @@ class LibraryMixin:
         self.btn_clear_filter = icon_button(G['close'], "Clear filter", 34, "Ghost", round_=True)
         self.btn_clear_filter.clicked.connect(self._clear_filter)
         self.btn_clear_filter.setVisible(False)
+        # A shelf you built, shown as the filter: edit its rules (w-51).
+        self.btn_edit_shelf = icon_button(G['pencil'], "Edit this shelf", 34, "Ghost",
+                                          round_=True)
+        self.btn_edit_shelf.clicked.connect(
+            lambda: self._edit_shelf(str(self.filter.currentData())[len(smart.USER):]))
+        self.btn_edit_shelf.setVisible(False)
         self.sort = QComboBox()
         for text, key in (("Recently played", 'played'), ("Name", 'name'),
                           ("Most played", 'most'), ("Recently added", 'added'),
@@ -117,7 +124,8 @@ class LibraryMixin:
         self.btn_surprise = dice
         # Right-anchored, with the view switch last before refresh: controls
         # that hide per view are on its left, so the switch itself never moves.
-        for w in (self.btn_clear_filter, self.filter, self.sort, self.size_slider,
+        for w in (self.btn_edit_shelf, self.btn_clear_filter, self.filter, self.sort,
+                  self.size_slider,
                   self.view_seg, dice, refresh):
             bl.addWidget(w)
         lay.addWidget(bar)
@@ -157,6 +165,23 @@ class LibraryMixin:
         chips.set_right(self.own_seg)
         self.own_seg.setVisible(self.prefs.show_owned)
         lay.addWidget(chips)
+        # The shelf builder (w-51): under the chips while open; the grid
+        # below is its live preview.
+        self.shelf_editor = ShelfEditor()
+        self.shelf_editor.setVisible(False)
+        self.shelf_editor.changed.connect(self._shelf_edited)
+        self.shelf_editor.done.connect(self._shelf_done)
+        self.shelf_editor.hide_asked.connect(lambda sid: self._hide_smart(smart.USER + sid))
+        self.shelf_editor.remove_asked.connect(self._remove_shelf)
+        ed = QHBoxLayout()
+        ed.setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
+        ed.addWidget(self.shelf_editor, 10)       # up to its MAX_W, then the stretch
+        ed.addStretch(1)
+        lay.addLayout(ed)
+        self._shelf_save = QTimer(self)        # a burst of edits saves library.json once
+        self._shelf_save.setSingleShot(True)
+        self._shelf_save.setInterval(600)
+        self._shelf_save.timeout.connect(self.prefs.save)
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
 
@@ -271,7 +296,7 @@ class LibraryMixin:
     def _restore_library_state(self):
         st = self.prefs.library_state
         status = st.get('status')
-        if isinstance(status, str) and status.startswith(('smart:', 'genre:')):
+        if isinstance(status, str) and status.startswith(smart.KEY_PREFIXES):
             self._smart_want = status             # its entry comes with the library
         for box, key in ((self.sort, 'sort'), (self.filter, 'status')):
             i = box.findData(st.get(key))
@@ -635,10 +660,10 @@ class LibraryMixin:
         q = self.search.text().strip().lower()
         status = self.filter.currentData() or 'all'
         self.btn_clear_filter.setVisible(status != 'all')
-        if status.startswith(('smart:', 'genre:')):
-            hit = {g['slug'] for g in smart.games_for(
-                status, [g for g in self._games if not g.get('hidden')], self._smart_facts(),
-                linux=has('proton'))}
+        self.btn_edit_shelf.setVisible(smart.is_user(status) and self.shelf_editor.isHidden())
+        if status.startswith(smart.KEY_PREFIXES):
+            hit = {g['slug'] for g in self._smart_games(
+                status, [g for g in self._games if not g.get('hidden')])}
             smart_keep = lambda g: g['slug'] in hit
         else:
             smart_keep = None
@@ -714,6 +739,8 @@ class LibraryMixin:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
+        if not self.shelf_editor.isHidden():
+            self.shelf_editor.set_count(n)
         self._refresh_home(empty, pending)
 
     # ---- smart shelves (nexus/smart.py) ----
@@ -750,11 +777,38 @@ class LibraryMixin:
         return "More appear as Nexus learns about your games" + (
             f" · {have} of {len(could)}" if could else '')
 
-    def _smart_shelves(self, games) -> tuple[list, str, int]:
-        """What HomeView.set_smart needs for the Shelves view."""
-        shelves = smart.shelves(games, self._smart_facts(), hidden=set(self.prefs.smart_hidden),
-                                linux=has('proton'))
-        return shelves, self._smart_note(games), len(self.prefs.smart_hidden)
+    def _smart_shelves(self, games) -> tuple[list, str, int, bool]:
+        """What HomeView.set_smart needs for the Shelves view: your own
+        shelves first (shown even when empty), then the automatic ones."""
+        hidden = set(self.prefs.smart_hidden)
+        facts = self._smart_facts()
+        mine = [{'key': smart.USER + s['id'], 'title': smart.title_of(s),
+                 'tip': smart.describe(s), 'games': smart.user_games(s, games, facts)}
+                for s in self.prefs.user_shelves() if smart.USER + s['id'] not in hidden]
+        auto = smart.shelves(games, facts, hidden=hidden, linux=has('proton'))
+        return mine + auto, self._smart_note(games), len(self._hidden_keys()), True
+
+    def _hidden_keys(self) -> list[str]:
+        """What the divider's "N hidden" brings back: hidden shelves (yours
+        only while not removed), then the ones you removed."""
+        live = {smart.USER + s['id'] for s in self.prefs.user_shelves()}
+        hid = [k for k in self.prefs.smart_hidden if not smart.is_user(k) or k in live]
+        return hid + [smart.USER + s['id'] for s in self.prefs.smart_shelves if s['removed']]
+
+    def _smart_games(self, key: str, games: list[dict]) -> list[dict]:
+        """The games under any smart key, yours included."""
+        if smart.is_user(key):
+            shelf = smart.find_user(self.prefs.smart_shelves, key)
+            return smart.user_games(shelf, games, self._smart_facts()) if shelf else []
+        return smart.games_for(key, games, self._smart_facts(), linux=has('proton'))
+
+    def _smart_label(self, key: str) -> str:
+        shelf = smart.find_user(self.prefs.smart_shelves, key)
+        return smart.title_of(shelf) if shelf else smart.label(key)
+
+    def _smart_tip(self, key: str) -> str:
+        shelf = smart.find_user(self.prefs.smart_shelves, key)
+        return smart.describe(shelf) if shelf else smart.tip(key)
 
     def _rebuild_smart_filter(self, want: str | None = None):
         """The status filter's Smart group: a separator, a "Smart" header,
@@ -766,14 +820,15 @@ class LibraryMixin:
         if not want and self._smart_want and self._loaded:
             cur, self._smart_want = self._smart_want, None
         pool = [g for g in self._games if not g.get('hidden') and not g.get('dup_of')]
-        keys = smart.filter_keys(pool, self._smart_facts(), linux=has('proton'))
+        keys = [smart.USER + s['id'] for s in self.prefs.user_shelves()] + \
+            smart.filter_keys(pool, self._smart_facts(), linux=has('proton'))
         if self._smart_temp and self._smart_temp != cur:
             self._smart_temp = None
         if cur and cur.startswith(('smart:', 'genre:')) and cur not in keys:
             self._smart_temp = cur
         if self._smart_temp:
             keys.append(self._smart_temp)
-        sig = (tuple(keys), cur)
+        sig = (tuple((k, self._smart_label(k)) for k in keys), cur)
         if sig == self._smart_sig:
             return
         self._smart_sig = sig
@@ -786,8 +841,9 @@ class LibraryMixin:
             box.addItem("Smart")
             box.model().item(box.count() - 1).setEnabled(False)
             for key in keys:
-                box.addItem(f"  {smart.label(key)}", key)
-                box.setItemData(box.count() - 1, smart.tip(key), Qt.ItemDataRole.ToolTipRole)
+                box.addItem(f"  {self._smart_label(key)}", key)
+                box.setItemData(box.count() - 1, self._smart_tip(key),
+                                Qt.ItemDataRole.ToolTipRole)
         i = box.findData(cur)
         box.setCurrentIndex(i if i >= 0 else 0)
         box.blockSignals(False)
@@ -798,7 +854,7 @@ class LibraryMixin:
         all", or a game page's genre / Co-op chip (`from_page`, which also
         drops the source chip so the whole library is searched). The grid
         shows because a filter is on; ✕ or "Any status" goes back."""
-        if not isinstance(key, str) or not key.startswith(('smart:', 'genre:')):
+        if not isinstance(key, str) or not key.startswith(smart.KEY_PREFIXES):
             return
         if self.current() != self.LIBRARY:
             self.go(self.LIBRARY)
@@ -825,26 +881,34 @@ class LibraryMixin:
         self.filter.setCurrentIndex(0)
 
     def _smart_menu(self, key: str, pos: QPoint):
-        """A smart shelf's ⋮: See all, Save as collection, Hide this shelf.
-        The desktop menu, or the ActionSheet when a pad is driving."""
-        name = smart.label(key)
+        """A smart shelf's ⋮: See all, Save as collection, Hide this shelf;
+        a shelf you built also has Edit and Remove. The desktop menu, or the
+        ActionSheet when a pad is driving."""
+        name = self._smart_label(key)
         items = [("See all", G['grid'], lambda: self._show_filter(key)),
                  ("Save as collection", G['collection'], lambda: self._save_smart(key)),
                  ("Hide this shelf", G['eye_off'], lambda: self._hide_smart(key))]
+        if smart.is_user(key):
+            sid = key[len(smart.USER):]
+            items[1:1] = [("Edit shelf", G['pencil'], lambda: self._edit_shelf(sid))]
+            items.append(("Remove shelf", G['trash'], lambda: self._remove_shelf(sid)))
         if self.input.mode == 'pad':
-            self.sheet.choose(name, items, sub=smart.tip(key))
+            self.sheet.choose(name, items, sub=self._smart_tip(key))
             self._update_hints()
             return
         m = QMenu(self)
         for text, glyph, fn in items:
-            m.addAction(text).triggered.connect(lambda _=False, fn=fn: fn())
+            m.addAction(amp(text)).triggered.connect(lambda _=False, fn=fn: fn())
         m.exec(pos if not pos.isNull() else QCursor.pos())
         m.deleteLater()
 
     def _smart_hidden_menu(self, pos: QPoint):
-        """The divider's "N hidden": bring a hidden shelf back."""
-        items = [(f"Show “{smart.label(k)}” again", G['eye'],
-                  lambda k=k: self._unhide_smart(k)) for k in self.prefs.smart_hidden]
+        """The divider's "N hidden": bring a hidden or removed shelf back."""
+        removed = {smart.USER + s['id'] for s in self.prefs.smart_shelves if s['removed']}
+        items = [(f"Bring back “{self._smart_label(k)}”", G['reset'],
+                  lambda k=k: self._restore_shelf(k[len(smart.USER):])) if k in removed else
+                 (f"Show “{self._smart_label(k)}” again", G['eye'],
+                  lambda k=k: self._unhide_smart(k)) for k in self._hidden_keys()]
         if not items:
             return
         if self.input.mode == 'pad':
@@ -865,9 +929,8 @@ class LibraryMixin:
     def _save_smart(self, key: str):
         """"Save as collection": an ordinary collection named after the
         shelf, holding today's games (added to it if it exists)."""
-        games = smart.games_for(key, self._smart_pool(), self._smart_facts(),
-                                linux=has('proton'))
-        cname = self.prefs.add_collection(smart.label(key))
+        games = self._smart_games(key, self._smart_pool())
+        cname = self.prefs.add_collection(self._smart_label(key))
         if not cname or not games:
             return
         slugs = self.prefs.collections[cname]
@@ -882,15 +945,95 @@ class LibraryMixin:
         if key not in self.prefs.smart_hidden:
             self.prefs.smart_hidden.append(key)
             self.prefs.save()
+        if smart.is_user(key) and not self.shelf_editor.isHidden():
+            self._shelf_done()
         self.apply_filter()
-        self.toast(f"Hid “{smart.label(key)}”.", 'info', ("Undo", lambda: self._unhide_smart(key)),
-                   6000)
+        self.dash_update('smart')
+        self.toast(f"Hid “{self._smart_label(key)}”.", 'info',
+                   ("Undo", lambda: self._unhide_smart(key)), 6000)
 
     def _unhide_smart(self, key: str):
         if key in self.prefs.smart_hidden:
             self.prefs.smart_hidden.remove(key)
             self.prefs.save()
         self.apply_filter()
+
+    # ---- shelves you build (w-51, gui/shelfedit.py) ----
+    def _shelf_pool(self) -> list[dict]:
+        """What the builder offers fields and values from: the library."""
+        return [g for g in self._games if not g.get('hidden') and not g.get('dup_of')]
+
+    def _new_shelf(self):
+        shelf = self.prefs.new_shelf(smart.fields_offered(self._shelf_pool(),
+                                                          self._smart_facts()))
+        if shelf is None:
+            self.toast(f"That's {smart.MAX_USER_SHELVES} shelves, the most Nexus keeps. "
+                       "Edit one instead.", 'warn', None, 5000)
+            return
+        self._edit_shelf(shelf['id'], new=True)
+
+    def _edit_shelf(self, sid: str, new: bool = False):
+        """Open the builder on a shelf: the Library shows it as the filter,
+        so the grid below is the live preview."""
+        shelf = self.prefs.find_shelf(sid)
+        if shelf is None or shelf['removed']:
+            return
+        ed = self.shelf_editor
+        ed.open(shelf, self._shelf_pool(), self._smart_facts(), new=new)
+        ed.setVisible(True)
+        self._smart_sig = None
+        self._show_filter(smart.USER + sid, from_page=True)
+        target = ed.name if new and self.input.mode != 'pad' else \
+            (ed.rows[0].field if ed.rows else ed.btn_done)
+        QTimer.singleShot(0, lambda: alive(target) and target.setFocus(
+            Qt.FocusReason.OtherFocusReason))
+
+    def _shelf_edited(self, shelf: dict):
+        """Every edit: keep it (library.json a moment later), re-filter."""
+        if self.prefs.update_shelf(shelf, save=False) is None:
+            return
+        self._shelf_save.start()
+        self.apply_filter()
+
+    def _shelf_done(self):
+        """Close the builder and go back to the shelves."""
+        if self._shelf_save.isActive():
+            self._shelf_save.stop()
+            self.prefs.save()
+        key = smart.USER + (self.shelf_editor.shelf or {}).get('id', '')
+        self.shelf_editor.setVisible(False)
+        if smart.is_user(self.filter.currentData()):
+            self._clear_filter()
+        else:
+            self.apply_filter()
+        # Its row in the Shelves view, scrolled into sight (the focus goes there too).
+        row = next((x for x in self.home._smart if isinstance(x, ShelfRow)
+                    and x.title == self._smart_label(key)), None)
+        if row is not None and self.views.currentWidget() is self.home:
+            QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.btn_menu))
+        self.dash_update('smart')
+
+    def _remove_shelf(self, sid: str):
+        """Remove: off the Library, the filter menu and Home; kept in
+        library.json, so Undo (or "N hidden") brings it back."""
+        shelf = self.prefs.find_shelf(sid)
+        if shelf is None:
+            return
+        if not self.shelf_editor.isHidden() and \
+                (self.shelf_editor.shelf or {}).get('id') == sid:
+            self._shelf_done()
+        self.prefs.set_shelf_removed(sid, True)
+        if self.filter.currentData() == smart.USER + sid:
+            self._clear_filter()
+        self.apply_filter()
+        self.dash_update('smart')
+        self.toast(f"Removed “{smart.title_of(shelf)}”. Your games stay.", 'info',
+                   ("Undo", lambda: self._restore_shelf(sid)), 6000)
+
+    def _restore_shelf(self, sid: str):
+        self.prefs.set_shelf_removed(sid, False)
+        self.apply_filter()
+        self.dash_update('smart')
 
     def _refresh_home(self, empty=None, pending=()):
         """Home shows the whole library, so it only rebuilds when the library
@@ -899,7 +1042,7 @@ class LibraryMixin:
         visible = [g for g in everything if is_installed(g)]
         self._sync_facts()
         struct = (self._loaded, self._load_error, tuple(id(j) for j in pending),
-                  tuple(COLLECTION_NAMES), self._facts_stamp,
+                  tuple(COLLECTION_NAMES), self._facts_stamp, repr(self.prefs.smart_shelves),
                   tuple((g['slug'], g.get('favorite'), tuple(g.get('collections') or ()),
                          g.get('last_played'), is_installed(g),
                          bool(g.get('installing')), g.get('install_requested'),
@@ -979,7 +1122,9 @@ from ..features import has  # noqa: E402
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
-    surprise_pick)  # noqa: E402
+    ShelfRow, surprise_pick)  # noqa: E402
+from .input import focus_and_reveal  # noqa: E402
+from .shelfedit import ShelfEditor  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import amp, icon_button, label, SegmentedControl, WrapRow  # noqa: E402
