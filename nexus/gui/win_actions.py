@@ -14,7 +14,7 @@ from nexus.features import has
 
 from .common import alive, CLI, cli_args, HOME, MAX_TITLE
 from .fmt import fmt_bytes
-from .theme import G
+from .theme import collection_look, G
 
 # Windows Security on its Virus & threat protection page (Protection history
 # is there). Opening it changes nothing.
@@ -356,9 +356,11 @@ class ActionsMixin:
             def new():
                 self.ask_collection_name("New collection", "", lambda n: (
                     (made := self.prefs.add_collection(n)) and add_to(made)))
+            looks = {n: collection_look(n) or (G['collection'], 'subtext')
+                     for n in self.prefs.collections}
             self.sheet.choose(f"Add {len(ok)} games to…", [
-                (n, G['collection'], lambda n=n: add_to(n)) for n in self.prefs.collections]
-                + [("New collection…", G['plus'], new)])
+                (n, looks[n][0], lambda n=n: add_to(n), looks[n][1])
+                for n in self.prefs.collections] + [("New collection…", G['plus'], new)])
         elif key == 'move':
             self._choose_move_target(ok[0], also=ok[1:])
         elif key == 'uninstall':

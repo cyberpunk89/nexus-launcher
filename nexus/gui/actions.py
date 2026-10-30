@@ -4,13 +4,13 @@ import html
 from typing import NamedTuple
 
 from PyQt6.QtCore import pyqtSignal, QEvent, Qt, QUrl
-from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLineEdit, QMenu, QPushButton,
     QScrollArea, QVBoxLayout, QWidget)
 
 from ..features import has
 from .common import COLLECTION_NAMES, MAX_COLLECTION_NAME
-from .theme import G, P, SP
+from .theme import collection_look, G, P, SP
 
 
 NOTE_KINDS = {'new': "New", 'improved': "Improved", 'fixed': "Fixed"}   # What's new groups
@@ -222,6 +222,12 @@ def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:
             f = qa.font()
             f.setWeight(QFont.Weight.DemiBold)
             qa.setFont(f)
+        if a.key.startswith('col:') and (look := collection_look(a.key[4:])):
+            # Fusion draws no tick on an action with an icon: a ticked one
+            # shows a tick in the collection's colour, the others its icon.
+            role = look[1] if look[1] != 'subtext' else 'accent'
+            qa.setIcon(QIcon(glyph_pixmap(G['check'], P[role], 16) if a.checked
+                             else glyph_pixmap(look[0], P[look[1]], 16)))
         qa.triggered.connect(lambda _=False, k=a.key: act(k, game))
     return m
 
@@ -297,9 +303,13 @@ class ActionSheet(QFrame):
             b = QPushButton(amp(text))
             b.setObjectName("SheetRow")
             b.setProperty('danger', a.danger)
-            set_glyph_icon(b, action_glyph(a), px,
-                           'danger' if a.danger else 'accent' if a.checked else 'subtext',
-                           hover_role=None)
+            glyph, role = action_glyph(a), \
+                'danger' if a.danger else 'accent' if a.checked else 'subtext'
+            look = collection_look(a.key[4:]) if a.key.startswith('col:') else None
+            if look:                     # ticked in its colour; else its own icon
+                glyph, role = (glyph, look[1] if look[1] != 'subtext' else 'accent') \
+                    if a.checked else (look[0], 'subtext')
+            set_glyph_icon(b, glyph, px, role, hover_role=None)
             b.setMinimumHeight(int(44 * self.scale))
             b.setEnabled(a.enabled)
             b.clicked.connect(lambda _=False, k=a.key: self._run(k))
@@ -344,12 +354,14 @@ class ActionSheet(QFrame):
         self.show()
         no.setFocus(Qt.FocusReason.TabFocusReason)
 
-    def choose(self, title: str, items: list, sub: str = '', text: str = ''):
+    def choose(self, title: str, items: list, sub: str = '', text: str = '', focus: int = 0):
         """The sheet as a plain list of choices — anything that isn't a game
         action (a deal's links, a game's collections). `items` are
-        (text, glyph, fn) or (text, glyph, fn, checked); fn runs once the
-        sheet has closed. `text`, plain, explains above them (a failed
-        install's cause)."""
+        (text, glyph, fn) or (text, glyph, fn, checked or a colour role); fn runs once the
+        sheet has closed. A widget among them is placed as it is (a
+        collection's colour and icon picker). `text`, plain, explains above
+        them (a failed install's cause). `focus`: which row (of the rows that
+        are choices) starts focused."""
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
@@ -360,16 +372,24 @@ class ActionSheet(QFrame):
             self.rows.addWidget(plain_label(text, "Muted", wrap=True))
             self.rows.addSpacing(int(SP['3'] * self.scale))
         px = int(18 * self.scale)
-        first = None
-        for text, glyph, fn, *rest in items:
+        first, rows = None, []
+        for item in items:
+            if isinstance(item, QWidget):
+                self.rows.addWidget(item)
+                continue
+            text, glyph, fn, *rest = item
             b = QPushButton(amp(text))
             b.setObjectName("SheetRow")
-            set_glyph_icon(b, glyph, px, 'accent' if rest and rest[0] else 'subtext',
-                           hover_role=None)
+            role = rest[0] if rest and isinstance(rest[0], str) else \
+                'accent' if rest and rest[0] else 'subtext'
+            b.setProperty('danger', role == 'danger')
+            set_glyph_icon(b, glyph, px, role, hover_role=None)
             b.setMinimumHeight(int(44 * self.scale))
             b.clicked.connect(lambda _=False, fn=fn: (self.close_sheet(), fn()))
             self.rows.addWidget(b)
-            first = first or b
+            rows.append(b)
+        if rows:
+            first = rows[max(0, min(focus, len(rows) - 1))]
         self.rows.addStretch()
         self.setGeometry(self.parentWidget().rect())
         self.raise_()
@@ -700,5 +720,5 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None,
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .widgets import (amp, clear_layout, icon_button, icon_label, label,  # noqa: E402
-    plain_label, set_glyph_icon)
+from .widgets import (amp, clear_layout, glyph_pixmap, icon_button, icon_label,  # noqa: E402
+    label, plain_label, set_glyph_icon)

@@ -17,7 +17,7 @@ from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .fmt import fmt_hours, fmt_relative, fmt_size
-from .theme import build_stylesheet, FONTS, FS, G, P, pill_qss, SP
+from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, pill_qss, SP
 
 
 THEATRE_SCALE = 1.4
@@ -903,20 +903,23 @@ class TheatreView(QWidget):
                         key=lambda g: g['last_played'], reverse=True)
         added = sorted((g for g in games if g.get('added_at')),
                        key=lambda g: g['added_at'], reverse=True)
-        cols = [(n, [g for g in games if n in (g.get('collections') or ())], 'cover')
+        looks = {n: collection_look(n) for n in COLLECTION_NAMES}
+        cols = [(n, [g for g in games if n in (g.get('collections') or ())], 'cover',
+                 (*looks[n], int(16 * THEATRE_SCALE)) if looks[n] else None)
                 for n in COLLECTION_NAMES]
-        for title, items, kind in (("Continue playing", played[:12], 'wide'),
-                                   ("Favourites", [g for g in games if g.get('favorite')],
-                                    'cover'),
-                                   *cols,
-                                   ("Recently installed", added[:14], 'cover'),
-                                   ("Not played yet",
-                                    [g for g in games if not g.get('last_played')], 'cover'),
-                                   ("Ready to install", owned[:20], 'cover')):
+        for title, items, kind, look in (("Continue playing", played[:12], 'wide', None),
+                                         ("Favourites", [g for g in games if g.get('favorite')],
+                                          'cover', None),
+                                         *cols,
+                                         ("Recently installed", added[:14], 'cover', None),
+                                         ("Not played yet",
+                                          [g for g in games if not g.get('last_played')],
+                                          'cover', None),
+                                         ("Ready to install", owned[:20], 'cover', None)):
             if not items:
                 continue
             w = self.WIDE if kind == 'wide' else self.TILE
-            row = ShelfRow(title, w, kind)
+            row = ShelfRow(title, w, kind, look=look)
             for g in items:
                 row.add(self._tile(g, w, kind))
             row.finish()

@@ -4,13 +4,32 @@ import json
 import sys
 
 from nexus import net, paths as NX
+from nexus.icons import COLLECTION_ICONS
 
 from .common import ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE
-from .theme import normalize_appearance, TILE_W
+from .theme import ACCENTS, normalize_appearance, TILE_W
+
+MAX_PINNED = 3                    # collections pinned to the top bar (w-52)
 
 
 def clean_collection_name(name) -> str:
     return ' '.join(str(name or '').split())[:MAX_COLLECTION_NAME]
+
+
+def clean_collection_look(look) -> dict:
+    """A collection_look entry with only valid choices: 'icon' a name from
+    COLLECTION_ICONS, 'color' an accent key, 'pinned' True. Keys a newer
+    Nexus added are kept as they are."""
+    if not isinstance(look, dict):
+        return {}
+    out = {k: v for k, v in look.items() if k not in ('icon', 'color', 'pinned')}
+    if look.get('icon') in COLLECTION_ICONS:
+        out['icon'] = look['icon']
+    if look.get('color') in ACCENTS:
+        out['color'] = look['color']
+    if look.get('pinned') is True:
+        out['pinned'] = True
+    return out
 
 
 class LibraryPrefs:
@@ -34,6 +53,16 @@ class LibraryPrefs:
             if name and isinstance(slugs, list) and not self.find_collection(name):
                 self.collections[name] = list(dict.fromkeys(
                     s for s in slugs if isinstance(s, str)))
+        # Each one's icon, colour and top-bar pin (w-52): a key of its own, so
+        # an older Nexus still reads `collections` (and keeps this one).
+        self.collection_look: dict[str, dict] = {}
+        looks = self._data.get('collection_look')
+        for name, look in (looks.items() if isinstance(looks, dict) else ()):
+            name = self.find_collection(name)
+            if name and (look := clean_collection_look(look)):
+                self.collection_look[name] = look
+        for name in self.pinned_collections()[MAX_PINNED:]:
+            self.collection_look[name].pop('pinned')
         self.view = self._data.get('view', 'home')
         try:                                 # a hand-edited bad value mustn't stop start-up
             self.tile = max(140, min(260, int(self._data.get('tile', TILE_W))))
@@ -120,6 +149,8 @@ class LibraryPrefs:
                     'overrides': self.overrides, 'notes': self.notes})
         if self.seen_repacks is not None:
             out['seen_repacks'] = list(self.seen_repacks)[-300:]
+        out['collection_look'] = {n: v for n, v in self.collection_look.items()
+                                  if v and n in self.collections}
         try:
             net.write_atomic(self.PATH, json.dumps(out, indent=2))
         except OSError as e:                 # a full disk: keep running, say so
@@ -170,12 +201,59 @@ class LibraryPrefs:
         if not new or old not in self.collections or (hit is not None and hit != old):
             return None
         self.collections = {new if n == old else n: v for n, v in self.collections.items()}
+        if old in self.collection_look:            # its icon, colour and pin go with it
+            self.collection_look[new] = self.collection_look.pop(old)
         self.save()
         return new
 
     def delete_collection(self, name: str):
+        self.collection_look.pop(name, None)
         if self.collections.pop(name, None) is not None:
             self.save()
+
+    def look_of(self, name: str) -> dict:
+        return self.collection_look.get(name) or {}
+
+    def pinned_collections(self) -> list[str]:
+        """The pinned ones, in the collections' order."""
+        return [n for n in self.collections if self.look_of(n).get('pinned')]
+
+    def set_collection_look(self, name: str, **change) -> bool:
+        """Change `icon`, `color` (None: back to the default) or `pinned`.
+        False (nothing saved) for an unknown collection, or a pin past
+        MAX_PINNED."""
+        if name not in self.collections:
+            return False
+        if change.get('pinned') and not self.look_of(name).get('pinned') \
+                and len(self.pinned_collections()) >= MAX_PINNED:
+            return False
+        look = dict(self.look_of(name))
+        for k in ('icon', 'color', 'pinned'):
+            if k in change:
+                look.pop(k, None)
+                if change[k]:
+                    look[k] = change[k]
+        look = clean_collection_look(look)
+        if look:
+            self.collection_look[name] = look
+        else:
+            self.collection_look.pop(name, None)
+        self.save()
+        return True
+
+    def move_collection(self, name: str, delta: int) -> bool:
+        """Move it `delta` places (-1 up / earlier, +1 down); False at an end."""
+        names = list(self.collections)
+        if name not in names:
+            return False
+        i = names.index(name)
+        j = max(0, min(len(names) - 1, i + delta))
+        if i == j:
+            return False
+        names.insert(j, names.pop(i))
+        self.collections = {n: self.collections[n] for n in names}
+        self.save()
+        return True
 
 
 # Siblings, imported last: they import this module too, and every use

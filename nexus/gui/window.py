@@ -17,7 +17,7 @@ from nexus import __version__, paths as NX, platform
 from nexus.features import has
 
 from .. import updates
-from .common import alive, COLLECTION_NAMES, CONFIG_PATH, HOME
+from .common import alive, CONFIG_PATH, HOME
 from .fmt import fmt_size
 from .theme import apply_appearance, build_stylesheet, FS, G, P, scaled, SP
 from .topbar import _TabHandle, TopBar
@@ -43,6 +43,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     SETUP = 'setup'
 
     TABS = (HOME, LIBRARY, DEALS, NEWS)          # content tabs; the rest are icons
+    PINS_WIDE_AT = 1280            # top-bar pins show their names from this width up
 
     # Sections reached by their old page keys: go(ACTIVITY) opens System on
     # Activity, go(UPCOMING) opens Deals on Upcoming.
@@ -88,7 +89,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._tray_told = False
         self._shown_games: list = []
         self._surprise_recent: list[str] = []
-        COLLECTION_NAMES[:] = list(self.prefs.collections)
+        self._mirror_collections()
         self._quit_deadline = 0.0
         self._quit_timer = QTimer(self)
         self._quit_timer.setInterval(100)
@@ -393,6 +394,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if compact != getattr(self, '_compact', None):
             self._compact = compact
             self.topbar.set_compact(compact)
+        # Pinned collections show their names only while there's room.
+        self.topbar.set_pins_wide(self.width() >= self.PINS_WIDE_AT)
 
     def _add_page(self, key, widget):
         self.pages[key] = widget
@@ -470,6 +473,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         # gives it the time (the click comes ~0.2 s later).
         self.icons[self.SETTINGS].hovered.connect(lambda: self.page_widget(self.SETTINGS))
         bar.install.clicked.connect(self.open_install)
+        bar.set_pins(self.prefs.pinned_collections())
+        bar.pin_clicked.connect(self._open_pinned)
         self.btn_install = bar.install
         self.search = bar.search
         # Debounced: rebuilding the grid per keystroke is wasted work. Typing

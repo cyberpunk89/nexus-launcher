@@ -28,6 +28,7 @@ from .common import (
     CONFIG_PATH, DATA_DIR, DESKTOP_PATH, HOME, ICON_PATH, INSTALL_BASE_DEFAULT, LEGACY_DESKTOP,
     LOGO_SVG,
     MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE)  # noqa: F401
+from .common import COLLECTION_LOOK  # noqa: F401
 from .theme import (
     _check_icon_path, _chevron_icon_path, _first_installed, _hex_ok, _ICON_CACHE, _mix, _rgba,
     _shade, _stroke_icon, accent_hex, accent_pair, ACCENTS, APPEARANCE_DEFAULT, apply_appearance,
@@ -36,6 +37,7 @@ from .theme import (
     PILL_H, pill_qss, qss_grad, R, R_BASE, resolve_fonts, SANS_STACK, SP, SRC_HUE, THEMES,
     TILE_LIFT, TILE_W, DARK_STATUS, DAWN_STATUS, is_light, LATTE_STATUS, PRESET_KEYS, PRESETS,
     SCALES, scaled, SETUP_THEMES, ui_scale)  # noqa: F401
+from .theme import collection_look  # noqa: F401
 from .fmt import (
     fmt_ago, fmt_bytes, fmt_elapsed, fmt_eta, fmt_hours, fmt_relative, fmt_size)  # noqa: F401
 from .widgets import (
@@ -59,6 +61,7 @@ from .tiles import (
     GameTile)  # noqa: F401
 from .prefs import (
     clean_collection_name, LibraryPrefs)  # noqa: F401
+from .prefs import clean_collection_look, MAX_PINNED  # noqa: F401
 from .gameinfo import (
     anticheat_warning, can_quick_play, compat_facts, install_fraction, is_installed,
     PCGW_COLORS, PCGW_WORDS, play_enabled, play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: F401
@@ -110,6 +113,7 @@ from .theatre import (
     _news_html, _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
     THEATRE_SCALE, TheatreCard, TheatreDetails, TheatreSearch, TheatreView)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401
+from .topbar import CollectionLookPicker, PinButton  # noqa: F401
 from .win_library import LibraryMixin  # noqa: F401
 from .win_nav import NavigationMixin  # noqa: F401
 from .win_controller import ControllerMixin  # noqa: F401

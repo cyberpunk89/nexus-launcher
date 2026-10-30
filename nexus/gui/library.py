@@ -230,12 +230,14 @@ class ShelfRow(QWidget):
     a scrollbar. Keyboard/controller focus moving along the row scrolls it
     smoothly so the focused tile is always in view. With `menu`, a round ⋮
     sits before "See all" (so "See all" lines up on every row) and asks for
-    the row's menu at a global point."""
+    the row's menu at a global point. `look` (glyph, colour role[, px]) puts
+    a collection's icon before the title."""
     see_all = pyqtSignal()
     menu_asked = pyqtSignal(QPoint)
 
     def __init__(self, title: str, tile_w: int, kind: str = 'cover', count: int | None = None,
-                 see_all: bool = False, menu: bool = False, tip: str = ''):
+                 see_all: bool = False, menu: bool = False, tip: str = '',
+                 look: tuple | None = None):
         super().__init__()
         self.title = title
         self.smart: str | None = None             # a smart shelf's key (HomeView sets it)
@@ -247,6 +249,9 @@ class ShelfRow(QWidget):
         lay.setSpacing(SP['2'])
         head = QHBoxLayout()
         head.setSpacing(SP['2'])
+        if look:
+            head.addWidget(icon_label(look[0], look[2] if len(look) > 2 else 16, P[look[1]]),
+                           0, Qt.AlignmentFlag.AlignVCenter)
         name = self.name_label = label(title, "ShelfTitle")
         name.setToolTip(tip)
         head.addWidget(name)
@@ -1002,16 +1007,17 @@ class HomeView(QScrollArea, _TileSignals):
             row.deleteLater()
 
     def make_shelf(self, title, games, kind='cover', link=None, smart: str | None = None,
-                   tip: str = '') -> 'ShelfRow':
+                   tip: str = '', look: tuple | None = None) -> 'ShelfRow':
         """A ShelfRow whose tiles are wired to this view (for the dashboard).
         `smart` makes it a smart shelf: "See all" asks for that filter and a
         ⋮ asks for the shelf's menu."""
-        return self._shelf(title, games, (), kind, link, add=False, smart=smart, tip=tip)
+        return self._shelf(title, games, (), kind, link, add=False, smart=smart, tip=tip,
+                           look=look)
 
-    def _shelf(self, title, games, jobs, kind, link, add=True, smart=None, tip=''):
+    def _shelf(self, title, games, jobs, kind, link, add=True, smart=None, tip='', look=None):
         w = self.WIDE_TILE if kind == 'wide' else self.SHELF_TILE
         row = ShelfRow(title, w, kind, count=len(games) if link or smart else None,
-                       see_all=bool(link or smart), menu=bool(smart), tip=tip)
+                       see_all=bool(link or smart), menu=bool(smart), tip=tip, look=look)
         row.smart = smart
         if smart:
             row.see_all.connect(lambda k=smart: self.show_filter.emit(k))
