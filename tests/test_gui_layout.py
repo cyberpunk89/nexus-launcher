@@ -353,6 +353,9 @@ class GameContextBlock(unittest.TestCase):
     def _show(self, slug, **extra):
         self.panel.show_games([{'slug': slug, 'display_name': slug, 'source': 'steam',
                                 'installed': True, **extra}])
+        # The panel is built on its first game (w-33), after the window is
+        # shown: on Windows its layout settles one event-loop pass later.
+        QApplication.processEvents()
         QApplication.processEvents()
         return self.panel.context
 
