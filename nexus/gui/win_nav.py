@@ -173,6 +173,7 @@ class NavigationMixin:
         from other pages, go back to the library. In Theatre the quick menu
         comes first: its question, then the menu."""
         if self._theatre and self.quick.back():
+            self.sounds.play('back')
             self._update_hints()
             return
         if self.palette.isVisible():
@@ -181,11 +182,13 @@ class NavigationMixin:
         sheet = self._open_sheet()
         if sheet is not None:
             sheet.close_sheet()
+            self.sounds.play('back')          # Theatre only (UiSounds checks)
             return
         focus = QApplication.focusWidget()
         in_details = focus is not None and self.details.isAncestorOf(focus)
         if self._theatre:
-            self.theatre.back()               # F11 or the quick menu leave Theatre, not B
+            if self.theatre.back():           # F11 or the quick menu leave Theatre, not B
+                self.sounds.play('back')      # only when B closed something
             return
         if self.desk_search.isVisible():
             self.desk_search.close_search()

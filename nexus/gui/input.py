@@ -118,6 +118,7 @@ def input_mode() -> str:
 
 class SpatialNav(QObject):
     """Application event filter: arrow keys move focus geometrically."""
+    moved = pyqtSignal()                # an arrow moved focus (Theatre's move sound, w-65)
 
     def __init__(self, window: QWidget):
         super().__init__(window)
@@ -207,6 +208,7 @@ class SpatialNav(QObject):
         nxt = self.move(cur, key)
         if nxt is not None:
             focus_and_reveal(nxt)
+            self.moved.emit()
             return True
         # At an edge: stay put — on a tile, and anywhere inside an overlay
         # (Qt's own arrow handling would tab out of it, behind the overlay).

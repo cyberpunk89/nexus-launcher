@@ -79,7 +79,9 @@ jobs:
         run: |
           $dir = "dist\$env:NAME"
           foreach ($f in "$env:NAME.exe", 'nexus-cli.exe', '_internal\SDL2.dll',
-                         '_internal\assets\fonts\lucide.ttf', '_internal\nexus\data\recipes.toml') {
+                         '_internal\assets\fonts\lucide.ttf', '_internal\nexus\data\recipes.toml',
+                         '_internal\assets\sounds\select.wav',
+                         '_internal\PyQt6\Qt6\plugins\multimedia') {
             if (-not (Test-Path "$dir\$f")) { throw "missing $f" }
           }
           $help = & "$dir\nexus-cli.exe" --help

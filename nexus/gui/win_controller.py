@@ -57,6 +57,7 @@ class ControllerMixin:
         else:
             self._on_activity()
         self.theatre.double_plays = self.prefs.controls['double_click'] == 'play'
+        self.sounds.configure(self.prefs.controls['sounds'], self.prefs.controls['volume'])
         self.sync_tray()
         if hasattr(self, 'hints'):
             self._update_hints()
@@ -436,6 +437,9 @@ class ControllerMixin:
             self.cursor_hider.start()
             self._on_activity()                   # the screensaver clock starts
             self._feed_theatre_week()
+            self.background.set_wash(True)        # w-65: the tint follows focus, low wash
+            self.theatre.refresh_tint()
+            self.sounds.preload()
         else:
             self._idle_timer.stop()
             self.attract.stop()
@@ -450,6 +454,9 @@ class ControllerMixin:
             self.theatre.pages.setEnabled(True)
             self.theatre.tabs.setEnabled(True)
             self.shell.setCurrentWidget(self.desk)
+            self.sounds.release()                 # Theatre only: let go of the device
+            self.background.set_wash(False)
+            self.background.set_tint(self._game_tint(self.homeview.hero.game))
             self.hints.setStyleSheet("")
             self.focus_ring.scale = 1.0
             was = self._was_state

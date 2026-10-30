@@ -622,6 +622,8 @@ class ActionsMixin:
 
     def toast(self, text, kind='info', action=None, timeout=6000):
         self.toasts.show_toast(text, kind, action, timeout)
+        if kind in ('warn', 'error') and hasattr(self, 'sounds'):
+            self.sounds.play('error')        # Theatre's refused action (w-65; silent elsewhere)
 
 
 def integrity_changed(job) -> bool:

@@ -703,9 +703,11 @@ class TheatreView(QWidget):
     open_settings = pyqtSignal()                 # the Game-db setup card
     hide_gamedb = pyqtSignal()                   # ... and X on it
     settings_sheet = pyqtSignal()                # the gear: the window opens Theatre's settings
+    focus_game = pyqtSignal(object)              # the game focus rests on (dwell): the tint (w-65)
 
     TILE = 230
     WIDE = 440
+    TINT_DWELL = 250                             # ms on a game before the background follows it
 
     def __init__(self):
         super().__init__()
@@ -858,6 +860,15 @@ class TheatreView(QWidget):
         self._clock.setInterval(20000)
         self._clock.timeout.connect(self._tick)
         self._tick()
+        # The background's tint follows the focused game once focus rests
+        # there (w-65): holding the D-pad doesn't strobe the colour.
+        self._tint_slug: str | None = None
+        self._tint_next: dict | None = None
+        self._tint_timer = QTimer(self)
+        self._tint_timer.setSingleShot(True)
+        self._tint_timer.timeout.connect(self._tint_settle)
+        self._masks: dict = {}                    # spotlight frame -> it faded out (paintEvent)
+        QApplication.instance().focusChanged.connect(self._focus_changed)
 
     # ---- data ----
     def set_games(self, everything: list[dict]):
@@ -1136,7 +1147,9 @@ class TheatreView(QWidget):
 
     def paintEvent(self, ev):
         """Home: the spotlight's art edge to edge, behind the top bar, moving
-        up with the page and fading into it before the shelves."""
+        up with the page and fading out before the shelves. It fades to
+        transparent, not to the page colour, so the window's background
+        (and its art-tinted wash, w-65) shows through below it."""
         if not self._art_on() or self.details.isVisible():
             return
         h = self.hero
@@ -1146,25 +1159,91 @@ class TheatreView(QWidget):
             return
         pt = QPainter(self)
         y = -self.home.verticalScrollBar().value()
-        r = QRectF(0, y, w, ht)
         if prev is not None and h._fade < 1.0:
-            pt.drawPixmap(0, y, prev)
+            pt.drawPixmap(0, y, self._masked(prev, w, ht))
         if cur is not None:
             pt.setOpacity(h._fade if prev is not None else 1.0)
-            pt.drawPixmap(0, y, cur)
+            pt.drawPixmap(0, y, self._masked(cur, w, ht))
             pt.setOpacity(1.0)
-        base, bg = QColor(P['scrim']), QColor(P['bg'])
+        pt.end()
+
+    def _masked(self, frame: QPixmap, w: int, h: int) -> QPixmap:
+        """The spotlight frame with its left scrim (the text side) and its
+        fade at the bottom baked in, so a repaint (scrolling, the cross-fade)
+        is one or two pixmap draws. Kept for the last few frames."""
+        key = (frame.cacheKey(), w, h, P['scrim'])
+        hit = self._masks.get(key)
+        if hit is not None:
+            return hit
+        out = QPixmap(frame.size())
+        out.setDevicePixelRatio(frame.devicePixelRatio())
+        out.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(out)
+        pt.drawPixmap(0, 0, frame)
+        r = QRectF(0, 0, w, h)
+        base = QColor(P['scrim'])
         g = QLinearGradient(0.0, 0.0, float(w), 0.0)
         for at, a in ((0.0, 0.90), (0.45, 0.45), (0.75, 0.05), (1.0, 0.0)):
             c = QColor(base); c.setAlphaF(a); g.setColorAt(at, c)
         pt.fillRect(r, QBrush(g))
-        g = QLinearGradient(0.0, r.bottom(), 0.0, r.top())
-        for at, a in ((0.0, 1.0), (0.35, 0.55), (0.6, 0.0)):
-            c = QColor(bg); c.setAlphaF(a); g.setColorAt(at, c)
+        # Keep the art's alpha: opaque at the top, gone at the bottom.
+        pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        g = QLinearGradient(0.0, float(h), 0.0, 0.0)
+        for at, a in ((0.0, 0.0), (0.35, 0.45), (0.6, 1.0), (1.0, 1.0)):
+            c = QColor(0, 0, 0); c.setAlphaF(a); g.setColorAt(at, c)
         pt.fillRect(r, QBrush(g))
-        if r.bottom() < ht:
-            pt.fillRect(QRectF(0, r.bottom(), w, ht - r.bottom()), bg)
         pt.end()
+        if len(self._masks) >= 3:                 # a cross-fade needs two; a resize makes many
+            self._masks.pop(next(iter(self._masks)))
+        self._masks[key] = out
+        return out
+
+    # ---- the background's tint follows focus (w-65) ----
+    def _game_at(self, w) -> dict | None:
+        """The game a focused control stands for: a tile, the game page,
+        the spotlight, Your week (its most played game)."""
+        while w is not None and w is not self:
+            if isinstance(w, GameTile):
+                return w.game
+            if w is self.details:
+                return self.details.game or None
+            if w is self.hero:
+                return self.hero.game or None
+            if w is self.week_card:
+                return self._week_game()
+            w = w.parentWidget()
+        return None
+
+    def _focus_changed(self, _old, new):
+        if new is None or not self.isVisible() or not self.isAncestorOf(new):
+            return
+        g = self._game_at(new)
+        if g is None:
+            return                               # a tab, a news card: the colour stays
+        self._tint_next = g
+        ms = anim_ms(self.TINT_DWELL)
+        if ms:
+            self._tint_timer.start(ms)
+        else:
+            self._tint_settle()
+
+    def _tint_settle(self):
+        g = self._tint_next
+        if g is None or g.get('slug') == self._tint_slug or not alive(self):
+            return
+        self._tint_slug = g.get('slug')
+        self.focus_game.emit(g)
+
+    def refresh_tint(self):
+        """Entering Theatre or a new look: the tint of the game in focus,
+        else the spotlight's, at once."""
+        self._tint_timer.stop()
+        f = QApplication.focusWidget()
+        g = self._game_at(f) if f is not None and self.isAncestorOf(f) else None
+        if g is None and self.hero.games:
+            g = self.hero.game or None
+        self._tint_slug = g.get('slug') if g else None
+        self.focus_game.emit(g)
 
     # ---- navigation ----
     def _open_reader(self, items: list, index: int, card):

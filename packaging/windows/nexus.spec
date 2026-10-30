@@ -63,7 +63,7 @@ else:
     print(f"nexus.spec: WARNING: {SDL2} missing, building without SDL2", file=sys.stderr)
 
 datas = [
-    (str(ROOT / 'assets'), 'assets'),                 # logo, wordmark, fonts/lucide.ttf
+    (str(ROOT / 'assets'), 'assets'),                 # logo, wordmark, fonts/lucide.ttf, sounds/*.wav
     (str(ROOT / 'nexus' / 'data'), 'nexus/data'),     # bundled recipes.toml
     (str(ROOT / 'LICENSE'), '.'),
 ]
@@ -71,7 +71,8 @@ datas = [
 # ---- what to leave out -----------------------------------------------------
 # Qt modules Nexus never imports. PyInstaller only collects what is imported,
 # so these mostly guard against a stray import pulling in hundreds of MB
-# (QtWebEngine alone is ~200 MB). QtMultimedia(+Widgets) stays: trailers.
+# (QtWebEngine alone is ~200 MB). QtMultimedia(+Widgets) stays: trailers and
+# Theatre's menu sounds (w-65).
 QT_EXCLUDES = [f'PyQt6.{m}' for m in (
     'QtWebEngineCore', 'QtWebEngineWidgets', 'QtWebEngineQuick', 'QtWebChannel',
     'QtWebSockets', 'QtQml', 'QtQuick', 'QtQuick3D', 'QtQuickWidgets', 'QtDesigner',
@@ -104,7 +105,11 @@ def _analysis(script):
         pathex=[str(ROOT)],
         binaries=binaries,
         datas=datas,
-        hiddenimports=['tomllib'],          # also reached through __import__('tomllib')
+        # tomllib is also reached through __import__('tomllib'). QtMultimedia is
+        # only imported inside functions (trailers, Theatre's menu sounds,
+        # gui/sounds.py): named here so its hook always brings the multimedia
+        # plugins (QSoundEffect needs them to open the audio device).
+        hiddenimports=['tomllib', 'PyQt6.QtMultimedia'],
         excludes=QT_EXCLUDES + PY_EXCLUDES,
         noarchive=False,
         optimize=0,                         # keep asserts and docstrings (argparse help)

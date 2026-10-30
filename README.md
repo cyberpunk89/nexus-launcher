@@ -64,6 +64,8 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
   and trailers, all reachable with the D-pad.
 - **On-screen keyboard** for search, a **screensaver** that shows your games' art or trailers
   when you're idle, and a Start/Guide map in the hint bar.
+- **Colour and sound:** the background takes its colour from the game you're on, and soft
+  menu sounds can be turned on in Theatre's settings (off by default).
 
 ![A game's page in Theatre mode](docs/screenshots/theatre-game.jpg)
 

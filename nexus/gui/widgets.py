@@ -66,7 +66,13 @@ class GradientBackground(QWidget):
     The main glow takes on a tint (the featured game's dominant colour) and
     cross-fades when it changes — an event-driven animation, never a
     per-frame loop, since repainting this repaints the whole window.
+
+    Theatre adds a wash (`set_wash`, w-65): a low, wide pool of the same tint
+    along the bottom. Light themes get a fainter, less saturated one so Dawn
+    stays cream. Glow Off paints neither.
     """
+
+    WASH_SIZE = (64, 36)          # painted this small and scaled up: it's all blur anyway
 
     def __init__(self):
         super().__init__()
@@ -79,6 +85,29 @@ class GradientBackground(QWidget):
         self._anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
         self._anim.valueChanged.connect(self._step)
         self._base: tuple | None = None          # (key, pixmap): the layers that don't fade
+        self.wash = False
+        self._wash_pm: tuple | None = None       # (key, small pixmap)
+
+    def set_wash(self, on: bool):
+        """Theatre's low, wide wash of the tint (w-65)."""
+        if on != self.wash:
+            self.wash = on
+            self.update()
+
+    @staticmethod
+    def wash_color(tint: QColor, light: bool) -> QColor:
+        """The wash's colour and alpha: dark themes 0.30 x glow (at most
+        0.40), light themes 0.10 with the saturation capped at 0.35."""
+        k = LOOK['glow']
+        c = QColor(tint)
+        if light:
+            h, s, v, _ = c.getHsvF()
+            if h >= 0:                           # -1 for greys (Pitfalls - Qt §3)
+                c = QColor.fromHsvF(h, min(s, 0.35), v)
+            c.setAlphaF(0.10 if k > 0 else 0.0)
+        else:
+            c.setAlphaF(max(0.0, min(0.40, 0.30 * k)))
+        return c
 
     def set_tint(self, color: QColor | None):
         if not LOOK['art_tint']:
@@ -122,7 +151,32 @@ class GradientBackground(QWidget):
         if k > 0:
             pt.setClipRect(ev.rect())
             self._glows(pt, w, h, k, fixed=False)
+            if self.wash:
+                pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                pt.drawPixmap(QRect(0, 0, w, h), self._wash_pixmap())
         pt.end()
+
+    def _wash_pixmap(self) -> QPixmap:
+        """The wash at WASH_SIZE: an ellipse wider than the window, centred
+        under its bottom edge (scaled up, a radial gradient turns elliptical)."""
+        c = self.wash_color(self._tint, LOOK['light'])
+        key = (c.rgba(), c.alpha())
+        if self._wash_pm is not None and self._wash_pm[0] == key:
+            return self._wash_pm[1]
+        sw, sh = self.WASH_SIZE
+        pm = QPixmap(sw, sh)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        g = QRadialGradient(sw * 0.5, sh * 1.25, sw * 0.5)
+        end = QColor(c); end.setAlphaF(0.0)
+        g.setColorAt(0.0, c)
+        mid = QColor(c); mid.setAlphaF(c.alphaF() * 0.55)
+        g.setColorAt(0.45, mid)
+        g.setColorAt(1.0, end)
+        p.fillRect(pm.rect(), QBrush(g))
+        p.end()
+        self._wash_pm = (key, pm)
+        return pm
 
     def _glows(self, pt, w, h, k, fixed):
         rect = QRect(0, 0, w, h)
