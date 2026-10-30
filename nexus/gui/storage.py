@@ -4,12 +4,13 @@ import html
 import re
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt, QUrl
+from PyQt6.QtCore import pyqtSignal, QItemSelectionModel, QPointF, QRectF, Qt, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath
-from PyQt6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QMenu,
+    QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..features import has
+from .common import alive
 from .fmt import fmt_bytes, fmt_hours, fmt_relative, fmt_size
 from .theme import P, PAL, pill, R, SP
 
@@ -79,6 +80,8 @@ class StoragePage(QWidget):
     quarantine of stray Steam prefixes (restorable)."""
     request = pyqtSignal(list, str, bool, str)
     select_game = pyqtSignal(str)
+    uninstall = pyqtSignal(list, bool, bool)    # repack slugs, save backup, remove snapshots
+    game_action = pyqtSignal(str, str)          # a game-menu action for one game (Steam's)
 
     def __init__(self):
         super().__init__()
@@ -191,12 +194,24 @@ class StoragePage(QWidget):
         lay.addWidget(self.q_card)
 
         # ---- per-game table ----
-        lay.addWidget(label("Games by size", "ShelfTitle"))
+        thead = QHBoxLayout()
+        thead.addWidget(label("Games by size", "ShelfTitle"))
+        thead.addStretch()
+        self.btn_uninstall = QPushButton("Uninstall…")
+        self.btn_uninstall.setObjectName("Danger")
+        self.btn_uninstall.clicked.connect(self.ask_uninstall)
+        thead.addWidget(self.btn_uninstall)
+        lay.addLayout(thead)
+        lay.addWidget(self._build_uninstall_bar())
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Game", "Source", "Size", "Played",
                                               "Last played", "Added"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         self.table.setShowGrid(False)
@@ -209,6 +224,7 @@ class StoragePage(QWidget):
             lambda r, _c: self.select_game.emit(self.table.item(r, 0).data(Qt.ItemDataRole.UserRole)))
         lay.addWidget(self.table)
         lay.addStretch()
+        self._selection_changed()
 
     # ---- drives + table ----
     def set_library(self, games, disks):
@@ -217,6 +233,15 @@ class StoragePage(QWidget):
         clear_layout(self.disk_box)
         for disk in self.disks:
             self.disk_box.addWidget(self._disk_card(disk))
+        # The library reloads after every job: keep the rows that were
+        # selected, and an open question as long as all its games are here.
+        keep = set(self.selected_slugs())
+        here = {g['slug'] for g in games}
+        if self._un_slugs and not set(self._un_slugs) <= here:
+            self.un_bar.setVisible(False)
+            self._un_slugs = []
+        self.table.blockSignals(True)
+        self.table.clearSelection()
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(games))
         for r, g in enumerate(games):
@@ -235,6 +260,199 @@ class StoragePage(QWidget):
                 self.table.setItem(r, c, it)
         self.table.setSortingEnabled(True)
         self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0).data(Qt.ItemDataRole.UserRole) in keep:
+                self.table.selectionModel().select(
+                    self.table.model().index(r, 0),
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows)
+        self.table.blockSignals(False)
+        self._selection_changed(keep_question=True)
+
+    # ---- uninstall (w-48) ----
+    def _build_uninstall_bar(self) -> QFrame:
+        """The inline question, the game page's (DetailsPanel.ask_uninstall)
+        for one or several rows: saves backed up first, snapshots kept
+        unless ticked (shown only when there are some)."""
+        self._un_slugs: list[str] = []          # the rows the question is about
+        self._un_games: list[str] = []          # the repacks among them
+        self._un_token = 0
+        self.un_bar = QFrame()
+        self.un_bar.setObjectName("DangerBar")
+        cl = QVBoxLayout(self.un_bar)
+        cl.setContentsMargins(SP['3'], SP['2_5'], SP['3'], SP['2_5'])
+        self.un_text = label("", None, wrap=True)
+        cl.addWidget(self.un_text)
+        self.un_skip = label("", "Muted", wrap=True)
+        self.un_skip.hide()
+        cl.addWidget(self.un_skip)
+        self.un_backup = QCheckBox("Back up save-game files first, if any are found")
+        self.un_backup.setChecked(True)
+        if not has('save_backup'):
+            self.un_backup.hide()
+        cl.addWidget(self.un_backup)
+        self.un_snaps = QCheckBox("")
+        self.un_snaps.hide()
+        cl.addWidget(self.un_snaps)
+        row = QHBoxLayout()
+        row.addStretch()
+        keep = QPushButton("Keep it")
+        keep.clicked.connect(self._close_uninstall)
+        self.un_go = QPushButton("Uninstall")
+        self.un_go.setObjectName("DangerSolid")
+        self.un_go.clicked.connect(self._do_uninstall)
+        row.addWidget(keep)
+        row.addWidget(self.un_go)
+        cl.addLayout(row)
+        self.un_bar.setVisible(False)
+        return self.un_bar
+
+    def selected_slugs(self) -> list[str]:
+        """The selected rows' games, top to bottom."""
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        return [s for r in rows if (it := self.table.item(r, 0))
+                and (s := it.data(Qt.ItemDataRole.UserRole))]
+
+    def _games_of(self, slugs) -> list[dict]:
+        by = {g['slug']: g for g in self.games}
+        return [by[s] for s in slugs if s in by]
+
+    @staticmethod
+    def uninstall_kind(g: dict) -> tuple[str, str]:
+        """How a row's game is uninstalled: ('repack', ''), ('steam', '') or
+        ('', why not here)."""
+        src = g.get('source', 'nexus')
+        name = g.get('display_name', g['slug'])
+        if g.get('playing') or g.get('launching'):
+            return '', f"{name} is running — close it first"
+        if g.get('busy'):
+            return '', f"{name} is busy — wait for its current job"
+        if src == 'nexus':
+            if g.get('incomplete'):
+                return '', f"{name} is an unfinished install — discard it from its page"
+            return 'repack', ''
+        if src == 'steam' and g.get('appid') and _supported('steam-uninstall'):
+            return 'steam', ''
+        return '', f"{name}: uninstall it in {SOURCE_LABEL.get(src) or 'its launcher'}"
+
+    def _plan(self, slugs):
+        """(repacks, steam games, reasons for the rest) for a selection."""
+        repacks, steam, why = [], [], []
+        for g in self._games_of(slugs):
+            kind, reason = self.uninstall_kind(g)
+            (repacks if kind == 'repack' else steam if kind == 'steam' else why).append(
+                g if kind else reason)
+        return repacks, steam, why
+
+    def _selection_changed(self, keep_question=False):
+        slugs = self.selected_slugs()
+        repacks, steam, _why = self._plan(slugs)
+        steam_only = bool(steam) and not repacks and len(slugs) == 1
+        self.btn_uninstall.setText("Uninstall in Steam…" if steam_only else
+                                   f"Uninstall {len(repacks)} games…" if len(repacks) > 1
+                                   else "Uninstall…")
+        self.btn_uninstall.setEnabled(bool(repacks) or steam_only)
+        if not slugs:
+            self.btn_uninstall.setToolTip("Select one or more games in the table")
+        elif not repacks and not steam_only:
+            self.btn_uninstall.setToolTip("; ".join(_why) or "Nothing here can be uninstalled")
+        else:
+            self.btn_uninstall.setToolTip("")
+        # The question named a selection; a changed one needs asking again.
+        if not keep_question and self.un_bar.isVisible() and set(slugs) != set(self._un_slugs):
+            self._close_uninstall()
+
+    def _menu_entries(self):
+        """The right-click menu for the selection: (text, callback, enabled)."""
+        slugs = self.selected_slugs()
+        out = []
+        if len(slugs) == 1:
+            out.append(("Open game page", lambda s=slugs[0]: self.select_game.emit(s), True))
+        out.append((self.btn_uninstall.text(), self.ask_uninstall,
+                    self.btn_uninstall.isEnabled()))
+        return out
+
+    def _context(self, pos):
+        r = self.table.rowAt(pos.y())
+        if r < 0:
+            return
+        if not self.table.item(r, 0).isSelected():
+            self.table.selectRow(r)
+        m = QMenu(self)
+        for text, fn, on in self._menu_entries():
+            a = m.addAction(text, fn)
+            a.setEnabled(on)
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def ask_uninstall(self):
+        """Uninstall… for the selected rows: one Steam game goes to Steam's own
+        question; repacks get the inline question (several at once allowed)."""
+        slugs = self.selected_slugs()
+        repacks, steam, why = self._plan(slugs)
+        if not repacks:
+            if len(slugs) == 1 and steam:
+                self.game_action.emit('steam-uninstall', steam[0]['slug'])
+            return
+        why += [f"{g.get('display_name', g['slug'])}: one at a time, Steam asks for each"
+                for g in steam]
+        self._un_slugs = slugs
+        self._un_games = [g['slug'] for g in repacks]
+        size = sum(g.get('disk_bytes') or 0 for g in repacks)
+        gb = f" ({fmt_size(size)})" if fmt_size(size) else ''
+        if len(repacks) == 1:
+            name = repacks[0].get('display_name', repacks[0]['slug'])
+            self.un_text.setText(
+                f"Uninstall {name}? This deletes its install folder{gb} and removes it from "
+                f"Steam, Heroic and the app menu. Logs are kept.")
+            self.un_go.setText("Uninstall")
+        else:
+            names = ", ".join(g.get('display_name', g['slug']) for g in repacks[:4]) \
+                + ("…" if len(repacks) > 4 else "")
+            self.un_text.setText(
+                f"Uninstall {len(repacks)} games{gb}? {names}. Their install folders are "
+                f"deleted and they are removed from Steam, Heroic and the app menu. "
+                f"Logs are kept.")
+            self.un_go.setText(f"Uninstall {len(repacks)} games")
+        self.un_skip.setText("Left out: " + "; ".join(why) + "." if why else "")
+        self.un_skip.setVisible(bool(why))
+        self.un_snaps.setChecked(False)
+        self.un_snaps.hide()
+        self._un_token += 1
+        if has('btrfs'):
+            self._count_snapshots([g['slug'] for g in repacks if g.get('owned_dir')])
+        self.un_bar.setVisible(True)
+
+    def _count_snapshots(self, slugs):
+        """Ask the CLI how many snapshots the games have; the box appears only
+        when there are some (they hold copies of the saves)."""
+        token, counts = self._un_token, {}
+
+        def done(data, _err, slug):
+            if token != self._un_token or not alive(self.un_snaps):
+                return
+            counts[slug] = len((data or {}).get('snapshots') or [])
+            n = sum(counts.values())
+            if n:
+                one = len(self._un_games) == 1
+                self.un_snaps.setText(
+                    f"Also delete {'its' if one else 'their'} {n} snapshot{'s' if n > 1 else ''}"
+                    f" (they hold copies of {'its' if one else 'their'} saves)")
+                self.un_snaps.show()
+        for s in slugs:
+            cli_json(['--snapshots', s, '--json'], lambda d, e, s=s: done(d, e, s), 30000)
+
+    def _close_uninstall(self):
+        self.un_bar.setVisible(False)
+        self._un_slugs = []
+        self._un_token += 1
+
+    def _do_uninstall(self):
+        slugs = list(self._un_games)
+        backup = has('save_backup') and self.un_backup.isChecked()
+        snaps = not self.un_snaps.isHidden() and self.un_snaps.isChecked()
+        self._close_uninstall()
+        if slugs:
+            self.uninstall.emit(slugs, backup, snaps)
 
     def _disk_card(self, disk):
         card = QFrame()
@@ -471,6 +689,7 @@ class SortItem(QTableWidgetItem):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .actions import _supported  # noqa: E402
 from .deals import _pill  # noqa: E402
 from .gameinfo import SOURCE_LABEL  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402

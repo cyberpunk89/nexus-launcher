@@ -357,6 +357,49 @@ class Behaviour(unittest.TestCase):
         self.win.on_game_action('uninstall', self.win.game('alpha'))
         self.assertIn("busy", self.toasts[-1][0])
 
+    def test_storage_uninstall_runs_the_cli_and_skips_a_running_game(self):
+        """w-48: the Storage page's answer becomes one --uninstall job per
+        repack, with the same gates as the game menu."""
+        self.win._playing = {'gamma'}
+        self.win._mark_states()
+        ran = []
+        with mock.patch.object(self.win, 'run', lambda args, *a, **k: ran.append(args)):
+            self.win.storage.uninstall.emit(['alpha', 'gamma', 'steam-1'], True, True)
+            self.win.storage.uninstall.emit(['alpha'], False, False)
+        self.assertEqual(ran, [['--uninstall', 'alpha', '--yes', '--save-backup',
+                                '--remove-snapshots'],
+                               ['--uninstall', 'alpha', '--yes']])
+        self.assertIn("Gamma is running", self.toasts[0][0])
+        with mock.patch.object(self.win, 'on_game_action') as act:
+            self.win.storage.game_action.emit('steam-uninstall', 'steam-1')
+        act.assert_called_once_with('steam-uninstall', self.win.game('steam-1'))
+
+    def test_storage_refreshes_when_an_uninstall_ends(self):
+        """The drive bars, the table and the cleanup list catch up with a
+        finished uninstall while the Storage page is shown."""
+        w = self.win
+        asked = []
+        with patch_gui('cli_json', lambda args, cb, *a, **k: asked.append((args, cb))):
+            w.go(w.STORAGE)
+            QApplication.processEvents()
+            asked.clear()
+            job = nx.Job(['x', '--uninstall', 'alpha', '--yes'], "Uninstalling Alpha",
+                         'alpha', 'task')
+            job.state = 'done'
+            w._job_done(job)
+            QApplication.processEvents()
+            lib = next(cb for a, cb in asked if a[0] == '--library')
+            self.assertTrue(any(a[0] == '--cleanup-scan' for a, _cb in asked))
+            disk = {'path': '/g', 'free': 9 << 30, 'total': 20 << 30, 'used': 11 << 30}
+            lib({'games': [g for g in fake_games() if g['slug'] != 'alpha'],
+                 'disks': [disk]}, '')
+            QApplication.processEvents()
+        rows = {w.storage.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+                for r in range(w.storage.table.rowCount())}
+        self.assertNotIn('alpha', rows)
+        self.assertEqual(w.storage.disks, [disk])
+        w.go(w.HOME)
+
     def test_restore_saves_asks_first(self):
         ran = []
         with mock.patch.object(self.win, 'run', lambda *a, **k: ran.append(a)):
@@ -617,6 +660,115 @@ class Storage(unittest.TestCase):
         self.assertEqual(sent[0][:2], ['--cleanup', 'a'])
         self.assertNotIn('b', sent[0])
         page.deleteLater()
+
+    # w-48: Uninstall from the "Games by size" table.
+    GAMES = [{'slug': 'a', 'display_name': 'A', 'source': 'nexus', 'disk_bytes': 9 << 30,
+              'owned_dir': True},
+             {'slug': 'b', 'display_name': 'B', 'source': 'nexus', 'disk_bytes': 5 << 30},
+             {'slug': 'run', 'display_name': 'Run', 'source': 'nexus', 'disk_bytes': 3 << 30,
+              'playing': True},
+             {'slug': 's', 'display_name': 'S', 'source': 'steam', 'appid': 7,
+              'disk_bytes': 2 << 30},
+             {'slug': 'h', 'display_name': 'H', 'source': 'heroic', 'disk_bytes': 1 << 30}]
+
+    def page(self, snaps=None):
+        asked = []
+
+        def fake(args, cb, *a, **k):
+            asked.append(args)
+            cb({'snapshots': [{}] * (snaps or {}).get(args[1], 0)}, None)
+        p = patch_gui('cli_json', fake)
+        p.start()
+        self.addCleanup(p.stop)
+        page = nx.StoragePage()
+        self.addCleanup(page.deleteLater)
+        page.set_library([dict(g) for g in self.GAMES], [])
+        page.resize(900, 900)
+        page.show()
+        self.sent, self.acts, self.asked = [], [], asked
+        page.uninstall.connect(lambda *a: self.sent.append(a))
+        page.game_action.connect(lambda *a: self.acts.append(a))
+        page.request.connect(lambda *a: self.fail(f"ran a job without asking: {a}"))
+        return page
+
+    def select(self, page, *slugs):
+        from PyQt6.QtCore import QItemSelectionModel
+        page.table.clearSelection()
+        for r in range(page.table.rowCount()):
+            if page.table.item(r, 0).data(Qt.ItemDataRole.UserRole) in slugs:
+                page.table.selectionModel().select(
+                    page.table.model().index(r, 0),
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows)
+
+    @linux_features
+    def test_uninstall_asks_inline_with_the_game_pages_choices(self):
+        page = self.page(snaps={'a': 2})
+        tops = set(QApplication.topLevelWidgets())
+        self.assertFalse(page.btn_uninstall.isEnabled())       # nothing selected
+        self.select(page, 'a')
+        self.assertTrue(page.btn_uninstall.isEnabled())
+        self.assertEqual([t for t, _f, _on in page._menu_entries()],
+                         ["Open game page", "Uninstall…"])
+        page.btn_uninstall.click()
+        self.assertTrue(page.un_bar.isVisible())               # inline, no window
+        self.assertEqual(set(QApplication.topLevelWidgets()), tops)
+        self.assertIn("Uninstall A?", page.un_text.text())
+        self.assertTrue(page.un_backup.isVisible() and page.un_backup.isChecked())
+        self.assertEqual(self.asked, [['--snapshots', 'a', '--json']])
+        self.assertTrue(page.un_snaps.isVisible())
+        self.assertFalse(page.un_snaps.isChecked())            # kept unless ticked
+        self.assertEqual(self.sent, [])
+        page.un_snaps.setChecked(True)
+        page.un_go.click()
+        self.assertEqual(self.sent, [(['a'], True, True)])
+        self.assertFalse(page.un_bar.isVisible())
+
+    @linux_features
+    def test_uninstall_several_leaves_out_what_it_cant(self):
+        page = self.page()
+        self.select(page, 'a', 'b', 'run', 's', 'h')
+        self.assertEqual(page.btn_uninstall.text(), "Uninstall 2 games…")
+        page.ask_uninstall()
+        self.assertFalse(page.un_snaps.isVisible())            # none to delete
+        skip = page.un_skip.text()
+        for why in ("Run is running", "S: one at a time", "uninstall it in Heroic"):
+            self.assertIn(why, skip)
+        page.un_backup.setChecked(False)
+        page.un_go.click()
+        self.assertEqual(self.sent, [(['a', 'b'], False, False)])
+
+    @linux_features
+    def test_running_game_alone_cant_be_asked(self):
+        page = self.page()
+        self.select(page, 'run')
+        self.assertFalse(page.btn_uninstall.isEnabled())
+        self.assertIn("running", page.btn_uninstall.toolTip())
+        page.ask_uninstall()
+        self.assertFalse(page.un_bar.isVisible())
+
+    @linux_features
+    def test_steam_game_goes_to_steam(self):
+        page = self.page()
+        self.select(page, 's')
+        self.assertEqual(page.btn_uninstall.text(), "Uninstall in Steam…")
+        page.btn_uninstall.click()
+        self.assertEqual(self.acts, [('steam-uninstall', 's')])
+        self.assertFalse(page.un_bar.isVisible())
+
+    @linux_features
+    def test_question_follows_the_selection_and_survives_a_reload(self):
+        page = self.page()
+        self.select(page, 'a', 'b')
+        page.ask_uninstall()
+        page.set_library([dict(g) for g in self.GAMES], [])    # a job finished elsewhere
+        self.assertTrue(page.un_bar.isVisible())
+        self.assertEqual(set(page.selected_slugs()), {'a', 'b'})
+        self.select(page, 'a')                                 # asked about two
+        self.assertFalse(page.un_bar.isVisible())
+        page.ask_uninstall()
+        page.set_library([dict(g) for g in self.GAMES if g['slug'] != 'a'], [])
+        self.assertFalse(page.un_bar.isVisible())              # it's gone
 
 
 if __name__ == '__main__':

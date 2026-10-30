@@ -351,6 +351,9 @@ class LibraryMixin:
 
     def _uninstall_selected(self):
         # Line edits keep Delete for themselves (Qt gives them the key first).
+        if self._showing(self.STORAGE):
+            self.storage.ask_uninstall()            # its selected rows (w-48)
+            return
         g = self._selected_repack()
         if g is not None:
             self.on_game_action('uninstall', g)
