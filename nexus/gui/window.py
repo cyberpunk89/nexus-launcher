@@ -150,6 +150,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.split = QSplitter(Qt.Orientation.Horizontal)
         self.stack = QStackedWidget()
         self.pages: dict[str, QWidget] = {}
+        self._lazy: dict = {}                        # page key -> its builder (_add_lazy_page)
         self.split.addWidget(self.stack)
         self.details = DetailsPanel()
         self.split.addWidget(self.details)
@@ -252,16 +253,6 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                                   'storage': self.storage, 'health': self.health})
         self.system.section_changed.connect(self._on_system_section)
         self._add_page(self.SYSTEM, self.system)
-        self.settings = SettingsPage()
-        self.settings.saved.connect(self._settings_saved)
-        self.settings.show_owned.setChecked(self.prefs.show_owned)
-        self.settings.show_owned.toggled.connect(self._set_show_owned)
-        self.settings.set_controls(self.prefs.controls)
-        self.settings.controls_changed.connect(self._apply_controls)
-        self.settings.request.connect(self._on_request)
-        self.settings.background_changed.connect(self._background_changed)
-        self.settings.import_wanted.connect(self._import_settings)
-        self.settings.appearance.load(self.prefs.appearance)
         # Re-styling ~2000 widgets takes about a second: coalesce quick clicks
         # through the swatches into one apply.
         self._ap_pending = None
@@ -269,8 +260,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._ap_timer.setSingleShot(True)
         self._ap_timer.setInterval(160)
         self._ap_timer.timeout.connect(self._flush_appearance)
-        self.settings.appearance.changed.connect(self._queue_appearance)
-        self._add_page(self.SETTINGS, self.settings)
+        self._add_lazy_page(self.SETTINGS, self._build_settings)
         self.install = InstallPage()
         self.install.submit.connect(self._start_install)
         self.install.torrent.connect(self._add_torrent)
@@ -324,8 +314,6 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             {**self.prefs.appearance, **look}, save=False))
         self.setup.finished.connect(self._setup_finished)
         self._add_page(self.SETUP, self.setup)
-        self.settings.setup_wanted.connect(self.open_setup)
-        self.settings.whats_new_wanted.connect(self.show_whats_new)
         self._art_from = self.HOME
         self._deals_warmed = False
 
@@ -407,6 +395,49 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.pages[key] = widget
         self.stack.addWidget(widget)
 
+    def _add_lazy_page(self, key, build):
+        """A page made the first time it's needed (`page_widget(key)`, or an
+        attribute such as `settings`); until then an empty placeholder holds
+        its place in the stack. Most sessions never open Settings, and it's
+        the costliest page to build (~20 ms of a 140 ms window, offscreen)."""
+        self._lazy[key] = build
+        self._add_page(key, QWidget())
+
+    def page_widget(self, key) -> QWidget:
+        """The page for `key`, built now if it's a lazy one not made yet."""
+        build = self._lazy.pop(key, None)
+        if build is not None:
+            spot = self.pages[key]
+            widget = build()
+            self.stack.insertWidget(self.stack.indexOf(spot), widget)
+            self.pages[key] = widget
+            self.stack.removeWidget(spot)
+            spot.deleteLater()
+        return self.pages[key]
+
+    def page_built(self, key) -> bool:
+        return key not in self._lazy
+
+    @property
+    def settings(self) -> 'SettingsPage':
+        return self.page_widget(self.SETTINGS)
+
+    def _build_settings(self) -> 'SettingsPage':
+        st = SettingsPage(self.stack)
+        st.saved.connect(self._settings_saved)
+        st.show_owned.setChecked(self.prefs.show_owned)
+        st.show_owned.toggled.connect(self._set_show_owned)
+        st.set_controls(self.prefs.controls)
+        st.controls_changed.connect(self._apply_controls)
+        st.request.connect(self._on_request)
+        st.background_changed.connect(self._background_changed)
+        st.import_wanted.connect(self._import_settings)
+        st.appearance.load(self.prefs.appearance)
+        st.appearance.changed.connect(self._queue_appearance)
+        st.setup_wanted.connect(self.open_setup)
+        st.whats_new_wanted.connect(self.show_whats_new)
+        return st
+
     def current(self) -> str | None:
         w = self.stack.currentWidget()
         return next((k for k, v in self.pages.items() if v is w), None)
@@ -432,6 +463,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             b.clicked.connect(lambda _=False, p=page: self.go(p))
             self.icons[page] = b
             self.nav[page] = b
+        # Settings is built on first use: a pointer on its way to the icon
+        # gives it the time (the click comes ~0.2 s later).
+        self.icons[self.SETTINGS].hovered.connect(lambda: self.page_widget(self.SETTINGS))
         bar.install.clicked.connect(self.open_install)
         self.btn_install = bar.install
         self.search = bar.search
@@ -685,7 +719,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.prefs.setup_done = True
         self.prefs.save()
         self.config = load_config()
-        self.settings.load()
+        if self.page_built(self.SETTINGS):         # else it loads when first opened
+            self.settings.load()
         self._apply_repacks()
         self.set_appearance({**self.prefs.appearance, **opts['appearance']})
         if opts.get('tray'):

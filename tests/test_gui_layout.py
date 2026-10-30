@@ -114,6 +114,20 @@ class DetailsPanelWidth(unittest.TestCase):
         # The raw value is still what gets copied (in the OS's own separators).
         self.assertEqual(self.panel._folder, str(Path(DEEP)))
 
+    def test_widgets_are_made_when_first_needed(self):
+        p = nx.DetailsPanel()
+        self.addCleanup(p.deleteLater)
+        self.assertFalse(p._built)
+        self.assertEqual(p.findChildren(QWidget), [])
+        self.assertEqual(p.game, {})                       # state the window reads early
+        self.assertFalse(hasattr(p, 'no_such_widget'))
+        self.assertTrue(p._built)                          # asking for any name builds it
+        self.assertIsNotNone(p.btn_play)
+        q = nx.DetailsPanel()
+        self.addCleanup(q.deleteLater)
+        q.open_section('files')                            # before any game, as a menu may
+        self.assertTrue(q._built)
+
     def test_steam_game_long_install_dir_fits(self):
         game = {'slug': 'y', 'display_name': 'Y', 'source': 'steam', 'launcher': 'steam',
                 'install_dir': DEEP}

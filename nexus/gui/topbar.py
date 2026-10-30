@@ -94,6 +94,7 @@ def _wordmark_renderer():
 class TopIcon(QToolButton):
     """A round icon button in the top bar, with an optional count badge and
     (for System) a disk-usage ring around it."""
+    hovered = pyqtSignal()                      # the pointer came in (Settings builds then)
 
     SIZE = 36
 
@@ -108,6 +109,10 @@ class TopIcon(QToolButton):
         self.setStyleSheet(f"border-radius: {pill(self.SIZE + 6)}px;")
         self._badge, self._role = '', 'accent'
         self.usage: float | None = None        # 0..1, Storage only
+
+    def enterEvent(self, ev):
+        super().enterEvent(ev)
+        self.hovered.emit()
 
     def set_badge(self, text, role='accent'):
         self._badge, self._role = (str(text) if text not in (None, '', 0) else ''), role
