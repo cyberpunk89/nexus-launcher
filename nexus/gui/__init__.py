@@ -64,7 +64,8 @@ from .prefs import (
 from .prefs import clean_collection_look, MAX_PINNED  # noqa: F401
 from .gameinfo import (
     anticheat_warning, can_quick_play, compat_facts, install_fraction, is_installed,
-    PCGW_COLORS, PCGW_WORDS, play_enabled, play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: F401
+    live_kicker, now_playing, PCGW_COLORS, PCGW_WORDS, play_enabled, play_label,
+    played_minutes, session_minutes, SOURCE_LABEL, TIER_COLORS)  # noqa: F401
 from .actions import (
     _gate_actions, about_html, action_glyph, ACTION_GLYPHS, ActionSheet, build_game_menu,
     COUCH_SKIP, game_actions, GameAction, NOT_WHILE_BUSY, NOT_WHILE_PLAYING,

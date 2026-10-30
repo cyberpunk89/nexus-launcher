@@ -51,8 +51,13 @@ class PlayMixin:
         for slug in started:
             self._launching.pop(slug, None)
             self._session_start[slug] = now
+            g = self.game(slug)
+            # Play time before this session: the library's figure isn't
+            # refreshed until the next load, so Now playing adds to this.
+            self._session_base[slug] = int((g or {}).get('playtime_minutes') or 0)
         for slug in stopped:
             t0 = self._session_start.pop(slug, None)
+            self._session_base.pop(slug, None)
             g = self.game(slug)
             # Repacks are recorded by their launch tracker; the rest here.
             if t0 and g and (g.get('source', 'nexus') != 'nexus'
@@ -156,6 +161,51 @@ class PlayMixin:
             g['playing'] = g['slug'] in self._playing
             g['launching'] = g['slug'] in self._launching and not g['playing']
             g['busy'] = g['slug'] in self._busy
+            # When this session started and the play time before it (Now
+            # playing: "42 min", "Started at 21:02 · 141.7 h played").
+            g['session_start'] = self._session_start.get(g['slug']) if g['playing'] else None
+            g['session_base'] = self._session_base.get(g['slug'])
+
+    def resume_game(self, g: dict):
+        """Resume: back to a running game. Its window (the one the hand-off
+        found, else the best match now) is focused on the thread pool, like
+        every compositor call. Best effort: without the compositor's help,
+        or with no window to be found, Nexus steps aside (minimises) so the
+        game is what's underneath, as it does at launch."""
+        slug = g['slug']
+        if not winfocus.available():
+            self.showMinimized()
+            return
+        wid = self._game_window.get(slug)
+        game = {k: g.get(k) for k in ('slug', 'source', 'appid', 'exe', 'display_name',
+                                      'install_dir')}
+        pid = os.getpid()
+
+        def find():
+            wins = winfocus.windows()
+            me = winfocus.own_window(wins, pid=pid)
+            target = wid if any(w.get('id') == wid for w in wins) else \
+                winfocus.pick_game_window(wins, {me}, game, strict=True)
+            return (target if target is not None and winfocus.focus(target) else None), me
+
+        def done(res, _err):
+            if not alive(self):
+                return
+            target, me = res or (None, None)
+            if target is None:
+                self.showMinimized()             # nothing to raise: step aside
+                return
+            self._game_window[slug] = target
+            if me is not None:                   # and come back here when it ends
+                self._return_to.setdefault(slug, me)
+        in_thread(find, done)
+
+    def stop_game(self, g: dict):
+        """Quit game, once confirmed: `--stop` as a quick job, so the process
+        scan and the kills (TERM, KILL after 10 s) stay off the GUI thread.
+        The running poll then sees it go, as if it had closed by itself."""
+        slug, name = g['slug'], g.get('display_name', g['slug'])
+        self.run(['--stop', slug], f"Quitting {name}", slug, 'tool')
 
     def _game_changed(self, slug):
         """One game's state moved (download progress): repaint just it."""
@@ -222,6 +272,7 @@ class PlayMixin:
         if wid is None or h is not self._handoff:
             return
         in_thread(lambda: winfocus.focus(wid), lambda *_: None)
+        self._game_window[h['game']['slug']] = wid      # for Resume
         if h.get('nexus') is not None:
             self._return_to[h['game']['slug']] = h['nexus']
         self._handoff_timer.stop()
@@ -229,6 +280,7 @@ class PlayMixin:
 
     def _game_stopped(self, slug):
         """The game closed: come back to Nexus (where focus was handed off)."""
+        self._game_window.pop(slug, None)
         nexus = self._return_to.pop(slug, None)
         if nexus is not None:
             in_thread(lambda: winfocus.focus(nexus), lambda *_: None)

@@ -80,12 +80,15 @@ def _words(s: str) -> set[str]:
     return {w for w in re.split(r'[^a-z0-9]+', (s or '').lower()) if len(w) > 2}
 
 
-def pick_game_window(wins: list[dict], before_ids: set, game: dict) -> int | None:
+def pick_game_window(wins: list[dict], before_ids: set, game: dict,
+                     strict: bool = False) -> int | None:
     """The window that most likely belongs to `game` among the windows that
     weren't there before it was launched. Steam games run with WM_CLASS
     steam_app_<appid>; other games are matched by exe or title; failing
-    that, the newest unknown window wins. A window whose exe lies in the
-    game's install folder (Windows reports exe paths) counts like a match."""
+    that, the newest unknown window wins (with `strict`, nothing does:
+    Resume, long after the launch, must not raise a random window). A
+    window whose exe lies in the game's install folder (Windows reports exe
+    paths) counts like a match."""
     new = [w for w in wins if w.get('id') not in before_ids
            and (w.get('app_id') or '').lower() not in IGNORE_APP_IDS]
     if not new:
@@ -111,6 +114,8 @@ def pick_game_window(wins: list[dict], before_ids: set, game: dict) -> int | Non
         s += 10 * len(name & _words(title))
         return (s, w.get('id') or 0)
     best = max(new, key=score)
+    if strict and score(best)[0] == 0:
+        return None
     return best.get('id')
 
 

@@ -1,8 +1,9 @@
 """Facts about a game shown in several places: install/play state, compat."""
 
 import html
+from datetime import datetime
 
-from .theme import P
+from .theme import is_light, P
 
 
 SOURCE_LABEL = {'nexus': 'Repack', 'steam': 'Steam', 'heroic': 'Heroic', 'epic': 'Epic'}
@@ -118,6 +119,44 @@ def play_enabled(g: dict) -> bool:
             and not g.get('install_requested')
     return bool(g.get('launcher')) and not g.get('playing') and not g.get('launching') \
         and not g.get('busy') and not g.get('stale')
+
+
+def session_minutes(g: dict, now: datetime | None = None) -> int | None:
+    """Minutes into the session of a running game (None when it isn't).
+    The running poll lags 1 to 15 s, so it's only ever shown rounded."""
+    t0 = g.get('session_start')
+    if not g.get('playing') or t0 is None:
+        return None
+    return max(0, int(((now or datetime.now()) - t0).total_seconds() // 60))
+
+
+def played_minutes(g: dict, now: datetime | None = None) -> int:
+    """Play time with the running session counted in: the library's figure
+    is only refreshed at the next load, so it's the larger of that and the
+    time before the session plus the session so far."""
+    cur = int(g.get('playtime_minutes') or 0)
+    s = session_minutes(g, now)
+    return cur if s is None else max(cur, int(g.get('session_base') or 0) + s)
+
+
+def now_playing(games: list[dict]) -> dict | None:
+    """The game Now playing is about (the quick menu, Theatre's spotlight):
+    of those running, the one that started last; else one that's starting."""
+    playing = [g for g in games if g.get('playing')]
+    if playing:
+        return max(playing, key=lambda g: g.get('session_start') or datetime.min)
+    return next((g for g in games if g.get('launching')), None)
+
+
+def live_kicker(g: dict) -> str:
+    """'NOW PLAYING · 42 MIN', or 'STARTING…' (as rich text: on a light
+    theme the kicker over art is white, so a small green dot says live)."""
+    if not g.get('playing'):
+        return "STARTING…"
+    mins = session_minutes(g)
+    text = "NOW PLAYING" + (f"&nbsp;&nbsp;·&nbsp;&nbsp;{mins} MIN" if mins is not None else "")
+    return (f"<span style='color:{P['success']}'>●</span>&nbsp;&nbsp;" if is_light() else "") \
+        + text
 
 
 def can_quick_play(g: dict) -> bool:

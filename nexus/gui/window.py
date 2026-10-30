@@ -79,6 +79,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._lib_retry.timeout.connect(self.reload_library)
         self._handoff: dict | None = None            # the launch whose window we focus
         self._return_to: dict[str, int] = {}         # slug -> Nexus window to come back to
+        self._game_window: dict[str, int] = {}       # slug -> its window, for Resume
+        self._session_start: dict[str, datetime] = {}   # play sessions the poll saw start
+        self._session_base: dict[str, int] = {}      # play minutes before each
         self._view = 'home'
         self.jobs = JobManager()
         self.jobs.finished.connect(self._job_done)
@@ -362,7 +365,6 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
         # Repack downloads: "ready to install" toasts and repack updates.
         self._repack_updates: dict[str, str] = {}          # slug -> new repack folder
-        self._session_start: dict[str, datetime] = {}      # Steam/Heroic play sessions
         self._feed_timer = QTimer(self)                     # FitGirl feed: newer repacks
         self._feed_timer.timeout.connect(self._check_repack_feed)
         self._feed_checks = 0

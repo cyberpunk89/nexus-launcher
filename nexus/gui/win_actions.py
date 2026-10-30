@@ -579,6 +579,8 @@ class ActionsMixin:
                            3500)
             QTimer.singleShot(4000, self.reload_library)       # last-played updates
             return
+        if cli_args(job.argv)[:1] == ['--stop']:
+            QTimer.singleShot(0, self._poll_running)      # Quit game: notice it now
         if job.kind == 'install':
             self._install_followups(job)
         elif job.state == 'done':

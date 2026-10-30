@@ -38,6 +38,14 @@ class PickWindow(unittest.TestCase):
                            {'id': 12, 'app_id': 'b', 'title': ''}]
         self.assertEqual(winfocus.pick_game_window(wins, {1, 2}, {'display_name': 'Zz'}), 12)
 
+    def test_strict_wants_a_real_match(self):
+        """Resume, long after the launch: a random window is never raised."""
+        wins = WINS[:2] + [{'id': 11, 'app_id': 'a', 'title': ''}]
+        self.assertIsNone(winfocus.pick_game_window(wins, {1}, {'display_name': 'Zz'},
+                                                    strict=True))
+        g = {'source': 'steam', 'appid': 3669870, 'display_name': 'CONTROL Resonant'}
+        self.assertEqual(winfocus.pick_game_window(WINS, set(), g, strict=True), 7)
+
     def test_own_window(self):
         self.assertEqual(winfocus.own_window(WINS), 1)
 

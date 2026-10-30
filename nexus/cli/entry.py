@@ -923,7 +923,8 @@ from .manage import cmd_library, cmd_list, cmd_running  # noqa: E402
 from .protoncmds import (cmd_list_protons, cmd_proton_install, cmd_proton_migrate,
     cmd_proton_releases, cmd_proton_remove, cmd_protondb, cmd_protons)  # noqa: E402
 from .registry import load_registry, registry_get  # noqa: E402
-from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause, cmd_stop  # noqa: E402
+from .running import (cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause,  # noqa: E402
+    cmd_stop)
 from .sgdb import (cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search,
     SGDB_KINDS)  # noqa: E402
 from .steam import set_steam_account_pin  # noqa: E402
