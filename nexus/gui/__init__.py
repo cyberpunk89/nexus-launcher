@@ -110,8 +110,9 @@ from .input import (
     _native_arrows, ControllerInput, focus_and_reveal, FocusRing, HintBar, INPUT, input_mode,
     InputMode, install_input_mode, NAV_KEYS, SpatialNav)  # noqa: F401
 from .theatre import (
-    _news_html, _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
-    THEATRE_SCALE, TheatreCard, TheatreDetails, TheatreSearch, TheatreView)  # noqa: F401
+    _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
+    THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: F401
+from .theatre_game import _news_html, TheatreCard, TheatreDetails  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401
 from .topbar import CollectionLookPicker, PinButton  # noqa: F401
 from .win_library import LibraryMixin  # noqa: F401
