@@ -400,7 +400,12 @@ class CliQuery(QObject):
             # body, so callers keep seeing None for it.
             self._complete(None if kind == 'internal' else out, msg)
             return
-        self._complete(out if code == 0 else None, err or f"exit {code}")
+        if code == 0:
+            # No error text on success, even with warnings on stderr: cli_json's
+            # memo only keeps error-free answers, and some callers toast `err`.
+            self._complete(out, '')
+            return
+        self._complete(None, err or f"exit {code}")
 
     def _error(self, e):
         if e == QProcess.ProcessError.FailedToStart:
