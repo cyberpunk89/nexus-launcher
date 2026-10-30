@@ -769,6 +769,16 @@ def build_stylesheet(scale: float = 1.0) -> str:
     /* Dawn's surface_2 is cream: on dark glass the bar's track stays glass. */
     #TheatreDrawer QProgressBar#CardProgress { background: $glass; }
 
+    /* ---- Theatre quick menu (w-57): Guide / Start / F10 ------------------ */
+    /* The panel's rows are SheetRow; this styles the panel and its header. */
+    #QuickPanel { background: $surface_solid; border-right: 1px solid $border; }
+    #QuickPanel QLabel#QuickClock { color: $text; font-size: ${fs_quick_clock}px;
+                                    font-weight: 600; }
+    #QuickPanel QLabel#QuickDate { color: $subtext; font-size: ${fs_sm}px; }
+    #QuickPanel #QuickPad { background: $surface_1; border-radius: ${r_card}px; }
+    #QuickPanel QLabel#QuickPadName { color: $text; font-size: ${fs_sm}px; }
+    #QuickPanel QLabel#QuickPadPct { color: $subtext; font-size: ${fs_sm}px; font-weight: 600; }
+
     /* ---- Theatre search: on-screen keyboard ------------------------------ */
     QLabel#SearchQuery { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     QPushButton#Key { background: $glass; color: $on_art; border: 1px solid $glass_hi;
@@ -878,6 +888,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         **{f'r_{k}': v for k, v in R.items()},
         **{f'sp_{k}': int(round(v * scale)) for k, v in SP.items()},
         **{f'fs_{k}': int(round(v * scale)) for k, v in FS.items()},
+        fs_quick_clock=int(round(FS['big'] * 1.5 * scale)),
     )
 
 

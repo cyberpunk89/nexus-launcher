@@ -90,6 +90,7 @@ ICONS = {
     'bell':           '\ue059',  # bell
     'magnet':         '\ue2b5',  # magnet
     'power':          '\ue140',  # power
+    'log_out':        '\ue10e',  # log-out
     'pin':            '\ue259',  # pin
     'pin_off':        '\ue2b6',  # pin-off
 }
