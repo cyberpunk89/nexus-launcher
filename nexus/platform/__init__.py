@@ -33,14 +33,17 @@ processes
     processes()                             every process now, as records with
                                             .pid .name (Linux comm; Windows exe
                                             name without .exe) .cmdline (list)
-                                            .exe and .environ() (Linux only;
-                                            {} on Windows). Read lazily.
+                                            .exe .ppid and .environ() (Linux
+                                            only; {} on Windows). Read lazily.
     new_group()                             Popen kwargs: the child leads its
                                             own process group
     spawn_detached(cmd, **popen_kwargs)     start and forget: own group, stdio
                                             on DEVNULL unless given
     kill_tree(proc, timeout=5)              stop a new_group() child and
                                             everything it started
+    stop_process(pid, force=False) -> bool  ask one process to quit: SIGTERM
+                                            (force: SIGKILL); taskkill (force:
+                                            /F) on Windows
 
 console
     console_encoding()                      what other programs' output is in
@@ -185,6 +188,7 @@ install_base_warnings = _impl.install_base_warnings
 processes = _impl.processes
 new_group = _impl.new_group
 kill_tree = _impl.kill_tree
+stop_process = _impl.stop_process
 meminfo = _impl.meminfo
 open_url = _impl.open_url
 cli_command = _impl.cli_command

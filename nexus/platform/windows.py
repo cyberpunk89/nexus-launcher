@@ -289,8 +289,9 @@ class Proc:
     is: 'steam', 'steamwebhelper'). `exe` and `cmdline` open the process
     on first use; a process that's gone, or protected, gives empty ones."""
 
-    def __init__(self, pid: int, exe_file: str):
+    def __init__(self, pid: int, exe_file: str, ppid: int = 0):
         self.pid = pid
+        self.ppid = ppid
         self.name = exe_file[:-4] if exe_file.lower().endswith('.exe') else exe_file
 
     def _open(self):
@@ -354,7 +355,7 @@ def processes():
         ok = _k32.Process32FirstW(snap, ctypes.byref(e))
         while ok:
             if e.th32ProcessID:                       # 0 = System Idle Process
-                out.append(Proc(e.th32ProcessID, e.szExeFile))
+                out.append(Proc(e.th32ProcessID, e.szExeFile, e.th32ParentProcessID))
             ok = _k32.Process32NextW(snap, ctypes.byref(e))
     finally:
         _k32.CloseHandle(snap)
@@ -379,6 +380,19 @@ def kill_tree(proc, timeout=5):
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         pass
+
+
+def stop_process(pid: int, force: bool = False) -> bool:
+    """Ask one process to quit: taskkill without /F sends its windows
+    WM_CLOSE (there's no SIGTERM); with force, /F ends it. False when
+    taskkill failed (gone, no window to close, or not ours)."""
+    args = ['taskkill', *(['/F'] if force else []), '/PID', str(int(pid))]
+    try:
+        return subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=10,
+                              creationflags=subprocess.CREATE_NO_WINDOW).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 # Recycle Bin.

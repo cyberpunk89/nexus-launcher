@@ -114,6 +114,15 @@ class Proc:
         return [a.decode('utf-8', 'replace') for a in raw.split(b'\0')] if raw else []
 
     @functools.cached_property
+    def ppid(self) -> int:
+        """The parent's pid (0 when gone): the field after the state in
+        stat, past the name, which may hold spaces and parentheses."""
+        try:
+            return int(self._read('stat').rsplit(b')', 1)[1].split()[1])
+        except (IndexError, ValueError):
+            return 0
+
+    @functools.cached_property
     def exe(self) -> str:
         try:
             return os.readlink(f'/proc/{self.pid}/exe')
@@ -156,6 +165,16 @@ def kill_tree(proc, timeout=5):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, OSError):
             pass
+
+
+def stop_process(pid: int, force: bool = False) -> bool:
+    """Ask one process to quit (SIGTERM), or end it (SIGKILL with force).
+    False when it was already gone or isn't ours."""
+    try:
+        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        return True
+    except OSError:
+        return False
 
 
 def _trash_manual(path: Path) -> None:

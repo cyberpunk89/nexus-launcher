@@ -93,7 +93,7 @@ from .manage import (
     managed_entries, owned_games, steam_shortcut_last_played)  # noqa: F401
 from .running import (
     _OPEN_URL_RE, _proc_state, BENCH_DIR, cmd_bench_results, cmd_benchmark, cmd_open_url,
-    cmd_pause, parse_mangohud_csv, running_repacks)  # noqa: F401
+    cmd_pause, cmd_stop, parse_mangohud_csv, running_repacks, stop_targets)  # noqa: F401
 from .sunshine import (
     _achievement_watcher, _cli_command, _has_option, _launch_through_steam, _prefix_markers,
     _run_session, _sunshine_find, _sunshine_marker, _sunshine_png, cmd_launch,

@@ -38,7 +38,7 @@ def main() -> None:
 _SLUG_OPTS = {
     'uninstall': '--uninstall', 'discard_incomplete': '--discard-incomplete',
     'restore_saves': '--restore-saves', 'check_integrity': '--check-integrity',
-    'launch': '--launch', 'steam': '--steam', 'remove_steam': '--remove-steam',
+    'launch': '--launch', 'stop': '--stop', 'steam': '--steam', 'remove_steam': '--remove-steam',
     'heroic': '--heroic', 'remove_heroic': '--remove-heroic',
     'refetch_art': '--refetch-art', 'repair_launchers': '--repair-launchers',
     'show_launch': '--show-launch', 'set_launch': '--set-launch',
@@ -189,6 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
                         dest='pause_toggle',
                         help='Pause or resume (no slug: the one repack running) — '
                              'handy as a compositor key binding')
+    parser.add_argument('--stop', metavar='SLUG',
+                        help='Quit a running game (repack, Steam or Heroic): ask it to '
+                             'close, end it after 10 s')
     parser.add_argument('--benchmark', metavar='SLUG',
                         help='Launch a repack with MangoHud frame-time logging')
     parser.add_argument('--bench-seconds', type=int, default=60, dest='bench_seconds',
@@ -757,6 +760,7 @@ COMMANDS = (
      lambda a, base: add_existing_to_steam(Path(a.add_steam), a.name, a, load_config())),
     ('launch_via', _cmd_launch_via),
     (lambda a: a.pause or a.resume or a.pause_toggle is not None, _cmd_pause),
+    ('stop', lambda a, base: cmd_stop(a.stop)),
     ('benchmark',
      lambda a, base: cmd_benchmark(base, require_slug(a.benchmark, '--benchmark'), a.bench_seconds, a.bench_delay)),
     ('bench_results',
@@ -919,7 +923,7 @@ from .manage import cmd_library, cmd_list, cmd_running  # noqa: E402
 from .protoncmds import (cmd_list_protons, cmd_proton_install, cmd_proton_migrate,
     cmd_proton_releases, cmd_proton_remove, cmd_protondb, cmd_protons)  # noqa: E402
 from .registry import load_registry, registry_get  # noqa: E402
-from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause  # noqa: E402
+from .running import cmd_bench_results, cmd_benchmark, cmd_open_url, cmd_pause, cmd_stop  # noqa: E402
 from .sgdb import (cmd_art_variants, cmd_fill_art, cmd_set_art, cmd_set_sgdb, cmd_sgdb_search,
     SGDB_KINDS)  # noqa: E402
 from .steam import set_steam_account_pin  # noqa: E402

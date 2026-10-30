@@ -914,6 +914,7 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 |---|---|
 | `--list --sizes` | Work out (and cache) each game's size on disk; slow on a big library |
 | `--pause SLUG`, `--resume SLUG` | Freeze and thaw a running repack (everything in its prefix) |
+| `--stop SLUG` | Quit a running game: a repack (everything in its prefix), a Steam game (the processes under Steam's reaper for exactly that AppId) or a Heroic game (by its install folder). Asks it to close, ends what's left after 10 s; exits 1 if it isn't running. Theatre's *Quit game* runs this |
 
 **Tips and protongen:**
 

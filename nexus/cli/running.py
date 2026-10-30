@@ -1,4 +1,4 @@
-"""Pausing a running repack, and benchmark runs."""
+"""Pausing or stopping a running game, and benchmark runs."""
 
 import json
 import os
@@ -6,10 +6,11 @@ import re
 import shutil
 import signal
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-from nexus import features, paths as NX
+from nexus import features, paths as NX, platform, steamlib
 
 
 def _proc_state(pid: int) -> str | None:
@@ -61,6 +62,117 @@ def cmd_pause(slug: str | None, mode: str) -> None:
         except OSError:
             pass
     print(f"{'Paused' if mode == 'pause' else 'Resumed'} '{slug}' ({n} processes).")
+
+
+STOP_GRACE = 10          # s between asking a game to quit (TERM) and ending it (KILL)
+
+# The reaper Steam starts every game under: `reaper SteamLaunch AppId=<id> -- …`.
+# Whole tokens only, so AppId=12 never matches a game with AppId=123.
+_REAPER_RE = re.compile(r'(?:^|\s)SteamLaunch AppId=(\d+)(?=\s|$)')
+
+
+def _reaper_tree(procs: list, appid: int) -> set[int]:
+    """Everything under Steam's reaper for exactly this AppId. The reaper is
+    a subreaper, so a game's whole tree (wineserver, the real game a
+    launcher stub started) ends up below it; the reaper itself exits on its
+    own once that's gone."""
+    if not appid:
+        return set()
+    roots = set()
+    for p in procs:
+        m = _REAPER_RE.search(' '.join(p.cmdline or []))
+        if m and int(m.group(1)) == appid:
+            roots.add(p.pid)
+    kids: dict[int, list[int]] = {}
+    for p in procs:
+        kids.setdefault(getattr(p, 'ppid', 0) or 0, []).append(p.pid)
+    out, todo = set(), list(roots)
+    while todo:
+        for c in kids.get(todo.pop(), ()):
+            if c not in out and c not in roots:
+                out.add(c)
+                todo.append(c)
+    return out
+
+
+def _in_dir(procs: list, install_dir: str) -> set[int]:
+    """Processes running something inside install_dir: by exe, or by a
+    Wine command line (the Z:\\ form included). Only Wine and .exe command
+    lines, as steamlib.running reads them: an editor with the game's
+    readme open is not the game."""
+    def wine(cmd: str) -> bool:
+        low = cmd.lower()
+        return '.exe' in low or 'wine' in low
+    cmds = {p.pid: ' '.join(p.cmdline or []) for p in procs}
+    return {pid for pid, cmd in cmds.items()
+            if wine(cmd) and steamlib.in_dir_cmdline(install_dir, [cmd])} \
+        | set(dir_processes(install_dir))
+
+
+def stop_targets(g: dict) -> set[int]:
+    """The processes that make up a running game, by its source. A repack:
+    everything in its prefix (Linux) or folder (Windows), plus the tree of
+    its Steam shortcut's reaper. Steam: the reaper's tree for its exact
+    AppId; on Windows (no reaper) the game folder, only while Steam says
+    that game is the one running. Heroic and Epic: by install folder. Never
+    this process, its parents, or a repack's session tracker (it records
+    the play time once the game is gone)."""
+    procs = list(platform.processes())
+    src = g.get('source', 'nexus')
+    pids: set[int] = set()
+    if src == 'nexus':
+        pids |= set(game_processes(g))
+        pids |= _reaper_tree(procs, int(g.get('steam_appid') or 0))
+    elif src == 'steam':
+        appid = int(g.get('appid') or 0)
+        pids |= _reaper_tree(procs, appid)
+        if not pids and appid and platform.steam_running_appid() == appid:
+            d = g.get('install_dir') or (_game_by_id(f"steam-{appid}") or {}).get('install_dir')
+            if d:
+                pids |= set(dir_processes(d))
+    elif g.get('install_dir'):
+        pids |= _in_dir(procs, g['install_dir'])
+    by_pid = {p.pid: p for p in procs}
+    keep, pid = set(), os.getpid()
+    while pid and pid not in keep:                   # us and everything above us
+        keep.add(pid)
+        pid = getattr(by_pid.get(pid), 'ppid', 0)
+    keep |= {p.pid for p in procs if '--track-session' in (p.cmdline or [])}
+    return pids - keep
+
+
+def cmd_stop(slug: str) -> None:
+    """Quit a running game: ask its processes to quit (SIGTERM; taskkill on
+    Windows), then end what's left after STOP_GRACE seconds (SIGKILL;
+    taskkill /F). Exits 1 if it isn't running, 2 if there's no such game."""
+    g = _game_by_id(slug, light=True)
+    if g is None:
+        print(f"'{slug}' isn't in the library.", file=sys.stderr)
+        sys.exit(2)
+    name = g.get('display_name') or g.get('name') or slug
+    pids = stop_targets(g)
+    if not pids:
+        print(f"'{name}' isn't running.", file=sys.stderr)
+        sys.exit(1)
+    asked = sum(bool(platform.stop_process(p)) for p in sorted(pids))
+    print(f"Asked '{name}' to quit ({asked} of {len(pids)} processes).", flush=True)
+    deadline = time.monotonic() + STOP_GRACE
+    left = pids
+    while left and time.monotonic() < deadline:
+        time.sleep(0.5)
+        left = stop_targets(g)
+    if not left:
+        print(f"Stopped '{name}'.")
+        return
+    for p in sorted(left):                           # what's left now, never a stale pid
+        platform.stop_process(p, force=True)
+    time.sleep(0.5)
+    left = stop_targets(g)
+    if left:
+        print(f"'{name}' is still running ({len(left)} processes would not stop).",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"Stopped '{name}' (ended after {STOP_GRACE} s).")
 
 
 BENCH_DIR = NX.DATA_DIR / 'benchmarks'
@@ -186,6 +298,8 @@ def cmd_open_url(url: str) -> None:
 # below is inside a function, so the cycle resolves at call time.
 from .apply import _require_entry  # noqa: E402
 from .launchprofile import perf_state  # noqa: E402
+from .manage import _game_by_id  # noqa: E402
 from .registry import load_registry  # noqa: E402
 from .runner import BENCH_HOOK  # noqa: E402
-from .sunshine import _prefix_markers, cmd_launch, prefix_processes  # noqa: E402
+from .sunshine import (_prefix_markers, cmd_launch, dir_processes,  # noqa: E402
+    game_processes, prefix_processes)
