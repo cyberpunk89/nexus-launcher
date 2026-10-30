@@ -748,6 +748,32 @@ def build_stylesheet(scale: float = 1.0) -> str:
                                  border-radius: ${r_card}px; padding: ${sp_4}px;
                                  font-size: ${fs_sm}px; }
 
+    /* ---- Theatre: game page stage + drawer, spotlight Home (w-55) ------- */
+    /* Scoped to Theatre (its sheet is built at THEATRE_SCALE); text sits on
+       art behind a dark scrim, so it is on_art in every theme. */
+    #Theatre QPushButton#PlayBig { font-size: ${fs_display}px; border-radius: ${r_card}px; }
+    #Theatre QPushButton#TabItem { font-size: ${fs_base}px; }
+    #Theatre[art="true"] QPushButton#TabItem, #TheatreDetails QPushButton#TabItem {
+        color: $on_art; }
+    #Theatre[art="true"] QPushButton#TabItem:checked,
+    #TheatreDetails QPushButton#TabItem:checked { color: $on_art; font-weight: 600; }
+    #Theatre #ShelfTitle { font-size: ${fs_lg}px; }
+    QLabel#TheatreMeta { color: $on_art; font-size: ${fs_lg}px; font-weight: 500; }
+    QLabel#TheatreAbout { color: $on_art; font-size: ${fs_base}px; }
+    QLabel#TheatreSub { color: $on_art; font-size: ${fs_sm}px; }
+    QLabel#TheatreBig { color: $on_art; font-size: ${fs_big}px; font-weight: 600; }
+    QLabel#TheatreLabel { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    #TheatreShot { background: $glass; border-radius: ${r_tile}px; }
+    #TheatreDrawer { background: transparent; border: none; }
+    #TheatreDrawer[open="true"] { background: $glass_hi; border: 1px solid $glass;
+                                  border-bottom: none; border-top-left-radius: ${r_panel}px;
+                                  border-top-right-radius: ${r_panel}px; }
+    #TheatreNewsRow { background: $glass; border: 1px solid $glass_hi;
+                      border-radius: ${r_card}px; }
+    #TheatreNewsRow:hover { background: $glass_hi; }
+    /* Dawn's surface_2 is cream: on dark glass the bar's track stays glass. */
+    #TheatreDrawer QProgressBar#CardProgress { background: $glass; }
+
     /* ---- Theatre search: on-screen keyboard ------------------------------ */
     QLabel#SearchQuery { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     QPushButton#Key { background: $glass; color: $on_art; border: 1px solid $glass_hi;
