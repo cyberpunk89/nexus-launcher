@@ -373,6 +373,35 @@ class ActionsMixin:
                                       lambda g: bool(g.get('steam')), verb="Uninstalling"))
         self._update_hints()
 
+    def uninstall_games(self, slugs: list, save_backup: bool, remove_snapshots: bool):
+        """Uninstall repacks the Storage page asked about (its inline question
+        already offered the save backup and the snapshots): the same gates as
+        the game menu (running, busy), one --uninstall job each, one toast."""
+        ok, skipped = [], []
+        for slug in slugs:
+            g = self.game(slug)
+            if g is None or g.get('source', 'nexus') != 'nexus':
+                continue
+            if g.get('playing') or g.get('launching'):
+                skipped.append(f"{g.get('display_name', slug)} is running")
+            elif self.jobs.busy(slug):
+                skipped.append(f"{g.get('display_name', slug)} is busy")
+            else:
+                ok.append(g)
+        for g in ok:
+            args = ['--uninstall', g['slug'], '--yes']
+            if save_backup:
+                args.append('--save-backup')
+            if remove_snapshots:
+                args.append('--remove-snapshots')
+            self.run(args, f"Uninstalling {g.get('display_name', g['slug'])}", g['slug'],
+                     'task', bool(g.get('steam')))
+        parts = [f"Uninstalling {len(ok)} game{'s' if len(ok) != 1 else ''}"] if ok else []
+        if skipped:
+            parts.append("skipped: " + ", ".join(skipped))
+        if parts:
+            self.toast(" · ".join(parts) + ".", 'success' if ok else 'warn', None, 5000)
+
     def _choose_move_target(self, game, also: list | None = None):
         """Move to…: the folders games can live in (free space shown against
         the game's size), or any folder."""

@@ -242,6 +242,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.storage = StoragePage()
         self.storage.request.connect(self._on_request)
         self.storage.select_game.connect(self._reveal_game)
+        self.storage.uninstall.connect(self.uninstall_games)
+        self.storage.game_action.connect(
+            lambda action, slug: (g := self.game(slug)) and self.on_game_action(action, g))
         self.health = HealthPage()
         self.health.request.connect(self._on_request)
         self.health.counts.connect(self._health_counts)
