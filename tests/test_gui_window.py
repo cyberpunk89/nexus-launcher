@@ -1473,6 +1473,9 @@ class Window(unittest.TestCase):
             self.assertTrue(d.isAncestorOf(QApplication.focusWidget()),
                             QApplication.focusWidget())
         self.assertTrue(d.expanded())                     # Down went into the drawer
+        # From the tabs (where the last Down lands depends on what has loaded).
+        d.drawer.tabs.item(d.drawer.tabs.current()).setFocus()
+        QApplication.processEvents()
         QApplication.sendEvent(QApplication.focusWidget(),
                                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up,
                                          Qt.KeyboardModifier.NoModifier))
