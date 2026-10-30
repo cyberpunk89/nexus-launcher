@@ -71,7 +71,7 @@ class NavigationMixin:
                 self.toast(f"Not saved — {self.settings.unsaved_reason()}", 'warn',
                            [("Fix it", lambda: self.go(self.SETTINGS)),
                             ("Discard", self.settings.load)], 10000)
-        self.stack.setCurrentWidget(self.pages[page])
+        self.stack.setCurrentWidget(self.page_widget(page))
         self.tabs.set_current(page if page in self.TABS else None)
         for p, b in self.icons.items():
             b.setChecked(p == page)

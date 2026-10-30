@@ -510,6 +510,26 @@ class Window(unittest.TestCase):
             sp._decoded(('/art/x.jpg', *want), QPixmap(4, 4))                    # right one
             self.assertEqual(asked, [])
 
+    def test_spotlight_counter_reads_on_a_light_theme(self):
+        from PyQt6.QtGui import QColor, QPixmap
+        items = [{'title': f'Deal {i}', 'price': {'currentStr': '1€'}} for i in range(3)]
+        try:
+            self.win.set_appearance({**nx.APPEARANCE_DEFAULT, 'theme': 'dawn'})
+            sp = nx.DealSpotlight()
+            self.addCleanup(sp.deleteLater)
+            sp.resize(900, sp.H)
+            sp.set_items(items, {}, None)
+            pm = QPixmap(900, sp.H)
+            pm.fill(QColor('#f2ede4'))                 # light art under the counter
+            sp._pm = pm
+            sp.show()
+            QApplication.processEvents()
+            g = sp.counter.geometry()
+            under = sp.grab().toImage().pixelColor(g.x() + 3, g.center().y())
+            self.assertLess(under.lightnessF(), 0.35)  # white "1 / 3" on a dark backing
+        finally:
+            self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT))
+
     def test_deals_show_fitgirl_matches_and_filter(self):
         d = self._deals()
         cards = {c.item['appid']: c for c in d._cards}
@@ -1256,6 +1276,35 @@ class Window(unittest.TestCase):
         finally:
             self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT))
         self.assertEqual(nx.P['accent'], nx.ACCENTS['iris'])
+
+    def test_settings_and_the_game_page_are_built_on_first_use(self):
+        w = self.win
+        self.assertFalse(w.page_built(w.SETTINGS))
+        self.assertFalse(w.details._built)
+        spot = w.pages[w.SETTINGS]
+        w.go(w.SETTINGS)
+        self.assertTrue(w.page_built(w.SETTINGS))
+        self.assertIsInstance(w.pages[w.SETTINGS], nx.SettingsPage)
+        self.assertIs(w.stack.currentWidget(), w.settings)
+        self.assertEqual(w.current(), w.SETTINGS)
+        self.assertEqual(w.stack.indexOf(spot), -1)          # the placeholder is gone
+        self.assertEqual(w.settings.show_owned.isChecked(), w.prefs.show_owned)
+        w.settings.show_owned.setChecked(not w.prefs.show_owned)   # wired to the window
+        self.assertEqual(w.settings.show_owned.isChecked(), w.prefs.show_owned)
+        w.go(w.LIBRARY)
+        w.selected = ['alpha']
+        w._sync_selection()
+        self.assertTrue(w.details._built)
+        self.assertEqual(w.details.name.text(), 'Alpha')
+
+    def test_pointing_at_the_settings_icon_builds_it(self):
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QEnterEvent
+        w = self.win
+        b = w.icons[w.SETTINGS]
+        QApplication.sendEvent(b, QEnterEvent(QPointF(5, 5), QPointF(5, 5), QPointF(5, 5)))
+        self.assertTrue(w.page_built(w.SETTINGS))
+        self.assertNotEqual(w.current(), w.SETTINGS)
 
     def test_title_bar_follows_the_theme(self):
         """Light themes get a light title bar, dark ones a dark one, again on

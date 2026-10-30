@@ -910,6 +910,23 @@ class DetailsPanel(QFrame):
         self.games: list[dict] = []
         self.info: dict = {}
         self._info_query = None
+        self._built = False
+
+    def __getattr__(self, name):
+        # Python asks here only for a name that isn't set: before _build()
+        # that's every widget and its state. Build them, then look again.
+        if name.startswith('__') or self.__dict__.get('_built', True):
+            raise AttributeError(name)
+        self._build()
+        return getattr(self, name)
+
+    def _build(self):
+        """The panel's widgets: made the first time a game is shown (or
+        anything reaches for one of them), not with the window, which saves
+        start-up ~15 ms (offscreen, Linux) that most sessions spend later."""
+        if self._built:
+            return
+        self._built = True
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -1444,6 +1461,7 @@ class DetailsPanel(QFrame):
         return self.game.get('slug')
 
     def show_games(self, games: list[dict]):
+        self._build()
         self.games = games
         if len(games) > 1:
             self.batch_title.setText(f"{len(games)} games selected")

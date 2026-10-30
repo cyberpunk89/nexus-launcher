@@ -114,6 +114,20 @@ class DetailsPanelWidth(unittest.TestCase):
         # The raw value is still what gets copied (in the OS's own separators).
         self.assertEqual(self.panel._folder, str(Path(DEEP)))
 
+    def test_widgets_are_made_when_first_needed(self):
+        p = nx.DetailsPanel()
+        self.addCleanup(p.deleteLater)
+        self.assertFalse(p._built)
+        self.assertEqual(p.findChildren(QWidget), [])
+        self.assertEqual(p.game, {})                       # state the window reads early
+        self.assertFalse(hasattr(p, 'no_such_widget'))
+        self.assertTrue(p._built)                          # asking for any name builds it
+        self.assertIsNotNone(p.btn_play)
+        q = nx.DetailsPanel()
+        self.addCleanup(q.deleteLater)
+        q.open_section('files')                            # before any game, as a menu may
+        self.assertTrue(q._built)
+
     def test_steam_game_long_install_dir_fits(self):
         game = {'slug': 'y', 'display_name': 'Y', 'source': 'steam', 'launcher': 'steam',
                 'install_dir': DEEP}
@@ -577,6 +591,44 @@ class Caching(unittest.TestCase):
             self.assertTrue(cache.has_room())
             cache.used = cache.budget
             self.assertFalse(cache.has_room())
+
+    def test_shelves_keep_rows_and_tiles_across_refreshes(self):
+        view = nx.HomeView('shelves')
+        games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': 'nexus' if i < 4
+                  else 'steam'} for i in range(6)]
+        smart = lambda gs: [{'key': 'smart:never', 'title': "Never played", 'tip': 't',
+                             'games': gs[:3]}]
+        view.set_games(games)
+        view.set_smart(smart(games))
+        rows = {r.title: r for r in view.findChildren(nx.ShelfRow)}
+        first = {id(t): t for r in rows.values() for t in r.tiles}
+        g1 = rows['Repacks'].tiles[1]
+        fresh = [dict(g) for g in games]                 # a reload: new dicts
+        view.set_games(fresh)
+        view.set_smart(smart(fresh))
+        now = {r.title: r for r in view.findChildren(nx.ShelfRow) if not r.isHidden()}
+        self.assertEqual({k: id(v) for k, v in now.items()},
+                         {k: id(v) for k, v in rows.items()})        # the same rows…
+        self.assertEqual({id(t) for r in now.values() for t in r.tiles}, set(first))
+        self.assertIs(now['Repacks'].tiles[0].game, fresh[0])         # …on the new data
+        self.assertEqual(sorted(len(ts) for ts in view.tiles.values()), [1, 1, 1, 2, 2, 2])
+        # One repack gone, one new: the rest keep their tiles, the count follows.
+        fresh2 = [dict(g) for g in fresh[1:]] + [{'slug': 'g9', 'display_name': 'G9',
+                                                  'source': 'nexus'}]
+        view.set_games(fresh2)
+        view.set_smart(smart(fresh2))
+        repacks = now['Repacks']
+        self.assertEqual([t.game['slug'] for t in repacks.tiles], ['g1', 'g2', 'g3', 'g9'])
+        self.assertIs(repacks.tiles[0], g1)
+        self.assertEqual(repacks.count_label.text(), '4')
+        self.assertNotIn('g0', [s for s, ts in view.tiles.items() if ts])
+        self.assertEqual(len(view.tiles['g1']), 2)                    # its shelf and Never played
+        # No games: no rows, no smart shelves, the empty state.
+        view.set_games([])
+        QApplication.processEvents()
+        self.assertEqual([r for r in view.findChildren(nx.ShelfRow) if not r.isHidden()], [])
+        self.assertEqual(view._smart, [])
+        view.deleteLater()
 
     def test_art_cache_is_bounded_and_async(self):
         import tempfile

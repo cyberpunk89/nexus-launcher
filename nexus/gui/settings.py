@@ -460,8 +460,8 @@ class SettingsPage(QWidget):
     NAV_W, RAIL_W = 228, 60
     COMPACT_BELOW = 960            # narrower: the list becomes an icon rail
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
         self._compact = False
         page = QHBoxLayout(self)
         page.setContentsMargins(0, 0, 0, 0)

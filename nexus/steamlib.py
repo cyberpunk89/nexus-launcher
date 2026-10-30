@@ -162,31 +162,58 @@ def birth_time(path) -> float | None:
         return None
 
 
-_FLAT_ART: dict[Path, tuple[float, dict[int, list[Path]]]] = {}
+_ART_INDEX: dict[Path, tuple[float, dict[int, list[str]], set[int]]] = {}
 
 
-def _flat_art(cache: Path) -> dict[int, list[Path]]:
-    """Old-style `<appid>_<file>` art, indexed by appid with one listing of
-    the folder (a glob per game re-lists it every time: thousands of files
-    for a big library). Rebuilt when the folder changes."""
+def _art_index(cache: Path) -> tuple[dict[int, list[str]], set[int]]:
+    """One listing of the library cache: old-style `<appid>_<file>` art by
+    appid, and the appids that have a newer-style `<appid>/` folder. A glob
+    or an is_dir() per game re-lists or stats it every time: thousands of
+    files and a stat per owned game, slow on Windows. Rebuilt when the folder
+    changes (a new game's folder or file changes its mtime)."""
     try:
         mtime = cache.stat().st_mtime
     except OSError:
-        return {}
-    hit = _FLAT_ART.get(cache)
+        return {}, set()
+    hit = _ART_INDEX.get(cache)
     if hit and hit[0] == mtime:
-        return hit[1]
-    index: dict[int, list[Path]] = {}
+        return hit[1], hit[2]
+    flat: dict[int, list[str]] = {}
+    dirs: set[int] = set()
     try:
         with os.scandir(cache) as it:
             for e in it:
+                if e.name.isdigit():
+                    if e.is_dir():
+                        dirs.add(int(e.name))
+                    continue
                 head, sep, _rest = e.name.partition('_')
                 if sep and head.isdigit() and e.is_file():
-                    index.setdefault(int(head), []).append(Path(e.path))
+                    flat.setdefault(int(head), []).append(e.path)
     except OSError:
-        return {}
-    _FLAT_ART[cache] = (mtime, index)
-    return index
+        return {}, set()
+    _ART_INDEX[cache] = (mtime, flat, dirs)
+    return flat, dirs
+
+
+def _files_under(d: str) -> list[str]:
+    """Every file below `d`, with os.scandir (its entries know file from
+    folder without a stat on Windows; rglob stats each one)."""
+    out: list[str] = []
+    try:
+        with os.scandir(d) as it:
+            entries = list(it)
+    except OSError:
+        return out
+    for e in entries:
+        try:
+            if e.is_file():
+                out.append(e.path)
+            elif e.is_dir():
+                out += _files_under(e.path)
+        except OSError:
+            continue
+    return out
 
 
 def art(steam_root: Path, appid: int) -> dict:
@@ -201,15 +228,13 @@ def art(steam_root: Path, appid: int) -> dict:
         'logo': ('logo',),
         'header': ('library_header', 'header'),
     }
-    files: list[Path] = []
-    d = cache / str(appid)
-    if d.is_dir():
-        files = [p for p in d.rglob('*') if p.is_file()]
-    files += _flat_art(cache).get(appid, [])
+    flat, dirs = _art_index(cache)
+    files = _files_under(str(cache / str(appid))) if appid in dirs else []
+    files += flat.get(appid, [])
     stems = {}
-    for p in files:
-        stem = p.stem.removeprefix(f'{appid}_')
-        stems.setdefault(stem, str(p))
+    for f in files:
+        stem = os.path.splitext(os.path.basename(f))[0].removeprefix(f'{appid}_')
+        stems.setdefault(stem, f)
     for kind, names in wanted.items():
         for n in names:
             if n in stems:
