@@ -143,7 +143,7 @@ class Regressions(unittest.TestCase):
             hb.set_game(b)                                 # moved on before A finished
             QThreadPool.globalInstance().waitForDone()
             QApplication.processEvents()
-            self.assertEqual(hb._pm.width(), nx.HeroBanner.DECODE_W)   # at banner size
+            self.assertEqual(hb._pm.width(), 600)          # at banner size, not 2400
             self.assertEqual(colour(), 0x0000ff)           # B's, not A's late one
             self.assertLessEqual(hb._logo.height(), 176)
             self.assertEqual(logos[-1], True)

@@ -99,6 +99,23 @@ def fit_image(path: str, w: int, h: int, cover: bool) -> QImage | None:
     return None if img.isNull() else img
 
 
+def screen_pixmap(path: str | None, widget) -> QPixmap | None:
+    """Full-screen art (Theatre): the image decoded to cover the widget's
+    screen, never larger. A 3840x1240 hero on a 1080p screen is then a
+    third of the pixels, and nothing bigger is kept."""
+    if not path:
+        return None
+    screen = widget.screen() if widget is not None else None
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is None:
+        img = fit_image(path, 1920, 1080, cover=True)
+    else:
+        size, dpr = screen.size(), screen.devicePixelRatio()
+        img = fit_image(path, _device(size.width(), dpr), _device(size.height(), dpr),
+                        cover=True)
+    return QPixmap.fromImage(img) if img is not None else None
+
+
 def cover_pixmap(path: str, w: int, h: int) -> QPixmap | None:
     """Load and center-crop cover art to fill w x h logical pixels (see
     cover_image), at the screen's device pixel ratio."""

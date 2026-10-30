@@ -23,7 +23,7 @@ os.environ['NEXUS_NO_GAMEPAD'] = '1'
 REPO = Path(__file__).resolve().parent.parent
 
 try:
-    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtCore import QPoint, QRect, Qt
     from PyQt6.QtWidgets import QApplication, QWidget, QWidgetItem
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
@@ -195,6 +195,35 @@ class HiDpiArt(unittest.TestCase):
                 self.assertAlmostEqual(size.height(), round(150 * dpr) / dpr, delta=0.01)
         ph = nx.placeholder_pixmap('Some Game', 100, 150)
         self.assertEqual(ph.devicePixelRatio(), dpr)
+
+    def test_hero_art_is_sized_in_screen_pixels(self):
+        """The game page's hero and the Theatre art are decoded and scaled
+        to the pixels they cover: sharp at 125 %, and no bigger (w-46)."""
+        import tempfile
+        from PyQt6.QtGui import QImage, QColor, QPixmap
+        dpr = _app.devicePixelRatio()
+        hb = nx.HeroBanner()
+        self.addCleanup(hb.deleteLater)
+        hb.resize(400, 200)
+        frame = hb._scaled('art', QPixmap(1600, 800), 400, 200,
+                           Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        self.assertEqual(frame.width(), round(400 * dpr))
+        self.assertAlmostEqual(frame.deviceIndependentSize().width(), 400, delta=1)
+        self.assertEqual(hb._box('art'), (round(nx.HeroBanner.DECODE_W * dpr),
+                                          round(200 * dpr)))
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/hero.png"
+            img = QImage(8000, 2000, QImage.Format.Format_RGB32)
+            img.fill(QColor(10, 20, 30))
+            img.save(src)
+            host = QWidget()
+            self.addCleanup(host.deleteLater)
+            pm = nx.screen_pixmap(src, host)
+            screen = _app.primaryScreen().size()
+            self.assertLess(pm.width(), 8000)                  # not decoded at full size…
+            self.assertGreaterEqual(pm.width(), round(screen.width() * dpr))   # …but covers
+            self.assertGreaterEqual(pm.height(), round(screen.height() * dpr))
+            self.assertIsNone(nx.screen_pixmap(None, host))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
