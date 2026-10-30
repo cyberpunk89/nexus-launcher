@@ -1389,3 +1389,105 @@ class SteamGridDB(unittest.TestCase):
              'store_appid': 10}
         self.assertEqual(fi.sgdb_game_id(g, 'k'), (42, None))
         self.assertEqual(self.calls, ['/games/steam/10'])
+
+    def test_network_error_is_not_remembered_as_a_miss(self):
+        g = {'slug': 'x', 'display_name': 'Flaky'}
+        with patch_cli('_sgdb_json', lambda p, k: (None, 'net')):
+            self.assertEqual(fi.sgdb_game_id(g, 'k'), (None, 'net'))
+        self.assertEqual(fi.sgdb_game_id(g, 'k'), (7, None))     # asked again, found
+
+    def test_failed_variants_are_not_cached(self):
+        with patch_cli('_sgdb_json', lambda p, k: ((None, 'rate') if p.startswith('/heroes/')
+                                                   else ({'id': 42}, None))):
+            self.assertEqual(fi.art_variants(self.steam, 'hero', 0, 'k')['error'], 'rate')
+        res = fi.art_variants(self.steam, 'hero', 0, 'k')
+        self.assertEqual(([v['id'] for v in res['items']], res['error']), ([1], None))
+        # A thumb on another host falls back to the full image.
+        v = fi._variant({'id': 3, 'url': 'https://cdn2.steamgriddb.com/grid/b.webp',
+                         'thumb': 'https://evil.example/t.png', 'author': {'name': 'me'}})
+        self.assertEqual((v['thumb'], v['author']),
+                         ('https://cdn2.steamgriddb.com/grid/b.webp', 'me'))
+
+    def test_save_art_keeps_the_old_file_when_the_download_fails(self):
+        d = fi.ARTWORK_DIR / 'g'
+        d.mkdir(parents=True)
+        (d / 'cover.jpg').write_bytes(b'old')
+        with patch_cli('_download', lambda url, dest: None):
+            self.assertIsNone(fi.save_art(d, 'cover', 'https://cdn2.steamgriddb.com/grid/a.png'))
+        self.assertEqual([p.name for p in d.iterdir()], ['cover.jpg'])
+        # An odd extension is saved as .png and replaces the old cover.
+        self.assertEqual(fi.save_art(d, 'cover', 'https://cdn2.steamgriddb.com/grid/a.gif'),
+                         d / 'cover.png')
+        self.assertEqual([p.name for p in d.iterdir()], ['cover.png'])
+
+    def test_reset_of_a_repack_fetches_the_first_match_again(self):
+        repack = {'slug': 'rp', 'source': 'nexus', 'display_name': 'Ten', 'steam_appid': None}
+        with patch_cli('_game_by_id', lambda ident: dict(repack)), \
+                mock.patch('sys.stdout', new_callable=io.StringIO):
+            fi.cmd_set_art('rp', 'hero', 'https://cdn2.steamgriddb.com/hero/b.jpg', False)
+            d = fi.ARTWORK_DIR / 'rp'
+            self.assertTrue((d / 'hero.jpg').exists())
+            with patch_cli('_sgdb_json', lambda p, k: (
+                    [{'id': 7}] if p.startswith('/search/') else
+                    [{'id': 1, 'url': 'https://cdn2.steamgriddb.com/hero/a.png'}], None)):
+                fi.cmd_set_art('rp', 'hero', None, True)
+        self.assertEqual(sorted(p.name for p in d.glob('hero.*')), ['hero.png'])
+        self.assertEqual(json.loads((d / 'picks.json').read_text()), {})
+
+    def test_fill_art_stops_on_a_rate_limit(self):
+        from nexus import steamlib
+        games = [{'slug': f'steam-{i}', 'source': 'steam', 'appid': i,
+                  'display_name': str(i)} for i in range(10, 30)]
+        with patch_cli('managed_entries', lambda *a, **k: []), \
+                patch_cli('_sgdb_json', lambda p, k: (None, 'rate')), \
+                mock.patch.object(steamlib, 'scan', lambda *a, **k: [dict(g) for g in games]), \
+                mock.patch.object(steamlib, 'heroic_store_games', lambda *a, **k: []), \
+                patch_cli('find_heroic_config', lambda: None), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+            fi.cmd_fill_art(Path(self.tmp.name), True, False)
+        got = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual((got['filled'], got['error']), (0, 'rate'))
+        self.assertFalse(fi._cache_json('misses.json'))     # a rate limit isn't a miss
+
+    def test_parallel_lookups_keep_every_id(self):
+        import threading
+        ts = [threading.Thread(target=fi._cache_set, args=('ids.json', f'name:{i}', i))
+              for i in range(1, 21)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(len(fi._cache_json('ids.json')), 20)
+
+
+class SteamGridDBRequests(unittest.TestCase):
+    """_sgdb_json against a faked net.get: the key goes in a header, and
+    HTTP failures become the short error codes the GUI words."""
+
+    def ask(self, reply=None, error=None):
+        from nexus import net
+        seen = {}
+
+        def get(url, timeout=20, headers=None, limit=0):
+            seen.update(url=url, headers=headers)
+            if error is not None:
+                raise error
+            return reply
+        with mock.patch.object(net, 'get', get):
+            return fi._sgdb_json('/games/steam/10', 'secret'), seen
+
+    def test_key_in_the_header_and_data_unwrapped(self):
+        got, seen = self.ask(b'{"success": true, "data": {"id": 42}}')
+        self.assertEqual(got, ({'id': 42}, None))
+        self.assertEqual(seen['url'], fi.SGDB_API + '/games/steam/10')
+        self.assertEqual(seen['headers'], {'Authorization': 'Bearer secret'})
+        self.assertNotIn('secret', seen['url'])
+
+    def test_failures_map_to_short_codes(self):
+        from nexus import net
+        for status, code in ((401, 'auth'), (403, 'auth'), (404, 'none'), (429, 'rate'),
+                             (500, 'net'), (None, 'net')):
+            self.assertEqual(self.ask(error=net.NetError('x', status))[0], (None, code), status)
+        self.assertEqual(self.ask(b'<html>')[0], (None, 'net'))
+        self.assertEqual(self.ask(b'{"success": false}')[0], (None, 'none'))
+        self.assertEqual(self.ask(b'[1, 2]')[0], (None, 'none'))
