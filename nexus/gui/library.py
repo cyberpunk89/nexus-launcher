@@ -269,7 +269,7 @@ class LibraryView(QScrollArea, _TileSignals):
             if not t.isHidden():
                 t.hide()
 
-    def _place(self, t: GameTile, i: int, cols: int, pitch: int, xs: list[int]):
+    def _place(self, t: 'GameTile', i: int, cols: int, pitch: int, xs: list[int]):
         r, c = divmod(i, cols)
         p = QPoint(xs[c], self.flow_host.margin + r * pitch)
         if t.pos() != p:
@@ -277,13 +277,13 @@ class LibraryView(QScrollArea, _TileSignals):
         if t.isHidden():
             t.show()
 
-    def _make(self, g: dict) -> GameTile:
+    def _make(self, g: dict) -> 'GameTile':
         t = GameTile(g, width=self.tile_width)
         t.setParent(self.flow_host)
         self._wire(t)
         return t
 
-    def tile_for(self, slug: str | None = None) -> GameTile | None:
+    def tile_for(self, slug: str | None = None) -> 'GameTile | None':
         """The tile of `slug` (of the first game when None), built if its
         row had none; it stays until the next set_games or until it's
         focused and left. None when the game isn't shown."""
