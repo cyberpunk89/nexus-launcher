@@ -2,39 +2,40 @@
   "0.5.2": [
     {
       "kind": "new",
+      "icon": "image",
+      "title": "A new look for game pages",
+      "text": "Theatre's game page is a full-screen stage with a drawer. The desktop pane has a fact line, progress bars and tabs."
+    },
+    {
+      "kind": "new",
       "icon": "gamepad",
-      "title": "Quick menu and settings in Theatre",
-      "text": "Start or Guide opens a quick menu. Theatre has its own settings (the gear or the menu) and a Your week card on Home. F11 still leaves."
+      "title": "Quick menu and Now playing",
+      "text": "Start or Guide opens a menu with Resume, Quit game, Sleep, Restart and Shut down. A summary shows when a game closes."
     },
     {
       "kind": "new",
-      "icon": "play",
-      "title": "Now playing",
-      "text": "While a game runs, Theatre's Home and the quick menu show it with Resume and Quit game. Quit game works for repacks, Steam and Heroic games."
+      "icon": "tv",
+      "title": "Theatre grows up",
+      "text": "Library sort and filter, Downloads, Discover with news and deals, and a Your week card on Home."
     },
     {
       "kind": "new",
-      "icon": "power",
-      "title": "Sleep, Restart and Shut down",
-      "text": "The Theatre quick menu has a power section. Sleep acts at once; Restart and Shut down ask first."
+      "icon": "settings",
+      "title": "Theatre settings and auto-enter",
+      "text": "Change settings from the couch. Nexus can start in Theatre on a TV, or when a controller is plugged in."
     },
     {
       "kind": "new",
-      "icon": "trophy",
-      "title": "Session summary",
-      "text": "When a game closes in Theatre, its page shows how long you played, your total and any achievements you unlocked."
+      "icon": "palette",
+      "title": "Sounds and colour",
+      "text": "Optional menu sounds, off by default, and a background tinted by the game you're on."
     },
     {
-      "kind": "new",
-      "icon": "list",
-      "title": "Theatre Library: sort and filter",
-      "text": "Press View on the Library tab to sort by name, last played, play time, date added or collection, and filter what shows."
-    },
-    {
-      "kind": "new",
-      "icon": "download",
-      "title": "Downloads and Discover in Theatre",
-      "text": "New tabs: Downloads, with a banner when something is ready, and Discover, with news and deals from your wishlist."
+      "kind": "fixed",
+      "icon": "wrench",
+      "title": "Windows fixes",
+      "text": "Play works right after installing a game from a setup file, and a false permissions warning is gone.",
+      "platform": "windows"
     }
   ],
   "0.5.1": [
