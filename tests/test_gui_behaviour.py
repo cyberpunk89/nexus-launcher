@@ -661,6 +661,29 @@ class CliErrorBodies(unittest.TestCase):
                          (None, "--x isn't available"))
         self.assertEqual(self.finish(1, b'{"error": "x"}', error_body=False), (None, "exit 1"))
 
+    def test_success_has_no_error_text(self):
+        # It used to say "exit 0", so cli_json's ttl memo never kept an answer
+        # and the news source switch toasted "Couldn't change the sources".
+        self.assertEqual(self.finish(0, b'{"a": 1}'), ('{"a": 1}', ''))
+        self.assertEqual(self.finish(0, b'{}', b'warning: x'), ('{}', ''))
+
+    def test_ttl_memo_answers_the_second_call_at_once(self):
+        from nexus.gui import jobs
+        started, got = [], []
+
+        def fake(args, cb, timeout_ms=0, error_body=False):
+            started.append(args)
+            cb('{"n": 1}', '')
+        saved = jobs.CliQuery
+        jobs.CliQuery = fake
+        self.addCleanup(setattr, jobs, 'CliQuery', saved)
+        self.addCleanup(jobs.cli_cache_clear)
+        jobs.cli_cache_clear()
+        for _ in range(2):
+            jobs.cli_json(['--w47-memo', '--json'], lambda d, e: got.append((d, e)), ttl=60)
+        self.assertEqual(len(started), 1)
+        self.assertEqual(got, [({'n': 1}, '')] * 2)
+
 
 INFO = {'proton': 'GE-Proton10-1', 'proton_pinned': None, 'protons': ['GE-Proton10-1', 'cachy'],
         'launch_options': 'X=1 %command%', 'owns_options': True, 'profile': {'source': 'nexus'},
