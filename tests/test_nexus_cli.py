@@ -1031,6 +1031,25 @@ class Sandbox(unittest.TestCase):
         self.assertEqual([g['source'] for g in data['games']], ['nexus'])
         self.assertTrue(data['disks'])
 
+    def test_library_play_time_adds_heroic_minutes(self):
+        # A Nexus game added to Heroic gets Heroic's timed minutes on top of
+        # its own (--launch) seconds; last played is the later of the two.
+        self.cli('--heroic', 'test-game')
+        app = self.registry()['heroic_app_name']
+        reg = tests.sandbox.data_dir(self.home) / 'games.json'
+        data = json.loads(reg.read_text())
+        data['games']['test-game'].update(playtime_seconds=600,
+                                          last_played='2026-01-01T10:00:00')
+        reg.write_text(json.dumps(data))
+        (self.heroic / 'store').mkdir()
+        (self.heroic / 'store' / 'timestamp.json').write_text(json.dumps({
+            app: {'firstPlayed': '2026-08-14T10:28:55.092Z',
+                  'lastPlayed': '2026-08-29T16:39:27.738Z', 'totalPlayed': 741},
+            'junk': None}))
+        g = json.loads(self.cli('--library', '--json').stdout)['games'][0]
+        self.assertEqual(g['playtime_minutes'], 751)
+        self.assertTrue(g['last_played'].startswith('2026-08-29'))
+
     def test_game_facts_json_from_cache_with_gamedb_off(self):
         sys.path.insert(0, str(REPO))
         from nexus import hltb
