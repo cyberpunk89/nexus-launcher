@@ -458,6 +458,22 @@ class ActionsMixin:
             ("Close", G['close'], lambda: None)], job.name or '', text)
         self._update_hints()
 
+    def review_integrity(self, job, game):
+        """After a check found changed or missing files: look at the list,
+        accept the current files as the new baseline (an update or a mod),
+        or keep the old one. Inline, in the sheet."""
+        slug, name = game['slug'], game.get('display_name', game['slug'])
+        sheet = self.theatre_sheet if self._theatre else self.sheet
+        sheet.choose(f"{name}: files changed", [
+            ("Show the changed files", G['log'], lambda: self._open_job(job)),
+            ("Accept them as the new baseline", G['shield'],
+             lambda: self.run(['--check-integrity', slug, '--rebaseline'],
+                              f"Accepting {name}'s current files", slug)),
+            ("Keep the old baseline", G['close'], lambda: None)], '',
+            "If you updated or modded the game, accept the current files. If you didn't, "
+            "a snapshot or a reinstall puts the originals back.")
+        self._update_hints()
+
     def open_artwork(self, game, kind='hero'):
         cur = self.current()
         self._art_from = cur if cur in (self.HOME, self.LIBRARY) else self.HOME
@@ -536,6 +552,13 @@ class ActionsMixin:
             self._install_followups(job)
         elif job.state == 'done':
             self.toast(f"{job.title} — done", 'success')
+        elif job.state == 'failed' and integrity_changed(job):
+            game = self.game(job.slug) or {'slug': job.slug}
+            self.toast(f"{game.get('display_name', job.slug)}: files changed since the "
+                       f"baseline", 'warn', ("Review", lambda: self.review_integrity(job, game)),
+                       15000)
+            if not self.isActiveWindow():
+                notify_desktop(f"{job.title}: files changed", "Open Nexus to review them.")
         elif job.state == 'failed':
             self.toast(f"{job.title} — failed", 'error', ("Show log", lambda: self._open_job(job)),
                        10000)
@@ -565,6 +588,13 @@ class ActionsMixin:
 
     def toast(self, text, kind='info', action=None, timeout=6000):
         self.toasts.show_toast(text, kind, action, timeout)
+
+
+def integrity_changed(job) -> bool:
+    """A --check-integrity that failed because files differ from the
+    baseline (the CLI then suggests --rebaseline), not for another reason."""
+    return ('--check-integrity' in job.argv and '--rebaseline' not in job.argv
+            and any('--rebaseline' in line for line in job.log))
 
 
 # Siblings, imported last: they import this module too, and every use
