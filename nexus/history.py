@@ -87,9 +87,24 @@ def _period(sessions: list[dict], first: date, days: int, names: dict) -> dict:
     }
 
 
+def current_streak(sessions: list[dict], today: date | None = None) -> int:
+    """Days played in a row up to today; a streak still counts on a day you
+    haven't played yet (from yesterday back). 0 without play yesterday or
+    today."""
+    today = today or date.today()
+    days = {s['_start'].date() for s in sessions}
+    d = today if today in days else today - timedelta(days=1)
+    n = 0
+    while d in days:
+        n += 1
+        d -= timedelta(days=1)
+    return n
+
+
 def periods(sessions: list[dict] | None = None, today: date | None = None) -> dict:
     """This week (Monday on) and this month, by day and by game: what the
-    Home Play time widget charts."""
+    Home Play time widget charts; and the current streak (Theatre's Your
+    week)."""
     sessions = load() if sessions is None else sessions
     today = today or date.today()
     names = {}
@@ -100,7 +115,8 @@ def periods(sessions: list[dict] | None = None, today: date | None = None) -> di
     nxt = (first + timedelta(days=32)).replace(day=1)
     return {'today': today.isoformat(),
             'week': _period(sessions, monday, 7, names),
-            'month': _period(sessions, first, (nxt - first).days, names)}
+            'month': _period(sessions, first, (nxt - first).days, names),
+            'current_streak': current_streak(sessions, today)}
 
 
 def summary(sessions: list[dict] | None = None, today: date | None = None,

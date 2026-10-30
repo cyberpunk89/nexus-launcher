@@ -28,7 +28,7 @@ from .common import (
     CONFIG_PATH, DATA_DIR, DESKTOP_PATH, HOME, ICON_PATH, INSTALL_BASE_DEFAULT, LEGACY_DESKTOP,
     LOGO_SVG,
     MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE)  # noqa: F401
-from .common import COLLECTION_LOOK  # noqa: F401
+from .common import COLLECTION_LOOK, THEATRE_STARTS, VOLUME_STEPS  # noqa: F401
 from .theme import (
     _check_icon_path, _chevron_icon_path, _first_installed, _hex_ok, _ICON_CACHE, _mix, _rgba,
     _shade, _stroke_icon, accent_hex, accent_pair, ACCENTS, APPEARANCE_DEFAULT, apply_appearance,
@@ -116,6 +116,8 @@ from .theatre import (
     TheatreSpotlight, TheatreView)  # noqa: F401
 from .theatre_discover import (  # noqa: F401
     TheatreCard, TheatreDiscover, TheatreReader, TheatreSetupCard)
+from .theatre_settings import (  # noqa: F401
+    CouchRow, TheatreSettings, VolumeMeter, WeekCard)
 from .theatre_game import (_news_html, fact_text, SECTIONS, TheatreDetails, TheatreDrawer,
     TheatreRow, TheatreShot)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401

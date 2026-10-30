@@ -3,12 +3,15 @@ Python packages). SDL maps Xbox, PlayStation, Switch Pro, Steam Deck/Steam
 Controller (via Steam) and most generic pads to one standard layout.
 
 Used by the GUI's poll timer: `Gamepads.poll()` returns abstract events —
-('button', name, pressed), ('axis', name, value -1..1), ('added', name, kind),
-('removed', name). It never blocks, and it's inert (available=False) when no
-SDL library is found (on Windows: SDL2.dll shipped beside the exe)."""
+('button', name, pressed), ('axis', name, value -1..1), ('added', name, kind,
+guid, hotplug), ('removed', name). `hotplug` says a pad really arrived (plugged
+in, turned on), not SDL listing one that was already there. It never
+blocks, and it's inert (available=False) when no SDL library is found (on Windows: SDL2.dll shipped beside the exe)."""
 
 import ctypes
 import ctypes.util
+import time
+from collections import Counter
 from pathlib import Path
 
 from . import platform
@@ -39,6 +42,12 @@ AXES = ['lx', 'ly', 'rx', 'ry', 'lt', 'rt']
 # controller seen a second time. A Steam Deck's own controls are 28de:1205.
 STEAM_VIRTUAL = (0x28de, 0x11ff)
 # SDL_GameControllerType -> glyph family for on-screen hints.
+# After SDL starts (or resume() restarts it) it lists every pad already
+# connected as an ADDED: none of that is a hot-plug. The pads open at
+# suspend() are remembered for a while longer, so one that comes back late
+# (Bluetooth) still isn't.
+SETTLE = 2.0
+REMEMBER = 10.0
 KINDS = {1: 'xbox', 2: 'xbox', 3: 'ps', 4: 'ps', 5: 'nintendo', 6: 'generic', 7: 'ps',
          8: 'generic', 9: 'generic', 10: 'nintendo', 11: 'nintendo', 12: 'nintendo'}
 
@@ -103,6 +112,10 @@ class Gamepads:
         self.active = False
         self.pads: dict[int, tuple] = {}              # instance id -> (handle, name, kind)
         self.virtual: set[int] = set()                # ids of Steam's virtual pads
+        self.guids: dict[int, str] = {}               # instance id -> SDL GUID ('' unknown)
+        self._expect: Counter = Counter()             # GUIDs open at the last suspend()
+        self._settle_until = 0.0
+        self._expect_until = 0.0
         if not self.lib:
             return
         L = self.lib
@@ -167,6 +180,10 @@ class Gamepads:
     def resume(self):
         if self.available and not self.active:
             self.active = self.lib.SDL_InitSubSystem(INIT_GAMECONTROLLER) == 0
+            if self.active:                     # what SDL lists now was already there
+                now = time.monotonic()
+                self._settle_until = now + SETTLE
+                self._expect_until = now + REMEMBER
 
     def suspend(self):
         """Close every controller and stop the controller subsystem."""
@@ -174,8 +191,10 @@ class Gamepads:
             return
         for h, _n, _k in self.pads.values():
             self.lib.SDL_GameControllerClose(h)
+        self._expect = Counter(g for g in self.guids.values() if g)
         self.pads.clear()
         self.virtual.clear()
+        self.guids.clear()
         self.lib.SDL_QuitSubSystem(INIT_GAMECONTROLLER)
         self.active = False
 
@@ -198,7 +217,8 @@ class Gamepads:
         while L.SDL_PollEvent(ctypes.byref(ev)):
             t = ev.type
             if t == CONTROLLERDEVICEADDED:
-                self._remap(ev.which)
+                guid = self._guid(ev.which)
+                self._remap(ev.which, guid)
                 h = L.SDL_GameControllerOpen(ev.which)
                 if not h:
                     continue
@@ -208,12 +228,14 @@ class Gamepads:
                 name = (L.SDL_GameControllerName(h) or b'Controller').decode('utf-8', 'replace')
                 kind = KINDS.get(self._type(h), 'xbox') if self._type else 'xbox'
                 self.pads[iid] = (h, name, kind)
+                self.guids[iid] = guid
                 if len(self._ids) == 2 and tuple(f(h) for f in self._ids) == STEAM_VIRTUAL:
                     self.virtual.add(iid)
-                out.append(('added', name, kind))
+                out.append(('added', name, kind, guid, self._hotplug(iid, guid)))
             elif t == CONTROLLERDEVICEREMOVED:
                 pad = self.pads.pop(ev.which, None)
                 self.virtual.discard(ev.which)
+                self.guids.pop(ev.which, None)
                 if pad:
                     L.SDL_GameControllerClose(pad[0])
                     out.append(('removed', pad[1]))
@@ -227,17 +249,37 @@ class Gamepads:
                     out.append(('axis', AXES[ev.b0], max(-1.0, ev.value / 32767.0)))
         return out
 
-    def _remap(self, index: int):
+    def _guid(self, index: int) -> str:
+        """The pad's SDL GUID (its bus, vendor, product and version, so two
+        pads of one model share it); '' when this SDL can't say."""
+        if not self._fix:
+            return ''
+        L = self.lib
+        buf = ctypes.create_string_buffer(64)
+        L.SDL_JoystickGetGUIDString(L.SDL_JoystickGetDeviceGUID(index), buf, 64)
+        return buf.value.decode('ascii', 'replace')
+
+    def _remap(self, index: int, guid: str):
         """Correct SDL's mapping for a hid-playstation pad before opening it."""
         if not self._fix:
             return
         L = self.lib
-        buf = ctypes.create_string_buffer(64)
-        L.SDL_JoystickGetGUIDString(L.SDL_JoystickGetDeviceGUID(index), buf, 64)
-        line = playstation_mapping(buf.value.decode(), L.SDL_JoystickGetDeviceProduct(index),
+        line = playstation_mapping(guid, L.SDL_JoystickGetDeviceProduct(index),
                                    L.SDL_JoystickGetDeviceVendor(index))
         if line:
             L.SDL_GameControllerAddMapping(line.encode())
+
+    def _hotplug(self, iid: int, guid: str) -> bool:
+        """A pad that just arrived for real: not Steam's virtual copy, not
+        SDL listing what was there when it (re)started, and not a pad that was
+        open at suspend() coming back (each remembered GUID matches once)."""
+        now = time.monotonic()
+        if now > self._expect_until:
+            self._expect.clear()
+        remembered = bool(guid) and self._expect[guid] > 0
+        if remembered:
+            self._expect[guid] -= 1
+        return not (iid in self.virtual or now < self._settle_until or remembered)
 
     def shadowed(self, iid: int) -> bool:
         """Input from Steam's virtual pad while the physical one is open too:
@@ -271,6 +313,11 @@ class Gamepads:
     @property
     def names(self) -> list[str]:
         return [p[1] for p in self.pads.values()]
+
+    @property
+    def physical(self) -> list[str]:
+        """The open pads' names, Steam's virtual pads left out."""
+        return [p[1] for iid, p in self.pads.items() if iid not in self.virtual]
 
 
 def battery(root: Path = POWER_SUPPLY) -> list[dict]:

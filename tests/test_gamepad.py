@@ -126,5 +126,98 @@ class OnWindows(unittest.TestCase):
         self.assertEqual(gamepad.battery(Path('/nonexistent')), [])
 
 
+
+class HotPlug(unittest.TestCase):
+    """ADDED carries the pad's GUID and whether it is a real hot-plug: not
+    SDL listing what was there at start or resume, not a suspended pad coming
+    back, not Steam's virtual pad."""
+
+    GUIDS = {0: '030000004c050000e60c000011810000', 1: '03000000de280000ff11000001000000',
+             2: '030000005e040000130b000011050000'}
+
+    def setUp(self):
+        self.now = 1000.0
+        p = mock.patch.object(gamepad.time, 'monotonic', lambda: self.now)
+        p.start()
+        self.addCleanup(p.stop)
+        self.lib = lib = FakeSDL()
+        self.queue = []
+        self.vendor = {}
+
+        def poll(ref):
+            if not self.queue:
+                return 0
+            ev = ref._obj
+            ev.type, ev.which = self.queue.pop(0)
+            return 1
+        lib.SDL_PollEvent.side_effect = poll
+        lib.SDL_JoystickGetDeviceGUID.side_effect = lambda i: i
+        lib.SDL_JoystickGetGUIDString.side_effect = \
+            lambda i, buf, n: setattr(buf, 'value', self.GUIDS[i].encode())
+        lib.SDL_GameControllerOpen.side_effect = lambda i: 100 + i
+        lib.SDL_GameControllerGetJoystick.side_effect = lambda h: h
+        lib.SDL_JoystickInstanceID.side_effect = lambda j: j - 100
+        lib.SDL_GameControllerName.return_value = b'Pad'
+        lib.SDL_GameControllerGetVendor.side_effect = lambda h: self.vendor.get(h, (0, 0))[0]
+        lib.SDL_GameControllerGetProduct.side_effect = lambda h: self.vendor.get(h, (0, 0))[1]
+        with mock.patch.object(gamepad, '_load', return_value=lib), \
+                mock.patch.object(gamepad.platform, 'sdl_hints', return_value={}):
+            self.g = gamepad.Gamepads()
+        self.addCleanup(self.g.shutdown)
+
+    def add(self, index):
+        self.queue.append((gamepad.CONTROLLERDEVICEADDED, index))
+        return [e for e in self.g.poll() if e[0] == 'added']
+
+    def remove(self, iid):
+        self.queue.append((gamepad.CONTROLLERDEVICEREMOVED, iid))
+        return self.g.poll()
+
+    def test_added_carries_guid_and_first_enumeration_is_not_hotplug(self):
+        self.assertEqual(self.add(0), [('added', 'Pad', 'xbox', self.GUIDS[0], False)])
+        self.assertEqual(self.g.guids, {0: self.GUIDS[0]})
+        self.assertEqual(self.g.physical, ['Pad'])
+        self.now += 3                                       # past the settle window
+        self.assertEqual(self.remove(0), [('removed', 'Pad')])
+        self.assertEqual(self.g.guids, {})
+        self.assertEqual(self.add(0)[0][3:], (self.GUIDS[0], True))
+
+    def test_suspend_resume_same_pad_is_not_hotplug_a_new_one_is(self):
+        self.add(0)
+        self.now += 5
+        self.g.suspend()
+        self.g.resume()
+        self.assertEqual(self.add(0)[0][4], False)          # re-listed in the settle window
+        self.now += 3
+        self.assertEqual(self.add(2)[0][4], True)           # a new pad, after it
+        self.g.suspend()
+        self.g.resume()
+        self.now += 4                                       # a late Bluetooth reconnect
+        self.assertEqual(self.add(0)[0][4], False)
+        self.assertEqual(self.add(2)[0][4], False)
+
+    def test_each_remembered_guid_matches_once_and_expires(self):
+        self.add(0)
+        self.now += 5
+        self.g.suspend()
+        self.g.resume()
+        self.now += 3
+        self.assertEqual(self.add(0)[0][4], False)          # the remembered one
+        self.remove(0)
+        self.assertEqual(self.add(0)[0][4], True)           # used up: this one is new
+        self.g.suspend()
+        self.g.resume()
+        self.now += 11                                      # remembered GUIDs expired
+        self.assertEqual(self.add(0)[0][4], True)
+
+    def test_steam_virtual_pad_is_never_hotplug(self):
+        self.now += 3
+        self.vendor[101] = gamepad.STEAM_VIRTUAL
+        self.assertEqual(self.add(1)[0][4], False)
+        self.assertEqual(self.g.physical, [])
+        self.assertEqual(self.add(0)[0][4], True)
+        self.assertEqual(self.g.physical, ['Pad'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -104,7 +104,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._health_stale = True
         self._health_problems = (0, 0)
         self.input = install_input_mode(self)
-        self.input.changed.connect(lambda _m: self._sync_hints())
+        self.input.changed.connect(self._input_changed)     # hints, and Theatre's auto-leave
         self.input.activity.connect(self._on_activity)
         self._steam_seen = (0.0, False)
         self._install_req: dict[str, float] = {}     # slug -> when Install was pressed
@@ -194,7 +194,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.sheet.chosen.connect(self.on_game_action)
         self.theatre_sheet = ActionSheet(self.theatre, THEATRE_SCALE)
         self.theatre_sheet.chosen.connect(self._theatre_action)
-        for sh in (self.sheet, self.theatre_sheet):
+        # Theatre's own settings (w-63): the gear and the quick menu's row.
+        self.theatre_settings = TheatreSettings(self.theatre, THEATRE_SCALE)
+        self.theatre_settings.changed.connect(self._theatre_setting)
+        self.theatre_settings.all_settings.connect(self._theatre_all_settings)
+        self.theatre_settings.closed.connect(self._show_session)
+        self.theatre.settings_sheet.connect(self.open_theatre_settings)
+        for sh in (self.sheet, self.theatre_sheet, self.theatre_settings):
             sh.closed.connect(self._update_hints)
         # Theatre's system menu (Guide / Start / F10), on the left.
         self.quick = QuickMenu(self.theatre, THEATRE_SCALE)
@@ -230,6 +236,12 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._battery_timer = QTimer(self)          # first read soon, then every minute
         self._battery_timer.timeout.connect(self._poll_battery)
         self._battery_timer.start(0)
+        # Theatre a pad connect brought leaves when the last pad goes (w-64).
+        self._theatre_auto = False
+        self._pad_suppressed = False                # left Theatre by hand with a pad on
+        self._pad_leave_timer = QTimer(self)
+        self._pad_leave_timer.setSingleShot(True)
+        self._pad_leave_timer.timeout.connect(self._pad_leave_timeout)
 
     def _wire_details(self):
         """The game page's requests, plus the activity strip's."""
@@ -792,6 +804,40 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.prefs.theatre_library = dict(state)
         self.prefs.save()
 
+    # ---- Theatre's settings sheet and Your week (w-63) ----
+    def _theatre_setting(self, key: str, value):
+        """A row of Theatre's settings changed: save it the way desktop
+        Settings does, and show the same value there if it is built."""
+        if key in APPEARANCE_KEYS:
+            ap = {**(self._ap_pending or self.prefs.appearance), key: value}
+            self._queue_appearance(ap)          # coalesced: a held D-pad restyles once
+            if self.page_built(self.SETTINGS):
+                self.settings.appearance.load(ap)
+            return
+        self._apply_controls({key: value})
+        if self.page_built(self.SETTINGS):
+            self.settings.set_controls(self.prefs.controls)
+        if key == 'week_home':
+            self._feed_theatre_week()
+
+    def _theatre_all_settings(self):
+        """The sheet's foot: the desktop's Settings, at Controls and Theatre."""
+        self.set_theatre(False)
+        self._open_settings('controls')
+
+    def _feed_theatre_week(self, ttl: float = 60):
+        """Your week on Theatre's Home, from `--history` (as the Play time
+        widget; ttl 0 right after a game). Hidden while the setting is off."""
+        if not self.prefs.controls.get('week_home', True):
+            self.theatre.set_week(None, on=False)
+            return
+        cli_json(['--history', '--json'], self._week_arrived, 30000, ttl=ttl)
+
+    def _week_arrived(self, data, _err=''):
+        per = (data or {}).get('periods') or {}
+        self.theatre.set_week(per.get('week'), int(per.get('current_streak') or 0),
+                              self.prefs.controls.get('week_home', True), per.get('today'))
+
     def _note_version(self, used_before: bool):
         """Remember this version; on the first start of a newer one, show its
         "What's new" once Home is up. Not during first-run setup, nor in tests
@@ -1048,5 +1094,6 @@ from .settings import SettingsPage  # noqa: E402
 from .storage import StoragePage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
 from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402
+from .theatre_settings import APPEARANCE_KEYS, TheatreSettings  # noqa: E402
 from .widgets import (GradientBackground, notify_desktop, refresh_icons, SteamGate,
     ToastHost)  # noqa: E402

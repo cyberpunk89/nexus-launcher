@@ -11,6 +11,21 @@ from nexus import platform, winfocus
 from .common import alive
 from .theme import build_stylesheet, G, GLYPHS
 
+# Settings > Controls "Start Nexus in Theatre: On a TV": a screen this big or
+# bigger. EDID sizes outside 10-120" are made up (projectors report 0, some
+# TVs an aspect ratio like 16x9 cm), so they count as "not a TV".
+TV_INCHES = 32
+PAD_LEAVE_MS = 10_000          # last pad gone after a pad brought Theatre: back after this
+
+
+def screen_inches(w_mm, h_mm) -> float | None:
+    """The diagonal in inches, or None when the size is missing or not
+    believable (under 10" or over 120")."""
+    if not w_mm or not h_mm or w_mm <= 0 or h_mm <= 0:
+        return None
+    inches = (w_mm ** 2 + h_mm ** 2) ** 0.5 / 25.4
+    return inches if 10 <= inches <= 120 else None
+
 
 class ControllerMixin:
     """Part of MainWindow (nexus/gui/window.py), which mixes it in; `self` is
@@ -21,7 +36,8 @@ class ControllerMixin:
         if not self._theatre or self._playing or self._launching \
                 or not self.isActiveWindow() or self.trailer_view.isVisible() \
                 or self.theatre.trailer.isVisible() or self.theatre_sheet.isVisible() \
-                or self.quick.isVisible() or self.attract.running:
+                or self.theatre_settings.isVisible() or self.quick.isVisible() \
+                or self.attract.running:
             self._on_activity()                         # look again later
             return
         self.attract.start(self._games)
@@ -67,10 +83,16 @@ class ControllerMixin:
             self.toast(f"Controller battery low ({b['percent']}%).", 'warning', None, 6000)
         self._battery_warned = bool(low)
 
-    def _pad_connected(self, name, kind):
+    def _pad_connected(self, name, kind, guid='', hotplug=False):
+        self._pad_leave_timer.stop()                    # a pad is back: Theatre stays
         self._battery_timer.start(1500)                 # sysfs appears just after
         self.hints.kind = kind
         self.input.set('pad')
+        if hotplug and self._pad_may_enter():
+            self.set_theatre(True)
+            self._theatre_auto = True                   # so it leaves the way it came
+            self.toast("Theatre mode. Start opens the menu, F11 leaves.", 'info', None, 4000)
+            return
         self._sync_hints()
         self.toast(f"{name} connected — D-pad to move, {GLYPHS.get(kind, GLYPHS['xbox'])['a']} "
                    f"to select.", 'info', None, 4000)
@@ -78,10 +100,74 @@ class ControllerMixin:
             t = self.default_focus()
             t and focus_and_reveal(t)
 
+    def _pad_may_enter(self) -> bool:
+        """Settings > Controls "Switch to Theatre when a controller
+        connects", and nothing in the way: Nexus in front, no game running
+        or starting, no sheet, palette, search or setup open, and no pad
+        still connected from when Theatre was left by hand."""
+        return bool(self.prefs.controls.get('theatre_on_pad')) and not self._theatre \
+            and not self._pad_suppressed and self.isActiveWindow() \
+            and not (self._playing or self._launching) and self._open_sheet() is None \
+            and not self.palette.isVisible() and not self.desk_search.isVisible() \
+            and self.current() != self.SETUP and QApplication.activeModalWidget() is None
+
     def _pad_disconnected(self, name):
         self._battery_timer.start(500)
         self._sync_hints()
-        self.toast(f"{name} disconnected.", 'info', None, 3000)
+        if self.ctrl.pads.physical:
+            self.toast(f"{name} disconnected.", 'info', None, 3000)
+            return
+        self._pad_suppressed = False                    # the pad Theatre was left with is gone
+        if self._theatre and self._theatre_auto:
+            self._pad_leave_timer.start(PAD_LEAVE_MS)   # a battery swap or a Bluetooth blip
+            self.toast(f"{name} disconnected.", 'info', None, 3000)
+        elif self._theatre:
+            self.toast("Controller disconnected. Reconnect it, or press F11 to leave Theatre.",
+                       'info', None, 6000)
+        else:
+            self.toast(f"{name} disconnected.", 'info', None, 3000)
+
+    def _pad_leave_timeout(self):
+        """The last pad didn't come back: Theatre leaves the way it came."""
+        if not (self._theatre and self._theatre_auto) or self.ctrl.pads.physical \
+                or self._playing or self._launching:
+            return
+        self.set_theatre(False)
+        self.toast("Controller disconnected, back to the desktop.", 'info', None, 5000)
+
+    def _input_changed(self, mode: str):
+        """The mouse or keyboard took over: Theatre is now the user's, never
+        left on its own."""
+        if mode in ('mouse', 'keyboard'):
+            self._theatre_auto = False
+            self._pad_leave_timer.stop()
+        self._sync_hints()
+
+    def _screen_mm(self) -> tuple | None:
+        """The window's screen's physical size in mm: the platform's answer
+        (Windows reads the EDID), else Qt's."""
+        screen = self.screen()
+        if screen is None:
+            return None
+        g = screen.geometry()
+        got = platform.screen_size_mm(g.x() + 1, g.y() + 1)
+        if got:
+            return got
+        size = screen.physicalSize()
+        return size.width(), size.height()
+
+    def theatre_on_start(self):
+        """Settings > Controls "Start Nexus in Theatre" on a normal start:
+        Always, or On a TV (a screen of TV_INCHES or more). Never during
+        first-run setup; it never leaves Theatre by itself later."""
+        rule = self.prefs.controls.get('theatre_start', 'never')
+        if self._first_run or rule not in ('always', 'tv'):
+            return
+        if rule == 'tv':
+            inches = screen_inches(*(self._screen_mm() or (None, None)))
+            if inches is None or inches < TV_INCHES:
+                return
+        self.set_theatre(True)
 
     def _pad_used(self):
         if QApplication.focusWidget() is None or QApplication.focusWidget().window() is not self:
@@ -104,6 +190,10 @@ class ControllerMixin:
             return
         if self._theatre and self.quick.isVisible():
             return                                  # LB / RB / View / Y: not under the menu
+        if self._theatre and self.theatre_settings.isVisible():
+            if act == 'view':
+                self.theatre_settings.close_sheet()
+            return                                  # nor under Theatre's settings
         if self._theatre and act in ('page-prev', 'page-next') \
                 and self.theatre.details.isVisible():
             # The game page: LB / RB switch the drawer's sections.
@@ -186,6 +276,7 @@ class ControllerMixin:
             self.quick.close_menu()
             return
         self.theatre_sheet.close_sheet()
+        self.theatre_settings.close_sheet()
         game = now_playing(self._games)
         # Resume while a game runs or starts, else Exit Theatre; never a
         # row with a section (POWER), whatever joins the menu.
@@ -195,14 +286,16 @@ class ControllerMixin:
 
     def _quick_rows(self, game: dict | None = None) -> list:
         """The menu's rows, top to bottom: Resume (and Quit game) while `game`
-        runs or starts (Now playing), then Exit Theatre and Quit Nexus. Rows
+        runs or starts (Now playing), Settings (Theatre's sheet), then Exit
+        Theatre and Quit Nexus. Rows
         with a section (POWER) sit at the bottom of the panel."""
         rows = []
         if game is not None:                    # Quit game once it's really running
             rows.append(QuickRow('resume', "Resume", G['play']))
             if game.get('playing'):
                 rows.append(QuickRow('quit-game', "Quit game", G['stop'], danger=True))
-        rows += [QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=bool(rows)),
+        rows += [QuickRow('settings', "Settings", G['settings'], gap=bool(rows)),
+                 QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=True),
                  QuickRow('quit', "Quit Nexus", G['close'])]
         caps = platform.power_caps()
         for action, label, glyph in (('sleep', "Sleep", 'moon'), ('restart', "Restart PC", 'restart'),
@@ -233,6 +326,9 @@ class ControllerMixin:
             self.resume_game(game)
         elif key == 'quit-game' and game is not None:
             self._ask_quit_game(game, self.quick)
+        elif key == 'settings':
+            self.quick.close_menu()                     # focus back first: the sheet returns there
+            self.open_theatre_settings()
         elif key == 'exit-theatre':
             self.quick.close_menu(restore=False)
             self.set_theatre(False)
@@ -250,6 +346,15 @@ class ControllerMixin:
             self.quick.close_menu(restore=False)
             self._tray_quit = True                      # quit for real, not to the tray
             self.close()
+
+    def open_theatre_settings(self):
+        """Theatre's settings sheet (the gear, the quick menu's Settings),
+        with the values as they are now."""
+        if not self._theatre:
+            return
+        self.theatre_sheet.close_sheet(restore=False)
+        self.theatre_settings.open(self.prefs.controls, self.prefs.appearance)
+        self._update_hints()
 
     def _power_now(self, action: str):
         """Save what Nexus keeps, then ask the OS. close() would only go to
@@ -303,10 +408,18 @@ class ControllerMixin:
             in_thread(focus_own, lambda *_: None)
 
     def set_theatre(self, on: bool):
-        """Theatre mode: full screen, controller first, for the TV."""
+        """Theatre mode: full screen, controller first, for the TV. Any call
+        makes it the user's Theatre (only _pad_connected marks one a pad
+        brought, after this); leaving it with a pad still connected keeps
+        that pad from bringing it straight back."""
+        self._theatre_auto = False
+        self._pad_leave_timer.stop()
         if on == self._theatre:
             return
         self._theatre = on
+        if not on:
+            ctrl = getattr(self, 'ctrl', None)
+            self._pad_suppressed = bool(ctrl and ctrl.pads.physical)
         if on:
             self.desk_search.close_search()
             self._was_state = self.windowState() & ~Qt.WindowState.WindowMinimized
@@ -322,11 +435,13 @@ class ControllerMixin:
             self.focus_ring.nudge()
             self.cursor_hider.start()
             self._on_activity()                   # the screensaver clock starts
+            self._feed_theatre_week()
         else:
             self._idle_timer.stop()
             self.attract.stop()
             self.cursor_hider.stop()
             self.theatre_sheet.close_sheet(restore=False)
+            self.theatre_settings.close_sheet(restore=False)
             self.quick.close_menu(restore=False)
             self.theatre.trailer.stop()
             self.theatre.reader.hide()
@@ -391,6 +506,11 @@ class ControllerMixin:
                                   if self.quick.state == 'confirm' else
                                   [('a', 'Select'), ('b', 'Close'), ('Menu', 'Close')])
             return
+        if self._theatre and self.theatre_settings.isVisible():
+            self.hints.show_hints([('a', 'Change'), ('← →', 'Adjust'), ('b', 'Done')]
+                                  if isinstance(f, CouchRow) else
+                                  [('a', 'Open'), ('b', 'Done')])
+            return
         if self._open_sheet() is not None:
             self.hints.show_hints([('a', 'Select'), ('b', 'Close')])
             return
@@ -421,7 +541,9 @@ class ControllerMixin:
                     hints.append(('Menu', 'Quick menu'))
                 self.hints.show_hints(hints)
                 return
-            if f is not None and th.hero.isAncestorOf(f):
+            if f is th.week_card:
+                hints = ([('a', f"Open {f.game_name}")] if f.game_name else []) + [('b', 'Home')]
+            elif f is not None and th.hero.isAncestorOf(f):
                 # The spotlight on Home: the game that has focus in "Jump back in".
                 pinned = th.hero.is_pinned()
                 hints = [('a', ('Resume' if pinned else 'Play') if f is th.hero.btn else
@@ -483,4 +605,5 @@ from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
 from .theatre import THEATRE_SCALE, TheatreDownloadRow  # noqa: E402
 from .theatre_discover import TheatreCard, TheatreSetupCard  # noqa: E402
+from .theatre_settings import CouchRow  # noqa: E402
 from .tiles import GameTile  # noqa: E402

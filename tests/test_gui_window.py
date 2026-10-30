@@ -1302,6 +1302,137 @@ class Window(unittest.TestCase):
         self.assertEqual(self.win.current(), self.win.LIBRARY)
         self.assertEqual(self.win.selected, [game['slug']])
 
+    # ---- w-64: Theatre leaves the way it came ----
+    def _pads(self, *names, virtual=()):
+        """The window's (unopened) Gamepads with these pads open."""
+        g = self.win.ctrl.pads
+        g.pads = {i: (None, n, 'xbox') for i, n in enumerate(names)}
+        g.virtual = set(virtual)
+
+    def _auto_setup(self, on_pad=True):
+        w = self.win
+        w.prefs.controls = {**w.prefs.controls, 'theatre_on_pad': on_pad}
+        toasts = []
+        for p in (mock.patch.object(w, 'toast', lambda text, *a, **k: toasts.append(text)),
+                  mock.patch.object(w, 'isActiveWindow', return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+        return w, toasts
+
+    def test_theatre_start_rule(self):
+        w = self.win
+
+        def start(rule, mm=None, setup=False):
+            w.set_theatre(False)
+            w.prefs.controls = {**w.prefs.controls, 'theatre_start': rule}
+            with mock.patch.object(w, '_screen_mm', return_value=mm), \
+                    mock.patch.object(type(w), '_first_run', new_callable=mock.PropertyMock,
+                                      return_value=setup):
+                w.theatre_on_start()
+            return w._theatre
+        self.assertFalse(start('never', (1210, 680)))
+        self.assertTrue(start('always'))
+        self.assertFalse(w._theatre_auto)                    # the start rule never leaves
+        self.assertTrue(start('tv', (1210, 680)))           # 55"
+        self.assertFalse(start('tv', (531, 299)))           # 24"
+        self.assertFalse(start('tv', (0, 0)))               # a projector: no size
+        self.assertFalse(start('tv', None))
+        self.assertFalse(start('tv', (6640, 3740)))         # 300": made up
+        self.assertFalse(start('tv', (160, 90)))            # an aspect ratio, not a size
+        self.assertFalse(start('always', setup=True))       # never during first-run setup
+        self.assertFalse(start('tv', (1210, 680), setup=True))
+        from nexus.gui.win_controller import screen_inches
+        self.assertEqual(int(screen_inches(1210, 680)), 54)
+
+    def test_pad_hotplug_enters_theatre(self):
+        w, toasts = self._auto_setup(on_pad=False)
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)      # the setting is off
+        self.assertFalse(w._theatre)
+        w.prefs.controls = {**w.prefs.controls, 'theatre_on_pad': True}
+        w._pad_connected('DualSense', 'ps', 'g', False)     # listed at start, not plugged in
+        self.assertFalse(w._theatre)
+        w._playing.add('alpha')                             # a game is running
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertFalse(w._theatre)
+        w._playing.clear()
+        w.sheet.ask("Remove?", "Sure?", "Remove", lambda: None)   # a sheet is open
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertFalse(w._theatre)
+        w.sheet.close_sheet(restore=False)
+        toasts.clear()
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertTrue(w._theatre and w._theatre_auto)
+        self.assertEqual(toasts, ["Theatre mode. Start opens the menu, F11 leaves."])
+        w.set_theatre(False)                                # by hand, the pad still on
+        self.assertTrue(w._pad_suppressed)
+        w._pad_connected('Xbox', 'xbox', 'h', True)         # a second pad: still not
+        self.assertFalse(w._theatre)
+        self._pads()
+        w._pad_disconnected('DualSense')                    # the last one goes
+        self.assertFalse(w._pad_suppressed)
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    def test_pad_leave_way_it_came(self):
+        w, toasts = self._auto_setup()
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertTrue(w._theatre_auto)
+        self._pads('Steam Virtual Gamepad', virtual={0})    # Steam's copy doesn't count
+        w._pad_disconnected('DualSense')
+        self.assertTrue(w._pad_leave_timer.isActive())
+        self.assertEqual(w._pad_leave_timer.interval(), 10_000)
+        self.assertTrue(w._theatre)
+        self._pads('DualSense')                             # back inside the 10 s
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertFalse(w._pad_leave_timer.isActive())
+        self.assertTrue(w._theatre and w._theatre_auto)
+        self._pads()
+        w._pad_disconnected('DualSense')
+        toasts.clear()
+        w._pad_leave_timeout()                              # it didn't come back
+        self.assertFalse(w._theatre)
+        self.assertEqual(toasts, ["Controller disconnected, back to the desktop."])
+        # The mouse was used since: Theatre stays, and says how to leave.
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        w.input.set('mouse')
+        self.assertFalse(w._theatre_auto)
+        self._pads()
+        toasts.clear()
+        w._pad_disconnected('DualSense')
+        self.assertFalse(w._pad_leave_timer.isActive())
+        self.assertEqual(toasts, ["Controller disconnected. Reconnect it, or press F11 to "
+                                  "leave Theatre."])
+        w._pad_leave_timeout()                              # a stray timeout does nothing
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    def test_hand_entered_theatre_never_auto_left(self):
+        w, toasts = self._auto_setup()
+        self._pads('DualSense')
+        for enter in (lambda: w.set_theatre(True), lambda: w.handle_remote(['--theatre']),
+                      lambda: w._pad_action('start')):
+            enter()
+            self.assertTrue(w._theatre)
+            self._pads()
+            w._pad_disconnected('DualSense')
+            self.assertFalse(w._pad_leave_timer.isActive())
+            self.assertTrue(w._theatre)
+            self._pads('DualSense')
+            w.set_theatre(False)
+        # A pad brought Theatre; entering it again by hand makes it the user's.
+        self._pads()
+        w._pad_disconnected('DualSense')                    # clears the hand-leave suppression
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        w.set_theatre(True)                                 # any hand entry claims it
+        self.assertFalse(w._theatre_auto)
+        w.set_theatre(False)
+
     def test_theatre_mode(self):
         w = self.win
         w.set_theatre(True)
@@ -1755,7 +1886,7 @@ class Window(unittest.TestCase):
         w._pad_action('quick')                                  # Guide, on Home
         self._quick_scope(w)
         self.assertEqual([b.text() for b in w.quick.default_focus().parent().findChildren(
-            QPushButton)], ["Exit Theatre", "Quit Nexus"])
+            QPushButton)], ["Settings", "Exit Theatre", "Quit Nexus"])
         self.assertFalse(w.quick.pads.isVisibleTo(w.quick))     # no pad, no strip
         w._escape()                                             # B closes it
         self.assertFalse(w.quick.isVisible())
@@ -1920,7 +2051,8 @@ class Window(unittest.TestCase):
             self.assertIn("42 MIN", q.now_sub.text())
             self.assertEqual(q.now_title.text(), g['display_name'])
             self.assertIs(QApplication.focusWidget(), q.buttons['resume'])
-            self.assertEqual(list(q.buttons), ['resume', 'quit-game', 'exit-theatre', 'quit'])
+            self.assertEqual(list(q.buttons), ['resume', 'quit-game', 'settings', 'exit-theatre',
+                                               'quit'])
             self.assertTrue(q.buttons['quit-game'].property('danger'))
             q.buttons['quit-game'].setFocus()
             q.buttons['quit-game'].click()                  # asks, in the panel
@@ -1949,7 +2081,7 @@ class Window(unittest.TestCase):
             w._mark_states()
             w.toggle_quick()
             self.assertIn("STARTING", q.now_sub.text())
-            self.assertEqual(list(q.buttons), ['resume', 'exit-theatre', 'quit'])
+            self.assertEqual(list(q.buttons), ['resume', 'settings', 'exit-theatre', 'quit'])
             self.assertIs(QApplication.focusWidget(), q.buttons['resume'])
             w.toggle_quick()
             w._launching.clear()
@@ -1969,14 +2101,14 @@ class Window(unittest.TestCase):
         w.set_theatre(True)
         q = w.quick
         w.toggle_quick()
-        self.assertEqual(list(q.buttons), ['exit-theatre', 'quit'])     # no caps: no section
+        self.assertEqual(list(q.buttons), ['settings', 'exit-theatre', 'quit'])   # no section
         w.toggle_quick()
         self.power_caps.return_value = {'sleep', 'restart', 'shutdown'}
         order = []
         self.power.side_effect = lambda a: order.append(('power', a)) or True
         with mock.patch.object(w.prefs, 'save', lambda: order.append(('save',))):
             w.toggle_quick()
-            self.assertEqual(list(q.buttons), ['exit-theatre', 'quit', 'power-sleep',
+            self.assertEqual(list(q.buttons), ['settings', 'exit-theatre', 'quit', 'power-sleep',
                                                'power-restart', 'power-shutdown'])
             self.assertIs(QApplication.focusWidget(), q.buttons['exit-theatre'])
             q.buttons['power-restart'].setFocus()
@@ -2009,6 +2141,224 @@ class Window(unittest.TestCase):
         self._play(w, g, minutes)
         with mock.patch('nexus.history.record'):
             w._apply_running(set())
+
+    def _press(self, key, w=None):
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
+        QApplication.sendEvent(w or QApplication.focusWidget(),
+                               QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+        QApplication.processEvents()
+
+    def test_theatre_settings_rows_save_and_stop_at_ends(self):
+        """w-63: the gear opens Theatre's settings on the last row used;
+        Left/Right step and stop at the ends, A steps and wraps, Up/Down
+        move rows; each change lands in prefs.controls (the appearance goes
+        through the queue); volume is greyed while sounds are off; B closes
+        and gives focus back to the gear."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        st = w.theatre_settings
+        rows = st.rows_by_key
+        w.theatre.btn_settings.setFocus()
+        w.theatre.btn_settings.click()                          # the gear
+        QApplication.processEvents()
+        self.assertTrue(st.isVisible())
+        self.assertIs(w._open_sheet(), st)
+        self.assertIs(w.nav_scope(), st)
+        self.assertIs(QApplication.focusWidget(), rows['pad_a'])
+        from nexus.gui.theatre_settings import HELP
+        self.assertEqual(st.help.text(), HELP['pad_a'])         # the focused row's help
+        self.assertEqual(w.hints._shown[1][:3], (('a', 'Change'), ('← →', 'Adjust'),
+                                                 ('b', 'Done')))
+        self._press(Qt.Key.Key_Left)                              # already the first choice
+        self.assertEqual(w.prefs.controls['pad_a'], 'details')
+        self._press(Qt.Key.Key_Right)
+        self.assertEqual(w.prefs.controls['pad_a'], 'play')
+        self.assertTrue(w.theatre.a_plays)                      # applied at once
+        self._press(Qt.Key.Key_Right)                             # the end: stays
+        self.assertEqual(w.prefs.controls['pad_a'], 'play')
+        rows['pad_a'].click()                                   # A wraps round
+        self.assertEqual(w.prefs.controls['pad_a'], 'details')
+        self._press(Qt.Key.Key_Down)                              # Down: the next row
+        self.assertIs(QApplication.focusWidget(), rows['theatre_on_pad'])
+        rows['theatre_on_pad'].click()
+        self.assertIs(w.prefs.controls['theatre_on_pad'], True)
+        rows['theatre_start'].setFocus()
+        for _ in range(4):
+            self._press(Qt.Key.Key_Right)
+        self.assertEqual(w.prefs.controls['theatre_start'], 'always')
+        # Volume: greyed while sounds are off, then 10 steps that stop at 100.
+        self.assertFalse(w.prefs.controls['sounds'])
+        self.assertFalse(rows['volume'].isEnabled())
+        rows['sounds'].setFocus()
+        self._press(Qt.Key.Key_Right)
+        self.assertTrue(w.prefs.controls['sounds'])
+        self.assertTrue(rows['volume'].isEnabled())
+        rows['volume'].setFocus()
+        for _ in range(7):
+            self._press(Qt.Key.Key_Right)
+        self.assertEqual(w.prefs.controls['volume'], 100)
+        self.assertEqual(rows['volume'].meter.value, 100)
+        self.assertEqual(rows['volume'].text.text(), "100%")
+        # The look goes through the appearance queue (one restyle), not controls.
+        with mock.patch.object(w, '_queue_appearance') as q:
+            rows['theme'].setFocus()
+            self._press(Qt.Key.Key_Right)
+            ap = q.call_args[0][0]
+            self.assertEqual(ap['theme'], list(nx.THEMES)[1])
+            self.assertEqual(ap['accent'], w.prefs.appearance['accent'])
+            rows['art_tint'].setFocus()
+            rows['art_tint'].click()
+            self.assertFalse(q.call_args[0][0]['art_tint'])
+            self.assertEqual(q.call_args[0][0]['theme'], w.prefs.appearance['theme'])
+        self.assertNotIn('theme', w.prefs.controls)
+        w._escape()                                             # B: closed, focus on the gear
+        self.assertFalse(st.isVisible())
+        self.assertIs(QApplication.focusWidget(), w.theatre.btn_settings)
+        w.theatre.btn_settings.click()                          # the last row used, again
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), rows['art_tint'])
+        self.assertEqual(rows['theme'].value, w.prefs.appearance['theme'])   # synced on open
+        # X closes too; the foot leaves Theatre for desktop Settings.
+        self._press(Qt.Key.Key_Menu)
+        self.assertFalse(st.isVisible())
+        w.open_theatre_settings()
+        st.btn_all.click()
+        self.assertFalse(w._theatre)
+        self.assertEqual(w.current(), w.SETTINGS)
+
+    def test_theatre_settings_sync_desktop(self):
+        """w-63: a change on the couch shows in desktop Settings, and one made
+        on the desktop shows in the sheet next time it opens."""
+        w = self.win
+        s = w.settings                                          # built
+        self.assertEqual(s.sections['controls'].title, "Controls and Theatre")
+        w.set_theatre(True)
+        w.open_theatre_settings()
+        rows = w.theatre_settings.rows_by_key
+        rows['week_home'].click()
+        rows['sounds'].click()
+        rows['volume'].step(1)
+        rows['theatre_start'].step(1)
+        rows['attract'].step(1)
+        self.assertFalse(s.ctl_week.isChecked())
+        self.assertTrue(s.ctl_sounds.isChecked())
+        self.assertTrue(s.ctl_volume.isEnabled())
+        self.assertEqual(s.ctl_volume.currentData(), 60)
+        self.assertEqual(s.ctl_start.currentData(), 'tv')
+        self.assertEqual(s.ctl_attract.currentData(), w.prefs.controls['attract'])
+        with mock.patch.object(w, '_queue_appearance'):
+            rows['art_tint'].click()
+        self.assertFalse(s.appearance.ap['art_tint'])
+        w.theatre_settings.close_sheet()
+        w.set_theatre(False)
+        # The desktop's switches and combos reach prefs (both wiring lists).
+        s.ctl_on_pad.setChecked(True)
+        s.ctl_week.setChecked(True)
+        s.ctl_sounds.setChecked(False)
+        self.assertFalse(s.ctl_volume.isEnabled())               # greyed while sounds are off
+        s.ctl_start.setCurrentIndex(s.ctl_start.findData('always'))
+        s.ctl_start.activated.emit(s.ctl_start.currentIndex())
+        s.ctl_volume.setCurrentIndex(s.ctl_volume.findData(20))
+        s.ctl_volume.activated.emit(s.ctl_volume.currentIndex())
+        c = w.prefs.controls
+        self.assertEqual((c['theatre_on_pad'], c['week_home'], c['sounds'], c['theatre_start'],
+                          c['volume']), (True, True, False, 'always', 20))
+        w.set_theatre(True)
+        w.open_theatre_settings()
+        self.assertTrue(rows['theatre_on_pad'].switch.isChecked())
+        self.assertEqual(rows['theatre_start'].value, 'always')
+        self.assertEqual(rows['volume'].value, 20)
+        self.assertFalse(rows['volume'].isEnabled())
+        w.set_theatre(False)
+        self.assertFalse(w.theatre_settings.isVisible())
+
+    def test_quick_menu_settings_row(self):
+        """w-63: the quick menu's Settings closes the menu and opens the
+        sheet; B on it goes back to where the menu was opened from."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        w.theatre.hero.btn.setFocus()
+        w.toggle_quick()
+        self.assertIn('settings', w.quick.buttons)
+        w.quick.buttons['settings'].click()
+        QApplication.processEvents()
+        self.assertFalse(w.quick.isVisible())
+        self.assertTrue(w.theatre_settings.isVisible())
+        self.assertIsInstance(QApplication.focusWidget(), nx.CouchRow)
+        w._maybe_attract()                                      # the screensaver waits
+        self.assertFalse(w.attract.running)
+        w._pad_action('page-next')                              # no tab switch underneath
+        self.assertEqual(w.theatre.tabs.current(), 'home')
+        w.toggle_quick()                                        # Guide: the menu replaces it
+        self.assertFalse(w.theatre_settings.isVisible())
+        self.assertTrue(w.quick.isVisible())
+        w._escape()
+        self.assertIs(QApplication.focusWidget(), w.theatre.hero.btn)
+        w.set_theatre(False)
+
+    def test_theatre_week_card(self):
+        """w-63: Your week sits after Jump back in, hidden with no play this
+        week or with the setting off; A opens the most played game."""
+        w = self.win
+        week = {'start': '2026-10-26', 'minutes': 250.0, 'sessions': 4,
+                'days': [{'date': (datetime(2026, 10, 26) + timedelta(days=i)).date().isoformat(),
+                          'minutes': m}
+                         for i, m in enumerate((60, 0, 90, 100, 0, 0, 0))],
+                'games': [{'slug': 'alpha', 'name': 'Alpha', 'minutes': 190},
+                          {'slug': 'steam-1', 'name': 'Beta', 'minutes': 60}]}
+        hist = {'periods': {'today': '2026-10-29', 'week': week, 'current_streak': 2}}
+        calls = []
+
+        def fake(args, cb, *a, **k):
+            calls.append((args, k.get('ttl')))
+            cb(hist, '')
+        with mock.patch('nexus.gui.window.cli_json', fake):
+            w.activateWindow()
+            w.set_theatre(True)
+            QApplication.processEvents()
+            th = w.theatre
+            self.assertEqual(calls[-1], (['--history', '--json'], 60))
+            self.assertTrue(th.week_row.isVisibleTo(th))
+            titles = [th.rows.itemAt(i).widget() for i in range(th.rows.count())]
+            self.assertEqual(titles.index(th.week_row), 1)          # after Jump back in
+            self.assertEqual(titles[0].title, "Jump back in")
+            card = th.week_card
+            self.assertEqual(card.days.text(), "3 days  ·  2-day streak")
+            self.assertIn("Alpha", card.top.text())
+            self.assertEqual(card.bars.highlight, {3})                # today, Thursday
+            th.set_games([g for g in w._games if not g.get('hidden')])   # kept across a refill
+            self.assertTrue(th.week_row.isVisibleTo(th))
+            self.assertEqual([th.rows.itemAt(i).widget() for i in range(th.rows.count())]
+                             .index(th.week_row), 1)
+            card.setFocus()
+            QApplication.processEvents()
+            w._update_hints()
+            self.assertEqual(w.hints._shown[1][0], ('a', 'Open Alpha'))
+            self._press(Qt.Key.Key_Return, card)
+            self.assertTrue(th.details.isVisible())
+            self.assertEqual(th.details.game['slug'], 'alpha')
+            th.close_game()
+            # One streak day: no streak; nothing this week: hidden; off: hidden.
+            hist['periods']['current_streak'] = 1
+            w._feed_theatre_week()
+            self.assertEqual(card.days.text(), "3 days")
+            card.setFocus()
+            hist['periods']['week'] = {**week, 'minutes': 0,
+                                       'days': [{**d, 'minutes': 0} for d in week['days']]}
+            w._feed_theatre_week(ttl=0)
+            self.assertFalse(th.week_row.isVisibleTo(th))
+            self.assertIsNot(QApplication.focusWidget(), card)      # focus moved first
+            hist['periods']['week'] = week
+            w._theatre_setting('week_home', False)
+            self.assertFalse(th.week_row.isVisibleTo(th))
+            w._theatre_setting('week_home', True)
+            self.assertTrue(th.week_row.isVisibleTo(th))
+            w.set_theatre(False)
 
     def test_session_band_after_a_long_session(self):
         """>= 60 s in Theatre: the page opens with SESSION ENDED, the length

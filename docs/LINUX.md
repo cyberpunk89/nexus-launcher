@@ -256,9 +256,9 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   Metacritic, **how long to beat** (HowLongToBeat, for every game — Game-db's figure when it has
   one), trailers that play inside the window (Esc closes; needs `qt6-multimedia-ffmpeg`) and
   **more like this** (games you own link to their page) — and **Notes**, saved as you type.
-- **Theatre screensaver**: after a few idle minutes in Theatre (Settings → Controls), your
-  games take turns full screen — hero art drifting slowly, or the store trailer, muted. Any
-  button ends it; A opens the game on screen.
+- **Theatre screensaver**: after a few idle minutes in Theatre (Settings → Controls and
+  Theatre, or Theatre's own settings), your games take turns full screen — hero art drifting
+  slowly, or the store trailer, muted. Any button ends it; A opens the game on screen.
   `nexus-cli --store-info <game>`. HowLongToBeat has no public API: Nexus asks its search
   the way its own page does, once per title, cached for a month.
 - **One tile per game**: a game you have as a repack *and* on Steam or Heroic shows once
@@ -357,11 +357,33 @@ and Nexus remembers your choice. A opens a
 game, B goes back (never out of Theatre), F11 leaves. Start it directly with `nexus --theatre`
 or the desktop entry's *Theatre mode (TV)* action.
 
+Nexus can also go into Theatre by itself (Settings → Controls and Theatre). **Start Nexus in
+Theatre** can be *Never* (the default), *Always*, or *On a TV*: when the screen Nexus opens on
+reports 32" or more (a screen that reports no size, or a size under 10" or over 120", counts as
+not a TV). It doesn't apply to `--hidden` starts or first-run setup. **Switch to Theatre when a
+controller connects** (off by default) reacts only to a pad you plug in or turn on while Nexus
+is in front and nothing else is going on: no game running, no menu or setup open. Theatre leaves
+the way it came: if a controller brought you in and you haven't touched the mouse or keyboard
+since, Nexus returns to the desktop 10 s after the last controller disconnects (reconnect it to
+stay). Any other Theatre stays on and tells you F11 leaves. Leave Theatre by hand with a
+controller still on, and that controller won't bring it back until it disconnects.
+
 The **quick menu** (Start or Guide on a pad, F10 or a remote's Home key) opens on the left from
 any Theatre screen: the time and date, your controllers and their battery, **Exit Theatre**
 and **Quit Nexus** (which asks first only while a job is running). Below them, when your
 system allows it (logind), **Sleep**, **Restart PC** and **Shut down**: Sleep acts at once, the
 other two ask first. B closes it.
+
+**Theatre settings** (the quick menu's *Settings*, or the gear by the clock) is a sheet of big
+rows you change without leaving the couch: what A does on a game, starting Nexus in Theatre,
+switching to Theatre when a controller connects, the screensaver, *Your week* on Home, menu
+sounds and their volume, the theme and the art-coloured background. Up/Down move, Left/Right
+change a value, A steps it, B closes; every change is saved at once and shows in Settings →
+Controls and Theatre too. *All settings* leaves Theatre for the full Settings page.
+
+**Your week**, under *Jump back in* on Theatre's Home, shows this week's play time by day, the
+days you played and your streak, and the game you played most (A opens it). It hides when you
+haven't played this week, or when it is switched off.
 
 When a game you played for a minute or more closes while Theatre is on, its page opens with
 **Session ended**: this session's length, your total, and the achievements you unlocked, with

@@ -9,7 +9,7 @@ from PyQt6.QtCore import (pyqtSignal, QEvent, QObject, QPoint, QRectF, Qt, QTime
 from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter,
     QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QProgressBar,
-    QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+    QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, SP
@@ -702,6 +702,7 @@ class TheatreView(QWidget):
     reader_options = pyqtSignal(dict)            # X on a story: open the article, copy the link
     open_settings = pyqtSignal()                 # the Game-db setup card
     hide_gamedb = pyqtSignal()                   # ... and X on it
+    settings_sheet = pyqtSignal()                # the gear: the window opens Theatre's settings
 
     TILE = 230
     WIDE = 440
@@ -732,6 +733,11 @@ class TheatreView(QWidget):
                                         "GlassIcon")
         self.btn_surprise.clicked.connect(self.surprise)
         top.addWidget(self.btn_surprise)
+        # Theatre's settings (w-63): the quick menu has them too, but Steam
+        # may keep the Guide button, and a generic pad has none.
+        self.btn_settings = icon_button(G['settings'], "Settings", 52, "GlassIcon")
+        self.btn_settings.clicked.connect(self.settings_sheet)
+        top.addWidget(self.btn_settings)
         top.addSpacing(SP['4'])
         self.clock = label("", "TheatreClock")
         top.addWidget(self.clock)
@@ -764,6 +770,20 @@ class TheatreView(QWidget):
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['6'])
         self.home_lay.addLayout(self.rows)
+        # Your week (w-63): kept across set_games (taken out of the rows
+        # before they are cleared), shown after "Jump back in".
+        self.week_row = QWidget(host)
+        wl = QVBoxLayout(self.week_row)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(SP['2'])
+        wl.addWidget(label("Your week", "ShelfTitle"))
+        self.week_card = WeekCard(self.WIDE * 2 + SP['3'], int(self.WIDE * 9 / 16) + TILE_LIFT,
+                                  THEATRE_SCALE)
+        self.week_card.open.connect(self._week_open)
+        wl.addWidget(self.week_card, 0, Qt.AlignmentFlag.AlignLeft)
+        self.week_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.week_row.hide()
+        self._week_slug: str | None = None
         self.home_lay.addStretch()
         self.home.setWidget(host)
         self.pages.addWidget(self.home)
@@ -850,6 +870,7 @@ class TheatreView(QWidget):
         self.hero.set_games(featured_games(games))
         self.hero.setVisible(bool(games))
         self._sync_art()
+        self.rows.removeWidget(self.week_row)       # kept: clear_layout would delete it
         clear_layout(self.rows)
         played = sorted((g for g in games if g.get('last_played')),
                         key=lambda g: g['last_played'], reverse=True)
@@ -878,12 +899,50 @@ class TheatreView(QWidget):
             if title == "Jump back in":
                 row.focused.connect(self._spot_focus)
             self.rows.addWidget(row)
+            if title == "Jump back in":
+                self.rows.addWidget(self.week_row)
+        if self.rows.indexOf(self.week_row) < 0:     # nothing played: first
+            self.rows.insertWidget(0, self.week_row)
+        self._sync_week_game()
         self._fill_library()
         if self.details.isVisible():
             cur = next((g for g in everything
                         if g['slug'] == self.details.game.get('slug')), None)
             if cur:
                 self.details.open(cur, refocus=False)
+
+    # ---- Your week ----
+    def set_week(self, week: dict | None, streak: int = 0, on: bool = True,
+                 today: str | None = None):
+        """`week`: history.periods()['week'] (None: not known). Hidden with no
+        play this week or with the setting off; never a "0 h"."""
+        show = bool(on and week and (week.get('minutes') or 0) > 0)
+        if show:
+            self.week_card.set_week(week, streak, today)
+            top = (week.get('games') or [{}])[0]
+            self._week_slug = top.get('slug')
+            self._sync_week_game()
+        elif self.week_card.hasFocus():              # focus first, then hide (w-60)
+            nxt = self.default_focus()
+            if nxt is not None and nxt is not self.week_card:
+                focus_and_reveal(nxt)
+        self.week_row.setVisible(show)
+
+    def _week_game(self) -> dict | None:
+        slug = self._week_slug
+        return next((g for g in self.everything if g.get('slug') == slug), None) \
+            if slug else None
+
+    def _sync_week_game(self):
+        g = self._week_game()
+        self.week_card.game_name = g.get('display_name') or g['slug'] if g else None
+
+    def _week_open(self):
+        """A on the card: the most played game's page (nothing if it has
+        left the library)."""
+        g = self._week_game()
+        if g is not None:
+            self.open_game(g)
 
     # ---- the Library tab ----
     SORTS = (('name', "A to Z"), ('played', "Recently played"), ('most', "Most played"),
@@ -1401,6 +1460,8 @@ from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
 from .theatre_discover import TheatreDiscover, TheatreReader  # noqa: E402
+from .theatre_settings import WeekCard  # noqa: E402
+from .theme import TILE_LIFT  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, EmptyState, FlowLayout, glyph_pixmap, icon_button,  # noqa: E402

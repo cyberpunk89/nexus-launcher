@@ -366,6 +366,11 @@ def power(action: str) -> bool:
         return False
 
 
+def screen_size_mm(x: int, y: int) -> tuple[int, int] | None:
+    """Qt's QScreen.physicalSize() already has the EDID size here."""
+    return None
+
+
 def top_windows() -> list[dict]:
     """Windows' own window list; Linux asks the compositor (winfocus, niri)."""
     return []

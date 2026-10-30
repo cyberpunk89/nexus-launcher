@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QH
 from nexus import __version__, gamedb, platform, updates
 from nexus.features import has
 
-from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT
+from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT, VOLUME_STEPS
 from .theme import (_hex_ok, _mix, accent_hex, accent_pair, ACCENTS, APPEARANCE_DEFAULT,
     CORNERS, G, normalize_appearance, P, pill, PRESET_KEYS, PRESETS, R, R_BASE, SCALES, SP,
     THEMES)
@@ -715,9 +715,9 @@ class SettingsPage(QWidget):
 
     def _build_controls(self):
         sec = self._add_section(SettingsSection(
-            'controls', "Controls", 'gamepad',
-            "What clicks, keys and the controller do on a game. A game that's running, busy "
-            "or not installed always opens its page."))
+            'controls', "Controls and Theatre", 'gamepad',
+            "What clicks, keys and the controller do on a game, and how Theatre mode behaves. "
+            "A game that's running, busy or not installed always opens its page."))
         self.ctl_double = _combo((("Play the game", 'play'), ("Open its page", 'details')))
         self._row(sec, "Double-click a game", "", self.ctl_double, keywords="mouse")
         self.ctl_a = _combo((("Open its page (press again to play)", 'details'),
@@ -728,6 +728,24 @@ class SettingsPage(QWidget):
                                    for m in ATTRACT_MINUTES])
         self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
                   "untouched.", self.ctl_attract, keywords="attract idle tv")
+        # Theatre's own settings (w-63); its sheet on the couch shows the same.
+        self.ctl_on_pad = Switch()
+        self._row(sec, "Switch to Theatre when a controller connects",
+                  "Only when you plug one in or turn it on.", self.ctl_on_pad,
+                  keywords="gamepad tv auto")
+        self.ctl_start = _combo((("Never", 'never'), ("On a TV", 'tv'), ("Always", 'always')))
+        self._row(sec, "Start Nexus in Theatre", "On a TV: when the screen is 32\" or bigger.",
+                  self.ctl_start, keywords="tv couch startup launch")
+        self.ctl_week = Switch()
+        self._row(sec, "Your week on Theatre's Home", "Your play time this week, under "
+                  "Jump back in.", self.ctl_week, keywords="playtime stats streak")
+        self.ctl_sounds = Switch()
+        self._row(sec, "Menu sounds in Theatre", "Soft clicks as you move and select.",
+                  self.ctl_sounds, keywords="audio sfx")
+        self.ctl_volume = _combo([(f"{v}%", v) for v in VOLUME_STEPS])
+        self.volume_row = self._row(sec, "Menu sound volume", "", self.ctl_volume,
+                                    keywords="audio loud")
+        self.ctl_sounds.toggled.connect(self.ctl_volume.setEnabled)
 
     def _build_installing(self):
         sec = self._add_section(SettingsSection('installing', "Installing games", 'download'))
@@ -1063,9 +1081,13 @@ class SettingsPage(QWidget):
             cb.activated.connect(self.commit)
         self.tor_client.activated.connect(self._torrent_client_changed)
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
-                         (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract')):
+                         (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract'),
+                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume')):
             box.activated.connect(lambda _i, box=box, key=key: self.controls_changed.emit(
                 {key: box.currentData()}))
+        for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
+                        (self.ctl_week, 'week_home')):
+            sw.toggled.connect(lambda on, key=key: self.controls_changed.emit({key: on}))
 
     # ---- navigation and search ----
     def _show_repacks(self, on: bool):
@@ -1223,8 +1245,15 @@ class SettingsPage(QWidget):
 
     def set_controls(self, controls: dict):
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
-                         (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract')):
+                         (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract'),
+                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume')):
             box.setCurrentIndex(max(0, box.findData(controls.get(key))))
+        for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
+                        (self.ctl_week, 'week_home')):
+            sw.blockSignals(True)
+            sw.setChecked(bool(controls.get(key)))
+            sw.blockSignals(False)
+        self.ctl_volume.setEnabled(bool(controls.get('sounds')))   # greyed while sounds are off
         has_tray = tray_available()
         self.tray.blockSignals(True)
         self.tray.setChecked(bool(controls.get('close_to_tray')) and has_tray)

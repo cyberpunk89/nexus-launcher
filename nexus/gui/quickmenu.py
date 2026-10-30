@@ -43,6 +43,7 @@ class QuickMenu(QFrame):
         self.state = 'closed'                    # closed | list | confirm
         self._back_to = None                     # focus before the menu opened
         self._row_from: str | None = None        # the row a question came from
+        self._start: str | None = None           # the row the list opens on
         self._rows: list[QuickRow] = []
         self.buttons: dict[str, QPushButton] = {}
         sc = lambda v: int(v * scale)            # noqa: E731
@@ -121,6 +122,7 @@ class QuickMenu(QFrame):
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self._rows = list(rows)
+        self._start = focus
         self._fill_pads(pads)
         self._fill_now(now_playing)
         self._tick()
@@ -187,6 +189,11 @@ class QuickMenu(QFrame):
         self.closed.emit()
 
     def default_focus(self):
+        """The list's starting row (Resume or Exit Theatre, not the first:
+        Settings sits above Exit Theatre), else the first button."""
+        b = self.buttons.get(self._start) if self.state == 'list' else None
+        if b is not None and b.isEnabled() and not b.isHidden():
+            return b
         return next((b for b in self.panel.findChildren(QPushButton)
                      if b.isEnabled() and not b.isHidden()), None)
 

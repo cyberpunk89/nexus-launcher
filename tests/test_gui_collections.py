@@ -66,6 +66,38 @@ class Prefs(unittest.TestCase):
         self.assertEqual(nx.LibraryPrefs().theatre_library,
                          {'sort': 'collection', 'show': 'missing'})
 
+    def test_theatre_controls_defaults_bad_values_and_unknown_kept(self):
+        """w-63: Theatre's controls keys default, fall back on junk, and a
+        newer version's controls keys survive a save."""
+        c = nx.LibraryPrefs().controls
+        self.assertEqual({k: c[k] for k in ('theatre_start', 'theatre_on_pad', 'sounds',
+                                            'volume', 'week_home')},
+                         {'theatre_start': 'never', 'theatre_on_pad': False, 'sounds': False,
+                          'volume': 50, 'week_home': True})
+        for bad in ('loud', None, True, [], float('nan')):
+            self.path.write_text(json.dumps({'controls': {'volume': bad}}))
+            self.assertEqual(nx.LibraryPrefs().controls['volume'], 50, bad)
+        self.path.write_text(json.dumps({'controls': {
+            'theatre_start': 'tv-ish', 'theatre_on_pad': 'yes', 'sounds': 1, 'volume': 147,
+            'week_home': 0, 'future': {'x': 1}}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.controls['theatre_start'], 'never')
+        self.assertFalse(p.controls['theatre_on_pad'])          # only a real true
+        self.assertFalse(p.controls['sounds'])
+        self.assertEqual(p.controls['volume'], 100)              # clamped
+        self.assertTrue(p.controls['week_home'])                 # only a real false hides it
+        self.path.write_text(json.dumps({'controls': {'volume': 34, 'theatre_start': 'tv',
+                                                      'future': {'x': 1}}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.controls['volume'], 30)               # steps of 10
+        self.assertEqual(p.controls['theatre_start'], 'tv')
+        p.controls = {**p.controls, 'sounds': True}
+        p.save()
+        data = json.loads(self.path.read_text())['controls']
+        self.assertEqual(data['future'], {'x': 1})
+        self.assertTrue(data['sounds'])
+        self.assertEqual(data['volume'], 30)
+
     def test_look_order_and_pin_round_trip(self):
         p = nx.LibraryPrefs()
         for n in ('Couch', 'Short', 'Spooky'):

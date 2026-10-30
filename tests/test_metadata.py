@@ -132,6 +132,21 @@ class History(unittest.TestCase):
                                                 path=path), history.is_session(secs))
             self.assertEqual(len(history.load(path)), 2)
 
+    def test_current_streak(self):
+        """w-63: days in a row up to today, or up to yesterday while today
+        has no play yet; a gap ends it."""
+        def sess(day):
+            s = datetime(2026, 10, day, 20, 0)
+            return {'slug': 'x', 'name': 'X', 'start': s.isoformat(), '_start': s,
+                    'minutes': 30.0}
+        days = [sess(d) for d in (20, 22, 23, 24, 24)]       # 21st missed; two on the 24th
+        self.assertEqual(history.current_streak(days, date(2026, 10, 24)), 3)   # today
+        self.assertEqual(history.current_streak(days, date(2026, 10, 25)), 3)   # from yesterday
+        self.assertEqual(history.current_streak(days, date(2026, 10, 26)), 0)   # a gap
+        self.assertEqual(history.current_streak(days, date(2026, 10, 20)), 1)
+        self.assertEqual(history.current_streak([], date(2026, 10, 24)), 0)
+        self.assertEqual(history.periods(days, date(2026, 10, 25))['current_streak'], 3)
+
     def test_periods(self):
         def sess(day, mins, slug, month=10):
             s = datetime(2026, month, day, 20, 0)

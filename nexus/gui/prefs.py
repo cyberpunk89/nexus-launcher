@@ -7,7 +7,8 @@ import uuid
 from nexus import net, paths as NX, smart
 from nexus.icons import COLLECTION_ICONS
 
-from .common import ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE
+from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, THEATRE_STARTS,
+    VOLUME_STEPS)
 from .theme import ACCENTS, normalize_appearance, TILE_W
 
 MAX_PINNED = 3                    # collections pinned to the top bar (w-52)
@@ -31,6 +32,13 @@ def clean_collection_look(look) -> dict:
     if look.get('pinned') is True:
         out['pinned'] = True
     return out
+
+
+def _volume(v) -> int:
+    """controls.volume: 0-100 in steps of 10; anything else is 50."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return 50
+    return min(VOLUME_STEPS, key=lambda s: abs(s - max(0, min(100, v))))
 
 
 class LibraryPrefs:
@@ -95,6 +103,16 @@ class LibraryPrefs:
             'attract': ctl.get('attract') if ctl.get('attract') in ATTRACT_MINUTES else 5,
             # Closing the window hides it to the tray (Settings → Background).
             'close_to_tray': ctl.get('close_to_tray') is True,
+            # Theatre (w-63): start Nexus in it, and switch to it when a pad
+            # connects (stored here; w-64 acts on them).
+            'theatre_start': ctl.get('theatre_start') if ctl.get('theatre_start') in
+            THEATRE_STARTS else 'never',
+            'theatre_on_pad': ctl.get('theatre_on_pad') is True,
+            # Menu sounds in Theatre and their volume (w-65 plays them).
+            'sounds': ctl.get('sounds') is True,
+            'volume': _volume(ctl.get('volume')),
+            # The "Your week" card on Theatre's Home.
+            'week_home': ctl.get('week_home') is not False,
         }
         # Your notes on a game (the details panel's Notes section).
         notes = self._data.get('notes')
@@ -154,7 +172,11 @@ class LibraryPrefs:
                     'view': self.view, 'tile': self.tile,
                     'dashboard': {'version': 1, 'items': self.dashboard},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
-                    'owned_view': self.owned_view, 'controls': self.controls,
+                    'owned_view': self.owned_view,
+                    # A newer version's controls keys are kept too.
+                    'controls': {**(self._data.get('controls')
+                                    if isinstance(self._data.get('controls'), dict) else {}),
+                                 **self.controls},
                     'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
                     'theatre_library': self.theatre_library,
                     'theatre_hide_gamedb': self.theatre_hide_gamedb,

@@ -813,6 +813,22 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #QuickPanel QLabel#NowSub { color: $success; font-size: ${fs_xs}px; font-weight: 600; }
     #QuickPanel QLabel#NowTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
 
+    /* ---- Theatre settings sheet and Your week (w-63) --------------------- */
+    /* The sheet is #Sheet (above); its rows are CouchRow: title left, value right. */
+    QPushButton#CouchRow { background: transparent; border: 1px solid transparent;
+                           border-radius: ${r_control}px; }
+    QPushButton#CouchRow:hover, QPushButton#CouchRow:focus { background: $accent_16; }
+    QLabel#CouchTitle { color: $text; font-size: ${fs_sm}px; }
+    QLabel#CouchValue { color: $subtext; font-size: ${fs_sm}px; font-weight: 500; }
+    QLabel#CouchTitle:disabled, QLabel#CouchValue:disabled { color: $muted; }
+    QLabel#CouchHelp { color: $muted; font-size: ${fs_xs}px; }
+    #WeekCard { background: $surface; border: 1px solid $border_card;
+                border-radius: ${r_card}px; }
+    QLabel#WeekKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#WeekBig { color: $text; font-size: ${fs_big}px; font-weight: 600; }
+    QLabel#WeekLine { color: $subtext; font-size: ${fs_xs}px; }
+    QLabel#WeekGame { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
+
     /* ---- Theatre search: on-screen keyboard ------------------------------ */
     QLabel#SearchQuery { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     QPushButton#Key { background: $glass; color: $on_art; border: 1px solid $glass_hi;

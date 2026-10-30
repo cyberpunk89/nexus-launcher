@@ -100,6 +100,8 @@ class PlayMixin:
     def _back_from_game(self):
         """400 ms after a game closed: the session band if there is one, else
         focus back where it belongs."""
+        if self._theatre:
+            self._feed_theatre_week(ttl=0)          # the week just grew
         if not self._show_session():
             focus_and_reveal(self.default_focus())
 
@@ -114,7 +116,7 @@ class PlayMixin:
             self._session_pending = None
             return False
         if self.isMinimized() or not self.isVisible() or self.quick.isVisible() \
-                or self.theatre_sheet.isVisible():
+                or self.theatre_sheet.isVisible() or self.theatre_settings.isVisible():
             return False
         self._session_pending = None
         g = self.game(pend['slug'])

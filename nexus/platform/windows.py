@@ -934,6 +934,58 @@ def focus_window(window_id: int) -> bool:
             _user32.AttachThreadInput(mine, theirs, False)
 
 
+class _MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT),
+                ('rcWork', wintypes.RECT), ('dwFlags', wintypes.DWORD),
+                ('szDevice', wintypes.WCHAR * 32)]
+
+
+class _DISPLAY_DEVICEW(ctypes.Structure):
+    _fields_ = [('cb', wintypes.DWORD), ('DeviceName', wintypes.WCHAR * 32),
+                ('DeviceString', wintypes.WCHAR * 128), ('StateFlags', wintypes.DWORD),
+                ('DeviceID', wintypes.WCHAR * 128), ('DeviceKey', wintypes.WCHAR * 128)]
+
+
+_user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+_user32.MonitorFromPoint.restype = wintypes.HANDLE
+_user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFOEXW)]
+_user32.GetMonitorInfoW.restype = wintypes.BOOL
+_user32.EnumDisplayDevicesW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                        ctypes.POINTER(_DISPLAY_DEVICEW), wintypes.DWORD]
+_user32.EnumDisplayDevicesW.restype = wintypes.BOOL
+_MONITOR_DEFAULTTONEAREST = 2
+_EDD_GET_DEVICE_INTERFACE_NAME = 1
+
+
+def screen_size_mm(x: int, y: int) -> tuple[int, int] | None:
+    """The monitor at (x, y): its display device (\\\\.\\DISPLAY1), that
+    device's monitor interface (\\\\?\\DISPLAY#<model>#<instance>#{...}),
+    then the EDID Windows keeps under Enum\\DISPLAY\\<model>\\<instance>.
+    None when any step fails."""
+    try:
+        mon = _user32.MonitorFromPoint(wintypes.POINT(x, y), _MONITOR_DEFAULTTONEAREST)
+        info = _MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(info)
+        if not mon or not _user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return None
+        dev = _DISPLAY_DEVICEW()
+        dev.cb = ctypes.sizeof(dev)
+        if not _user32.EnumDisplayDevicesW(info.szDevice, 0, ctypes.byref(dev),
+                                           _EDD_GET_DEVICE_INTERFACE_NAME):
+            return None
+        parts = dev.DeviceID.split('#')
+        if len(parts) < 3 or not parts[0].upper().endswith('DISPLAY'):
+            return None
+        key = '\\'.join((r'SYSTEM\CurrentControlSet\Enum\DISPLAY', parts[1], parts[2],
+                         'Device Parameters'))
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+            blob = winreg.QueryValueEx(k, 'EDID')[0]
+    except OSError:
+        return None
+    from . import edid_size_mm
+    return edid_size_mm(bytes(blob)) if isinstance(blob, (bytes, bytearray)) else None
+
+
 def sdl_library_paths() -> list[str]:
     """SDL2.dll shipped beside nexus-launcher.exe (or beside python.exe when
     run from source), then whatever the DLL search path finds."""

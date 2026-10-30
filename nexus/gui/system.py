@@ -186,13 +186,15 @@ class MinuteBars(QWidget):
     """Minutes played per slot (a day or a week), oldest left: plain painted
     bars with the time above each (when there's room) and a label below
     every `labels_every`-th one, counted back from the last. Bars in
-    `highlight` are full strength, the rest dimmed."""
+    `highlight` are full strength, the rest dimmed. `scale` sizes the text
+    and its room (Theatre's Your week passes THEATRE_SCALE)."""
 
-    def __init__(self, height: int = 170, labels_every: int = 2):
+    def __init__(self, height: int = 170, labels_every: int = 2, scale: float = 1.0):
         super().__init__()
         self.bars: list[dict] = []          # {minutes, label}
         self.highlight: set[int] = set()
         self.labels_every = labels_every
+        self.scale = scale
         self.setMinimumHeight(height)
 
     def set_bars(self, bars: list[dict], highlight=None):
@@ -206,10 +208,11 @@ class MinuteBars(QWidget):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
         f = QFont(FONTS.ui)
-        f.setPixelSize(FS['2xs'])
+        sc = self.scale
+        f.setPixelSize(int(FS['2xs'] * sc))
         pt.setFont(f)
         n = len(self.bars)
-        top, bottom = 18.0, 20.0
+        top, bottom = 18.0 * sc, 20.0 * sc
         h = self.height() - top - bottom
         slot = self.width() / n
         most = max((b['minutes'] for b in self.bars), default=0) or 1
@@ -223,16 +226,16 @@ class MinuteBars(QWidget):
             if b['minutes'] and i not in self.highlight:
                 col.setAlphaF(0.55)
             pt.setBrush(col)
-            pt.drawRoundedRect(r, 3.0, 3.0)
+            pt.drawRoundedRect(r, 3.0 * sc, 3.0 * sc)
             pt.setPen(QColor(P['subtext']))
             if b['minutes'] and slot >= 22:
-                pt.drawText(QRectF(i * slot - 4, r.top() - 16, slot + 8, 14),
+                pt.drawText(QRectF(i * slot - 4, r.top() - 16 * sc, slot + 8, 14 * sc),
                             Qt.AlignmentFlag.AlignCenter, f"{b['minutes'] / 60:.0f} h"
                             if b['minutes'] >= 60 else f"{b['minutes']:.0f} m")
             if b.get('label') and (n - 1 - i) % self.labels_every == 0:
                 pt.setPen(QColor(P['muted']))
-                pt.drawText(QRectF(i * slot - slot, self.height() - bottom + 4, slot * 3, 14),
-                            Qt.AlignmentFlag.AlignCenter, b['label'])
+                pt.drawText(QRectF(i * slot - slot, self.height() - bottom + 4 * sc, slot * 3,
+                                   14 * sc), Qt.AlignmentFlag.AlignCenter, b['label'])
         pt.end()
 
 

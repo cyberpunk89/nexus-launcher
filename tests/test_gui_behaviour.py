@@ -647,6 +647,22 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(got, ['quick', 'start', 'search'])
         ctrl.deleteLater()
 
+    def test_connected_signal_carries_hotplug(self):
+        """A pad's ADDED reaches the window with its GUID and whether it was
+        really plugged in (w-64: only that may bring Theatre)."""
+        from nexus.gui.input import ControllerInput
+        ctrl = ControllerInput(self.win)            # not the window's: nothing acts on it
+        got, gone = [], []
+        ctrl.connected.connect(lambda *a: got.append(a))
+        ctrl.disconnected.connect(gone.append)
+        events = [('added', 'DualSense', 'ps', 'abc', True), ('added', 'Xbox', 'xbox', '', False),
+                  ('removed', 'Xbox')]
+        with mock.patch.object(ctrl.pads, 'poll', return_value=events):
+            ctrl._tick()
+        self.assertEqual(got, [('DualSense', 'ps', 'abc', True), ('Xbox', 'xbox', '', False)])
+        self.assertEqual(gone, ['Xbox'])
+        ctrl.deleteLater()
+
     def test_install_cancel_asks_first(self):
         job = nx.Job(['x'], "Installing T", 't', 'install', 'T')
         job.state = 'running'

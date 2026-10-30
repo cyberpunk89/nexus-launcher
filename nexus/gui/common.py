@@ -75,4 +75,8 @@ COLLECTION_LOOK: dict[str, dict] = {}
 MAX_COLLECTION_NAME = 40
 MAX_TITLE = 120
 ATTRACT_MINUTES = (0, 3, 5, 10, 20)
+# Start Nexus in Theatre: never, on a TV (a big screen), always (w-63).
+THEATRE_STARTS = ('never', 'tv', 'always')
+# Theatre's sound volume, in steps of 10 (the sheet shows 10 pills).
+VOLUME_STEPS = tuple(range(0, 101, 10))
 MAX_NOTE = 20000

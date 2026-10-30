@@ -18,6 +18,8 @@ from .theme import GLYPHS, GRAD, pill, R, SP, TILE_LIFT
 def _native_arrows(w: QWidget, key) -> bool:
     """Arrow keys this widget should keep for itself instead of moving focus."""
     horiz = key in (Qt.Key.Key_Left, Qt.Key.Key_Right)
+    if getattr(w, 'NATIVE_ARROWS', False):      # Theatre's settings rows: Left/Right step
+        return horiz
     if isinstance(w, QLineEdit):
         return horiz and bool(w.text())
     if isinstance(w, (QSlider, QTabBar)):
@@ -229,7 +231,7 @@ class ControllerInput(QObject):
     scroll, right stick = scroll, View/Share = switch library view, Menu/Options
     (Start) and Guide (Xbox / PS button) = the window decides: Theatre's quick
     menu, or into Theatre from the desktop."""
-    connected = pyqtSignal(str, str)       # name, kind
+    connected = pyqtSignal(str, str, str, bool)    # name, kind, guid, hot-plug
     disconnected = pyqtSignal(str)
     used = pyqtSignal()
     action = pyqtSignal(str)               # page-prev/next, view, start, quick, search
@@ -326,7 +328,7 @@ class ControllerInput(QObject):
         for ev in self.pads.poll():
             kind = ev[0]
             if kind == 'added':
-                self.connected.emit(ev[1], ev[2])
+                self.connected.emit(*ev[1:5])
                 continue
             if kind == 'removed':
                 self.disconnected.emit(ev[1])

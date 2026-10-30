@@ -292,6 +292,8 @@ def main():
         instance.request.connect(win.handle_remote)
     if "--theatre" in argv:
         win.set_theatre(True)
+    elif "--hidden" not in argv:
+        win.theatre_on_start()                # Settings > Controls "Start Nexus in Theatre"
     code = app.exec()
     # Tear the window down while Qt is still fully alive: left to PyQt's
     # atexit cleanup, a large widget tree can segfault in sip on the way out.

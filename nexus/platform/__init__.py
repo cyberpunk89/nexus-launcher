@@ -228,6 +228,37 @@ power_caps = _impl.power_caps
 power = _impl.power
 
 
+# the screen (Theatre's "On a TV" start)
+#   screen_size_mm(x, y) -> (w, h) | None   the physical size of the monitor
+#                                           at screen point (x, y), from its
+#                                           EDID in the registry on Windows;
+#                                           None on Linux (Qt's QScreen
+#                                           physicalSize() has it there) or
+#                                           when it can't be read
+#   edid_size_mm(blob) -> (w, h) | None     the size an EDID block gives:
+#                                           the first detailed timing
+#                                           descriptor's mm, else the basic
+#                                           cm bytes; None for a short blob or
+#                                           no size
+screen_size_mm = _impl.screen_size_mm
+
+
+def edid_size_mm(blob: bytes) -> tuple[int, int] | None:
+    """(width, height) in mm from a 128-byte (or longer) EDID: bytes 66-68
+    of the first detailed timing descriptor (54-71; a zero pixel clock means
+    it isn't one), else bytes 21-22 in cm. None when neither has a size."""
+    if not blob or len(blob) < 128:
+        return None
+    if blob[54] or blob[55]:
+        w = blob[66] | (blob[68] & 0xF0) << 4
+        h = blob[67] | (blob[68] & 0x0F) << 8
+        if w and h:
+            return w, h
+    if blob[21] and blob[22]:
+        return blob[21] * 10, blob[22] * 10
+    return None
+
+
 def spawn_detached(cmd, **kw) -> subprocess.Popen:
     for stream in ('stdin', 'stdout', 'stderr'):
         kw.setdefault(stream, subprocess.DEVNULL)

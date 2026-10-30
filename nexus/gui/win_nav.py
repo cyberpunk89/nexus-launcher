@@ -252,6 +252,10 @@ class NavigationMixin:
         return self
 
     def _open_sheet(self) -> 'ActionSheet | None':
+        """The sheet that's up: in Theatre its settings first (w-63), then
+        the options sheet."""
+        if self._theatre and self.theatre_settings.isVisible():
+            return self.theatre_settings
         sheet = self.theatre_sheet if self._theatre else self.sheet
         return sheet if sheet.isVisible() else None
 

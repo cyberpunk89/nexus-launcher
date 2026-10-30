@@ -473,6 +473,37 @@ class Power(unittest.TestCase):
         self.assertLessEqual({'restart', 'shutdown'}, windows.power_caps())
 
 
+class PlatformEdid(unittest.TestCase):
+    """Theatre's "On a TV" start: a screen's size from its EDID."""
+
+    def test_edid_size_mm(self):
+        blob = bytearray(128)
+        blob[21], blob[22] = 121, 68                        # basic block: cm
+        self.assertEqual(platform.edid_size_mm(bytes(blob)), (1210, 680))
+        blob[54], blob[55] = 0x02, 0x3a                     # a detailed timing descriptor
+        blob[66], blob[67], blob[68] = 0x2c, 0xa8, 0x42     # 1068 x 680 mm (high nibbles)
+        self.assertEqual(platform.edid_size_mm(bytes(blob)), (0x42c, 0x2a8))
+        blob[66] = blob[67] = blob[68] = 0                  # no mm there: the cm bytes
+        self.assertEqual(platform.edid_size_mm(bytes(blob)), (1210, 680))
+        blob[21] = blob[22] = 0                             # a projector: no size at all
+        self.assertIsNone(platform.edid_size_mm(bytes(blob)))
+        self.assertIsNone(platform.edid_size_mm(b'\x00\xff' * 10))   # short
+        self.assertIsNone(platform.edid_size_mm(b''))
+
+    @linux_only
+    def test_linux_leaves_it_to_qt(self):
+        from nexus.platform import linux
+        self.assertIsNone(linux.screen_size_mm(0, 0))
+
+    @windows_only
+    def test_windows_answer_is_a_size_or_none(self):
+        from nexus.platform import windows
+        got = windows.screen_size_mm(0, 0)
+        self.assertTrue(got is None or (len(got) == 2 and all(v > 0 for v in got)))
+        with mock.patch.object(windows.winreg, 'OpenKey', side_effect=OSError):
+            self.assertIsNone(windows.screen_size_mm(0, 0))
+
+
 class Memory(unittest.TestCase):
     def test_meminfo_has_what_the_memory_check_reads(self):
         m = platform.meminfo()
