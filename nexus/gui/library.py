@@ -238,6 +238,7 @@ class ShelfRow(QWidget):
                  see_all: bool = False, menu: bool = False, tip: str = ''):
         super().__init__()
         self.title = title
+        self.smart: str | None = None             # a smart shelf's key (HomeView sets it)
         self._want: int | None = None             # an offset to come back to (KeepPlace)
         self.tile_w, self.kind = tile_w, kind
         tile_h = int(tile_w * 9 / 16) if kind == 'wide' else int(tile_w * 3 / 2)
@@ -246,11 +247,12 @@ class ShelfRow(QWidget):
         lay.setSpacing(SP['2'])
         head = QHBoxLayout()
         head.setSpacing(SP['2'])
-        name = label(title, "ShelfTitle")
+        name = self.name_label = label(title, "ShelfTitle")
         name.setToolTip(tip)
         head.addWidget(name)
+        self.count_label = None
         if count:
-            c = label(str(count), "ShelfCount")
+            c = self.count_label = label(str(count), "ShelfCount")
             head.addWidget(c, 0, Qt.AlignmentFlag.AlignBottom)
         head.addStretch()
         if menu:
@@ -306,6 +308,37 @@ class ShelfRow(QWidget):
 
     def finish(self):
         self.row.addStretch()
+
+    def set_games(self, games: list[dict], make):
+        """Point the row at `games` (a refresh): the tiles of games still in
+        it are kept and re-pointed at the fresh dicts, `make(game)` makes the
+        missing ones. The same games in the same order touch no layout."""
+        if [t.game.get('slug') for t in self.tiles] == [g['slug'] for g in games]:
+            for t, g in zip(self.tiles, games):
+                t.set_game(g)
+        else:
+            spare: dict[str, list[GameTile]] = {}
+            for t in self.tiles:
+                spare.setdefault(t.game.get('slug'), []).append(t)
+            while self.row.count():
+                self.row.takeAt(0)              # tiles stay children of the row
+            self.tiles = []
+            for g in games:
+                pool = spare.get(g['slug'])
+                if pool:
+                    t = pool.pop(0)
+                    t.set_game(g)
+                    self.row.addWidget(t)
+                    self.tiles.append(t)
+                else:
+                    self.add(make(g))
+            for pool in spare.values():
+                for t in pool:
+                    t.hide()                    # gone now, not at the next event loop
+                    t.deleteLater()
+            self.finish()
+        if self.count_label is not None:
+            self.count_label.setText(str(len(games)))
 
     def page(self, direction: int):
         self.scroll_to(shelf_page_target(self.bar.value(), self.bar.maximum(),
@@ -865,12 +898,16 @@ class HomeView(QScrollArea, _TileSignals):
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['5'])
         self.lay.addLayout(self.rows)
+        self.smart_rows = QVBoxLayout()       # Shelves: the divider and smart shelves
+        self.smart_rows.setSpacing(SP['5'])
+        self.lay.addLayout(self.smart_rows)
         self.extra = QVBoxLayout()            # Home: the dashboard goes here
         self.lay.addLayout(self.extra)
         self.lay.addStretch()
         self.setWidget(host)
         self.tiles: dict[str, list[GameTile]] = {}
         self._smart: list[QWidget] = []
+        self._kept: dict[str, ShelfRow] = {}   # Shelves: the source rows, by title
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -878,8 +915,6 @@ class HomeView(QScrollArea, _TileSignals):
         self.hero.setFixedHeight(int(max(320, min(560, h * 0.52))))
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
-        clear_layout(self.rows)
-        self._smart = []
         self.tiles = {}             # the dashboard re-adds its shelves' tiles after this
         if self.mode == 'home':
             feat = featured_games(games)
@@ -897,35 +932,74 @@ class HomeView(QScrollArea, _TileSignals):
                 items = sorted((g for g in games if g.get('source', 'nexus') == src),
                                key=lambda g: (g.get('display_name') or '').lower())
                 shelves.append((name, items, (), 'cover', (src, 'name')))
+        # A source row that's still there is kept, with the tiles of the
+        # games still in it: a library reload (after every job) or a
+        # favourite re-points a few hundred tiles instead of making them again.
+        old, self._kept = self._kept, {}
+        while self.rows.count():
+            w = self.rows.takeAt(0).widget()
+            if w is not None and w not in old.values():
+                w.hide()
+                w.deleteLater()
         for title, items, jobs, kind, link in shelves:
-            if items or jobs:
-                self._shelf(title, items, jobs, kind, link)
+            if not (items or jobs):
+                continue
+            row = old.pop(title, None) if not jobs else None
+            if row is not None and row.kind == kind:
+                row.set_games(items, lambda g, r=row: self._tile(g, r.tile_w, r.kind))
+                self.rows.addWidget(row)
+                self._track(row)
+            else:
+                if row is not None:
+                    old[title] = row
+                row = self._shelf(title, items, jobs, kind, link)
+            if not jobs:
+                self._kept[title] = row
+        for row in old.values():
+            row.hide()
+            row.deleteLater()
+        for w in self._smart:
+            if isinstance(w, ShelfRow):
+                self._track(w)
+        if not games:
+            self.set_smart([])
         if not games and not pending_jobs:
             self.rows.addWidget(EmptyState(G['library'], *empty_state_text(empty_text)))
 
     def set_smart(self, shelves: list[dict], note: str = '', hidden: int = 0):
         """The smart shelves after the source rows (Shelves view): a divider,
         then one row per shelf ({key, title, tip, games}) with a ⋮ menu.
-        Nothing at all with no shelf and none hidden. Replaces the last ones."""
+        Nothing at all with no shelf and none hidden. Replaces the last ones,
+        keeping the row (and tiles) of a shelf that's still there."""
+        old = {}
         for w in self._smart:
-            for t in w.findChildren(GameTile):
-                ts = self.tiles.get(t.game.get('slug'), [])
-                if t in ts:
-                    ts.remove(t)
-            self.rows.removeWidget(w)
-            w.hide()
-            w.deleteLater()
+            self.smart_rows.removeWidget(w)
+            if isinstance(w, ShelfRow):
+                self._untrack(w)
+                old[(w.smart, w.title)] = w
+            else:
+                w.hide()
+                w.deleteLater()
         self._smart = []
-        if not shelves and not hidden:
-            return
-        div = SmartDivider(note, hidden)
-        div.hidden_menu.connect(self.hidden_menu)
-        self.rows.addWidget(div)
-        self._smart.append(div)
+        if shelves or hidden:
+            div = SmartDivider(note, hidden)
+            div.hidden_menu.connect(self.hidden_menu)
+            self.smart_rows.addWidget(div)
+            self._smart.append(div)
         for s in shelves:
-            row = self.make_shelf(s['title'], s['games'], smart=s['key'], tip=s.get('tip', ''))
-            self.rows.addWidget(row)
+            row = old.pop((s['key'], s['title']), None)
+            if row is not None:
+                row.set_games(s['games'], lambda g, r=row: self._tile(g, r.tile_w, r.kind))
+                row.name_label.setToolTip(s.get('tip', ''))
+                self._track(row)
+            else:
+                row = self.make_shelf(s['title'], s['games'], smart=s['key'],
+                                      tip=s.get('tip', ''))
+            self.smart_rows.addWidget(row)
             self._smart.append(row)
+        for row in old.values():
+            row.hide()
+            row.deleteLater()
 
     def make_shelf(self, title, games, kind='cover', link=None, smart: str | None = None,
                    tip: str = '') -> 'ShelfRow':
@@ -938,6 +1012,7 @@ class HomeView(QScrollArea, _TileSignals):
         w = self.WIDE_TILE if kind == 'wide' else self.SHELF_TILE
         row = ShelfRow(title, w, kind, count=len(games) if link or smart else None,
                        see_all=bool(link or smart), menu=bool(smart), tip=tip)
+        row.smart = smart
         if smart:
             row.see_all.connect(lambda k=smart: self.show_filter.emit(k))
             row.menu_asked.connect(lambda pos, k=smart: self.shelf_menu.emit(k, pos))
@@ -950,14 +1025,30 @@ class HomeView(QScrollArea, _TileSignals):
             t.selected.connect(lambda _g, _m, j=job: self.pending_clicked.emit(j))
             row.add(t)
         for g in games:
-            t = GameTile(g, width=w, kind=kind)
-            self._wire(t)
+            t = self._tile(g, w, kind)
             row.add(t)
             self.tiles.setdefault(g['slug'], []).append(t)
         row.finish()
         if add:
             self.rows.addWidget(row)
         return row
+
+    def _tile(self, g, w, kind) -> 'GameTile':
+        t = GameTile(g, width=w, kind=kind)
+        self._wire(t)
+        return t
+
+    def _track(self, row: ShelfRow):
+        """A kept row's tiles back in `tiles` (selection, jobs, reveal)."""
+        for t in row.tiles:
+            if not t.pending:
+                self.tiles.setdefault(t.game.get('slug'), []).append(t)
+
+    def _untrack(self, row: ShelfRow):
+        for t in row.tiles:
+            ts = self.tiles.get(t.game.get('slug'), [])
+            if t in ts:
+                ts.remove(t)
 
     def _each_tile(self):
         for slug, ts in self.tiles.items():
