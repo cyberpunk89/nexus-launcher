@@ -1,4 +1,12 @@
 {
+  "0.5.2": [
+    {
+      "kind": "new",
+      "icon": "gamepad",
+      "title": "Quick menu in Theatre",
+      "text": "Start or the Guide button opens a quick menu in Theatre, with Exit Theatre and Quit Nexus. Start no longer leaves Theatre; F11 still does."
+    }
+  ],
   "0.5.1": [
     {
       "kind": "new",
