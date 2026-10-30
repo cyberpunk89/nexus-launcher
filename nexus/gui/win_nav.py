@@ -272,6 +272,9 @@ class NavigationMixin:
         view = self.homeview if self.current() == self.HOME else self.views.currentWidget()
         if isinstance(view, ListView):
             return view if view.rowCount() else None
+        make = getattr(view, 'tile_for', None)
+        if make is not None:                    # the grid builds only rows near the view
+            return (make(slug) if slug else None) or make()
         tiles = getattr(view, 'tiles', {})
         if slug and tiles.get(slug):
             return tiles[slug][0]

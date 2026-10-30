@@ -30,18 +30,84 @@ class _TileSignals:
         tile.double.connect(self.double)
 
 
-class LibraryView(QScrollArea, _TileSignals):
-    """Reflowing grid of tiles with a centered empty state.
+class _GridHost(QWidget):
+    """The grid's canvas: as tall as every row of the library, though only
+    the rows near the view hold tiles (LibraryView places them), so its
+    height comes from the count, not from child widgets. The geometry is
+    FlowLayout's with `justify` for same-size items: full rows reach both
+    edges and the last row keeps their columns."""
 
-    The empty message is a sibling of the flow rather than an item inside it —
-    a FlowLayout sizes each child to its own hint, so a label placed in it would
-    sit top-left however it's aligned."""
+    def __init__(self, margin: int, spacing: int):
+        super().__init__()
+        self.margin, self.spacing = margin, spacing
+        self.count = 0
+        self.cell = QSize(TILE_W, int(TILE_W * 3 / 2) + TILE_LIFT)
+        sp = self.sizePolicy()
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+
+    def set_shape(self, count: int, cell: QSize):
+        if count != self.count or cell != self.cell:
+            self.count, self.cell = count, QSize(cell)
+            self.updateGeometry()
+
+    def columns(self, width: int) -> int:
+        avail = width - 2 * self.margin
+        return max(1, (avail + self.spacing) // (self.cell.width() + self.spacing))
+
+    def rows(self, width: int) -> int:
+        return -(-self.count // self.columns(width))
+
+    def pitch(self) -> int:
+        return self.cell.height() + self.spacing
+
+    def xs(self, width: int) -> list[int]:
+        """Each column's left edge, rounded the way FlowLayout rounds."""
+        cols, cw = self.columns(width), self.cell.width()
+        gap = float(self.spacing)
+        if self.rows(width) > 1 and cols > 1:      # one row only: plain spacing
+            gap = max(gap, (width - 2 * self.margin - cols * cw) / (cols - 1))
+        out, x = [], float(self.margin)
+        for _ in range(cols):
+            out.append(round(x))
+            x += cw + gap
+        return out
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        rows = self.rows(width)
+        return 2 * self.margin + rows * self.cell.height() + max(0, rows - 1) * self.spacing
+
+    def sizeHint(self):
+        return QSize(self.cell.width() + 2 * self.margin, self.heightForWidth(self.width()))
+
+    def minimumSizeHint(self):
+        return QSize(self.cell.width() + 2 * self.margin,
+                     2 * self.margin + (self.cell.height() if self.count else 0))
+
+
+class LibraryView(QScrollArea, _TileSignals):
+    """The grid of tiles, with a centered empty state.
+
+    Virtual (w-50): only the rows on screen, and one more over each edge,
+    have tiles, so the arrow keys and the D-pad always find a next row.
+    Scrolling hands the tiles that leave to the games that come in
+    (`GameTile.set_game`), so 3,000 games cost the tiles of a screen or
+    two. The focused tile, and the rows around it, stay wherever the view
+    goes. `tiles` holds the built tiles only; `games` maps every shown game
+    to its place; `tile_for` builds the tile of a game that has none.
+
+    The empty message is a sibling of the grid rather than inside it."""
     clicked = pyqtSignal(dict, object)
     play = pyqtSignal(dict)
     menu = pyqtSignal(dict, QPoint)
     activated = pyqtSignal(dict)
     double = pyqtSignal(dict)
     pending_clicked = pyqtSignal(object)
+
+    BUFFER_ROWS = 1          # built beyond each edge of the view
 
     def __init__(self):
         super().__init__()
@@ -51,8 +117,7 @@ class LibraryView(QScrollArea, _TileSignals):
         outer = QVBoxLayout(self.container)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.flow_host = QWidget()
-        self.flow = FlowLayout(self.flow_host, margin=SP['5'], spacing=SP['4'], justify=True)
+        self.flow_host = _GridHost(SP['5'], SP['4'])
         outer.addWidget(self.flow_host)
         self._empty = EmptyState(G['library'], "")
         self._empty.setVisible(False)
@@ -60,63 +125,192 @@ class LibraryView(QScrollArea, _TileSignals):
         outer.addStretch()
         self.setWidget(self.container)
         self.tiles: dict[str, list[GameTile]] = {}
+        self.games: dict[str, int] = {}          # slug -> place in the grid
         self.tile_width = TILE_W
+        self._games: list[dict] = []
+        self._pending: list[GameTile] = []       # install jobs: first, always built
+        self._built: dict[int, GameTile] = {}    # place -> its game's tile
+        self._spare: list[GameTile] = []         # hidden, ready for the next rows
+        self._pin: int | None = None             # a place tile_for asked for
+        self._sel: set = set()
+        self._job_of: dict = {}
+        self.flow_host.installEventFilter(self)
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
-        # Tiles are kept and re-pointed at the new game dicts where they can
-        # be (same game, same size): a search, a favourite or a library
-        # reload then costs a re-layout, not a few hundred new widgets.
-        spare: dict[str, list[GameTile]] = {}
-        while self.flow.count():
-            item = self.flow.takeAt(0)
-            w = item.widget()
-            if isinstance(w, GameTile) and not w.pending and w.tw == self.tile_width:
-                spare.setdefault(w.game.get('slug'), []).append(w)
-            elif w is not None:
-                w.hide()                       # gone now, not at the next event loop
-                w.deleteLater()
-        self.tiles = {}
-        order = []
+        # Tiles are kept and re-pointed at the new game dicts (same size): a
+        # search, a favourite or a library reload re-uses the few tiles
+        # there are. The focused one keeps its game, wherever that moved.
+        host = self.flow_host
+        for t in self._pending:
+            t.hide()                           # gone now, not at the next event loop
+            t.deleteLater()
+        self._pending = []
         for job in pending_jobs:
             t = GameTile({'slug': f'__pending_{id(job)}', 'display_name': job.name},
                          pending=True, width=self.tile_width)
+            t.setParent(host)
             t.set_job(job)
             t.selected.connect(lambda _g, _m, j=job: self.pending_clicked.emit(j))
-            order.append(t)
-        for g in games:
-            pool = spare.get(g['slug'])
-            if pool:
-                tile = pool.pop()
-                tile.set_game(g)
-            else:
-                tile = GameTile(g, width=self.tile_width)
-                self._wire(tile)
-            order.append(tile)
-            self.tiles.setdefault(g['slug'], []).append(tile)
-        self.flow.add_widgets(order)
-        for pool in spare.values():
-            for w in pool:
-                w.hide()
-                w.deleteLater()
+            self._pending.append(t)
+        old = [*self._built.values(), *self._spare]
+        self._built, self._spare = {}, []
+        if old and old[0].tw != self.tile_width:   # a new tile size: new tiles
+            for t in old:
+                t.hide()
+                t.deleteLater()
+            old = []
+        self._spare = old
+        self._games = list(games)
+        n = len(self._pending)
+        self.games = {}
+        for i, g in enumerate(self._games):
+            self.games.setdefault(g['slug'], n + i)
+        self._pin = None
+        f = QApplication.focusWidget()
+        if f in old and f.game.get('slug') in self.games:
+            self._spare.remove(f)
+            self._built[self.games[f.game['slug']]] = f
+        host.set_shape(n + len(self._games),
+                       QSize(self.tile_width, int(self.tile_width * 3 / 2) + TILE_LIFT))
+        self._fill()
         shown = bool(games) or bool(pending_jobs)
         self._empty.set(*empty_state_text(empty_text))
         self._empty.setVisible(not shown)
-        self.flow_host.setVisible(shown)
+        host.setVisible(shown)
+
+    def scrollContentsBy(self, dx, dy):
+        # The bar has its new value; the rows are filled before the grid
+        # moves, so the move's own enter/leave finds the tile now under the
+        # mouse (its hover lift), as it did when every tile existed.
+        self._fill()
+        super().scrollContentsBy(dx, dy)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fill()                           # a taller view shows more rows
+
+    def eventFilter(self, obj, ev):
+        if obj is self.flow_host and ev.type() == QEvent.Type.Resize:
+            self._fill()                       # new width: new columns
+        return super().eventFilter(obj, ev)
+
+    def _focus_place(self) -> int | None:
+        f = QApplication.focusWidget()
+        return next((i for i, t in self._built.items() if t is f), None)
+
+    def _fill(self):
+        """Give the rows near the view their tiles, from the spares first;
+        hide the tiles that are left over."""
+        host = self.flow_host
+        total, n = host.count, len(self._pending)
+        width = host.width()
+        cols, pitch = host.columns(width), host.pitch()
+        want: set[int] = set()
+        if total > n:
+            vh = self.viewport().height()
+            if not self.isVisible():           # not laid out yet: guess a screenful
+                scr = self.screen()
+                vh = max(vh, scr.availableGeometry().height() if scr else 900)
+            # The bar catches up with a shorter grid only at the next layout.
+            v = min(self.verticalScrollBar().value(),
+                    max(0, host.y() + host.heightForWidth(width) - vh))
+            reach = pitch * self.BUFFER_ROWS
+            top = v - host.y() - host.margin - reach
+            bottom = v + vh - host.y() - host.margin + reach
+            first, last = max(0, top // pitch), max(0, bottom // pitch)
+            want.update(range(first * cols, min(total, (last + 1) * cols)))
+            for anchor in (self._focus_place(), self._pin):
+                if anchor is not None and anchor < total:
+                    r = anchor // cols             # its row and the rows around it
+                    want.update(range(max(0, (r - 1) * cols), min(total, (r + 2) * cols)))
+            want.difference_update(range(n))
+        for i in [i for i in self._built if i not in want]:
+            self._spare.append(self._built.pop(i))
+        fresh = {}
+        need = sorted(i for i in want if i not in self._built)
+        if need:
+            # The same game's old tile first (its art is ready), then any.
+            by_slug: dict[str, list[GameTile]] = {}
+            for t in self._spare:
+                by_slug.setdefault(t.game.get('slug'), []).append(t)
+            rest = []
+            for i in need:
+                pool = by_slug.get(self._games[i - n]['slug'])
+                if pool:
+                    fresh[i] = pool.pop()
+                else:
+                    rest.append(i)
+            left = [t for ts in by_slug.values() for t in ts]
+            for i in rest:
+                fresh[i] = left.pop() if left else self._make(self._games[i - n])
+            self._spare = left
+            self._built.update(fresh)
+        xs = host.xs(width)
+        for i, t in enumerate(self._pending):
+            self._place(t, i, cols, pitch, xs)
+        tiles: dict[str, list[GameTile]] = {}
+        for i in sorted(self._built):
+            t, g = self._built[i], self._games[i - n]
+            if t.game is not g or i in fresh:
+                if t.game is not g:
+                    t.set_game(g)
+                t.rest()
+                t.set_selected(g['slug'] in self._sel)
+                t.set_job(self._job_of.get(g['slug']))
+            self._place(t, i, cols, pitch, xs)
+            tiles.setdefault(g['slug'], []).append(t)
+        self.tiles = tiles
+        keep = max(len(self._built), 2 * cols)
+        for t in self._spare[keep:]:
+            t.hide()
+            t.deleteLater()
+        del self._spare[keep:]
+        for t in self._spare:
+            if not t.isHidden():
+                t.hide()
+
+    def _place(self, t: GameTile, i: int, cols: int, pitch: int, xs: list[int]):
+        r, c = divmod(i, cols)
+        p = QPoint(xs[c], self.flow_host.margin + r * pitch)
+        if t.pos() != p:
+            t.move(p)
+        if t.isHidden():
+            t.show()
+
+    def _make(self, g: dict) -> GameTile:
+        t = GameTile(g, width=self.tile_width)
+        t.setParent(self.flow_host)
+        self._wire(t)
+        return t
+
+    def tile_for(self, slug: str | None = None) -> GameTile | None:
+        """The tile of `slug` (of the first game when None), built if its
+        row had none; it stays until the next set_games or until it's
+        focused and left. None when the game isn't shown."""
+        i = self.games.get(slug) if slug else (len(self._pending) if self._games else None)
+        if i is None:
+            return None
+        if i not in self._built:
+            self._pin = i
+            self._fill()
+        return self._built.get(i)
 
     def mark_selected(self, slugs: set):
+        self._sel = set(slugs)
         for s, ts in self.tiles.items():
             for t in ts:
-                t.set_selected(s in slugs)
+                t.set_selected(s in self._sel)
 
     def reveal(self, slug):
-        for t in self.tiles.get(slug, [])[:1]:
+        t = self.tile_for(slug)
+        if t is not None:
             self.ensureWidgetVisible(t)
 
     def set_jobs(self, jobs: 'JobManager'):
-        by_slug = jobs.tile_jobs()
+        self._job_of = jobs.tile_jobs()
         for slug, ts in self.tiles.items():
             for t in ts:
-                t.set_job(by_slug.get(slug))
+                t.set_job(self._job_of.get(slug))
 
 
 class KeepPlace:
@@ -1321,5 +1515,5 @@ from .gameinfo import (is_installed, play_enabled, play_label, SOURCE_LABEL, TIE
 from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import (clear_layout, empty_state_text, EmptyState, FlowLayout, icon_button,
+from .widgets import (clear_layout, empty_state_text, EmptyState, icon_button,
     icon_label, label, set_glyph_icon)  # noqa: E402

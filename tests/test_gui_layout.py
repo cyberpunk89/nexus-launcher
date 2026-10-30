@@ -476,6 +476,131 @@ class Caching(unittest.TestCase):
         self.assertIsNot(view.tiles['g1'][0], first['g1'])
         view.deleteLater()
 
+    def _big_grid(self, n=3000, size=(900, 700)):
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QVBoxLayout
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(*size)
+        view = nx.LibraryView()
+        QVBoxLayout(host).addWidget(view)
+        host.show()
+        games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': 'steam',
+                  'installed': True} for i in range(n)]
+        view.set_games(games)
+        QTest.qWait(20)
+        return host, view, games
+
+    @staticmethod
+    def _shown(view):
+        return [t for t in view.findChildren(nx.GameTile) if not t.isHidden()]
+
+    def test_library_grid_builds_only_the_rows_near_the_view(self):
+        """w-50: 3,000 games make the tiles of about two screens, not 3,000,
+        in the same places FlowLayout gave them."""
+        host, view, games = self._big_grid()
+        cols = view.flow_host.columns(view.flow_host.width())
+        self.assertGreater(cols, 1)
+        built = self._shown(view)
+        self.assertLess(len(built), 8 * cols)
+        self.assertLess(len(view.findChildren(nx.GameTile)), 12 * cols)   # spares included
+        self.assertEqual(len(view.games), 3000)
+        # The canvas is as tall as every row; positions match FlowLayout's.
+        ref_host = QWidget()
+        self.addCleanup(ref_host.deleteLater)
+        flow = nx.FlowLayout(ref_host, margin=nx.SP['5'], spacing=nx.SP['4'], justify=True)
+        cell = view.flow_host.cell
+        for _ in range(3 * cols + 1):
+            w = QWidget(ref_host)
+            w.setFixedSize(cell)
+            flow.addWidget(w)
+        width = view.flow_host.width()
+        ref_host.resize(width, flow.heightForWidth(width))
+        flow.setGeometry(QRect(0, 0, width, flow.heightForWidth(width)))
+        for i in range(3 * cols):
+            self.assertEqual(view.tiles[f'g{i}'][0].pos(), flow.itemAt(i).geometry().topLeft())
+        rows = -(-3000 // cols)
+        self.assertEqual(view.flow_host.height(),
+                         2 * nx.SP['5'] + rows * cell.height() + (rows - 1) * nx.SP['4'])
+        # Scrolled to the end: the last games have tiles, the first don't.
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        self.assertIn('g2999', view.tiles)
+        self.assertNotIn('g0', view.tiles)
+        self.assertIs(view.tiles['g2999'][0].game, games[2999])
+        self.assertLess(len(self._shown(view)), 8 * cols)
+        self.assertLess(len(view.findChildren(nx.GameTile)), 12 * cols)
+
+    def test_library_grid_keeps_focus_and_selection_while_scrolling(self):
+        host, view, _games = self._big_grid()
+        host.activateWindow()
+        tile = view.tiles['g1'][0]
+        tile.setFocus()
+        view.mark_selected({'g1', 'g2500'})
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum() // 2)
+        bar.setValue(bar.maximum())
+        # The focused tile stays put (with its neighbours, for the arrow keys).
+        self.assertIs(view.tiles['g1'][0], tile)
+        self.assertTrue(tile.hasFocus())
+        self.assertEqual(tile.game['slug'], 'g1')
+        self.assertFalse(tile.isHidden())
+        self.assertIn('g0', view.tiles)
+        # A game scrolled into view gets its selection from mark_selected.
+        view.reveal('g2500')
+        self.assertTrue(view.tiles['g2500'][0]._selected)
+        self.assertFalse([t for s, ts in view.tiles.items() for t in ts
+                          if t._selected != (s in ('g1', 'g2500'))])
+        bar.setValue(0)
+        self.assertIs(view.tiles['g1'][0], tile)
+        # A reload keeps the focused tile on its game, wherever that moved.
+        fresh = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': 'steam',
+                  'installed': True} for i in reversed(range(3000))]
+        view.set_games(fresh)
+        self.assertIs(view.tiles['g1'][0], tile)
+        self.assertIs(tile.game, fresh[2998])
+        self.assertTrue(tile.hasFocus())
+
+    def test_tile_for_builds_a_tile_far_down(self):
+        host, view, _games = self._big_grid()
+        self.assertNotIn('g2000', view.tiles)
+        t = view.tile_for('g2000')
+        self.assertIs(view.tiles['g2000'][0], t)
+        self.assertIs(view.tile_for(), view.tiles['g0'][0])   # the first game's
+        self.assertIsNone(view.tile_for('nope'))
+        view.reveal('g2000')
+        vp = view.viewport()
+        top = t.mapTo(vp, QPoint(0, 0)).y()
+        self.assertTrue(0 <= top and top + t.height() <= vp.height())
+
+    def test_arrow_keys_cross_rows_that_had_no_tiles(self):
+        """Down from the last built row: the next row is always built (one
+        row over the edge), the focus moves there, the view follows and
+        builds the row after. Up comes back the same way."""
+        from PyQt6.QtTest import QTest
+        from nexus.gui.input import SpatialNav
+        host, view, _games = self._big_grid(n=600)
+        nav = SpatialNav(host)
+        _app.installEventFilter(nav)
+        self.addCleanup(_app.removeEventFilter, nav)
+        host.activateWindow()
+        cols = view.flow_host.columns(view.flow_host.width())
+        view.tiles['g1'][0].setFocus()
+        for _ in range(40):
+            QTest.keyClick(_app.focusWidget(), Qt.Key.Key_Down)
+        f = _app.focusWidget()
+        self.assertIsInstance(f, nx.GameTile)
+        self.assertEqual(f.game['slug'], f'g{1 + 40 * cols}')
+        vp = view.viewport()
+        top = f.mapTo(vp, QPoint(0, 0)).y()
+        self.assertTrue(0 <= top and top + f.height() <= vp.height())
+        self.assertLess(len(self._shown(view)), 10 * cols)
+        QTest.keyClick(f, Qt.Key.Key_Right)
+        self.assertEqual(_app.focusWidget().game['slug'], f'g{2 + 40 * cols}')
+        for _ in range(40):
+            QTest.keyClick(_app.focusWidget(), Qt.Key.Key_Up)
+        self.assertEqual(_app.focusWidget().game['slug'], 'g2')
+
     def test_big_library_stays_within_the_art_budget(self):
         """3,000 games used to cost about 1 GB: every tile kept its own
         decoded pixmap, so the cache's cap capped nothing (w-46). Tiles now
@@ -529,7 +654,7 @@ class Caching(unittest.TestCase):
             self.assertLessEqual(cache.used, cache.budget)
             self.assertLess(len(cache.pix), 30)                # not 600
             tiles = [t for ts in view.tiles.values() for t in ts]
-            self.assertEqual(len(tiles), 600)
+            self.assertLess(len(tiles), 60)                    # the rows near the view (w-50)
             for t in tiles:                                    # nothing outside the budget
                 self.assertFalse([k for k, v in vars(t).items() if isinstance(v, QPixmap)])
             self.assertEqual(centre(view.tiles['g0'][0]), colours[0])
