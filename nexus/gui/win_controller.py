@@ -175,14 +175,24 @@ class ControllerMixin:
             self.quick.close_menu()
             return
         self.theatre_sheet.close_sheet()
-        self.quick.open(self._quick_rows(), self._quick_pads(), focus='exit-theatre')
+        game = now_playing(self._games)
+        # Resume while a game runs or starts, else Exit Theatre; never a
+        # row with a section (POWER), whatever joins the menu.
+        self.quick.open(self._quick_rows(game), self._quick_pads(),
+                        focus='resume' if game else 'exit-theatre', now_playing=game)
         self._update_hints()
 
-    def _quick_rows(self) -> list:
-        """The menu's rows, top to bottom. Rows with a section (POWER) sit
-        at the bottom of the panel."""
-        return [QuickRow('exit-theatre', "Exit Theatre", G['log_out']),
-                QuickRow('quit', "Quit Nexus", G['close'])]
+    def _quick_rows(self, game: dict | None = None) -> list:
+        """The menu's rows, top to bottom: Resume (and Quit game) while `game`
+        runs or starts (Now playing), then Exit Theatre and Quit Nexus. Rows
+        with a section (POWER) sit at the bottom of the panel."""
+        rows = []
+        if game is not None:                    # Quit game once it's really running
+            rows.append(QuickRow('resume', "Resume", G['play']))
+            if game.get('playing'):
+                rows.append(QuickRow('quit-game', "Quit game", G['stop'], danger=True))
+        return rows + [QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=bool(rows)),
+                       QuickRow('quit', "Quit Nexus", G['close'])]
 
     def _quick_pads(self) -> list[dict]:
         """The connected pads for the menu's strip (Steam's virtual copy of
@@ -199,7 +209,13 @@ class ControllerMixin:
                  'charging': bool(batt and batt[0]['charging'])} for n in names]
 
     def _quick_chosen(self, key: str):
-        if key == 'exit-theatre':
+        game = self.quick.now_game
+        if key == 'resume' and game is not None:
+            self.quick.close_menu(restore=False)
+            self.resume_game(game)
+        elif key == 'quit-game' and game is not None:
+            self._ask_quit_game(game, self.quick)
+        elif key == 'exit-theatre':
             self.quick.close_menu(restore=False)
             self.set_theatre(False)
         elif key == 'quit':
@@ -288,9 +304,26 @@ class ControllerMixin:
     DESK_ACTIONS = ('artwork', 'settings', 'view-log', 'uninstall')
 
     def _theatre_action(self, act, game):
+        if act == 'resume':
+            self.resume_game(game)
+            return
+        if act == 'quit-game':                       # the spotlight, or Options on its page
+            self._ask_quit_game(game, self.theatre_sheet)
+            return
         if act in self.DESK_ACTIONS:
             self.set_theatre(False)
         self.on_game_action(act, game)
+
+    def _ask_quit_game(self, g: dict, where):
+        """Quit game asks first, in the panel it came from (the quick menu or
+        Theatre's sheet), with Cancel focused and the game named."""
+        name = g.get('display_name', g['slug'])
+        title, text = f"Quit {name}?", "Anything you haven't saved will be lost."
+        if where is self.quick:
+            where.ask(title, text, "Quit game", G['stop'], lambda: self.stop_game(g))
+        else:
+            where.ask(title, text, "Quit game", lambda: self.stop_game(g))
+        self._update_hints()
 
     def _a_label(self, f) -> str:
         game = f.game if isinstance(f, GameTile) else {}
@@ -340,8 +373,10 @@ class ControllerMixin:
                 return
             if f is not None and th.hero.isAncestorOf(f):
                 # The spotlight on Home: the game that has focus in "Jump back in".
-                hints = [('a', 'Play' if f is th.hero.btn else 'Open'), ('x', 'Options'),
-                         ('↓', 'Your games')]
+                pinned = th.hero.is_pinned()
+                hints = [('a', ('Resume' if pinned else 'Play') if f is th.hero.btn else
+                          'Quit game' if pinned and f is th.hero.btn_details else 'Open'),
+                         ('x', 'Options'), ('↓', 'Your games')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
             else:
@@ -373,7 +408,7 @@ class ControllerMixin:
 # below is inside a method, so the cycle resolves at call time.
 from .dashboard import mark_duplicates  # noqa: E402
 from .deals import DealCard, DealSpotlight  # noqa: E402
-from .gameinfo import can_quick_play  # noqa: E402
+from .gameinfo import can_quick_play, now_playing  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
 from .quickmenu import QuickRow  # noqa: E402

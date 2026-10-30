@@ -5,6 +5,12 @@
       "icon": "gamepad",
       "title": "Quick menu in Theatre",
       "text": "Start or the Guide button opens a quick menu in Theatre, with Exit Theatre and Quit Nexus. Start no longer leaves Theatre; F11 still does."
+    },
+    {
+      "kind": "new",
+      "icon": "play",
+      "title": "Now playing",
+      "text": "While a game runs, Theatre's Home and the quick menu show it with Resume and Quit game. Quit game works for repacks, Steam and Heroic games."
     }
   ],
   "0.5.1": [

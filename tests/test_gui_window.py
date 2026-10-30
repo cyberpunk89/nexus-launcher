@@ -3,7 +3,10 @@ details panel, Home's rows. Offscreen with the CLI stubbed out, so nothing
 runs, nothing is fetched and the user's prefs are never written."""
 
 import json
+import os
+import time
 import unittest
+from datetime import datetime, timedelta
 from unittest import mock
 
 try:
@@ -1809,6 +1812,210 @@ class Window(unittest.TestCase):
                                  if not lab.isHidden()])
         w.set_theatre(False)
 
+    # ---- Now playing (w-59) ----
+    def _play(self, w, g, minutes=42):
+        """`g` is running, as the poll would see it, started `minutes` ago."""
+        w._apply_running({g['slug']})
+        w._session_start[g['slug']] -= timedelta(minutes=minutes)
+        w._mark_states()
+        QApplication.processEvents()
+
+    def test_quick_menu_now_playing(self):
+        """While a game runs the menu shows it (art, minutes, name) with
+        Resume focused and Quit game; Quit game asks first, Cancel focused,
+        naming the game; starting: Resume only; nothing running: no card,
+        Exit Theatre focused."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        g = w._games[1]
+        runs = []
+        with mock.patch.object(w, 'run', lambda *a, **k: runs.append(a)), \
+                mock.patch.object(w, 'resume_game') as resume:
+            self._play(w, g)
+            w.toggle_quick()
+            q = w.quick
+            QApplication.processEvents()
+            self.assertTrue(q.now.isVisibleTo(q))
+            self.assertIn("NOW PLAYING", q.now_sub.text())
+            self.assertIn("42 MIN", q.now_sub.text())
+            self.assertEqual(q.now_title.text(), g['display_name'])
+            self.assertIs(QApplication.focusWidget(), q.buttons['resume'])
+            self.assertEqual(list(q.buttons), ['resume', 'quit-game', 'exit-theatre', 'quit'])
+            self.assertTrue(q.buttons['quit-game'].property('danger'))
+            q.buttons['quit-game'].setFocus()
+            q.buttons['quit-game'].click()                  # asks, in the panel
+            self.assertEqual(q.state, 'confirm')
+            self.assertFalse(q.now.isVisibleTo(q))
+            self.assertEqual(QApplication.focusWidget().text(), "Cancel")
+            self.assertTrue(any(lab.text() == f"Quit {g['display_name']}?"
+                                for lab in q.findChildren(QLabel)))
+            self.assertEqual(runs, [])
+            w._escape()                                     # B: back, on Quit game
+            self.assertEqual(q.state, 'list')
+            self.assertIs(QApplication.focusWidget(), q.buttons['quit-game'])
+            q.buttons['quit-game'].click()
+            next(b for b in q.findChildren(QPushButton)
+                 if b.text() == "Quit game" and b.isVisible()).click()
+            self.assertFalse(q.isVisible())
+            self.assertEqual(runs[-1][0], ['--stop', g['slug']])
+            self.assertEqual(runs[-1][3], 'tool')           # a quick job, off the GUI thread
+            w.toggle_quick()
+            q.buttons['resume'].click()                     # Resume: the menu goes
+            resume.assert_called_once()
+            self.assertEqual(resume.call_args[0][0]['slug'], g['slug'])
+            self.assertFalse(q.isVisible())
+            w._apply_running(set())                         # it closed
+            w._launching[g['slug']] = time.monotonic()       # another start
+            w._mark_states()
+            w.toggle_quick()
+            self.assertIn("STARTING", q.now_sub.text())
+            self.assertEqual(list(q.buttons), ['resume', 'exit-theatre', 'quit'])
+            self.assertIs(QApplication.focusWidget(), q.buttons['resume'])
+            w.toggle_quick()
+            w._launching.clear()
+            w._mark_states()
+            w.toggle_quick()                                # nothing running
+            self.assertFalse(q.now.isVisibleTo(q))
+            self.assertIs(QApplication.focusWidget(), q.buttons['exit-theatre'])
+            w.toggle_quick()
+        w.set_theatre(False)
+
+    def test_spotlight_pins_the_running_game(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th, hero = w.theatre, w.theatre.hero
+        g = w._games[1]
+        other = next(x for x in w._games if x['slug'] != g['slug'] and x.get('installed', True))
+        with mock.patch.object(w, 'run', lambda *a, **k: None):
+            self._play(w, g)
+            g = w.game(g['slug'])
+            g['session_base'] = 600                         # 10 h before this session
+            w._home_sig = None
+            w.apply_filter()
+            QApplication.processEvents()
+            self.assertTrue(hero.is_pinned())
+            self.assertEqual(hero.game['slug'], g['slug'])
+            self.assertIn("NOW PLAYING", hero.kicker.text())
+            self.assertIn("42 MIN", hero.kicker.text())
+            self.assertEqual(hero.btn.text(), "Resume")
+            self.assertTrue(hero.btn.isEnabled())
+            self.assertEqual(hero.btn_details.text(), "Quit game")
+            t0 = w._session_start[g['slug']]
+            self.assertIn(f"Started at {t0:%H:%M}", hero.fact.text())
+            self.assertIn(f"{max(g.get('playtime_minutes') or 0, 642) / 60:.1f} h played",
+                          hero.fact.text())
+            hero.show_game(other)                           # pinned: focus doesn't move it
+            self.assertEqual(hero.game['slug'], g['slug'])
+            tile = next(t for t in th.findChildren(nx.GameTile) if t.game['slug'] == g['slug'])
+            self.assertEqual(tile.caption_sub(), "Playing · 42 min")
+            hero.btn.setFocus()
+            w._update_hints()
+            self.assertIn(('a', 'Resume'), w.hints._shown[1])
+            with mock.patch.object(w, 'resume_game') as resume:
+                hero.btn.click()
+            self.assertEqual(resume.call_args[0][0]['slug'], g['slug'])
+            hero.btn_details.click()                        # Quit game: asks in the sheet
+            self.assertTrue(w.theatre_sheet.isVisible())
+            self.assertEqual(QApplication.focusWidget().text(), "Cancel")
+            self.assertEqual(w.theatre_sheet.title.text(), f"Quit {g['display_name']}?")
+            w._escape()
+            self.assertFalse(w.theatre_sheet.isVisible())
+            w._apply_running(set())                         # closed: the pin lets go
+            w._launching[g['slug']] = time.monotonic()      # starting again
+            w._mark_states()
+            w._home_sig = None
+            w.apply_filter()
+            QApplication.processEvents()
+            self.assertTrue(hero.is_pinned())
+            self.assertIn("STARTING", hero.kicker.text())
+            self.assertEqual(hero.btn.text(), "Starting…")
+            self.assertFalse(hero.btn.isEnabled())          # nothing to go back to yet
+            self.assertTrue(hero.btn_details.isHidden())
+            w._launching.clear()
+            w._mark_states()
+            w._home_sig = None
+            w.apply_filter()
+            QApplication.processEvents()
+            self.assertFalse(hero.is_pinned())
+            self.assertEqual(hero.btn_details.text(), "Details")
+            self.assertTrue(hero.btn.isEnabled())
+        w.set_theatre(False)
+
+    def test_resume_focuses_the_remembered_window_off_the_gui_thread(self):
+        import threading
+        from PyQt6.QtCore import QThreadPool
+        w = self.win
+        g = dict(w._games[1], playing=True)
+        focused, on_gui = [], []
+        wins = [[{'id': 1, 'app_id': 'nexus', 'pid': os.getpid()},
+                 {'id': 9, 'app_id': f"steam_app_{g['appid']}"},
+                 {'id': 5, 'app_id': 'org.kde.konsole', 'title': 'shell'}]]
+
+        def windows():
+            on_gui.append(threading.current_thread() is threading.main_thread())
+            return wins[0]
+
+        def settle():
+            for _ in range(2):
+                QThreadPool.globalInstance().waitForDone(2000)
+                QApplication.processEvents()
+        with mock.patch.object(winfocus, 'available', lambda: True), \
+                mock.patch.object(winfocus, 'windows', windows), \
+                mock.patch.object(winfocus, 'focus', lambda i: focused.append(i) or True), \
+                mock.patch.object(w, 'showMinimized') as minimise:
+            w._game_window[g['slug']] = 9                   # the hand-off found it
+            w.resume_game(g)
+            settle()
+            self.assertEqual(focused, [9])
+            self.assertEqual(w._return_to.get(g['slug']), 1)   # and back here at the end
+            wins[0] = [wins[0][0], {'id': 12, 'app_id': f"steam_app_{g['appid']}"},
+                       wins[0][2]]                          # a new window: picked again
+            w.resume_game(g)
+            settle()
+            self.assertEqual(focused, [9, 12])
+            self.assertEqual(w._game_window[g['slug']], 12)
+            wins[0] = [wins[0][0], wins[0][2]]              # only a terminal: not it
+            w.resume_game(g)
+            settle()
+            self.assertEqual(focused, [9, 12])
+            minimise.assert_called_once_with()              # step aside instead
+        self.assertTrue(on_gui)
+        self.assertNotIn(True, on_gui)
+        with mock.patch.object(winfocus, 'available', lambda: False), \
+                mock.patch.object(w, 'showMinimized') as minimise:
+            w.resume_game(g)                                # no compositor help
+            minimise.assert_called_once_with()
+        w._game_stopped(g['slug'])
+        self.assertNotIn(g['slug'], w._game_window)
+
+    def test_stop_job_polls_at_once(self):
+        w = self.win
+        job = nx.Job([*nx.CLI, '--stop', 'steam-1'], "Quitting Beta", 'steam-1', 'tool')
+        job.state = 'done'
+        with mock.patch.object(w, '_poll_running') as poll:
+            w._job_done(job)
+            QApplication.processEvents()
+        poll.assert_called_once_with()
+
+    def test_session_minutes_and_played(self):
+        now = datetime(2026, 10, 30, 21, 44)
+        g = {'playing': True, 'session_start': now - timedelta(minutes=42, seconds=50),
+             'playtime_minutes': 8460, 'session_base': 8460}
+        self.assertEqual(nx.session_minutes(g, now), 42)
+        self.assertEqual(nx.played_minutes(g, now), 8502)
+        g['playtime_minutes'] = 9000                        # a reload caught up: the larger
+        self.assertEqual(nx.played_minutes(g, now), 9000)
+        self.assertIsNone(nx.session_minutes(dict(g, playing=False), now))
+        self.assertEqual(nx.played_minutes(dict(g, playing=False), now), 9000)
+        a = {'slug': 'a', 'playing': True, 'session_start': now - timedelta(hours=1)}
+        b = {'slug': 'b', 'playing': True, 'session_start': now}
+        c = {'slug': 'c', 'launching': True}
+        self.assertIs(nx.now_playing([a, b, c]), b)        # started last
+        self.assertIs(nx.now_playing([c, {'slug': 'd'}]), c)
+        self.assertIsNone(nx.now_playing([{'slug': 'd'}]))
+
     def test_theatre_drawer_sections_and_reader(self):
         w = self.win
         w.set_theatre(True)
@@ -2023,7 +2230,7 @@ class Window(unittest.TestCase):
     def test_theatre_default_focus_skips_a_disabled_play(self):
         w = self.win
         w.set_theatre(True)
-        g = dict(w._games[0], playing=True)
+        g = dict(w._games[0], launching=True)                 # Starting…
         w.theatre.open_game(g)
         d = w.theatre.details
         self.assertFalse(d.btn_play.isEnabled())
@@ -2032,6 +2239,29 @@ class Window(unittest.TestCase):
         w._game_changed(g['slug'])                            # the real game: both follow
         self.assertTrue(d.btn_play.isEnabled())
         self.assertTrue(d.band_play.isEnabled())
+        self.assertEqual(d.btn_play.text(), "Play")
+        w.set_theatre(False)
+
+    def test_theatre_game_page_resumes_a_running_game(self):
+        w = self.win
+        w.set_theatre(True)
+        g = dict(w._games[0], playing=True, session_start=datetime.now())
+        w.theatre.open_game(g)
+        d = w.theatre.details
+        self.assertEqual((d.btn_play.text(), d.band_play.text()), ("Resume", "Resume"))
+        self.assertTrue(d.btn_play.isEnabled())
+        self.assertIn("NOW PLAYING", d.kicker.text())
+        self.assertEqual(d.hints(d.btn_play)[0], ('a', "Resume"))
+        acts = []
+        with mock.patch.object(w, 'resume_game', acts.append), \
+                mock.patch.object(w, 'on_game_action', lambda *a: acts.append(a)):
+            d.btn_play.click()
+        self.assertEqual([a['slug'] for a in acts], [g['slug']])   # Resume, never a launch
+        keys = [a.key for a in nx.game_actions(g, theatre=True)]
+        self.assertIn('quit-game', keys)                     # Quit game under Options
+        self.assertNotIn('quit-game', [a.key for a in nx.game_actions(g)])
+        self.assertNotIn('quit-game', [a.key for a in nx.game_actions(w._games[0],
+                                                                      theatre=True)])
         w.set_theatre(False)
 
     def test_pad_on_desktop_gets_the_sheet_and_hints(self):

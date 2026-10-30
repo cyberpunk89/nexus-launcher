@@ -3,11 +3,12 @@
 from datetime import datetime
 from typing import NamedTuple
 
-from PyQt6.QtCore import pyqtSignal, QEvent, Qt, QTimer
-from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QVBoxLayout, QWidget)
 
-from .theme import G, P, SP
+from .theme import G, P, R, SP
 
 
 class QuickRow(NamedTuple):
@@ -19,17 +20,21 @@ class QuickRow(NamedTuple):
     glyph: str
     danger: bool = False
     section: str = ''
+    gap: bool = False                    # a little space above: a new group
 
 
 class QuickMenu(QFrame):
     """A left-side panel over the dimmed Theatre page: clock and date, the
-    connected pads, then the rows the window hands over (Exit Theatre, Quit
-    Nexus). A child overlay like ActionSheet, never a dialog; the right
+    connected pads, the game that's running (Now playing: art, minutes,
+    name), then the rows the window hands over (Resume, Quit game, Exit
+    Theatre, Quit Nexus). A child overlay like ActionSheet, never a dialog; the right
     side stays the game's own Options sheet. Two states: the list, and a
     question asked in place of the rows (`ask`), with Cancel focused. B
     steps back one state at a time (`back`)."""
     chosen = pyqtSignal(str)
     closed = pyqtSignal()
+
+    ART = (96, 54)                               # the Now playing card's art, unscaled
 
     def __init__(self, parent: QWidget, scale: float = 1.0):
         super().__init__(parent)
@@ -64,6 +69,32 @@ class QuickMenu(QFrame):
         self.pad_rows.setSpacing(SP['2'])
         lay.addWidget(self.pads)
         lay.addSpacing(sc(SP['4']))
+        # Now playing: the running game, above its Resume and Quit game rows.
+        self.now = QFrame()
+        self.now.setObjectName("NowCard")
+        self.now.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        nh = QHBoxLayout(self.now)
+        nh.setContentsMargins(sc(SP['3']), sc(SP['3']), sc(SP['3']), sc(SP['3']))
+        nh.setSpacing(sc(SP['3']))
+        self.now_art = QLabel()
+        self.now_art.setFixedSize(sc(self.ART[0]), sc(self.ART[1]))
+        nh.addWidget(self.now_art)
+        nv = QVBoxLayout()
+        nv.setSpacing(sc(SP['0_5']))
+        self.now_sub = label("", "NowSub")
+        self.now_sub.setTextFormat(Qt.TextFormat.RichText)
+        nv.addWidget(self.now_sub)
+        self.now_title = label("", "NowTitle")
+        nv.addWidget(self.now_title)
+        nh.addLayout(nv, 1)
+        lay.addWidget(self.now)
+        self._now_gap = sc(SP['2'])
+        self.now_space = QWidget()               # between the card and its rows
+        self.now_space.setFixedHeight(self._now_gap)
+        lay.addWidget(self.now_space)
+        self.now.hide()
+        self.now_space.hide()
+        self._now: dict | None = None
         self.body = QVBoxLayout()                # the rows, or a question
         self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(sc(SP['1']))
@@ -80,14 +111,18 @@ class QuickMenu(QFrame):
         self.hide()
 
     # ---- open / close ----
-    def open(self, rows: list[QuickRow], pads: list[dict], focus: str | None = None):
+    def open(self, rows: list[QuickRow], pads: list[dict], *, focus: str | None = None,
+             now_playing: dict | None = None):
         """Show the list. `pads`: [{'name', 'percent' (or None), 'charging'}];
         the strip hides with none. `focus`: the row that starts focused
-        (else the first)."""
+        (else the first). `now_playing`: the game running or starting, for
+        the card above the rows (none: no card). Keyword arguments, so more
+        can join them (power capabilities)."""
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self._rows = list(rows)
         self._fill_pads(pads)
+        self._fill_now(now_playing)
         self._tick()
         self._tick_timer.start()
         self._show_list(focus)
@@ -95,6 +130,11 @@ class QuickMenu(QFrame):
         self.raise_()
         self.show()
         self._focus(self.buttons.get(focus) or self.default_focus())
+
+    @property
+    def now_game(self) -> dict | None:
+        """The game the Now playing card shows (None without one)."""
+        return self._now
 
     def ask(self, title: str, text: str, yes: str, glyph: str, on_yes, danger: bool = True):
         """A question in place of the rows; Cancel has the focus, so A pressed
@@ -104,6 +144,7 @@ class QuickMenu(QFrame):
         self._row_from = next((k for k, b in self.buttons.items() if b is f), None)
         self.state = 'confirm'
         self._clear()
+        self._show_now(False)                    # the question names the game itself
         sc = lambda v: int(v * self.scale)       # noqa: E731
         self._add(self.body, label(title, "SheetTitle", wrap=True))
         if text:
@@ -153,6 +194,7 @@ class QuickMenu(QFrame):
     def _show_list(self, focus: str | None = None):
         self.state = 'list'
         self._clear()
+        self._show_now(self._now is not None)
         sc = lambda v: int(v * self.scale)       # noqa: E731
         section = None
         for r in self._rows:
@@ -160,6 +202,8 @@ class QuickMenu(QFrame):
             b.clicked.connect(lambda _=False, k=r.key: self._run(k))
             self.buttons[r.key] = b
             if not r.section:
+                if r.gap and self.body.count():
+                    self.body.addSpacing(sc(SP['4']))
                 self._add(self.body, b)
                 continue
             if r.section != section:
@@ -206,6 +250,47 @@ class QuickMenu(QFrame):
             self.pad_rows.addLayout(row)
         self.pads.setVisible(bool(pads))
 
+    def _fill_now(self, g: dict | None):
+        """The Now playing card: the game's art, NOW PLAYING · 42 MIN (or
+        STARTING…) and its name."""
+        self._now = g
+        if g is None:
+            return
+        self.now_sub.setText(live_kicker(g))
+        self.now_title.setText(g.get('display_name', g.get('slug', '')))
+        self.now_art.setPixmap(self._art(g))
+
+    def _art(self, g: dict) -> QPixmap:
+        w, h = self.now_art.width(), self.now_art.height()
+        out = QPixmap(w, h)
+        out.fill(Qt.GlobalColor.transparent)
+        path, url = art_source(g, WIDE_KINDS)
+        img = fit_image(path, w, h, cover=True) if path else None
+        if img is None and url:                  # fetched for next time
+            ART.fetch(url, lambda _p, slug=g.get('slug'): self._art_arrived(slug))
+        pt = QPainter(out)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0, 0, w, h), R['sm'] * self.scale, R['sm'] * self.scale)
+        pt.setClipPath(clip)
+        if img is not None and not img.isNull():
+            pt.drawImage(int((w - img.width()) / 2), int((h - img.height()) / 2), img)
+        else:
+            pt.fillRect(out.rect(), QColor(P['surface_2']))
+        pt.end()
+        return out
+
+    def _art_arrived(self, slug):
+        try:
+            if self._now is not None and self._now.get('slug') == slug:
+                self.now_art.setPixmap(self._art(self._now))
+        except RuntimeError:                     # gone with the window
+            pass
+
+    def _show_now(self, on: bool):
+        self.now.setVisible(on)
+        self.now_space.setVisible(on)
+
     def _clear(self):
         self.buttons = {}
         clear_layout(self.body)
@@ -222,6 +307,8 @@ class QuickMenu(QFrame):
         now = datetime.now()
         self.clock.setText(now.strftime('%H:%M'))
         self.date.setText(f"{now:%A} {now.day} {now:%B}")   # %-d isn't on Windows
+        if self._now is not None:                # "42 MIN" moves on
+            self.now_sub.setText(live_kicker(self._now))
 
     # ---- events ----
     def keyPressEvent(self, ev):
@@ -249,6 +336,8 @@ class QuickMenu(QFrame):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
+from .art import ART, art_source, fit_image, WIDE_KINDS  # noqa: E402
+from .gameinfo import live_kicker  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .widgets import (amp, clear_layout, icon_label, label, plain_label,  # noqa: E402
     set_glyph_icon)
