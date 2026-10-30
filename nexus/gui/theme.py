@@ -738,12 +738,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                        font-weight: 500; min-height: ${glyph_inner}px; max-height: ${glyph_inner}px; }
     QCheckBox:focus { color: $text; }
 
-    /* ---- Theatre game page cards ---------------------------------------- */
-    #TheatreCard { background: $glass; border: 1px solid $glass_hi; border-radius: ${r_card}px; }
-    #TheatreCard:hover { background: $glass_hi; }
-    QLabel#TheatreCardTitle { color: $subtext; font-size: ${fs_2xs}px; font-weight: 600; }
-    QLabel#TheatreCardBig { color: $on_art; font-size: ${fs_lg}px; font-weight: 600; }
-    QLabel#TheatreCardLine { color: $on_art; font-size: ${fs_xs}px; }
+    /* ---- Theatre game page reader ---------------------------------------- */
     QTextBrowser#TheatreReader { background: $glass; color: $on_art; border: 1px solid $glass_hi;
                                  border-radius: ${r_card}px; padding: ${sp_4}px;
                                  font-size: ${fs_sm}px; }

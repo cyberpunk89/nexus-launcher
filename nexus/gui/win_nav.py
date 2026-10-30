@@ -235,6 +235,8 @@ class NavigationMixin:
         if not self._theatre and self.desk_search.isVisible():
             return self.desk_search
         if self._theatre:
+            if self.theatre.trailer.isVisible():
+                return self.theatre.trailer
             if self.theatre.search.isVisible():
                 return self.theatre.search
             return self.theatre.details if self.theatre.details.isVisible() else self.theatre

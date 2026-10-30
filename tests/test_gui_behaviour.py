@@ -569,6 +569,39 @@ class Behaviour(unittest.TestCase):
             w._tile_double(w.game('alpha'))
         self.assertEqual(acts, ['launch'])                # A plays, double click opens
         w._apply_controls({'pad_a': 'details', 'double_click': 'play'})
+        # Theatre's hints follow where you are: the stage, the drawer, the
+        # reader, a trailer, Home's spotlight.
+        w.set_theatre(True)
+        th = w.theatre
+        try:
+            def shown():
+                w._update_hints()
+                return [text for _b, text in w.hints._shown[1]]
+            w.activateWindow()
+            QApplication.processEvents()
+            th.hero.btn.setFocus()
+            self.assertEqual(shown(), ['Play', 'Options', 'Your games', 'Search',
+                                       'Home / Library', 'Exit Theatre'])
+            th.open_game(w.game('steam-1'))
+            d = th.details
+            d.set_info(news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes'}])
+            d.btn_play.setFocus()
+            self.assertEqual(shown(), ['Play', 'Options', 'More about this game', 'Back'])
+            d.cycle_section(1)
+            self.assertEqual(shown(), ['Select', 'Section', 'Play', 'Back to game'])
+            d.band_play.setFocus()
+            self.assertEqual(shown(), ['Play', 'Section', 'More', 'Back to game'])
+            d.drawer.show_section('news')
+            row = d.drawer.sections['news'].findChild(nx.TheatreRow)
+            row.setFocus()
+            self.assertEqual(shown()[0], 'Read')
+            d._open_row(row)
+            self.assertEqual(shown(), ['Scroll', 'Section', 'Close'])
+            th.trailer.show()
+            self.assertEqual(shown(), ['Close'])
+            th.trailer.hide()
+        finally:
+            w.set_theatre(False)
 
     def test_install_cancel_asks_first(self):
         job = nx.Job(['x'], "Installing T", 't', 'install', 'T')

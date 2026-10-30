@@ -1462,15 +1462,22 @@ class Window(unittest.TestCase):
         QApplication.processEvents()
         w.theatre.open_game(w._games[0])
         QApplication.processEvents()
-        w.theatre.details.btn_fav.setFocus()
-        for key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Left,
-                    Qt.Key.Key_Right, Qt.Key.Key_Right):
+        d = w.theatre.details
+        d.btn_fav.setFocus()
+        for key in (Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Right,
+                    Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Right):
             QApplication.sendEvent(QApplication.focusWidget(),
                                    QKeyEvent(QEvent.Type.KeyPress, key,
                                              Qt.KeyboardModifier.NoModifier))
             QApplication.processEvents()
-            self.assertTrue(w.theatre.details.isAncestorOf(QApplication.focusWidget()),
+            self.assertTrue(d.isAncestorOf(QApplication.focusWidget()),
                             QApplication.focusWidget())
+        self.assertTrue(d.expanded())                     # Down went into the drawer
+        QApplication.sendEvent(QApplication.focusWidget(),
+                               QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up,
+                                         Qt.KeyboardModifier.NoModifier))
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), d.band_play)     # Play, one Up away
         w.theatre.close_game()
         self.assertTrue(w.theatre.pages.isEnabled())
         w.set_theatre(False)
@@ -1630,33 +1637,159 @@ class Window(unittest.TestCase):
         self.assertTrue(w.theatre.details.isVisible())         # still on the game page
         w.set_theatre(False)
 
-    def test_theatre_game_page_cards_and_reader(self):
+    def test_theatre_drawer_sections_and_reader(self):
         w = self.win
         w.set_theatre(True)
         g = w._games[1]                                       # Steam, appid 1
         w.theatre.open_game(g)
         d = w.theatre.details
-        self.assertFalse(d.cards['stats'].isHidden())         # always something to say
-        self.assertTrue(d.cards['compat'].isHidden())         # no data yet
+        dr = d.drawer
+        # The stage: no pills, no Back button, no row of cards; tabs only.
+        self.assertFalse(hasattr(d, 'cards'))
+        self.assertFalse([b for b in d.findChildren(QPushButton) if b.text() == "Back"])
+        self.assertFalse(d.expanded())
+        self.assertFalse(dr.pages.isVisibleTo(d))
+        self.assertEqual(dr.visible_keys(), ['overview'])      # nothing else known yet
         d.set_info(tips={'protondb': {'tier': 'gold', 'total': 9},
                          'gamedb': {'list': 'library', 'hltb': {'main': 10}}},
                    news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes',
                           'date': '2026-10-01T10:00:00'},
-                         {'appid': 2, 'title': 'Other game'}])
-        # ProtonDB is a Proton fact: the card has nothing else here to show without it.
-        self.assertEqual(d.cards['compat'].isHidden(), not features.has('proton'))
-        self.assertFalse(d.cards['gamedb'].isHidden())
-        self.assertFalse(d.cards['news'].isHidden())
-        self.assertNotIn('Other game', d.cards['news'].more)
-        d.cards['news'].setFocus()
-        self._key(d.cards['news'], Qt.Key.Key_Return)     # A opens the card
-        self.assertEqual(d.lower.currentWidget(), d.reader)
-        self.assertIn('Fixes', d.reader.toPlainText())
-        w._escape()                                           # B: close the card…
+                         {'appid': 2, 'title': 'Other game'}],
+                   store={'store': {'blurb': 'A game about tests.', 'developers': ['Dev'],
+                                    'trailers': [{'name': 'Launch trailer',
+                                                  'url': 'https://example.invalid/t.m3u8'}]}})
+        # Compatibility is a Proton fact: no section without Proton.
+        self.assertEqual('compat' in dr.visible_keys(), features.has('proton'))
+        self.assertIn('news', dr.visible_keys())
+        self.assertIn('media', dr.visible_keys())
+        self.assertNotIn('achievements', dr.visible_keys())   # this game has none
+        self.assertEqual(dr.about.text(), 'A game about tests.')
+        # D-pad Down from Play reaches the tabs and opens the drawer.
+        w.activateWindow()
+        d.btn_play.setFocus()
+        self._key(d.btn_play, Qt.Key.Key_Down)
+        self.assertTrue(d.expanded())
+        self.assertTrue(dr.isAncestorOf(QApplication.focusWidget()))
+        self.assertTrue(d.band_play.isVisible())              # Play, one Up away
+        self.assertFalse(d.btn_play.isVisible())
+        # News: one row for this game only; A opens it in the reader.
+        dr.show_section('news')
+        rows = dr.sections['news'].findChildren(nx.TheatreRow)
+        self.assertEqual([r.title for r in rows], ['Patch'])
+        rows[0].setFocus()
+        self._key(rows[0], Qt.Key.Key_Return)
+        self.assertTrue(dr.reader_open())
+        self.assertIn('Fixes', dr.reader.toPlainText())
+        w._escape()                                           # B: the reader...
+        self.assertTrue(d.expanded())
+        self.assertFalse(dr.reader_open())
+        self.assertIs(QApplication.focusWidget(), rows[0])
+        w._escape()                                           # ...the drawer...
+        self.assertFalse(d.expanded())
         self.assertTrue(d.isVisible())
-        self.assertEqual(d.lower.currentIndex(), 0)
-        w._escape()                                           # …then the page
+        self.assertIs(QApplication.focusWidget(), d.btn_play)
+        w._escape()                                           # ...then the page
         self.assertFalse(d.isVisible())
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    def test_theatre_achievements_section(self):
+        w = self.win
+        w.set_theatre(True)
+        g = dict(w._games[1], achievements=[3, 4])
+        asked = []
+        with patch_gui('cli_json', lambda args, cb, *a, **k: asked.append((args, cb))):
+            w.theatre.open_game(g)
+        d = w.theatre.details
+        self.assertIn('achievements', d.drawer.visible_keys())
+        self.assertEqual(d.drawer.ach_line.text(), "3 of 4 achievements")    # Overview too
+        cb = next(cb for args, cb in asked if args[0] == '--achievements')
+        cb({'items': [{'title': 'First', 'unlocked': True}]}, '')
+        row = d.drawer.sections['achievements'].findChild(nx.TheatreRow)
+        self.assertIn('First', row.more)
+        w.set_theatre(False)
+
+    def test_theatre_media_plays_trailers_in_theatre(self):
+        w = self.win
+        w.set_theatre(True)
+        w.theatre.open_game(w._games[1])
+        d = w.theatre.details
+        trailer = {'name': 'Launch trailer', 'url': 'https://example.invalid/t.m3u8'}
+        d.set_info(store={'store': {'trailers': [trailer]}})
+        d.cycle_section(1)                                    # RB opens the drawer...
+        d.cycle_section(1)                                    # ...and moves along
+        self.assertEqual(d.drawer.tabs.current(), 'media')
+        shot = d.drawer.sections['media'].findChild(nx.TheatreShot)
+        self.assertEqual(d.drawer.media_title.text(), 'Launch trailer')
+        played = []
+        with mock.patch.object(w.theatre.trailer, 'play', lambda t, name='': played.append(t)):
+            shot.setFocus()
+            self._key(shot, Qt.Key.Key_Return)
+        self.assertEqual(played, [trailer])
+        w.set_theatre(False)
+
+    def test_theatre_b_order(self):
+        """B: the trailer, the reader, the drawer, the page (back to the
+        search it came from), the search, then Home; never out of Theatre."""
+        w = self.win
+        w.set_theatre(True)
+        w.activateWindow()
+        th = w.theatre
+        w._pad_action('page-next')                            # Library
+        th.open_game(w._games[1])
+        d = th.details
+        d.set_info(news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes'}])
+        d.cycle_section(1)
+        d.drawer.show_section('news')
+        d._open_row(d.drawer.sections['news'].findChild(nx.TheatreRow))
+        th.trailer.show()                                     # as if a trailer played
+        th.trailer.raise_()
+        self.assertIs(w.nav_scope(), th.trailer)
+        steps = []
+        for _ in range(5):
+            w._escape()
+            steps.append((th.trailer.isVisible(), d.drawer.reader_open(), d.expanded(),
+                          d.isVisible(), th.tabs.current()))
+        self.assertEqual(steps, [(False, True, True, True, 'library'),
+                                 (False, False, True, True, 'library'),
+                                 (False, False, False, True, 'library'),
+                                 (False, False, False, False, 'library'),
+                                 (False, False, False, False, 'home')])
+        w._pad_action('search')                               # from the search...
+        th.search.picked.emit(w._games[0])
+        d.cycle_section(1)
+        w._escape()                                           # ...the drawer, then the search
+        self.assertTrue(d.isVisible())
+        w._escape()
+        self.assertTrue(th.search.isVisible())
+        w._escape()
+        self.assertFalse(th.search.isVisible())
+        w._escape()
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    def test_theatre_lb_rb_switch_sections_on_the_game_page(self):
+        w = self.win
+        w.set_theatre(True)
+        th = w.theatre
+        w._pad_action('page-next')                            # elsewhere: the tabs
+        self.assertEqual(th.tabs.current(), 'library')
+        th.open_game(w._games[1])
+        d = th.details
+        d.set_info(news=[{'appid': 1, 'title': 'Patch'}],
+                   store={'store': {'trailers': [{'url': 'https://example.invalid/t'}]}})
+        w._pad_action('page-next')                            # opens the drawer
+        self.assertTrue(d.expanded())
+        self.assertEqual(d.drawer.tabs.current(), 'overview')
+        w._pad_action('page-next')
+        self.assertEqual(d.drawer.tabs.current(), 'media')
+        w._pad_action('page-prev')
+        w._pad_action('page-prev')                            # wraps, skipping hidden ones
+        self.assertEqual(d.drawer.tabs.current(), d.drawer.visible_keys()[-1])
+        self.assertEqual(th.tabs.current(), 'library')        # the tabs behind stay put
+        th.close_game()
+        w._pad_action('page-prev')                            # off the page: tabs again
+        self.assertEqual(th.tabs.current(), 'home')
         w.set_theatre(False)
 
     def test_theatre_favourite_label_follows_the_state(self):
@@ -1667,10 +1800,12 @@ class Window(unittest.TestCase):
         d = w.theatre.details
         d.btn_fav.click()
         QApplication.processEvents()
-        self.assertIn("★", d.btn_fav.text())
+        self.assertEqual(d.btn_fav.text(), nx.G['star'])
+        self.assertEqual(d.btn_fav.toolTip(), "Favourite")
         d.btn_fav.click()
         QApplication.processEvents()
-        self.assertIn("☆", d.btn_fav.text())
+        self.assertEqual(d.btn_fav.text(), nx.G['star_outline'])
+        self.assertEqual(d.btn_fav.toolTip(), "Add to favourites")
         w.set_theatre(False)
 
     def test_theatre_default_focus_skips_a_disabled_play(self):
@@ -1678,8 +1813,13 @@ class Window(unittest.TestCase):
         w.set_theatre(True)
         g = dict(w._games[0], playing=True)
         w.theatre.open_game(g)
-        self.assertFalse(w.theatre.details.btn_play.isEnabled())
-        self.assertIs(w.theatre.default_focus(), w.theatre.details.btn_fav)
+        d = w.theatre.details
+        self.assertFalse(d.btn_play.isEnabled())
+        self.assertFalse(d.band_play.isEnabled())             # the band's Play too
+        self.assertIs(w.theatre.default_focus(), d.btn_fav)
+        w._game_changed(g['slug'])                            # the real game: both follow
+        self.assertTrue(d.btn_play.isEnabled())
+        self.assertTrue(d.band_play.isEnabled())
         w.set_theatre(False)
 
     def test_pad_on_desktop_gets_the_sheet_and_hints(self):

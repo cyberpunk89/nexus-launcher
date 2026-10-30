@@ -170,8 +170,7 @@ class PlayMixin:
             self.details.btn_play.setEnabled(play_enabled(g))
         td = self.theatre.details
         if td.isVisible() and td.game.get('slug') == slug:
-            td.btn_play.setText(play_label(g))
-            td.btn_play.setEnabled(play_enabled(g))
+            td.set_play(g)
 
     def _begin_launch(self, game):
         """Play pressed: show "Starting…" right away, poll until the game is

@@ -473,7 +473,14 @@ class TheatreView(QWidget):
         self.news_items = lambda: []          # MainWindow hands over the News page's items
         self.details.play.connect(self.play)
         self.details.action.connect(self._detail_action)
-        self.details.closed.connect(self.close_game)
+        self.details.back_asked.connect(self.back)
+        self.details.trailer.connect(self._play_trailer)
+        self._store: dict[str, dict] = {}
+        # Trailers from the game page's Media play here, over Theatre (the
+        # desktop's overlay lives in the hidden desk shell).
+        self.trailer = TrailerOverlay(self)
+        self.trailer.closed.connect(self._trailer_closed)
+        self._trailer_from = None
         self._clock = QTimer(self)
         self._clock.setInterval(20000)
         self._clock.timeout.connect(self._tick)
@@ -580,17 +587,19 @@ class TheatreView(QWidget):
         self._load_info(g)
 
     def _load_info(self, g):
-        """The cards' data: cached per game for the session (the CLI caches
-        ProtonDB / Game-db itself), fetched in the background."""
+        """The drawer's data: cached per game for the session (the CLI caches
+        ProtonDB / Game-db / the store itself), fetched in the background."""
         slug = g['slug']
-        tips = self._tips.get(slug)
-        launch = self._launch.get(slug)
-        self.details.set_info(tips, launch, self.news_items())
-        if tips is None and slug not in self._asked:
+        self.details.set_info(self._tips.get(slug), self._launch.get(slug), self.news_items(),
+                              self._store.get(slug))
+        if slug not in self._asked:
             self._asked.add(slug)
             cli_json(['--game-tips', slug, '--json'],
                      lambda info, _e, slug=slug: self._got(self._tips, slug, info or {}),
                      ttl=300)
+            cli_json(['--store-info', slug, '--json'],
+                     lambda info, _e, slug=slug: self._got(self._store, slug, info or {}),
+                     60000, ttl=600)
             if g.get('source', 'nexus') == 'nexus':
                 cli_json(['--show-launch', slug, '--json'],
                          lambda info, _e, slug=slug: self._got(self._launch, slug, info or {}))
@@ -599,9 +608,19 @@ class TheatreView(QWidget):
         store[slug] = info
         try:
             if self.details.isVisible() and self.details.game.get('slug') == slug:
-                self.details.set_info(self._tips.get(slug), self._launch.get(slug))
+                self.details.set_info(self._tips.get(slug), self._launch.get(slug),
+                                      store=self._store.get(slug))
         except RuntimeError:
             pass
+
+    def _play_trailer(self, t: dict):
+        self._trailer_from = QApplication.focusWidget()
+        self.trailer.play(t, self.details.game.get('display_name', ''))
+
+    def _trailer_closed(self):
+        f = self._trailer_from
+        if alive(f) and f.isVisible():
+            focus_and_reveal(f)
 
     def news_changed(self):
         if self.details.isVisible():
@@ -636,20 +655,24 @@ class TheatreView(QWidget):
             focus_and_reveal(self.btn_search)
 
     def back(self) -> bool:
-        """B: close the search or the game page; otherwise go to Home. True
-        if handled."""
+        """B, one step at a time: a trailer, the game page's reader, its
+        drawer, the page (back to the search it came from), the search;
+        otherwise go to Home. Never out of Theatre. True if handled."""
+        if self.trailer.isVisible():
+            self.trailer.stop()
+            return True
         if self.search.isVisible():
             self.search.close_search()
             return True
-        if self.details.isVisible() and getattr(self, '_from_search', False) \
-                and self.details.lower.currentIndex() == 0:
-            # Back from a game found by search: to the search, as it was.
-            self._from_search = False
-            self.details.setVisible(False)
-            self.search.open(self.everything or self.games)
-            return True
         if self.details.isVisible():
-            if not self.details.back():
+            if self.details.back():
+                return True
+            if getattr(self, '_from_search', False):
+                # Back from a game found by search: to the search, as it was.
+                self._from_search = False
+                self.details.setVisible(False)
+                self.search.open(self.everything or self.games)
+            else:
                 self.close_game()
             return True
         if self.tabs.current() != 'home':
@@ -664,6 +687,8 @@ class TheatreView(QWidget):
             self.action.emit(act, g)    # a favourite comes back through set_games
 
     def default_focus(self):
+        if self.trailer.isVisible():
+            return self.trailer
         if self.search.isVisible():
             return self.search.default_focus()
         if self.details.isVisible():
@@ -675,7 +700,9 @@ class TheatreView(QWidget):
         return next((t for t in page.findChildren(GameTile) if not t.isHidden()), None)
 
     def _tick(self):
-        self.clock.setText(datetime.now().strftime('%H:%M'))
+        now = datetime.now().strftime('%H:%M')
+        self.clock.setText(now)
+        self.details.clock.setText(now)
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -747,6 +774,7 @@ from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, HeroCarousel, ShelfRow, surprise_pick  # noqa: E402
+from .actions import TrailerOverlay  # noqa: E402
 from .theatre_game import TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label,

@@ -20,7 +20,7 @@ class ControllerMixin:
         """Start the screensaver, unless a game runs or something's open."""
         if not self._theatre or self._playing or self._launching \
                 or not self.isActiveWindow() or self.trailer_view.isVisible() \
-                or self.theatre_sheet.isVisible() or self.attract.running:
+                or self.theatre.trailer.isVisible() or self.theatre_sheet.isVisible() or self.attract.running:
             self._on_activity()                         # look again later
             return
         self.attract.start(self._games)
@@ -93,6 +93,13 @@ class ControllerMixin:
         return [p for p in self.TABS if not self.nav[p].isHidden()]
 
     def _pad_action(self, act):
+        if self._theatre and act in ('page-prev', 'page-next') \
+                and self.theatre.details.isVisible():
+            # The game page: LB / RB switch the drawer's sections.
+            if not self.theatre.trailer.isVisible() and self._open_sheet() is None:
+                self.theatre.details.cycle_section(-1 if act == 'page-prev' else 1)
+                self._update_hints()
+            return
         if self._theatre and act in ('page-prev', 'page-next', 'view'):
             self.theatre.cycle_tab(-1 if act == 'page-prev' else 1)
             return
@@ -200,6 +207,7 @@ class ControllerMixin:
             self.attract.stop()
             self.cursor_hider.stop()
             self.theatre_sheet.close_sheet(restore=False)
+            self.theatre.trailer.stop()
             self.theatre.search.setVisible(False)
             self.theatre.details.setVisible(False)
             self.theatre.pages.setEnabled(True)
@@ -248,13 +256,22 @@ class ControllerMixin:
                                                        ('b', 'Close')])
             return
         if self._theatre:
-            if self.theatre.search.isVisible():
+            th = self.theatre
+            if th.trailer.isVisible():
+                self.hints.show_hints([('b', 'Close')])
+                return
+            if th.search.isVisible():
                 hints = ([('a', 'Open')] if isinstance(f, GameTile) else [('a', 'Type')]) \
                     + [('x', 'Delete'), ('y', 'Space'), ('b', 'Close')]
                 self.hints.show_hints(hints)
                 return
-            if self.theatre.details.isVisible():
-                hints = [('a', 'Select'), ('x', 'Options'), ('b', 'Back')]
+            if th.details.isVisible():                  # stage, drawer or reader
+                self.hints.show_hints(th.details.hints(f))
+                return
+            if f is not None and th.hero.isAncestorOf(f):
+                # The spotlight on Home: the game that has focus in "Jump back in".
+                hints = [('a', 'Play' if f is th.hero.btn else 'Open'), ('x', 'Options'),
+                         ('↓', 'Your games')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
             else:
