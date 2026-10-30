@@ -30,7 +30,7 @@ from nexus import platform
 from nexus.features import has
 
 from .common import HOME, INSTALL_BASE_DEFAULT
-from .theme import FONTS, FS, G, GRAD, P, SCALES, SP, THEMES
+from .theme import FONTS, FS, G, GRAD, P, SCALES, SETUP_THEMES, SP, THEMES
 
 STEPS = (('checks', "Checks"), ('launchers', "Your launchers"), ('folders', "Folders"),
          ('proton', "Proton"), ('extras', "Extras"), ('look', "Look & background"))
@@ -384,16 +384,12 @@ class SetupPage(QWidget):
         lay = self._page()                             # 6 look & background
         lay.addWidget(label("Theme", "StatLabel"))
         self.theme = CardChoice()
-        for k, (name, t) in THEMES.items():
-            c = ChoiceCard(name)
-            sw = Swatch('theme', k, name, (84, 50))
-            sw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            c.add(sw)
-            c.add(label(name, "ChoiceTitle"))
-            c.add(label("Light" if t.get('kind') == 'light' else "Dark", "ChoiceNote"))
-            self.theme.add(c, k)
+        for k in SETUP_THEMES:                 # a few to start; Settings has them all
+            self._theme_card(k)
         self.theme.activated.connect(lambda _i: self.preview.emit(self._look()))
         lay.addWidget(self.theme)
+        lay.addWidget(label("More themes, accents and looks in Settings → Appearance.",
+                            "Muted", wrap=True))
         lay.addSpacing(SP['3'])
         lay.addWidget(label("Size", "StatLabel"))
         self.size = CardChoice()
@@ -429,6 +425,16 @@ class SetupPage(QWidget):
         self.tray.setEnabled(tray_available())
         lay.addStretch()
 
+    def _theme_card(self, k: str):
+        name, t = THEMES[k]
+        c = ChoiceCard(name)
+        sw = Swatch('theme', k, name, (84, 50))
+        sw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        c.add(sw)
+        c.add(label(name, "ChoiceTitle"))
+        c.add(label("Light" if t.get('kind') == 'light' else "Dark", "ChoiceNote"))
+        self.theme.add(c, k)
+
     def _browse_row(self, edit):
         row = QHBoxLayout()
         row.setSpacing(SP['2'])
@@ -461,7 +467,10 @@ class SetupPage(QWidget):
         self._check_base()
         self.scan.setText(config.get('scan_dir') or '')
         self.key.setText(config.get('api_key') or '')
-        i = self.theme.findData(appearance.get('theme'))
+        theme = appearance.get('theme')
+        if theme in THEMES and self.theme.findData(theme) < 0:
+            self._theme_card(theme)            # set up again with one only Settings lists
+        i = self.theme.findData(theme)
         self.theme.setCurrentIndex(max(0, i))
         i = self.size.findData(appearance.get('scale', 1.0))
         self.size.setCurrentIndex(max(0, i))

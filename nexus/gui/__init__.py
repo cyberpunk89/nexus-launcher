@@ -30,11 +30,12 @@ from .common import (
     MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE)  # noqa: F401
 from .theme import (
     _check_icon_path, _chevron_icon_path, _first_installed, _hex_ok, _ICON_CACHE, _mix, _rgba,
-    _shade, _stroke_icon, accent_hex, ACCENTS, APPEARANCE_DEFAULT, apply_appearance,
-    build_stylesheet, CHIP_H, CORNERS, FONTS, FS, G, GLOW, GLYPH_H, GLYPHS, GRAD,
+    _shade, _stroke_icon, accent_hex, accent_pair, ACCENTS, APPEARANCE_DEFAULT, apply_appearance,
+    build_stylesheet, CHIP_H, contrast, CORNERS, FONTS, FS, G, GLOW, GLYPH_H, GLYPHS, GRAD,
     ICON_FALLBACK_STACK, ICON_TTF, LOOK, MONO_STACK, normalize_appearance, P, PAL, pill,
     PILL_H, pill_qss, qss_grad, R, R_BASE, resolve_fonts, SANS_STACK, SP, SRC_HUE, THEMES,
-    TILE_LIFT, TILE_W, DARK_STATUS, DAWN_STATUS, is_light, SCALES, scaled, ui_scale)  # noqa: F401
+    TILE_LIFT, TILE_W, DARK_STATUS, DAWN_STATUS, is_light, LATTE_STATUS, PRESET_KEYS, PRESETS,
+    SCALES, scaled, SETUP_THEMES, ui_scale)  # noqa: F401
 from .fmt import (
     fmt_ago, fmt_bytes, fmt_elapsed, fmt_eta, fmt_hours, fmt_relative, fmt_size)  # noqa: F401
 from .widgets import (

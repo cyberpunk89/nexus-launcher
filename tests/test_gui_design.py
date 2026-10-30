@@ -457,7 +457,7 @@ class Appearance(unittest.TestCase):
             la, lb = sorted((lum(a), lum(b)), reverse=True)
             return (la + 0.05) / (lb + 0.05)
         for key in nx.THEMES:
-            for accent in ('iris', 'gold', 'foam'):
+            for accent in (*nx.ACCENTS, '#ffff00', '#202020'):      # every preset, and extremes
                 nx.apply_appearance({'theme': key, 'accent': accent})
                 for bg in ('bg', 'surface', 'surface_solid'):
                     self.assertGreaterEqual(contrast(nx.P['text'], nx.P[bg]), 4.5, (key, bg))
@@ -465,11 +465,57 @@ class Appearance(unittest.TestCase):
                 # The accent as a button fill with its label on it.
                 self.assertGreaterEqual(contrast(nx.P['on_accent'], nx.P['accent']), 3.0,
                                         (key, accent))
+                if nx.is_light():
+                    # Deep enough to read as text (links, the active tab) on the page.
+                    self.assertGreaterEqual(contrast(nx.P['accent'], nx.P['bg']), 3.0,
+                                            (key, accent))
+        self.assertAlmostEqual(nx.contrast('#ffffff', '#000000'), 21.0)   # the shared helper
+        self.assertAlmostEqual(nx.contrast(nx.P['text'], nx.P['bg']),
+                               contrast(nx.P['text'], nx.P['bg']))
         nx.apply_appearance({'theme': 'dawn'})
         self.assertTrue(nx.is_light())
         self.assertNotEqual(nx.P['danger'], nx.DARK_STATUS['love'])     # its own status hues
         nx.apply_appearance({'theme': 'rose-pine'})
         self.assertEqual(nx.P['danger'], nx.DARK_STATUS['love'])        # and back
+
+    def test_themes_dark_light_and_high_contrast(self):
+        kinds = [t.get('kind', 'dark') for _n, t in nx.THEMES.values()]
+        self.assertGreaterEqual(kinds.count('dark'), 8)
+        self.assertGreaterEqual(kinds.count('light'), 4)
+        for key, (name, t) in nx.THEMES.items():
+            self.assertTrue(name, key)
+            for k in ('base', 'surface', 'overlay', 'overlay_hi', 'text', 'subtle', 'muted'):
+                self.assertTrue(nx._hex_ok(t[k]), (key, k))
+        nx.apply_appearance({'theme': 'contrast'})
+        P = nx.P
+        self.assertGreaterEqual(nx.contrast(P['text'], P['bg']), 15)
+        self.assertGreaterEqual(nx.contrast(P['muted'], P['surface']), 7)      # AAA
+        self.assertGreaterEqual(nx.contrast(P['border'], P['bg']), 3)           # edges you see
+        self.assertGreaterEqual(nx.contrast(P['info'], P['surface']), 4.5)
+        self.assertNotIn('tokens', nx.PAL)
+        nx.apply_appearance({'theme': 'rose-pine'})
+        self.assertEqual(nx.P['border'], nx.PAL['overlay'])       # overrides don't stick
+
+    def test_light_theme_deepens_pale_accents(self):
+        nx.apply_appearance({'theme': 'paper', 'accent': '#ffff00', 'partner': 'none'})
+        self.assertEqual(nx.P['on_accent'], '#ffffff')
+        self.assertGreaterEqual(nx.contrast('#ffffff', nx.P['accent']), 3.5)
+        self.assertEqual(nx.GRAD['dusk'][0], nx.GRAD['dusk'][1])
+        a, b = nx.accent_pair('mist', 'teal', 'silver')
+        self.assertNotEqual(a, nx.ACCENTS['teal'])
+        self.assertNotEqual(b, nx.ACCENTS['silver'])
+        self.assertEqual(nx.accent_pair('midnight', 'teal', 'none'),
+                         (nx.ACCENTS['teal'],) * 2)              # dark: as picked
+
+    def test_presets_are_valid_looks(self):
+        self.assertTrue(3 <= len(nx.PRESETS) <= 6)
+        for key, (name, look) in nx.PRESETS.items():
+            self.assertEqual(set(look), set(nx.PRESET_KEYS), key)
+            ap = nx.normalize_appearance({**nx.APPEARANCE_DEFAULT, **look})
+            self.assertEqual({k: ap[k] for k in nx.PRESET_KEYS}, look, key)   # nothing dropped
+        self.assertTrue(any(nx.THEMES[look['theme']][1].get('kind') == 'light'
+                            for _n, look in nx.PRESETS.values()))
+        self.assertIn('contrast', {look['theme'] for _n, look in nx.PRESETS.values()})
 
     def test_size_scales_type_and_spacing(self):
         nx.apply_appearance({'scale': 1.25})
@@ -489,6 +535,59 @@ class Appearance(unittest.TestCase):
         self.assertEqual(nx.P['bg'], '#191724')
         self.assertEqual(nx.P['accent'], '#c4a7e7')
         self.assertEqual(nx.R, {**nx.R_BASE})
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class AppearanceSettings(unittest.TestCase):
+    """Settings > Appearance offscreen: every theme, accent and look has a
+    swatch; a look is one change; picking one part of it unmarks it."""
+
+    def setUp(self):
+        self.card = nx.AppearanceCard()
+        self.addCleanup(self.card.deleteLater)
+        self.card.resize(760, 900)
+        self.card.show()
+        self.got = []
+        self.card.changed.connect(self.got.append)
+        self.card.load(dict(nx.APPEARANCE_DEFAULT))
+
+    def tearDown(self):
+        self.card.close()
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+
+    def swatch(self, group, value):
+        return next(sw for sw in self.card.groups[group] if sw.value == value)
+
+    def test_every_theme_accent_and_look_has_a_swatch(self):
+        g = self.card.groups
+        self.assertEqual([sw.value for sw in g['theme']], list(nx.THEMES))
+        self.assertEqual([sw.value for sw in g['accent']], list(nx.ACCENTS.values()))
+        self.assertEqual([sw.value for sw in g['preset']], list(nx.PRESETS))
+        self.assertFalse(any(sw.isChecked() for sw in g['preset']))    # default isn't a look
+
+    def test_look_applies_in_one_change_and_is_marked(self):
+        self.swatch('preset', 'neon').click()
+        self.assertEqual(len(self.got), 1)                             # one re-style, not five
+        look = nx.PRESETS['neon'][1]
+        self.assertEqual({k: self.got[0][k] for k in nx.PRESET_KEYS}, look)
+        self.assertEqual(self.got[0]['scale'], nx.APPEARANCE_DEFAULT['scale'])   # Size kept
+        self.assertTrue(self.swatch('preset', 'neon').isChecked())
+        self.assertTrue(self.swatch('theme', look['theme']).isChecked())
+        self.assertEqual(self.card.theme_row.desc.text(), nx.THEMES[look['theme']][0])
+        self.swatch('preset', 'neon').click()                          # again: nothing new
+        self.assertEqual(len(self.got), 1)
+        self.swatch('theme', 'ocean').click()                          # a part changed
+        self.assertFalse(any(sw.isChecked() for sw in self.card.groups['preset']))
+        self.assertEqual(self.got[-1]['theme'], 'ocean')
+        self.card.load(self.got[-1] | look)                            # loaded back: marked
+        self.assertTrue(self.swatch('preset', 'neon').isChecked())
+
+    def test_swatches_paint_in_every_theme(self):
+        for key in ('contrast', 'latte'):
+            nx.apply_appearance({'theme': key})
+            for grp in ('preset', 'theme'):
+                for sw in self.card.groups[grp]:
+                    self.assertFalse(sw.grab().isNull())
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

@@ -12,7 +12,7 @@ from pathlib import Path
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF,
     Qt, QTimer, QUrl)
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QLinearGradient,
-    QPainter, QPen, QShortcut)
+    QPainter, QPen, QRadialGradient, QShortcut)
 from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
     QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
@@ -20,8 +20,9 @@ from nexus import __version__, gamedb, platform, updates
 from nexus.features import has
 
 from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT
-from .theme import (_hex_ok, _mix, accent_hex, ACCENTS, APPEARANCE_DEFAULT, G,
-    normalize_appearance, P, pill, R, R_BASE, SCALES, SP, THEMES)
+from .theme import (_hex_ok, _mix, accent_hex, accent_pair, ACCENTS, APPEARANCE_DEFAULT,
+    CORNERS, G, normalize_appearance, P, pill, PRESET_KEYS, PRESETS, R, R_BASE, SCALES, SP,
+    THEMES)
 
 SGDB_KEY_URL = 'https://www.steamgriddb.com/profile/preferences/api'
 LOCAL_URL_RE = re.compile(r'^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$')
@@ -30,8 +31,8 @@ MOTION = not os.environ.get('NEXUS_NO_MOTION')
 
 
 class Swatch(QAbstractButton):
-    """A colour (or theme preview, or gradient) to pick, painted; checkable
-    and focusable so the controller can choose too."""
+    """A colour (or theme preview, look preset, or gradient) to pick, painted;
+    checkable and focusable so the controller can choose too."""
 
     def __init__(self, kind: str, value, tip: str, size=(30, 30)):
         super().__init__()
@@ -42,27 +43,50 @@ class Swatch(QAbstractButton):
         self.setFixedSize(*size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setStyleSheet(f"border-radius: {pill(size[1]) if kind != 'theme' else R['control']}px;")
+        rad = R['control'] if kind in ('theme', 'preset') else pill(size[1])
+        self.setStyleSheet(f"border-radius: {rad}px;")
 
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
         pt.setPen(Qt.PenStyle.NoPen)
-        if self.kind == 'theme':
-            t = THEMES[self.value][1]
+        if self.kind in ('theme', 'preset'):
+            if self.kind == 'preset':
+                look = PRESETS[self.value][1]
+                t = THEMES[look['theme']][1]
+                a, b = accent_pair(look['theme'], look['accent'], look['partner'])
+                k = CORNERS[look['corners']]
+            else:
+                t, (a, b), k = THEMES[self.value][1], (P['accent'], P['accent']), 1.0
             rad = float(R_BASE['control'])
             pt.setBrush(QColor(t['base']))
             pt.drawRoundedRect(r, rad, rad)
+            if self.kind == 'preset' and look['glow'] != 'off':
+                pt.save()               # the glow, clipped to the preview
+                pt.setClipRect(r.adjusted(1, 1, -1, -1))
+                glow = QRadialGradient(QPointF(r.right() - 10, r.top() + 6), r.height() * 0.9)
+                c = QColor(b)
+                c.setAlphaF(0.55 if look['glow'] == 'vivid' else 0.3)
+                glow.setColorAt(0.0, c)
+                c.setAlphaF(0.0)
+                glow.setColorAt(1.0, c)
+                pt.setBrush(QBrush(glow))
+                pt.drawRoundedRect(r, rad, rad)
+                pt.restore()
             card = QRectF(r.left() + 8, r.top() + 8, r.width() * 0.55, r.height() - 16)
             pt.setBrush(QColor(_mix(t['base'], t['overlay'], 0.6)))
-            pt.drawRoundedRect(card, 4, 4)
+            pt.drawRoundedRect(card, 4 * k, 4 * k)
             pt.setBrush(QColor(t['text']))
             pt.drawRoundedRect(QRectF(card.left() + 6, card.top() + 7, card.width() - 18, 4), 2, 2)
             pt.setBrush(QColor(t['muted']))
             pt.drawRoundedRect(QRectF(card.left() + 6, card.top() + 15, card.width() - 28, 3), 1.5, 1.5)
-            pt.setBrush(QColor(P['accent']))
-            pt.drawRoundedRect(QRectF(card.left() + 6, card.bottom() - 11, 26, 6), 3, 3)
+            bar = QRectF(card.left() + 6, card.bottom() - 11, 26, 6)
+            g = QLinearGradient(bar.topLeft(), bar.topRight())
+            g.setColorAt(0.0, QColor(a))
+            g.setColorAt(1.0, QColor(b))
+            pt.setBrush(QBrush(g))
+            pt.drawRoundedRect(bar, 3 * min(k, 1.0), 3 * min(k, 1.0))
             pt.setBrush(QColor(t['overlay_hi']))
             pt.drawEllipse(QPointF(r.right() - 16, r.center().y()), 7, 7)
             ring = r
@@ -77,7 +101,7 @@ class Swatch(QAbstractButton):
         if self.isChecked():
             pt.setBrush(Qt.BrushStyle.NoBrush)
             pt.setPen(QPen(QColor(P['text']), 2.0))
-            if self.kind == 'theme':
+            if self.kind in ('theme', 'preset'):
                 pt.drawRoundedRect(ring, float(R_BASE['control']), float(R_BASE['control']))
             else:
                 pt.drawEllipse(ring)
@@ -274,8 +298,8 @@ class SettingsSection(QWidget):
 
 
 class AppearanceCard(SettingsSection):
-    """Theme, accent, gradient, glow, corners — applied as you click, saved
-    straight away like everything else here."""
+    """Looks (one-click presets), theme, accent, gradient, glow, corners —
+    applied as you click, saved straight away like everything else here."""
     changed = pyqtSignal(dict)
 
     def __init__(self):
@@ -290,19 +314,32 @@ class AppearanceCard(SettingsSection):
         self.actions.addWidget(reset)
 
         self.groups: dict[str, list[Swatch]] = {}
-        row = QHBoxLayout()
-        row.setSpacing(SP['2'])
+        # Looks: a preview of each preset with its name under it.
+        flow = FlowLayout(None, 0, SP['3'])
+        for key, (name, _look) in PRESETS.items():
+            cell = QWidget()
+            col = QVBoxLayout(cell)
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(SP['1'])
+            sw = Swatch('preset', key, name, (112, 60))
+            sw.clicked.connect(lambda _=False, k=key: self._preset(k))
+            col.addWidget(sw)
+            col.addWidget(label(name, "Muted"), 0, Qt.AlignmentFlag.AlignHCenter)
+            flow.addWidget(cell)
+            self.groups.setdefault('preset', []).append(sw)
+        self.preset_row = self.add(SettingRow(
+            "Looks", "Theme, accent, gradient, glow and corners in one click.", flow,
+            wide=True, keywords="preset style quick neon contrast accessibility"))
+        flow = FlowLayout(None, 0, SP['2'])
         for key, (name, _t) in THEMES.items():
             sw = Swatch('theme', key, name, (96, 56))
             sw.clicked.connect(lambda _=False, k=key: self._set('theme', k))
-            row.addWidget(sw)
+            flow.addWidget(sw)
             self.groups.setdefault('theme', []).append(sw)
-        row.addStretch()
-        self.theme_row = self.add(SettingRow("Theme", "", row, wide=True,
-                                             keywords="dark light colours palette"))
+        self.theme_row = self.add(SettingRow("Theme", "", flow, wide=True,
+                                             keywords="dark light colours palette high contrast"))
 
-        row = QHBoxLayout()
-        row.setSpacing(SP['1_5'])
+        row = FlowLayout(None, 0, SP['1_5'])     # wraps in a narrow window
         for key, hexv in ACCENTS.items():
             sw = Swatch('color', hexv, key.capitalize())
             sw.clicked.connect(lambda _=False, k=key: self._set('accent', k))
@@ -314,14 +351,11 @@ class AppearanceCard(SettingsSection):
         self.custom.setFixedWidth(96)
         self.custom.setToolTip("Any colour, as a hex code")
         self.custom.editingFinished.connect(self._custom)
-        row.addSpacing(SP['2'])
         row.addWidget(self.custom)
-        row.addStretch()
         self.add(SettingRow("Accent colour", "Buttons, highlights and the focus ring.", row,
                             wide=True, keywords="color hex"))
 
-        row = QHBoxLayout()
-        row.setSpacing(SP['1_5'])
+        row = FlowLayout(None, 0, SP['1_5'])
         self.partner_row = row
         self.add(SettingRow("Gradient", "A second colour the accent blends into.", row,
                             wide=True, keywords="color"))
@@ -369,7 +403,6 @@ class AppearanceCard(SettingsSection):
             sw.clicked.connect(lambda _=False, k=key: self._set('partner', k))
             self.partner_row.addWidget(sw)
             self.groups['partner'].append(sw)
-        self.partner_row.addStretch()
 
     def load(self, ap: dict, emit=False):
         self.ap = normalize_appearance(ap)
@@ -387,6 +420,9 @@ class AppearanceCard(SettingsSection):
             sw.setChecked(sw.key == self.ap['partner'])
         self.custom.setText(self.ap['accent'] if _hex_ok(self.ap['accent']) else "")
         self.theme_row.set_description(THEMES[self.ap['theme']][0])
+        on = self._current_preset()
+        for sw in self.groups['preset']:
+            sw.setChecked(sw.value == on)
         self.glow.set_current(self.ap['glow'], animate=False)
         self.corners.set_current(self.ap['corners'], animate=False)
         self.size.set_current(str(self.ap['scale']), animate=False)
@@ -406,6 +442,20 @@ class AppearanceCard(SettingsSection):
         if key == 'accent' and self.ap['partner'] not in ('none',) and \
                 accent_hex(self.ap['partner']) == accent_hex(value):
             self.ap['partner'] = 'none'
+        self._sync()
+        self.changed.emit(dict(self.ap))
+
+    def _current_preset(self) -> str | None:
+        return next((k for k, (_n, look) in PRESETS.items()
+                     if all(self.ap[f] == look[f] for f in PRESET_KEYS)), None)
+
+    def _preset(self, key: str):
+        """Apply a look: one change (one re-style), not five."""
+        look = PRESETS[key][1]
+        if all(self.ap[f] == look[f] for f in PRESET_KEYS):
+            self._sync()
+            return
+        self.ap.update({f: look[f] for f in PRESET_KEYS})
         self._sync()
         self.changed.emit(dict(self.ap))
 
@@ -1513,5 +1563,5 @@ class SettingsPage(QWidget):
 from .config import ConfigError, load_config, save_config  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
-from .widgets import (amp, clear_layout, glyph_pixmap, icon_label, label,  # noqa: E402
-    NoWheelCombo, SegmentedControl, set_glyph_icon)
+from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402
+    label, NoWheelCombo, SegmentedControl, set_glyph_icon)

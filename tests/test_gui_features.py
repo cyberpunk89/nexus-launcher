@@ -375,6 +375,22 @@ class InstallPages(unittest.TestCase):
         self.addCleanup(page.deleteLater)
         self.assertEqual(len(page.steps), len(setup.STEPS))
 
+    def test_setup_shows_a_few_themes_and_keeps_yours(self):
+        """Setup shows a short list of themes (Settings has them all); setting
+        up again with one only Settings lists keeps it, not the first card."""
+        with linux():
+            page = setup.SetupPage()
+        self.addCleanup(page.deleteLater)
+        self.assertEqual(page.theme.count(), len(nx.SETUP_THEMES))
+        self.assertTrue(set(nx.SETUP_THEMES) <= set(nx.THEMES))
+        self.assertIn('contrast', nx.SETUP_THEMES)
+        with mock.patch.object(setup, 'cli_json'):
+            page.open({}, {'theme': 'ocean', 'scale': 1.0})
+        self.assertEqual(page._look()['theme'], 'ocean')
+        with mock.patch.object(setup, 'cli_json'):
+            page.open({}, {'theme': 'ocean', 'scale': 1.0})     # no second card
+        self.assertEqual(page.theme.count(), len(nx.SETUP_THEMES) + 1)
+
     def test_setup_cards_answer_like_the_menus(self):
         """Theme and size are cards now, the switches sit on cards: the same
         answers come out, and a click on a card is a click on its choice."""

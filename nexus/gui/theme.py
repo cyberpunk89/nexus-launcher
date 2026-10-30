@@ -152,6 +152,8 @@ DARK_STATUS = {'iris': '#c4a7e7', 'foam': '#9ccfd8', 'love': '#eb6f92', 'gold': 
                'rose': '#ebbcba', 'pine': '#31748f'}
 DAWN_STATUS = {'iris': '#907aa9', 'foam': '#56949f', 'love': '#b4637a', 'gold': '#ea9d34',
                'rose': '#d7827e', 'pine': '#286983'}
+LATTE_STATUS = {'iris': '#8839ef', 'foam': '#179299', 'love': '#d20f39', 'gold': '#df8e1d',
+                'rose': '#dc8a78', 'pine': '#1e66f5'}
 THEMES = {
     'rose-pine': ("Rosé Pine", {'base': '#191724', 'surface': '#1f1d2e', 'overlay': '#26233a',
                                 'overlay_hi': '#393552', 'text': '#e0def4', 'subtle': '#c9c7e0',
@@ -168,20 +170,60 @@ THEMES = {
     'midnight':  ("Midnight", {'base': '#0b0b10', 'surface': '#13131a', 'overlay': '#1c1c26',
                                'overlay_hi': '#2a2a38', 'text': '#ececf1', 'subtle': '#c6c6d2',
                                'muted': '#8b8b9e'}),
+    'forest':    ("Forest", {'base': '#111a16', 'surface': '#17221d', 'overlay': '#213029',
+                             'overlay_hi': '#2e4138', 'text': '#e2ece5', 'subtle': '#c3d3c8',
+                             'muted': '#88a194'}),
+    'ember':     ("Ember", {'base': '#1a1412', 'surface': '#221a17', 'overlay': '#30241f',
+                            'overlay_hi': '#43332c', 'text': '#f1e6df', 'subtle': '#d8c8be',
+                            'muted': '#a69389'}),
+    'ocean':     ("Ocean", {'base': '#0c1322', 'surface': '#111a2d', 'overlay': '#1a253d',
+                            'overlay_hi': '#283552', 'text': '#e2e8f5', 'subtle': '#c3cde1',
+                            'muted': '#8a98b4'}),
+    # High contrast: black page, white text, borders you can see. 'tokens'
+    # overrides semantic colours after the theme is applied.
+    'contrast':  ("High contrast", {'base': '#000000', 'surface': '#0a0a0a', 'overlay': '#1c1c1c',
+                                    'overlay_hi': '#4d4d4d', 'text': '#ffffff',
+                                    'subtle': '#ededed', 'muted': '#c8c8c8',
+                                    'tokens': {'border': '#6b6b6b', 'border_card': '#5a5a5a',
+                                               'info': '#6cb6d9'}}),
     'dawn':      ("Dawn", {'base': '#faf4ed', 'surface': '#fffaf3', 'overlay': '#f2e9e1',
                            'overlay_hi': '#dfdad9', 'text': '#575279', 'subtle': '#6e6a86',
                            'muted': '#857f99', 'kind': 'light', **DAWN_STATUS}),
     'paper':     ("Paper", {'base': '#f3f3f1', 'surface': '#ffffff', 'overlay': '#e6e5e2',
                             'overlay_hi': '#d4d2cd', 'text': '#1d1c1a', 'subtle': '#45433f',
                             'muted': '#6f6c66', 'kind': 'light', **DAWN_STATUS}),
+    'latte':     ("Latte", {'base': '#eff1f5', 'surface': '#ffffff', 'overlay': '#e4e7ee',
+                            'overlay_hi': '#ccd0da', 'text': '#4c4f69', 'subtle': '#5c5f77',
+                            'muted': '#6c6f85', 'kind': 'light', **LATTE_STATUS}),
+    'mist':      ("Mist", {'base': '#edf1f5', 'surface': '#ffffff', 'overlay': '#e0e6ed',
+                           'overlay_hi': '#c8d1dc', 'text': '#1b2633', 'subtle': '#3c4a5b',
+                           'muted': '#5f6d80', 'kind': 'light', **DAWN_STATUS}),
 }
+# First-run setup shows these; Settings shows them all.
+SETUP_THEMES = ('rose-pine', 'moon', 'midnight', 'forest', 'dawn', 'paper', 'contrast')
 SCALES = (0.9, 1.0, 1.1, 1.25, 1.5)   # Settings → Appearance → Size
-ACCENTS = {'iris': '#c4a7e7', 'rose': '#ebbcba', 'love': '#eb6f92', 'gold': '#f6c177',
-           'foam': '#9ccfd8', 'sky': '#89b4fa', 'mint': '#a6e3a1', 'pine': '#31748f'}
+ACCENTS = {'iris': '#c4a7e7', 'rose': '#ebbcba', 'love': '#eb6f92', 'coral': '#ff8a65',
+           'gold': '#f6c177', 'mint': '#a6e3a1', 'teal': '#4fd1b5', 'foam': '#9ccfd8',
+           'sky': '#89b4fa', 'blue': '#5b8def', 'pine': '#31748f', 'silver': '#d5dae3'}
 APPEARANCE_DEFAULT = {'theme': 'rose-pine', 'accent': 'iris', 'partner': 'love',
                       'glow': 'subtle', 'corners': 'default', 'art_tint': True, 'scale': 1.0}
 GLOW = {'off': 0.0, 'subtle': 1.0, 'vivid': 1.9}
 CORNERS = {'sharp': 0.45, 'default': 1.0, 'round': 1.45}
+# One-click looks: theme, accent, gradient partner, glow and corners together
+# (Size and the art tint stay as they are).
+PRESET_KEYS = ('theme', 'accent', 'partner', 'glow', 'corners')
+PRESETS = {
+    'neon':     ("Neon", {'theme': 'midnight', 'accent': 'teal', 'partner': 'love',
+                          'glow': 'vivid', 'corners': 'round'}),
+    'campfire': ("Campfire", {'theme': 'ember', 'accent': 'coral', 'partner': 'gold',
+                              'glow': 'vivid', 'corners': 'default'}),
+    'woodland': ("Woodland", {'theme': 'forest', 'accent': 'mint', 'partner': 'teal',
+                              'glow': 'subtle', 'corners': 'round'}),
+    'daylight': ("Daylight", {'theme': 'mist', 'accent': 'blue', 'partner': 'none',
+                              'glow': 'off', 'corners': 'sharp'}),
+    'contrast': ("High contrast", {'theme': 'contrast', 'accent': 'gold', 'partner': 'none',
+                                   'glow': 'off', 'corners': 'sharp'}),
+}
 LOOK = {'glow': 1.0, 'art_tint': True, 'light': False, 'scale': 1.0}   # read by the painters
 
 
@@ -238,6 +280,52 @@ def accent_hex(v: str) -> str:
     return ACCENTS.get(v, v if _hex_ok(v) else ACCENTS['iris'])
 
 
+THEME_META = ('kind', 'tokens')       # theme keys that aren't palette colours
+
+
+def _luminance(hex_color: str) -> float:
+    c = QColor(hex_color)
+    ch = [x / 255 for x in (c.red(), c.green(), c.blue())]
+    ch = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in ch]
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+
+def contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio of two colours (1 to 21)."""
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _deepen(hex_color: str, lightness: float, page: str, min_ratio: float = 3.5) -> str:
+    """The same hue, deep enough for a light page: pastels (the dark themes'
+    accents) drop to `lightness`, and anything still too pale for white text
+    on it, or for it as text on `page`, keeps darkening until it reads."""
+    c = QColor(hex_color)
+    h, s, ll = c.hslHueF(), c.hslSaturationF(), c.lightnessF()
+    if h < 0:                                   # a grey: no hue to keep
+        h, s = 0.0, 0.0
+    if ll > 0.62:
+        s, ll = min(1.0, s * 0.9 + 0.1), lightness
+    out = QColor.fromHslF(h, s, ll).name()
+    while ll > 0.2 and min(contrast('#ffffff', out), contrast(page, out)) < min_ratio:
+        ll -= 0.02
+        out = QColor.fromHslF(h, s, ll).name()
+    return out
+
+
+def accent_pair(theme_key: str, accent: str, partner: str) -> tuple[str, str]:
+    """(accent, gradient partner) as hex the way `theme_key` shows them: a
+    light theme deepens pale ones so they read on its page."""
+    theme = THEMES.get(theme_key, THEMES[APPEARANCE_DEFAULT['theme']])[1]
+    a = accent_hex(accent)
+    b = a if partner == 'none' else accent_hex(partner)
+    if theme.get('kind') == 'light':
+        same = b == a
+        a = _deepen(a, 0.42, theme['base'])
+        b = a if same else _deepen(b, 0.45, theme['base'], 3.0)
+    return a, b
+
+
 def apply_appearance(ap: dict) -> dict:
     """Rebuild the palette (PAL/P/GRAD/R) from an appearance in place, so every
     painter picks it up on its next paint; the caller re-applies the
@@ -246,20 +334,8 @@ def apply_appearance(ap: dict) -> dict:
     theme = THEMES[ap['theme']][1]
     light_theme = theme.get('kind') == 'light'
     PAL.update(DARK_STATUS)                    # a light theme overrides these below
-    PAL.update({k: v for k, v in theme.items() if k != 'kind'})
-    accent = accent_hex(ap['accent'])
-    if light_theme and QColor(accent).lightnessF() > 0.62:
-        # A pastel accent (the dark themes' defaults) washes out on a light
-        # page: the same hue, deep enough to read as text and as a fill.
-        c = QColor(accent)
-        accent = QColor.fromHslF(c.hslHueF(), min(1.0, c.hslSaturationF() * 0.9 + 0.1),
-                                 0.42).name()
-    partner = accent if ap['partner'] == 'none' else accent_hex(ap['partner'])
-    if light_theme and partner != accent and QColor(partner).lightnessF() > 0.62:
-        c = QColor(partner)
-        partner = QColor.fromHslF(c.hslHueF(), min(1.0, c.hslSaturationF() * 0.9 + 0.1),
-                                  0.45).name()
-    light = QColor(accent).lightnessF() > 0.55
+    PAL.update({k: v for k, v in theme.items() if k not in THEME_META})
+    accent, partner = accent_pair(ap['theme'], ap['accent'], ap['partner'])
     # Raised surfaces: lighter than the page on a dark theme (towards
     # overlay); on a light one cards are the white `surface` and the page
     # the tinted base.
@@ -286,7 +362,10 @@ def apply_appearance(ap: dict) -> dict:
         'overlay': PAL['overlay_hi'], 'border': PAL['overlay'] if not light_theme
         else PAL['overlay_hi'],
         'text': PAL['text'], 'subtext': PAL['subtle'], 'muted': PAL['muted'],
-        'accent': accent, 'on_accent': PAL['base'] if light and not light_theme else '#ffffff',
+        # The label on an accent fill: the page colour or white, whichever reads
+        # better (a light theme's accent is always deep enough for white).
+        'accent': accent, 'on_accent': '#ffffff' if light_theme or
+        contrast('#ffffff', accent) >= contrast(PAL['base'], accent) else PAL['base'],
         'accent_09': _rgba(accent, 0.09), 'accent_16': _rgba(accent, 0.16),
         'accent_22': _rgba(accent, 0.22), 'accent_35': _rgba(accent, 0.35),
         'success': PAL['foam'], 'danger': PAL['love'], 'warning': PAL['gold'],
@@ -294,6 +373,7 @@ def apply_appearance(ap: dict) -> dict:
         'success_18': _rgba(PAL['foam'], 0.18), 'danger_18': _rgba(PAL['love'], 0.18),
         'warning_18': _rgba(PAL['gold'], 0.18),
         **surf,
+        **theme.get('tokens', {}),
     })
     GRAD['dusk'] = (accent, partner)
     GRAD['aurora'] = (accent, PAL['foam'])
