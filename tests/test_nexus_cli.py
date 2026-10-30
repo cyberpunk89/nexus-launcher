@@ -592,6 +592,8 @@ class Sandbox(unittest.TestCase):
 
     def cli(self, *args, check=True):
         env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': ''}
+        if '--check-integrity' in args:         # hashes a Wine prefix: Linux only (needs 'proton')
+            env['NEXUS_FEATURES'] = f"{env.get('NEXUS_FEATURES', '')},proton"
         r = subprocess.run([sys.executable, str(CLI), *args], env=env, text=True,
                            capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
         if check and r.returncode != 0:

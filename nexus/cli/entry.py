@@ -518,7 +518,8 @@ def build_parser() -> argparse.ArgumentParser:
 # reading args.<dest> doesn't change.
 GATED = {
     'proton': ('try_proton', 'set_proton', 'list_protons', 'protons', 'proton_releases',
-               'proton_install', 'proton_remove', 'proton_migrate', 'protondb', 'prefix_tool'),
+               'proton_install', 'proton_remove', 'proton_migrate', 'protondb', 'prefix_tool',
+               'check_integrity'),
     'launch_profiles': ('set_launch', 'apply_launch'),
     'perf': ('perf', 'benchmark', 'bench_results'),
     'protongen': ('from_protongen', 'protongen_default', 'use_protongen_default',

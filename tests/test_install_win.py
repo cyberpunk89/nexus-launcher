@@ -245,8 +245,30 @@ class WindowsInstall(Harness):
         with contextlib.redirect_stdout(out):
             fi.cmd_list(self.base, as_json=True)
         row = next(g for g in json.loads(out.getvalue())['games'] if g['slug'] == 'test-game')
-        self.assertEqual((row['launcher'], row['wine_prefix'], row['desktop']),
-                         (None, None, True))
+        self.assertEqual((row['wine_prefix'], row['desktop']), (None, True))
+        self.assertEqual(row['launcher'], row['exe'])       # the exe plays; see below
+        self.assertIsNone(fi.registry_get('test-game')['launcher'])   # the registry stays clean
+
+    def test_a_fresh_install_can_be_played(self):
+        """The --library row is what the GUI's Play button reads: without a launcher
+        it was disabled for every Windows install."""
+        self.assertEqual(self.install()[0], 0)
+        row = next(g for g in fi.managed_entries(self.base) if g['slug'] == 'test-game')
+        self.assertEqual(row['launcher'], str(self.base / 'test-game' / 'bin' / 'TestGame.exe'))
+        self.assertIsNone(fi.registry_get('test-game')['launcher'])
+        try:
+            from nexus.gui import gameinfo
+        except ImportError:                                  # no PyQt6 here
+            return
+        self.assertTrue(gameinfo.play_enabled(row))
+
+    def test_check_integrity_is_refused(self):
+        with mock.patch.object(sys, 'argv', ['nexus-cli', '--check-integrity', 'test-game']), \
+                self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            entry.main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("isn't available", err.getvalue())
 
     def test_repair_launchers_recreates_a_missing_shortcut(self):
         self.assertEqual(self.install()[0], 0)

@@ -5,7 +5,7 @@ import re
 import sys
 from datetime import datetime
 
-from nexus import features
+from nexus import features, platform
 
 from .common import _cached_read, _load_toml, CONFIG_PATH, STEAM_ROOT
 
@@ -506,7 +506,11 @@ CONFIG_SECRETS = (('steamgriddb', 'api_key', 'SteamGridDB key'),
 
 def config_secrets_doctor(add, group: str) -> None:
     """--doctor: warn when config.toml holds a credential and others can read it
-    (the GUI writes it 0600; a hand-made one is usually 0644)."""
+    (the GUI writes it 0600; a hand-made one is usually 0644). Windows has no mode
+    bits (Python reports 0o666 for every file): the file sits in the user's profile
+    and the GUI gives it an owner-only ACL, so there is nothing to check."""
+    if platform.OS_NAME == 'windows':
+        return
     try:
         import tomllib
         data = tomllib.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))

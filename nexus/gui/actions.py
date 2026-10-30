@@ -64,7 +64,8 @@ NEEDS_FEATURE = {'add-heroic': 'heroic', 'remove-heroic': 'heroic',
                  'pg-default': 'protongen', 'protongen': 'protongen',
                  'restore-saves': 'save_backup', 'benchmark': 'perf',
                  'tool:': 'proton', 'pause-toggle': 'pause',
-                 'add-sunshine': 'sunshine', 'remove-sunshine': 'sunshine'}
+                 'add-sunshine': 'sunshine', 'remove-sunshine': 'sunshine',
+                 'check-integrity': 'proton', 'snapshots': 'btrfs'}
 
 
 def _supported(key: str) -> bool:

@@ -204,6 +204,7 @@ def managed_entries(install_base: Path, compute_sizes: bool = False,
         prof = g.get('launch') or {}
         enriched.append({
             **g,
+            'launcher': entry_launcher(g),      # the row only: the registry keeps none on Windows
             'launch_options': format_launch_options(prof) if profile_owns_options(prof) else None,
             'steam': steam,
             'desktop': desktop,
@@ -472,7 +473,7 @@ from .desktop import _desktop_path  # noqa: E402
 from .gamecmds import _launcher_display_name, ACHIEVEMENT_COUNTS, steam_account_id  # noqa: E402
 from .heroic import (_heroic_exe, _heroic_lib_path, _load_heroic_library, find_heroic_config)  # noqa: E402
 from .launchprofile import format_launch_options, protongen_heroic_id  # noqa: E402
-from .registry import load_registry, update_registry_size  # noqa: E402
+from .registry import entry_launcher, load_registry, update_registry_size  # noqa: E402
 from .repack import incomplete_installs  # noqa: E402
 from .sgdb import _art_file, cached_sgdb_id, overlay_art  # noqa: E402
 from .steam import _read_compat_mapping, _shortcut_uid, find_steam_userdata  # noqa: E402

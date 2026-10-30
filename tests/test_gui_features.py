@@ -24,7 +24,8 @@ if nx is not None:
 WINDOWS = features.WINDOWS
 
 LINUX_ACTIONS = ('add-heroic', 'remove-heroic', 'pg-default', 'protongen',
-                 'benchmark', 'pause-toggle', 'add-sunshine', 'remove-sunshine')
+                 'benchmark', 'pause-toggle', 'add-sunshine', 'remove-sunshine',
+                 'check-integrity', 'snapshots')
 
 
 def windows():
@@ -43,7 +44,7 @@ class Calls(list):
 
 
 GAME = {'slug': 'a', 'display_name': 'A', 'source': 'nexus', 'launcher': '/a',
-        'playing': True, 'sunshine': False, 'heroic': False}
+        'playing': True, 'sunshine': False, 'heroic': False, 'owned_dir': True}
 STEAM = {'slug': 's', 'display_name': 'S', 'source': 'steam', 'launcher': '/s', 'appid': 1}
 
 
@@ -69,7 +70,8 @@ class Actions(unittest.TestCase):
         with linux():
             keys = self.keys(GAME) | self.keys(STEAM)
         self.assertLessEqual({'add-heroic', 'protongen', 'restore-saves', 'pause-toggle',
-                              'add-sunshine', 'tool:winecfg'}, keys)
+                              'add-sunshine', 'tool:winecfg', 'check-integrity',
+                              'snapshots'}, keys)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

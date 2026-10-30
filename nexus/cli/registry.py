@@ -6,7 +6,7 @@ import os
 import sys
 from datetime import datetime
 
-from nexus import paths as NX, platform
+from nexus import features, paths as NX, platform
 
 from .common import atomic_write, DATA_DIR
 
@@ -126,6 +126,20 @@ def unregister_game(slug: str) -> None:
         reg = load_registry()
         if reg['games'].pop(slug, None) is not None:
             save_registry(reg)
+
+
+def entry_launcher(entry: dict) -> str | None:
+    """What --launch would start for this entry: its launch.sh on Linux; on
+    Windows the game's exe, or a Store app's shell URI. The GUI's Play button
+    asks for it through the --library row (never written back to the registry:
+    --apply would turn it into the path launch.sh is written to)."""
+    launcher = entry.get('launcher')
+    if launcher or features.has('proton'):
+        return launcher
+    if entry.get('appx'):
+        from nexus import appx
+        return appx.shell_uri(entry['appx'])
+    return entry.get('exe') or None
 
 
 def registry_get(slug: str) -> dict | None:

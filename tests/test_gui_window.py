@@ -258,6 +258,7 @@ class Actions(unittest.TestCase):
         self.assertTrue(fav.isChecked())
         m.deleteLater()
 
+    @linux_features                                        # snapshots need btrfs
     def test_move_and_snapshots_only_for_games_nexus_owns(self):
         g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a'}
         self.assertNotIn('move', [a.key for a in nx.game_actions(g)])

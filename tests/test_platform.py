@@ -504,6 +504,30 @@ class PlatformEdid(unittest.TestCase):
             self.assertIsNone(windows.screen_size_mm(0, 0))
 
 
+class ConfigPermissions(unittest.TestCase):
+    """--doctor warns about a readable config.toml with a token on Linux only:
+    Windows reports 0o666 for every file, so the check would always fire."""
+
+    def check(self, os_name):
+        from nexus.cli import info
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / 'config.toml'
+            cfg.write_text('[gamedb]\ntoken = "x"\n', encoding='utf-8')
+            cfg.chmod(0o644)
+            found = []
+            with mock.patch.object(info, 'CONFIG_PATH', cfg), \
+                    mock.patch.object(info.platform, 'OS_NAME', os_name):
+                info.config_secrets_doctor(lambda *a: found.append(a), 'Config')
+        return found
+
+    def test_linux_warns_on_a_readable_token(self):
+        found = self.check('linux')
+        self.assertEqual([f[2] for f in found], ['Config file permissions'])
+
+    def test_windows_is_silent(self):
+        self.assertEqual(self.check('windows'), [])
+
+
 class Memory(unittest.TestCase):
     def test_meminfo_has_what_the_memory_check_reads(self):
         m = platform.meminfo()
