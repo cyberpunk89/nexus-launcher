@@ -1246,6 +1246,23 @@ class Window(unittest.TestCase):
         self.win.go(self.win.LIBRARY)
         self.assertTrue(self.win.details.isVisible())
 
+    def test_details_width_follows_the_window(self):
+        """30 % of the window, 440-560 px, until you drag it (420-640);
+        a width saved before w-54 (under 420) gives way to the default."""
+        w, d = self.win, self.win.details
+        self.assertEqual([d.default_width(x) for x in (1000, 1366, 1600, 1920, 2560)],
+                         [440, 440, 480, 560, 560])
+        self.assertEqual((d.minimumWidth(), d.maximumWidth()), (420, 640))
+        for saved, want in ((None, 480), (380, 480), (600, 600), (900, 640)):
+            w.details.setVisible(False)
+            w.prefs.library_state = {**w.prefs.library_state, 'details_w': saved}
+            w.resize(1600, 900)
+            QApplication.processEvents()
+            w._tile_activated(w._games[0])
+            QApplication.processEvents()
+            self.assertEqual(d.width(), want, saved)
+        w.prefs.library_state = {**w.prefs.library_state, 'details_w': None}
+
     def test_home_rows_and_tiles(self):
         tiles = self.win.homeview.tiles
         self.assertIn('alpha', tiles)
@@ -1671,11 +1688,21 @@ class Window(unittest.TestCase):
         self.assertFalse(d.sec_launch.is_open)
         d.open_section('launch')
         self.assertTrue(d.sec_launch.is_open)
+        self.assertEqual(d.current_tab(), 'manage')            # sections live in Manage (w-54)
         d.sec_launch.set_open(False)
-        self.assertEqual(d.st_played.value.text(), "2.0 h")
+        self.assertTrue(d.facts_line.text().startswith("2.0 h played"))
         self.win._tile_activated(self.win._games[1])           # a Steam game
         QApplication.processEvents()
         self.assertTrue(d.sec_launch.isHidden())               # Steam owns its settings
+        self.assertEqual(d.current_tab(), 'overview')          # a new game starts there
+        self.win._rename_selected()                            # F2: on a Steam game, nothing
+        self.assertEqual(d.current_tab(), 'overview')
+        self.win._tile_activated(self.win._games[0])
+        QApplication.processEvents()
+        self.win._rename_selected()                            # F2: Manage / Game and files
+        self.assertEqual(d.current_tab(), 'manage')
+        self.assertTrue(d.sec_files.is_open)
+        d.sec_files.set_open(False)
 
     def test_theatre_game_page_keeps_focus(self):
         from PyQt6.QtCore import QEvent, Qt

@@ -29,8 +29,10 @@ once. Games you own but haven't installed are there too, with an Install button.
 
 ![A game's details panel: hero art, play time, genres, description, achievements and launch options](docs/screenshots/game.jpg)
 
-- **A page for every game:** hero art and logo, play time, last played, size on disk, genres,
-  a description, how long it takes to beat, achievements, trailers, news and your own notes.
+- **A page for every game:** hero art and logo, Play, one line of play time and size, your
+  progress through the story and the achievements, then tabs: Overview (description, genres,
+  reviews, how long to beat, how it runs, your notes), Media (screenshots, trailers),
+  Achievements and Manage (launch settings, files, logs).
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
   quietly in the background. Pick another image for any game, Steam games included.
 - **Home** starts with a *Continue playing* banner, then widgets you can move, resize or hide:

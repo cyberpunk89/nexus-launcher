@@ -314,9 +314,10 @@ class FlowJustify(unittest.TestCase):
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class GameContextBlock(unittest.TestCase):
-    """The game page's context block (w-40): built from the facts index the
-    CLI writes, each row only when its fact exists, no block (and no gap)
-    with no facts, tags that ask for a Library filter."""
+    """The game page's context block, now at the top of Overview (w-40,
+    w-54): built from the facts index the CLI writes, each row only when its
+    fact exists, a plain line with no facts, tags that ask for a Library
+    filter, Play at the same height for every game."""
 
     INDEX = {'games': {
         'full': {'developers': ['FromSoftware'], 'publishers': ['Bandai Namco', 'FromSoftware'],
@@ -369,14 +370,21 @@ class GameContextBlock(unittest.TestCase):
         self.assertEqual(ctx.credits.text(), "FromSoftware · Bandai Namco · 2022")
         self.assertEqual([b.text() for b in ctx.tag_btns], ['RPG', 'Action', 'Adventure', 'Co-op'])
         self.assertTrue(ctx.desc.isVisible() and ctx.more.isVisible())
-        self.assertLess(len(ctx.desc.text()), len(ctx.desc.full))     # clamped to 3 lines
-        self.assertLessEqual(ctx.desc.height(), ctx.desc.fontMetrics().lineSpacing() * 3 + 6)
-        self.assertEqual(ctx.length_text.text(), "Main story about 50 h · everything 133 h")
-        self.assertEqual(ctx.length_pct.text(), "24 %")
-        self.assertTrue(ctx.bar.isVisible())
-        self.assertEqual(ctx.shows, {'facts', 'hltb'})
-        self.assertLessEqual(self.panel.stack.currentWidget().widget().minimumSizeHint().width(),
-                             self.panel.maximumWidth())
+        self.assertLess(len(ctx.desc.text()), len(ctx.desc.full))     # clamped to 5 lines
+        self.assertLessEqual(ctx.desc.height(), ctx.desc.fontMetrics().lineSpacing() * 5 + 6)
+        ctx.more.click()                                                # Read more: all of it
+        self.assertEqual(ctx.desc.text(), ctx.desc.full)
+        self.assertEqual(ctx.more.text(), "Show less")
+        ctx.more.click()
+        self.assertLess(len(ctx.desc.text()), len(ctx.desc.full))
+        # The play length moved to the progress strip and At a glance (w-54).
+        p = self.panel
+        self.assertTrue(p.meter_story.isVisible())
+        self.assertEqual(p.meter_story.value.text(), "24 % of 50 h")
+        self.assertEqual(p.meter_story.bar.value(), 240)
+        self.assertIn('Length', p.glance_keys)
+        self.assertLessEqual(p.stack.currentWidget().widget().minimumSizeHint().width(),
+                             p.maximumWidth())
 
     def test_tags_ask_for_a_library_filter(self):
         got = []
@@ -389,25 +397,26 @@ class GameContextBlock(unittest.TestCase):
     def test_partial_and_played_past_the_end(self):
         ctx = self._show('part')
         self.assertEqual(ctx.credits.text(), "Larian Studios · 2023")   # publisher = developer
-        for w in (ctx.tags_host, ctx.desc, ctx.more, ctx.length):
+        for w in (ctx.tags_host, ctx.desc, ctx.more):
             self.assertFalse(w.isVisible())
-        rec = {'length': {'main': 10, 'source': 'igdb', 'count': 3}}
-        ctx.set_facts(rec, 0)
-        self.assertFalse(ctx.bar.isVisible())                   # no play time, no bar
-        self.assertIn("IGDB, 3 submissions", ctx.length.toolTip())
-        ctx.set_facts(rec, 12 * 60)
-        self.assertEqual(ctx.length_pct.text(), "past the main story")
-        self.assertEqual(ctx.bar.value(), 1000)
+        p = self.panel
+        self.assertFalse(p.progress.isVisible())                # no length, no achievements
+        length = {'main': 10, 'source': 'igdb', 'count': 3}
+        _t, note, frac, tip = self.details.GameContext.length_line(length, 0)
+        self.assertIsNone(frac)                                 # no play time, no bar
+        self.assertIn("IGDB, 3 submissions", tip)
+        _t, note, frac, _tip = self.details.GameContext.length_line(length, 12 * 60)
+        self.assertEqual((note, frac), ("past the main story", 1.0))
 
-    def test_no_facts_no_block_no_gap(self):
+    def test_no_facts_says_so_and_play_stays_put(self):
         ctx = self._show('nothing-known')
         self.assertFalse(ctx.isVisible())
-        y_none = self.panel.st_played.mapTo(self.panel.page, QPoint(0, 0)).y()
+        self.assertTrue(self.panel.bare_note.isVisible())
         y_play = self.panel.btn_play.mapTo(self.panel.page, QPoint(0, 0)).y()
-        self._show('full')
-        y_full = self.panel.st_played.mapTo(self.panel.page, QPoint(0, 0)).y()
-        self.assertGreater(y_full, y_none)
+        self._show('full', playtime_minutes=60)
+        self.assertFalse(self.panel.bare_note.isVisible())
         self.assertEqual(self.panel.btn_play.mapTo(self.panel.page, QPoint(0, 0)).y(), y_play)
+        self.assertEqual(y_play, self.panel.HERO_H + self.details.SP['1'])  # right under the hero
 
     def test_release_status_chip(self):
         self._show('ea')
@@ -421,11 +430,15 @@ class GameContextBlock(unittest.TestCase):
         ctx = self._show('steam-only', appid='1')
         self.assertFalse(ctx.isVisible())
         self.panel._fill_about({'store': {'blurb': 'A game.', 'developers': ['Dev'],
-                                          'genres': ['RPG'], 'release': '3 Mar, 2021'}})
+                                          'genres': ['RPG'], 'release': '3 Mar, 2021'},
+                                'reviews': {'desc': 'Very Positive', 'percent': 91,
+                                            'total': 12345}})
         QApplication.processEvents()
         self.assertTrue(ctx.isVisible())
         self.assertEqual(ctx.credits.text(), "Dev · 2021")
-        self.assertNotIn('RPG', self.panel.about_text.text())     # the block shows it
+        self.assertEqual(ctx.desc.full, "A game.")
+        self.assertEqual(self.panel.glance_keys[0], "Reviews")
+        self.assertFalse(self.panel.bare_note.isVisible())
 
 
 if __name__ == '__main__':

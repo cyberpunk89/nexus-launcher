@@ -703,6 +703,19 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#ContextMore { background: transparent; border: none; color: $accent;
                               padding: 0; font-size: ${fs_xs}px; text-align: left; }
     QPushButton#ContextMore:hover { text-decoration: underline; }
+    /* Game page header and tabs (w-54). */
+    QLabel#HeroName { color: $text; font-size: ${fs_headline}px; font-weight: 600; }
+    QLabel#FactLine { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#MeterLabel { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#MeterValue { color: $text; font-size: ${fs_xs}px; font-weight: 500; }
+    QLabel#ContextLede { color: $subtext; font-size: ${fs_sm}px; }
+    QLabel#SectionKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#GlanceKey { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#GlanceValue { color: $subtext; font-size: ${fs_xs}px; }
+    QLabel#MediaTitle { color: $text; font-weight: 500; }
+    QFrame#MediaPlay { background: $glass_hi; border: 1px solid $glass; }
+    #MediaRow { background: transparent; border: none; border-radius: ${r_control}px; }
+    #MediaRow:hover { background: $surface_1; }
     #DisclosureHead { background: $surface_1; border: 1px solid $border_card;
                       border-radius: ${r_control}px; }
     #DisclosureHead:hover { background: $surface_2; }

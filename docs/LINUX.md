@@ -224,17 +224,20 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   - A tile is just the game's art — no badges. The title fades in on hover with a **⋮** button
     (⋮ and right-click open the same menu); a green dot marks the game being played.
     A click (or Enter / A) opens the game's page, where Play is.
-  - **Details panel** (click a tile, from Home or Library): hero art, the game's status as
-    chips (source, ProtonDB tier, update, favourite, launch options), Play, play time /
-    last played / size.
-    Below them, five sections: **Launch** (repacks: Runtime, Display, Frame rate, Fixes and
-    overlay, suggested fixes for your GPU, Advanced, with one Apply bar; Steam/Heroic games
-    get only the suggestions and protongen's saved options to copy), **Game and files**
-    (name, exe, folder, Steam/Heroic, snapshots), **Troubleshoot** (logs, benchmarks,
-    *Explain with local AI* when protongen's AI coach is on), **About** (store info,
-    Game-db, compatibility with the ProtonDB tier, achievements) and **Notes**. Wine tools
-    and the rest live in ⋮. Steam games get Steam shortcuts (page, properties, verify,
-    uninstall) and *Tune in protongen*.
+  - **Details panel** (click a tile, from Home or Library; 30 % of the window, 440-560 px,
+    drag it 420-640): hero art with the status that matters now (source, not installed,
+    playing, update, release status), Play, ★ and ⋮, one line of play time / last played /
+    size, and your progress (main story, achievements). Then four tabs, each only when it
+    has something: **Overview** (credits, description, genres, *At a glance*: reviews,
+    length, ProtonDB / Steam Deck / anti-cheat, PCGamingWiki, links; more like this; notes),
+    **Media** (screenshots and trailers), **Achievements** (recently unlocked, still to get)
+    and **Manage**: **Launch** (repacks: Runtime, Display, Frame rate, Fixes and overlay,
+    suggested fixes for your GPU, Advanced, with one Apply bar; Steam/Heroic games get only
+    the suggestions and protongen's saved options to copy), **Game and files** (name, exe,
+    folder, Steam/Heroic, snapshots), **Troubleshoot** (logs, benchmarks, *Explain with
+    local AI* when protongen's AI coach is on). Wine tools, the game folder, artwork and the
+    rest live in ⋮. Steam games get Steam shortcuts (page, properties) and *Tune in
+    protongen* in Manage.
 - **System** (Ctrl+5) — Activity, Play history, Storage and Health as sections of one page:
   - **Activity** — every job as a card (step, progress, elapsed, Cancel, its own log), a strip
     under the library and a ring on the tile; toasts when done (and `notify-send` if the window
@@ -252,10 +255,11 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   - **Health** — the doctor as a checklist with fix buttons, including a **Performance** group
     (sched-ext scheduler, power profile, `vm.max_map_count`, open-file limit, ntsync, gaming
     tools, hybrid GPUs) that suggests commands to copy — Nexus never changes system settings.
-- **The game page** also has **About** — the Steam store's blurb, genres, review summary,
-  Metacritic, **how long to beat** (HowLongToBeat, for every game — Game-db's figure when it has
-  one), trailers that play inside the window (Esc closes; needs `qt6-multimedia-ffmpeg`) and
-  **more like this** (games you own link to their page) — and **Notes**, saved as you type.
+- **The game page** also shows the Steam store's blurb, genres, review summary, Metacritic,
+  **how long to beat** (HowLongToBeat, for every game — Game-db's figure when it has one),
+  screenshots, trailers that play inside the window (Esc closes; needs
+  `qt6-multimedia-ffmpeg`) and **more like this** (games you own link to their page) — and
+  **Notes**, saved as you type.
 - **Theatre screensaver**: after a few idle minutes in Theatre (Settings → Controls and
   Theatre, or Theatre's own settings), your games take turns full screen — hero art drifting
   slowly, or the store trailer, muted. Any button ends it; A opens the game on screen.
@@ -284,7 +288,7 @@ jobs run?". Under 1000 px wide the tabs fold to icons.
   tonight's three picks per time budget (Play if installed, else Install in Steam). Cards
   are focusable: Enter/A opens the best deal, Menu/X lists every link (deal, GG.deals,
   Steam, Game-db, copy). The Deals tab's badge counts games on sale, and the details panel's
-  About section shows a Game-db line for any game it knows (wishlist price, or HLTB time and
+  *At a glance* shows a Game-db line for any game it knows (wishlist price, or HLTB time and
   how far through you are). Up to 200 cards show at once; the line above them says how many
   matched, and search or the filters reach the rest. A refresh that fails keeps what is on
   screen and says why in the banner.
@@ -433,15 +437,14 @@ hands focus to the game's window as soon as it opens (Steam games are matched by
 `steam_app_<id>` window) and takes it back when the game closes; elsewhere, Theatre mode
 steps aside (minimises) once the game is running.
 
-**Game page.** Click a game (or A on a controller) for its page: Play, a row of quick
-actions (favourite, Steam page / properties / protongen, launch settings, log, folder,
-artwork), a stats grid (play time, last played, size, install date, Proton, ProtonDB, and for
-Steam games **achievements**, listed under About, newest unlock first; hidden ones stay
-hidden until unlocked), a "how far through" bar when Game-db knows the time to beat, and
-five collapsed sections: Launch, Game and files, Troubleshoot, About and Notes. In Launch,
-nothing changes until you press **Apply**: the bar says how many changes wait, and
-*Discard* puts them back. Switches whose tool isn't installed say so. Wine tools and the
-rest live in ⋮.
+**Game page.** Click a game (or A on a controller) for its page: the hero, Play, ★ and ⋮,
+one quiet line (play time, last played, size), your progress (main story when the time to
+beat is known, achievements), then the tabs **Overview**, **Media**, **Achievements** (newest
+unlock first; hidden ones stay hidden until unlocked) and **Manage** (Launch, Game and files,
+Troubleshoot). A tab with nothing to show is hidden. In Launch, nothing changes until you
+press **Apply**: the bar says how many changes wait, and *Discard* puts them back. Switches
+whose tool isn't installed say so. Wine tools and the rest live in ⋮. F2 opens Manage →
+Game and files on the name.
 
 Shortcuts: **Ctrl+K command palette** (games, pages, Settings sections and commands, fuzzy —
 "hk", "move noc"; Tab on a game lists its actions) · `/` search · Esc back · Ctrl+N install · Ctrl+R refresh (also retries art that
@@ -828,7 +831,7 @@ the rare game that needs one. `--doctor` flags any prefix still carrying a winet
   the game is copied in. It gets the same launch.sh / Steam / Heroic / app-menu treatment as a
   repack and can be uninstalled; the FitGirl-only steps (MD5 check, repack safety look, update
   feed) leave it alone.
-- **Snapshots — undo an update** (btrfs only; game page → *Snapshots*). New installs on a btrfs
+- **Snapshots — undo an update** (btrfs only; game page → Manage → *Game and files*). New installs on a btrfs
   drive get their own subvolume; one is snapshotted in an instant before every repack update,
   Proton change and winetricks run, and by hand with *Snapshot now*. **Roll back** puts the
   game and its prefix (settings and saves too) back the way they were — and snapshots what's

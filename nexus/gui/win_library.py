@@ -1188,9 +1188,16 @@ class LibraryMixin:
         self.details.show_games(games)
         if not self.details.isVisible():
             self.details.setVisible(True)
+            # 30 % of the window, 440-560 px, until you drag it (420-640);
+            # the Library keeps 4 columns at 1366 px and 6 at 1920 (w-54).
             total = self.split.width()
-            want = self.prefs.library_state.get('details_w') or 380
-            w = max(320, min(int(want), total - 300))
+            d = self.details
+            saved = self.prefs.library_state.get('details_w')
+            # A width dragged before w-54 (340-440 px) is below today's
+            # least: the new default suits it better than its old value.
+            w = (min(d.MAX_W, int(saved)) if saved and int(saved) >= d.MIN_W
+                 else d.default_width(self.width()))
+            w = max(min(w, total - 300), d.MIN_W)
             self.split.setSizes([max(total - w, 300), w])
 
     def _show_menu(self, game, pos):

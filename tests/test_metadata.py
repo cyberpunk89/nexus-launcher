@@ -237,6 +237,38 @@ class Gui(unittest.TestCase):
         self.assertNotIn('RPG', trimmed)
         self.assertNotIn('6.9', trimmed)
 
+    def test_glance_rows_escape_link_known_sites_and_skip_linux_on_windows(self):
+        from nexus.gui.actions import glance_rows
+        info = {'store': {'metacritic': {'score': 94},
+                          'url': 'https://store.steampowered.com/app/1/'},
+                'reviews': {'desc': '<b>Very Positive</b>', 'percent': 92, 'total': 712345}}
+        tips = {'protondb': {'tier': 'gold', 'total': 9, 'url': 'https://www.protondb.com/app/1'},
+                'deck': {'deck': 'Verified'},
+                'anticheat': {'status': 'Broken', 'anticheats': ['EAC']},
+                'pcgw': {'support': {'Ultrawide': 'true'}, 'url': 'javascript:alert(1)'},
+                'hltb': {'url': 'https://evil.example/'}}
+        rows = {name: (value, tip) for name, value, tip in
+                glance_rows(info, tips, {'main': 58, 'complete': 133, 'source': 'igdb',
+                                         'count': 4})}
+        self.assertEqual(list(rows), ['Reviews', 'Length', 'On Linux', 'PC', 'Links'])
+        self.assertIn('92% of 712k', rows['Reviews'][0])
+        self.assertIn('Metacritic 94', rows['Reviews'][0])
+        self.assertNotIn('<b>Very', rows['Reviews'][0])            # escaped
+        self.assertEqual(rows['Length'], ("Main story 58 h · everything 133 h",
+                                          "From IGDB, 4 submissions"))
+        self.assertIn('Gold', rows['On Linux'][0])
+        self.assertIn('broken', rows['On Linux'][0])
+        links = rows['Links'][0]
+        self.assertIn('store.steampowered.com', links)
+        self.assertIn('protondb.com', links)
+        self.assertNotIn('javascript:', links)                    # only the sites they name
+        self.assertNotIn('evil.example', links)
+        win = [r[0] for r in glance_rows(info, tips, None, linux=False)]
+        self.assertEqual(win, ['Reviews', 'PC', 'Links'])          # no ProtonDB / Deck / AC
+        self.assertNotIn('protondb', glance_rows(info, tips, None, linux=False)[-1][1])
+        self.assertEqual(glance_rows(None, None, None), [])
+        self.assertIn('Silver', glance_rows(None, None, None, protondb='silver')[0][1])
+
     def test_play_history_page(self):
         page = nx.PlayHistoryPage()
         page.fill({})

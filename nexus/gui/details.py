@@ -7,18 +7,18 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QPoint, QPointF, QRectF, Qt, QTimer, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QLinearGradient, QPainter, QPixmap,
-    QRadialGradient, QTextLayout)
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
+    QPixmap, QRadialGradient, QTextLayout)
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QFileDialog, QFrame,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from nexus import facts, gamedb
 from nexus.features import has
 
 from .common import alive, HOME, MAX_NOTE
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
-from .theme import FS, G, LOOK, P, R, SP
+from .theme import FS, G, LOOK, P, pill, PILL_H, pill_qss, R, SP
 
 
 def _hero_art(game: dict) -> str | None:
@@ -83,7 +83,7 @@ class HeroBanner(QWidget):
     logo_changed = pyqtSignal(bool)            # a logo is (not) shown now
     tint_changed = pyqtSignal(object)          # the art's average QColor, or None
 
-    DECODE_W = 440                             # the details panel's widest (DetailsPanel)
+    DECODE_W = 640                             # the details panel's widest (DetailsPanel.MAX_W)
     SYNC_BYTES = 1_500_000                     # smaller decodes faster than a frame
     _RECENT: dict[tuple, QPixmap] = {}         # shared by every banner, oldest first
     RECENT_MAX = 8
@@ -279,13 +279,15 @@ class ElideLabel(QLabel):
 
 
 class ClampLabel(QLabel):
-    """Wrapped plain text cut to `lines` lines, the last one ending in …"""
+    """Wrapped plain text cut to `lines` lines, the last one ending in …
+    `clamped` says whether anything was cut (it changes with the width)."""
+    clamped_changed = pyqtSignal(bool)
 
     def __init__(self, lines: int = 3, name=None):
         super().__init__()
         if name:
             self.setObjectName(name)
-        self.full, self.lines = '', lines
+        self.full, self.lines, self.clamped = '', lines, False
         self.setWordWrap(True)
         self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -317,7 +319,15 @@ class ClampLabel(QLabel):
         text = ''.join(out)
         if text != self.text():
             self.setText(text)
-        self.setToolTip(self.full if len(text) < len(self.full) else '')
+        cut = len(text) < len(self.full)
+        self.setToolTip(self.full if cut else '')
+        if cut != self.clamped:
+            self.clamped = cut
+            self.clamped_changed.emit(cut)
+
+    def set_lines(self, lines: int):
+        self.lines = lines
+        self._clamp()
 
 
 _FACTS: dict = {'mtime': None, 'games': {}}
@@ -352,52 +362,36 @@ def status_pill(rec: dict | None) -> tuple[str, str] | None:
 
 
 class GameContext(QWidget):
-    """What the game is, under the quick buttons: credits, up to three genre
-    tags (+ Co-op), a three-line description and the play length with your
-    progress. Built only from facts that exist: each row hides on its own,
-    and with nothing known the whole block hides, leaving no gap (w-40)."""
+    """What the game is, at the top of Overview: credits, a five-line
+    description with Read more, and up to three genre tags (+ Co-op) that
+    filter the Library. Built only from facts that exist: each row hides on
+    its own, and with nothing known the whole block hides (w-40, w-54)."""
     filter_library = pyqtSignal(str)             # 'genre:<Nexus genre>' or 'smart:coop'
-    open_about = pyqtSignal()
+    LINES = 5
 
     def __init__(self):
         super().__init__()
         self.setObjectName("GameContext")
         v = QVBoxLayout(self)
-        v.setContentsMargins(SP['1'], 0, SP['1'], 0)
+        v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(SP['2'])
         self.credits = ElideLabel('', "ContextCredits")
         v.addWidget(self.credits)
+        self.desc = ClampLabel(self.LINES, "ContextLede")
+        self.desc.clamped_changed.connect(self._sync_more)
+        v.addWidget(self.desc)
+        self.more = QPushButton("Read more")
+        self.more.setObjectName("ContextMore")
+        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more.clicked.connect(self._toggle_more)
+        v.addWidget(self.more, 0, Qt.AlignmentFlag.AlignLeft)
+        self.expanded = False
+        v.addSpacing(SP['1'])
         self.tags_host = QWidget()
         self.tags = FlowLayout(self.tags_host, margin=0, spacing=SP['1_5'])
         v.addWidget(self.tags_host)
         self.tag_btns: list[QPushButton] = []
         self._tag_keys: tuple = ()
-        self.desc = ClampLabel(3, "ContextBlurb")
-        v.addWidget(self.desc)
-        self.more = QPushButton("More about the game")
-        self.more.setObjectName("ContextMore")
-        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.more.clicked.connect(self.open_about)
-        v.addWidget(self.more, 0, Qt.AlignmentFlag.AlignLeft)
-        self.length = QWidget()
-        ll = QVBoxLayout(self.length)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(SP['1'])
-        lrow = QHBoxLayout()
-        lrow.setSpacing(SP['2'])
-        self.length_text = label("", "ContextLength", wrap=True)
-        lrow.addWidget(self.length_text, 1)
-        self.length_pct = label("", "Muted")
-        lrow.addWidget(self.length_pct, 0, Qt.AlignmentFlag.AlignTop)
-        ll.addLayout(lrow)
-        self.bar = QProgressBar()
-        self.bar.setObjectName("CardProgress")
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(6)
-        self.bar.setRange(0, 1000)
-        ll.addWidget(self.bar)
-        v.addWidget(self.length)
-        self.shows: set[str] = set()             # what About can leave out: 'facts', 'hltb'
         self.setVisible(False)
 
     @staticmethod
@@ -434,19 +428,17 @@ class GameContext(QWidget):
         if done <= 0:
             return text, '', None, tip
         frac = done / main
-        note = "past the main story" if frac > 1 else f"{round(100 * frac)} %"
+        note = "past the main story" if frac > 1 else f"{round(100 * frac)} % of {main:g} h"
         return text, note, min(1.0, frac), tip
 
-    def set_facts(self, rec: dict | None, minutes: int = 0) -> bool:
-        """Show what `rec` (a facts index record) knows; True when anything shows."""
+    def set_facts(self, rec: dict | None, blurb: str = '') -> bool:
+        """Show what `rec` (a facts index record) knows, the store's `blurb`
+        when it has no description; True when anything shows."""
         rec = rec or {}
-        self.shows = set()
         short, full = self.credits_text(rec)
         self.credits.setText(short)
         self.credits.setToolTip(full)
         self.credits.setVisible(bool(short))
-        if short:
-            self.shows.add('facts')
         tags = [(f"genre:{g}", g) for g in (rec.get('genres') or [])[:3]]
         if 'coop' in (rec.get('modes') or []):
             tags.append(('smart:coop', "Co-op"))
@@ -464,26 +456,277 @@ class GameContext(QWidget):
                 self.tags.addWidget(b)
                 self.tag_btns.append(b)
         self.tags_host.setVisible(bool(tags))
-        desc = (rec.get('description') or '').strip()
-        self.desc.set_full(desc)
+        desc = (rec.get('description') or blurb or '').strip()
+        if desc != self.desc.full:
+            self.expanded = False
+            self.desc.lines = self.LINES
+            self.desc.set_full(desc)
         self.desc.setVisible(bool(desc))
-        self.more.setVisible(bool(desc))
-        length = rec.get('length') or {}
-        if length.get('main'):
-            text, note, frac, tip = self.length_line(length, minutes)
-            self.length_text.setText(text)
-            self.length_pct.setText(note)
-            self.length_pct.setVisible(bool(note))
-            self.bar.setVisible(frac is not None)
-            self.bar.setValue(int((frac or 0) * 1000))
-            self.length.setToolTip(tip)
-            self.length.setVisible(True)
-            self.shows.add('hltb')
-        else:
-            self.length.setVisible(False)
-        shown = bool(short or tags or desc or length.get('main'))
+        self._sync_more()
+        shown = bool(short or tags or desc)
         self.setVisible(shown)
         return shown
+
+    def _sync_more(self, *_):
+        self.more.setText("Show less" if self.expanded else "Read more")
+        self.more.setVisible(bool(self.desc.full) and (self.expanded or self.desc.clamped))
+
+    def _toggle_more(self):
+        self.expanded = not self.expanded
+        self.desc.set_lines(10_000 if self.expanded else self.LINES)
+        self._sync_more()
+
+
+class Meter(QWidget):
+    """One thin progress bar with its name and value above it: the game
+    page's progress strip (Main story, Achievements; w-54)."""
+
+    def __init__(self, title: str):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SP['1'])
+        top = QHBoxLayout()
+        top.setSpacing(SP['2'])
+        self.title = label(title, "MeterLabel")
+        top.addWidget(self.title)
+        top.addStretch()
+        self.value = label("", "MeterValue")
+        top.addWidget(self.value)
+        v.addLayout(top)
+        self.bar = QProgressBar()
+        self.bar.setObjectName("CardProgress")
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        self.bar.setRange(0, 1000)
+        v.addWidget(self.bar)
+
+    def set(self, value: str, frac: float, tip: str = ''):
+        self.value.setText(value)
+        self.bar.setValue(int(max(0.0, min(1.0, frac)) * 1000))
+        self.setToolTip(tip)
+
+
+class ShotView(QAbstractButton):
+    """A screenshot or trailer still: the image cropped to fill, with
+    rounded corners, a quiet placeholder until it arrives. A button, so
+    the keyboard and the pad can pick it. `ratio` keeps its height to its
+    width (16:9) unless it has a fixed size."""
+
+    def __init__(self, url: str = '', ratio: float = 9 / 16):
+        super().__init__()
+        self.url, self.ratio = url, ratio
+        self._pm: QPixmap | None = None
+        self._asked = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+        self.setCheckable(True)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        return round(w * self.ratio)
+
+    def sizeHint(self):
+        from PyQt6.QtCore import QSize
+        return QSize(160, round(160 * self.ratio))
+
+    def set_url(self, url: str):
+        if url != self.url:
+            self.url, self._pm, self._asked = url, None, False
+            self.update()
+            if self.isVisible():
+                self.load()
+
+    def load(self):
+        """Fetch and decode the image (once; called when it is on screen)."""
+        if self._asked or not self.url:
+            return
+        self._asked = True
+        path = ART.cached(self.url)
+        if path:
+            self._decode(path)
+        else:
+            ART.fetch(self.url, self._decode)
+
+    def _decode(self, path, url=None):
+        want = self.url
+        ART.request(path, max(self.width(), 160), max(self.height(), 90),
+                    lambda pm, u=want: self._set(u, pm))
+
+    def _set(self, url, pm):
+        if url == self.url and pm is not None:
+            self._pm = pm
+            self.update()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.load()
+
+    def paintEvent(self, ev):
+        from PyQt6.QtGui import QPainterPath
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(r, R['control'], R['control'])
+        pt.setClipPath(clip)
+        if self._pm is None or self._pm.isNull():
+            pt.fillRect(r, QColor(P['surface_2']))
+        else:
+            size = self._pm.deviceIndependentSize()
+            scale = max(r.width() / max(1.0, size.width()), r.height() / max(1.0, size.height()))
+            w, h = size.width() * scale, size.height() * scale
+            pt.drawPixmap(QRectF((r.width() - w) / 2, (r.height() - h) / 2, w, h), self._pm,
+                          QRectF(self._pm.rect()))
+        if self.isChecked() or self.hasFocus():
+            pen = QColor(P['accent'])
+            pt.setClipping(False)
+            pt.setPen(pen)
+            pt.setBrush(Qt.BrushStyle.NoBrush)
+            pt.drawRoundedRect(r.adjusted(1, 1, -1, -1), R['control'], R['control'])
+        pt.end()
+
+
+class MediaStrip(QWidget):
+    """The game page's Media tab (w-54): a big screenshot with the others as
+    thumbnails under it (pick one to see it large), then the trailers, which
+    play right here. Images load only once the tab is on screen."""
+    trailer = pyqtSignal(dict)
+    THUMBS = 4                                   # per row
+
+    def __init__(self):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SP['3'])
+        self.big = ShotView()
+        self.big.setCheckable(False)
+        self.big.setToolTip("Next screenshot")
+        self.big.clicked.connect(lambda: self.show_shot(self.current + 1))
+        v.addWidget(self.big)
+        self.thumb_host = QWidget()
+        self.thumb_grid = QGridLayout(self.thumb_host)
+        self.thumb_grid.setContentsMargins(0, 0, 0, 0)
+        self.thumb_grid.setSpacing(SP['2'])
+        v.addWidget(self.thumb_host)
+        self.caption = label("", "Muted")
+        v.addWidget(self.caption)
+        self.trailer_box = QWidget()
+        tl = QVBoxLayout(self.trailer_box)
+        tl.setContentsMargins(0, SP['2'], 0, 0)
+        tl.setSpacing(SP['2'])
+        tl.addWidget(kicker("Trailers"))
+        self.trailer_rows = QVBoxLayout()
+        self.trailer_rows.setSpacing(SP['2'])
+        tl.addLayout(self.trailer_rows)
+        v.addWidget(self.trailer_box)
+        self.shots: list[str] = []
+        self.trailers: list[dict] = []
+        self.thumbs: list[ShotView] = []
+        self.current = 0
+        self.game_name = ''
+
+    def set_media(self, shots: list[str], trailers: list[dict], game_name: str = '') -> bool:
+        """Show these screenshot URLs and trailers; True when there is any."""
+        shots = [u for u in shots or [] if str(u).startswith('https://')][:12]
+        trailers = [t for t in trailers or [] if str(t.get('url') or '').startswith('https://')][:4]
+        self.game_name = game_name
+        if shots != self.shots:
+            self.shots = shots
+            clear_layout(self.thumb_grid)
+            self.thumbs = []
+            for i, url in enumerate(shots):
+                t = ShotView(url)
+                t.setToolTip(f"Screenshot {i + 1} of {len(shots)}")
+                t.clicked.connect(lambda _=False, i=i: self.show_shot(i))
+                self.thumb_grid.addWidget(t, i // self.THUMBS, i % self.THUMBS)
+                self.thumbs.append(t)
+            for c in range(self.THUMBS):
+                self.thumb_grid.setColumnStretch(c, 1)
+            self.show_shot(0)
+        n = len(shots)
+        self.big.setVisible(bool(shots))
+        self.thumb_host.setVisible(n > 1)
+        self.caption.setText(f"{n} screenshots · pick one to see it large" if n > 1 else '')
+        self.caption.setVisible(n > 1)
+        if [t.get('url') for t in trailers] != [t.get('url') for t in self.trailers]:
+            self.trailers = trailers
+            clear_layout(self.trailer_rows)
+            for t in trailers:
+                self.trailer_rows.addWidget(self._trailer_row(t))
+        self.trailer_box.setVisible(bool(trailers))
+        return bool(shots or trailers)
+
+    def show_shot(self, i: int):
+        if not self.shots:
+            return
+        self.current = i % len(self.shots)
+        self.big.set_url(self.shots[self.current])
+        for j, t in enumerate(self.thumbs):
+            t.setChecked(j == self.current)
+
+    def load(self):
+        """The tab is on screen: fetch what is visible."""
+        for w in (self.big, *self.thumbs):
+            if not w.isHidden():
+                w.load()
+
+    def _trailer_row(self, t: dict) -> QWidget:
+        row = ClickRow()
+        row.setObjectName("MediaRow")
+        row.setToolTip("Play the trailer here")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(SP['3'])
+        stack = QWidget()
+        stack.setFixedSize(128, 72)
+        sg = QGridLayout(stack)
+        sg.setContentsMargins(0, 0, 0, 0)
+        thumb = ShotView(t.get('thumb') or '')
+        thumb.setCheckable(False)
+        thumb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        thumb.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        sg.addWidget(thumb, 0, 0)
+        disc = QFrame()                          # a round glass disc with ▶ on it
+        disc.setObjectName("MediaPlay")
+        disc.setFixedSize(32, 32)
+        disc.setStyleSheet(f"QFrame#MediaPlay {{ border-radius: {pill(32)}px; }}")
+        dl = QHBoxLayout(disc)
+        dl.setContentsMargins(0, 0, 0, 0)
+        ic = icon_label(G['play'], 16, P['on_art'])
+        ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dl.addWidget(ic)
+        sg.addWidget(disc, 0, 0, Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(stack)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addStretch()
+        name = plain_label(t.get('name') or "Trailer", "MediaTitle")
+        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        col.addWidget(name)
+        col.addWidget(label("Plays here", "Muted"))
+        col.addStretch()
+        h.addLayout(col, 1)
+        for w in row.findChildren(QLabel):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        row.clicked.connect(lambda t=t: self.trailer.emit({**t, 'game': self.game_name}))
+        row.thumb = thumb
+        return row
+
+
+def kicker(text: str) -> QLabel:
+    """A small all-caps heading inside a game page tab ("AT A GLANCE")."""
+    lab = label(text.upper(), "SectionKicker")
+    f = lab.font()
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+    lab.setFont(f)
+    return lab
 
 
 class AchievementRow(QFrame):
@@ -885,9 +1128,11 @@ class PerfPanel(QWidget):
 
 
 class DetailsPanel(QFrame):
-    """Everything about one game: Play, stats, integrations, Proton and launch
-    options, protongen, maintenance tools and logs. With several tiles selected
-    it becomes a batch-actions panel instead.
+    """One game, with one clear focus (w-54): the hero, Play, a quiet fact
+    line and your progress, then four tabs for everything else: Overview
+    (what the game is), Media, Achievements and Manage (launch settings,
+    files, troubleshooting). With several tiles selected it becomes a
+    batch-actions panel instead.
 
     Changes are CLI jobs (emitted via `request`) so they land in launch.sh,
     Steam and Heroic exactly as the command line does it."""
@@ -901,11 +1146,23 @@ class DetailsPanel(QFrame):
     notes_changed = pyqtSignal(str, str)         # (slug, text)
     filter_library = pyqtSignal(str)             # a context tag: 'genre:RPG', 'smart:coop'
 
+    # Width: by default 30 % of the window, 440-560 px; a drag may go 420-640
+    # (win_library._selection_changed). Library keeps 4 columns at 1366 px
+    # and 6 at 1920.
+    MIN_W, MAX_W = 420, 640
+    HERO_H = 232
+    TABS = (('overview', "Overview"), ('media', "Media"), ('achievements', "Achievements"),
+            ('manage', "Manage"))
+
+    @staticmethod
+    def default_width(window_w: int) -> int:
+        return max(440, min(560, round(window_w * 0.30)))
+
     def __init__(self):
         super().__init__()
         self.setObjectName("Details")
-        self.setMinimumWidth(340)
-        self.setMaximumWidth(440)
+        self.setMinimumWidth(self.MIN_W)
+        self.setMaximumWidth(self.MAX_W)
         self.game: dict = {}
         self.games: list[dict] = []
         self.info: dict = {}
@@ -940,86 +1197,81 @@ class DetailsPanel(QFrame):
         scroll.setWidgetResizable(True)
         scroll.setWidget(page)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll = scroll
         self.stack.addWidget(scroll)
         # The hero runs edge to edge; everything under it keeps the margins.
         bleed = QVBoxLayout(page)
-        bleed.setContentsMargins(0, 0, 0, SP['4'])
+        bleed.setContentsMargins(0, 0, 0, SP['5'])
         bleed.setSpacing(0)
         lay = QVBoxLayout()
-        lay.setContentsMargins(SP['4'], 0, SP['4'], 0)
+        lay.setContentsMargins(SP['5'], SP['1'], SP['5'], 0)
         lay.setSpacing(SP['3'])
 
+        # ---- header: art, logo (or the name), the pills that matter now ----
         hero_wrap = QWidget()
         hw = QGridLayout(hero_wrap)
         hw.setContentsMargins(0, 0, 0, 0)
         self.hero = HeroBanner()
+        self.hero.setFixedHeight(self.HERO_H)
         self.hero.logo_changed.connect(lambda shown: self.name.setVisible(not shown))
         hw.addWidget(self.hero, 0, 0)
         self.hero.tint_changed.connect(page.set_tint)
+        corner = QWidget()                      # the art is edge to edge; these aren't
+        cl = QHBoxLayout(corner)
+        cl.setContentsMargins(SP['4'], SP['3'], SP['3'], 0)
+        cl.setSpacing(SP['2'])
+        self.chips_host = QWidget()
+        self.chips = FlowLayout(self.chips_host, margin=0, spacing=SP['1_5'])
+        cl.addWidget(self.chips_host, 1, Qt.AlignmentFlag.AlignVCenter)
         close = icon_button(G['close'], "Close (Esc)", 28, "TileMore")
         close.clicked.connect(self.closed)
-        corner = QWidget()                      # the art is edge to edge; the button isn't
-        cl = QHBoxLayout(corner)
-        cl.setContentsMargins(0, SP['2'], SP['2'], 0)
-        cl.addWidget(close)
-        hw.addWidget(corner, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        cl.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        hw.addWidget(corner, 0, 0, Qt.AlignmentFlag.AlignTop)
+        name_box = QWidget()
+        nl = QVBoxLayout(name_box)
+        nl.setContentsMargins(SP['5'], 0, SP['5'], SP['3'])
+        self.name = plain_label("", "HeroName", wrap=True)
+        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        nl.addWidget(self.name)
+        hw.addWidget(name_box, 0, 0, Qt.AlignmentFlag.AlignBottom)
         bleed.addWidget(hero_wrap)
         bleed.addLayout(lay)
 
-        self.name = label("", "PageTitle", wrap=True)
-        lay.addWidget(self.name)
-        # Status that matters right now: source, playing / starting, update.
-        self.chips_host = QWidget()
-        self.chips = FlowLayout(self.chips_host, margin=0, spacing=SP['1_5'])
-        lay.addWidget(self.chips_host)
-
+        # ---- the one action, at the same height for every game ----
         prow = QHBoxLayout()
+        prow.setSpacing(SP['2'])
         self.btn_play = QPushButton("Play")
         self.btn_play.setObjectName("PlayBig")
         set_glyph_icon(self.btn_play, G['play'], 18, 'on_accent', hover_role=None)
-        self.btn_play.setMinimumHeight(42)
+        self.btn_play.setFixedHeight(46)
         self.btn_play.clicked.connect(lambda: self.play.emit(self.game))
         prow.addWidget(self.btn_play, 1)
-        more = icon_button(G['more'], "Every action for this game", 42, "QuickAction",
+        self.btn_fav = icon_button(G['star_outline'], "Add to favourites", 46, "QuickAction",
+                                   round_=True)
+        self.btn_fav.clicked.connect(lambda: self._act('favorite'))
+        prow.addWidget(self.btn_fav)
+        more = icon_button(G['more'], "Every action for this game", 46, "QuickAction",
                            round_=True)
         more.clicked.connect(self._emit_menu)
         prow.addWidget(more)
         self.btn_more = more
         lay.addLayout(prow)
 
-        # The few things you reach for; everything else is in ⋮ or a section.
-        self.quick = QHBoxLayout()
-        self.quick.setSpacing(SP['1_5'])
-        lay.addLayout(self.quick)
-        # What the game is, from the facts index (below the buttons, so Play
-        # stays at the same height for every game).
-        self.context = GameContext()
-        self.context.filter_library.connect(self.filter_library)
-        self.context.open_about.connect(self._open_about)
-        lay.addWidget(self.context)
+        # ---- one quiet line instead of a grid of tiles ----
+        self.facts_line = ElideLabel('', "FactLine")
+        lay.addWidget(self.facts_line)
 
-        # The stats grid.
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(SP['2'])
-        grid.setVerticalSpacing(SP['2'])
-        self.st_played = StatTile(G['timer'], "Play time")
-        self.st_last = StatTile(G['history'], "Last played")
-        self.st_size = StatTile(G['storage'], "On disk", 'info')
-        self.st_added = StatTile(G['calendar'], "Installed", 'info')
-        self.st_proton = StatTile(G['proton'], "Proton", 'warning')
-        self.st_rating = StatTile(G['medal'], "ProtonDB", 'warning')
-        for i, t in enumerate((self.st_played, self.st_last, self.st_size, self.st_added,
-                               self.st_proton, self.st_rating)):
-            grid.addWidget(t, i // 2, i % 2)
-        if not has('proton'):           # hide only: a parentless show() is a window
-            self.st_proton.hide()
-            self.st_rating.hide()
-        self.st_ach = StatTile(G['trophy'], "Achievements", 'success')   # Steam games
-        self.st_ach.setVisible(False)
-        grid.addWidget(self.st_ach, 3, 0, 1, 2)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        lay.addLayout(grid)
+        # ---- your progress: the story and the achievements, side by side ----
+        self.progress = QWidget()
+        pl = QHBoxLayout(self.progress)
+        pl.setContentsMargins(0, SP['1'], 0, 0)
+        pl.setSpacing(SP['5'])
+        self.meter_story = Meter("Main story")
+        self.meter_ach = Meter("Achievements")
+        pl.addWidget(self.meter_story, 1)
+        pl.addWidget(self.meter_ach, 1)
+        self.progress.setVisible(False)
+        lay.addWidget(self.progress)
 
         # Inline uninstall confirmation (replaces the old modal message box).
         self.confirm = QFrame()
@@ -1050,10 +1302,6 @@ class DetailsPanel(QFrame):
         cl.addLayout(crow)
         self.confirm.setVisible(False)
         lay.addWidget(self.confirm)
-
-        # Five sections, closed until you need them: Launch (how a repack
-        # starts, on Linux; advice for Steam/Heroic games), Game and files,
-        # Troubleshoot, About, Notes.
         self.pg_notice = self._pg_notice()
         lay.addWidget(self.pg_notice)        # protongen drift: always in view
         self.ac_notice = label("", None, wrap=True)
@@ -1061,49 +1309,44 @@ class DetailsPanel(QFrame):
         self.ac_notice.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
         self.ac_notice.setVisible(False)
         lay.addWidget(self.ac_notice)        # online play broken: always in view
+
+        # State the tabs' fills share.
         self._dirty: set[str] = set()
         self._launch_full = False            # a Linux repack: the whole Launch section
-        self._about_summary = ''
         self._sent = False                   # applied; waiting for the jobs to finish
         self._was_busy = False
         self._base = {'proton': '', 'opts': '', 'via': 'nexus'}
         self._perf_base: list[str] = []
-        self.sec_launch = Disclosure('launch', "Launch", G['tune'], self._launch_tab())
-        self.sec_files = Disclosure('files', "Game and files", G['folder'], self._files_tab())
-        self.sec_files.toggled.connect(
-            lambda on: on and not self.snap_box.isHidden() and self._load_snapshots(force=True))
-        self.sec_trouble = Disclosure('troubleshoot', "Troubleshoot", G['wrench'],
-                                      self._logs_tab())
-        self.sec_trouble.toggled.connect(lambda on: on and self._load_log())
-        self.sec_about = Disclosure('about', "About", G['info'], self._about_tab())
-        self.sec_about.toggled.connect(lambda on: on and self._load_achievements())
-        self.sec_about.setVisible(False)
         self._store: dict = {}
+        self._tips: dict = {}
         self._tips_hltb = None
-        self._quick_btns: dict = {}
-        self._about_parts = {'store': False, 'compat': False, 'deal': False, 'ach': False}
         self._snap_at = (None, 0.0)
         self._ach_for = None
-        # Notes: yours, saved as you type (a second after you stop).
-        self.notes_edit = QPlainTextEdit()
-        self.notes_edit.setPlaceholderText("Where you left off, settings that worked, "
-                                           "a code to remember…")
-        self.notes_edit.setFixedHeight(120)
-        self._notes_timer = QTimer(self)
-        self._notes_timer.setSingleShot(True)
-        self._notes_timer.setInterval(1000)
-        self._notes_timer.timeout.connect(self._save_notes)
-        self.notes_edit.textChanged.connect(self._notes_timer.start)
-        self._notes_for = None
-        self.sec_notes = Disclosure('notes', "Notes", G['pencil'], self.notes_edit)
-        self.sections = QVBoxLayout()
-        self.sections.setSpacing(SP['2'])
-        for sec in (self.sec_launch, self.sec_files, self.sec_trouble, self.sec_about,
-                    self.sec_notes):
-            self.sections.addWidget(sec)
-        lay.addLayout(self.sections)
-        lay.addStretch()
         self._tips_query = None
+        self._notes_for = None
+
+        # ---- the switch: four tabs, the ones with nothing to show hidden ----
+        lay.addSpacing(SP['2'])
+        self.tabs = SegmentedControl('underline', 38)
+        for key, text in self.TABS:
+            self.tabs.add(key, text)
+        self.tabs.set_current('overview', animate=False)
+        self.tabs.changed.connect(self.show_tab)
+        self.tabs_rule = QFrame()
+        self.tabs_rule.setObjectName("SmartRule")
+        self.tabs_rule.setFixedHeight(1)
+        lay.addWidget(self.tabs)
+        lay.addWidget(self.tabs_rule)
+        lay.addSpacing(SP['2'])
+        # Tab bodies are shown and hidden inside the one scroll area (not a
+        # QStackedWidget, which is as tall as its tallest page).
+        self.tab_bodies = {'overview': self._overview_tab(), 'media': self._media_tab(),
+                           'achievements': self._achievements_tab(),
+                           'manage': self._manage_tab()}
+        for key, w in self.tab_bodies.items():
+            lay.addWidget(w)                     # parent first: a parentless show is a window
+            w.setVisible(key == 'overview')
+        lay.addStretch()
 
         # ---- batch (several selected) ----
         batch = QWidget()
@@ -1135,6 +1378,153 @@ class DetailsPanel(QFrame):
         self.stack.addWidget(batch)
 
     # ---- tabs ----
+    @staticmethod
+    def _column(spacing: int = SP['3']) -> tuple[QWidget, QVBoxLayout]:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(spacing)
+        return w, v
+
+    def _overview_tab(self) -> QWidget:
+        """Overview: what the game is (credits, description, genres), the
+        facts at a glance, more like this, and your notes."""
+        w, v = self._column(SP['4'])
+        self.context = GameContext()
+        self.context.filter_library.connect(self.filter_library)
+        v.addWidget(self.context)
+        self.glance_box, gv = self._column(SP['2'])
+        gv.addWidget(kicker("At a glance"))
+        self.glance = QGridLayout()
+        self.glance.setContentsMargins(0, 0, 0, 0)
+        self.glance.setHorizontalSpacing(SP['3'])
+        self.glance.setVerticalSpacing(SP['2'])
+        self.glance.setColumnStretch(1, 1)
+        gv.addLayout(self.glance)
+        self.glance_keys: list[str] = []
+        self.glance_box.setVisible(False)
+        v.addWidget(self.glance_box)
+        self.similar_box, sv = self._column(SP['2'])
+        sv.addWidget(kicker("More like this"))
+        host = QWidget()
+        self.similar = FlowLayout(host, margin=0, spacing=SP['1_5'])
+        sv.addWidget(host)
+        self.similar_box.setVisible(False)
+        v.addWidget(self.similar_box)
+        self.bare_note = label("Nothing known about this game yet. Its description, reviews "
+                               "and screenshots show here once Nexus has matched it.", "Muted",
+                               wrap=True)
+        self.bare_note.setVisible(False)
+        v.addWidget(self.bare_note)
+        # Notes: yours, saved as you type (a second after you stop).
+        self.notes_link = QPushButton("Add a note")
+        self.notes_link.setObjectName("ContextMore")
+        self.notes_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_glyph_icon(self.notes_link, G['pencil'], 14, 'accent', hover_role=None)
+        self.notes_link.clicked.connect(lambda: self.open_section('notes'))
+        v.addWidget(self.notes_link, 0, Qt.AlignmentFlag.AlignLeft)
+        self.notes_box, nv = self._column(SP['2'])
+        nv.addWidget(kicker("Notes"))
+        self.notes_edit = QPlainTextEdit()
+        self.notes_edit.setPlaceholderText("Where you left off, settings that worked, "
+                                           "a code to remember…")
+        self.notes_edit.setFixedHeight(120)
+        nv.addWidget(self.notes_edit)
+        self.notes_box.setVisible(False)
+        v.addWidget(self.notes_box)
+        self._notes_timer = QTimer(self)
+        self._notes_timer.setSingleShot(True)
+        self._notes_timer.setInterval(1000)
+        self._notes_timer.timeout.connect(self._save_notes)
+        self.notes_edit.textChanged.connect(self._notes_timer.start)
+        return w
+
+    def _media_tab(self) -> QWidget:
+        self.media = MediaStrip()
+        self.media.trailer.connect(self.trailer)
+        return self.media
+
+    def _achievements_tab(self) -> QWidget:
+        """Achievements: recently unlocked, then still to get (loaded when the
+        tab opens)."""
+        self.ach_body = QWidget()
+        self.ach_rows = QVBoxLayout(self.ach_body)
+        self.ach_rows.setContentsMargins(0, 0, 0, 0)
+        self.ach_rows.setSpacing(SP['2'])
+        return self.ach_body
+
+    def _manage_tab(self) -> QWidget:
+        """Manage: Steam's own tools for a Steam game, then the sections
+        (Launch with its Apply bar, Game and files, Troubleshoot)."""
+        w, v = self._column(SP['2'])
+        self.steam_tools = QWidget()
+        tl = FlowLayout(self.steam_tools, margin=0, spacing=SP['2'])
+        self.tool_btns: dict[str, QPushButton] = {}
+        for glyph, text, act in ((G['steam'], "Open in Steam", 'steam-page'),
+                                 (G['settings'], "Steam properties", 'steam-props'),
+                                 (G['wrench'], "Tune in protongen", 'protongen')):
+            b = QPushButton(text)
+            b.setObjectName("ToolRow")
+            set_glyph_icon(b, glyph, 15, 'accent')
+            b.clicked.connect(lambda _=False, a=act: self._act(a))
+            tl.addWidget(b)
+            self.tool_btns[act] = b
+        self.steam_tools.setVisible(False)
+        v.addWidget(self.steam_tools)
+        self.sec_launch = Disclosure('launch', "Launch", G['tune'], self._launch_tab())
+        self.sec_files = Disclosure('files', "Game and files", G['folder'], self._files_tab())
+        self.sec_files.toggled.connect(
+            lambda on: on and not self.snap_box.isHidden() and self._load_snapshots(force=True))
+        self.sec_trouble = Disclosure('troubleshoot', "Troubleshoot", G['wrench'],
+                                      self._logs_tab())
+        self.sec_trouble.toggled.connect(lambda on: on and self._load_log())
+        self.sections = QVBoxLayout()
+        self.sections.setSpacing(SP['2'])
+        for sec in (self.sec_launch, self.sec_files, self.sec_trouble):
+            self.sections.addWidget(sec)
+        v.addLayout(self.sections)
+        return w
+
+    def show_tab(self, key: str):
+        """Show one tab's body; a hidden tab falls back to Overview."""
+        if key not in self.tab_bodies or self.tabs.item(key).isHidden():
+            key = 'overview'
+        if self.tabs.current() != key:
+            self.tabs.set_current(key, animate=self.isVisible())
+        for k, w in self.tab_bodies.items():
+            w.setVisible(k == key)
+        if key == 'achievements':
+            self._load_achievements()
+        elif key == 'media':
+            self.media.load()
+
+    def current_tab(self) -> str:
+        return self.tabs.current()
+
+    def _sync_tabs(self):
+        """Each tab only when it has something; the bar itself only when
+        there is more than one."""
+        g = self.game
+        shown = {'overview': True,
+                 'media': bool(self.media.shots or self.media.trailers),
+                 'achievements': self._ach() is not None,
+                 'manage': not (self.steam_tools.isHidden() and self.sec_launch.isHidden()
+                                and self.sec_files.isHidden() and self.sec_trouble.isHidden())}
+        for key, on in shown.items():
+            if self.tabs.item(key).isHidden() == on:
+                self.tabs.set_item_visible(key, on)
+        many = sum(shown.values()) > 1
+        self.tabs.setVisible(many)
+        self.tabs_rule.setVisible(many)
+        if not shown.get(self.tabs.current()) and g:
+            self.show_tab('overview')
+
+    def _ach(self) -> tuple[int, int] | None:
+        """(unlocked, total) for a game whose achievements Nexus can list."""
+        g = self.game
+        ach = g.get('achievements') if g.get('source', 'nexus') in ('steam', 'nexus') else None
+        return (int(ach[0]), int(ach[1])) if ach and len(ach) == 2 and ach[1] else None
+
     def _row(self, lay, title):
         row = QHBoxLayout()
         row.setSpacing(SP['2'])
@@ -1246,50 +1636,6 @@ class DetailsPanel(QFrame):
         snl.addLayout(sbr)
         self.snap_box.setVisible(False)
         lay.addWidget(self.snap_box)
-        return w
-
-    def _about_tab(self):
-        """About: the store's blurb, reviews, time to beat, trailers, similar
-        games; then compatibility (ProtonDB, Deck, anti-cheat, PCGamingWiki)
-        and achievements (loaded when the section opens)."""
-        w, lay = self._body()
-        self.tune_deal = label("", None, wrap=True)          # Game-db: price, progress
-        self.tune_deal.setOpenExternalLinks(True)
-        lay.addWidget(self.tune_deal)
-        self.store_box = QWidget()
-        abl = QVBoxLayout(self.store_box)
-        abl.setContentsMargins(0, 0, 0, 0)
-        abl.setSpacing(SP['1_5'])
-        self.about_text = label("", None, wrap=True)
-        self.about_text.setOpenExternalLinks(True)
-        abl.addWidget(self.about_text)
-        self.trailer_rows = QVBoxLayout()
-        self.trailer_rows.setSpacing(SP['1'])
-        abl.addLayout(self.trailer_rows)
-        self.similar_title = label("More like this", "StatLabel")
-        abl.addWidget(self.similar_title)
-        self.similar_rows = QVBoxLayout()
-        self.similar_rows.setSpacing(SP['0_5'])
-        abl.addLayout(self.similar_rows)
-        lay.addWidget(self.store_box)
-        self.compat_box, cg = _group("Compatibility")
-        self.tune_pdb = label("", None, wrap=True)
-        self.tune_pdb.setOpenExternalLinks(True)
-        cg.addWidget(self.tune_pdb, 0, 0, 1, 4)
-        self.compat_text = label("", None, wrap=True)
-        self.compat_text.setOpenExternalLinks(True)
-        cg.addWidget(self.compat_text, 1, 0, 1, 4)
-        lay.addWidget(self.compat_box)
-        self.ach_box, ag = _group("Achievements")
-        self.ach_body = QWidget()
-        self.ach_rows = QVBoxLayout(self.ach_body)
-        self.ach_rows.setContentsMargins(0, 0, 0, 0)
-        self.ach_rows.setSpacing(SP['1_5'])
-        ag.addWidget(self.ach_body, 0, 0, 1, 4)
-        lay.addWidget(self.ach_box)
-        for box in (self.store_box, self.compat_box, self.ach_box, self.tune_deal,
-                    self.tune_pdb):
-            box.setVisible(False)
         return w
 
     def _launch_tab(self):
@@ -1480,9 +1826,10 @@ class DetailsPanel(QFrame):
         if not same:
             self.confirm.setVisible(False)
             self.info = {}
-            self._store, self._tips_hltb = {}, None
+            self._store, self._tips, self._tips_hltb = {}, {}, None
             self._dirty = set()                 # edits belong to the game they were made on
             self._sent = self._was_busy = False
+            self.media.set_media([], [])
         # Applied changes wait for their jobs: once the game stops being busy,
         # ask again what it uses now, and let go of the edits.
         busy = bool(self.game.get('busy'))
@@ -1499,7 +1846,9 @@ class DetailsPanel(QFrame):
             self.notes_edit.setPlainText(self.game.get('notes') or '')
             self.notes_edit.blockSignals(False)
             self._notes_for = self.slug
-            self.sec_notes.set_summary((self.game.get('notes') or '').strip().split('\n')[0][:40])
+            has_notes = bool((self.game.get('notes') or '').strip())
+            self.notes_box.setVisible(has_notes)
+            self.notes_link.setVisible(not has_notes)
         self._fill()
         self._refresh_info(force=done_job)
         if not same:
@@ -1508,6 +1857,11 @@ class DetailsPanel(QFrame):
                                  and bool(self.game.get('owned_dir')))
         if self.sec_files.is_open and not self.snap_box.isHidden():
             self._load_snapshots(force=not same)
+        if not same:
+            self.show_tab('overview')           # a new game starts on what it is
+            self.scroll.verticalScrollBar().setValue(0)
+        elif self.current_tab() == 'achievements':
+            self._load_achievements()           # the count may have changed
 
     def _load_snapshots(self, force: bool = False):
         """The game's snapshots, asked from the CLI (when the section is open;
@@ -1565,11 +1919,10 @@ class DetailsPanel(QFrame):
         self.sugg_box.setVisible(False)
         self.tune_pg_row.setVisible(False)
         self.sec_launch.setVisible(self._launch_full)
-        for key in ('store', 'compat', 'deal'):
-            self._about_parts[key] = False
-        self._sync_about()
         self.ac_notice.setVisible(False)
-        self._store, self._tips_hltb = {}, None
+        self._store, self._tips, self._tips_hltb = {}, {}, None
+        self._fill_overview()
+        self._sync_tabs()
         if self.slug:
             slug = self.slug
 
@@ -1594,24 +1947,12 @@ class DetailsPanel(QFrame):
         self._tips_query = cli_json(['--game-tips', slug, '--json'], done, 60000, ttl=300)
 
     def _fill_tips(self, info):
+        """--game-tips' answer: suggested fixes and protongen tuning (Manage →
+        Launch), ProtonDB / Deck / anti-cheat / PCGamingWiki (Overview's At a
+        glance), the play length when the facts have none."""
         g = self.game
+        self._tips = info or {}
         external = g.get('source', 'nexus') != 'nexus'
-        pdb = info.get('protondb')
-        if pdb and pdb.get('tier'):
-            color = TIER_COLORS.get(pdb['tier'], P['muted'])
-            self.tune_pdb.setText(
-                f"ProtonDB: <b style='color:{color}'>{html.escape(str(pdb['tier']).capitalize())}</b>"
-                + (f" · trending {html.escape(str(pdb['trending']))}"
-                   if pdb.get('trending') not in (None, pdb['tier']) else "")
-                + f" · {int(pdb.get('total') or 0)} reports · "
-                  f"<a href='{html.escape(pdb['url'])}' style='color:{P['accent']}'>open</a>")
-        elif pdb:
-            self.tune_pdb.setText("ProtonDB: no reports yet")
-        self.tune_pdb.setVisible(bool(pdb) and has('proton'))
-        deal = self._gamedb_line(info.get('gamedb'))
-        self.tune_deal.setText(deal)
-        self.tune_deal.setVisible(bool(deal))
-        self._about_parts['deal'] = bool(deal)
         pg = info.get('protongen')
         show_pg = bool(pg) and external and has('proton')
         self.tune_pg_row.setVisible(show_pg)
@@ -1659,10 +2000,6 @@ class DetailsPanel(QFrame):
             more.clicked.connect(expand)
             self.tune_rows.addWidget(more)
         self.btn_explain.setVisible(bool(info.get('llm')) and not external)
-        lines, more = compat_facts(info)
-        self.compat_text.setText(more)
-        self.compat_text.setVisible(bool(more))
-        self._about_parts['compat'] = bool(more) or not self.tune_pdb.isHidden()
         warn = anticheat_warning(info)
         self.ac_notice.setText(warn or '')
         self.ac_notice.setVisible(bool(warn))
@@ -1672,16 +2009,11 @@ class DetailsPanel(QFrame):
             self.sec_launch.setVisible(sugg or show_pg)
             self.sec_launch.set_summary(
                 f"{len(recipes)} suggestion{'s' if len(recipes) != 1 else ''}" if recipes else '')
-        self._sync_about()
-        if pdb and pdb.get('tier'):
-            t = pdb['tier']
-            self.st_rating.set(t.capitalize(), f"ProtonDB · {pdb.get('total') or 0} reports",
-                               TIER_COLORS.get(t))
         hl = ((info.get('gamedb') or {}).get('hltb') or {}) or (info.get('hltb') or {})
         self._tips_hltb = info.get('hltb') or (hl if hl.get('main') else None)
-        self._fill_context()
-        if self._store or self._tips_hltb:
-            self._fill_about()
+        self._fill_overview()
+        self._fill_summary(g)
+        self._sync_tabs()
 
     def _save_notes(self):
         if self._notes_for:
@@ -1691,61 +2023,24 @@ class DetailsPanel(QFrame):
             self.notes_changed.emit(self._notes_for, text)
 
     def _fill_about(self, info: dict | None = None):
+        """--store-info's answer: the description when the facts lack one,
+        reviews, screenshots and trailers (Media), similar games."""
         if info is not None:
             self._store = info
         info = self._store or {}
         st = info.get('store') or {}
-        self._fill_context()
-        self.about_text.setText(about_html(st, info.get('reviews'), self._tips_hltb,
-                                           skip=tuple(self.context.shows)))
-        clear_layout(self.trailer_rows)
-        for t in (st.get('trailers') or [])[:3]:
-            b = QPushButton(t.get('name') or "Trailer")
-            b.setObjectName("Ghost")
-            set_glyph_icon(b, G['play'], 14, 'accent')
-            b.setToolTip("Play the trailer here")
-            b.setStyleSheet("text-align: left;")
-            b.clicked.connect(lambda _=False, t=t: self.trailer.emit(
-                {**t, 'game': self.game.get('display_name', '')}))
-            self.trailer_rows.addWidget(b)
-        clear_layout(self.similar_rows)
-        similar = (info.get('similar') or [])[:6]
-        self.similar_title.setVisible(bool(similar))
-        for s_ in similar:
-            if s_.get('owned_slug'):
-                b = QPushButton(f"{s_['name']}  ·  in your library")
-                b.setObjectName("Ghost")
-                b.setStyleSheet("text-align: left;")
-                b.clicked.connect(lambda _=False, sl=s_['owned_slug']: self.reveal.emit(sl))
-                self.similar_rows.addWidget(b)
-            elif str(s_.get('url', '')).startswith('https://store.steampowered.com/'):
-                lab = label(f"<a href='{html.escape(s_['url'])}' style='color:{P['text']}'>"
-                            f"{html.escape(s_['name'])}</a>", None)
-                lab.setOpenExternalLinks(True)
-                self.similar_rows.addWidget(lab)
-        self._about_parts['store'] = bool(st or info.get('reviews') or similar or self._tips_hltb)
-        rv = info.get('reviews') or {}
-        self._about_summary = rv.get('desc') or ', '.join((st.get('genres') or [])[:2])
-        self._sync_about()
-
-    def _sync_about(self):
-        """About shows when any of its parts has something: the store blurb,
-        Game-db's line, compatibility facts, achievements."""
-        parts = self._about_parts
-        self.store_box.setVisible(parts['store'])
-        self.compat_box.setVisible(parts['compat'])
-        self.ach_box.setVisible(parts['ach'])
-        self.sec_about.setVisible(any(parts.values()))
-        ach = self.game.get('achievements') if parts['ach'] else None
-        self.sec_about.set_summary(" · ".join(x for x in (
-            getattr(self, '_about_summary', '') if parts['store'] else '',
-            f"{ach[0]} / {ach[1]}" if ach else '') if x))
+        self.media.set_media(st.get('screenshots') or [], st.get('trailers') or [],
+                             self.game.get('display_name', ''))
+        self._fill_overview()
+        self._fill_summary(self.game)
+        self._sync_tabs()
 
     @staticmethod
-    def _gamedb_line(gd) -> str:
+    def _gamedb_line(gd, head: bool = True) -> str:
         """Rich-text Game-db line: wishlist price, or HLTB/progress for owned
         games, or the release countdown. Every value is escaped; only https
-        links are made clickable."""
+        links are made clickable. head=False leaves out the leading
+        "Game-db: " and links "open" at the end instead (At a glance)."""
         if not gd:
             return ''
         esc = html.escape
@@ -1785,9 +2080,12 @@ class DetailsPanel(QFrame):
         if not bits:
             return ''
         page = gamedb.safe_url(gd.get('url'), gd.get('url', '').rsplit('/game/', 1)[0])
+        ago = fmt_ago(gd.get('fetched_at'))
+        if not head:
+            return " · ".join(bits) + (
+                f" · <a href='{esc(page)}' style='color:{P['accent']}'>open</a>" if page else '')
         head = (f"<a href='{esc(page)}' style='color:{P['accent']}'>Game-db</a>"
                 if page else "Game-db")
-        ago = fmt_ago(gd.get('fetched_at'))
         return f"{head}: " + " · ".join(bits) + (
             f" <span style='color:{P['muted']}'>({ago})</span>" if ago else '')
 
@@ -1807,6 +2105,25 @@ class DetailsPanel(QFrame):
         else:
             super().keyPressEvent(ev)
 
+    # The pills over the hero: only state that matters right now.
+    def _pills(self, g: dict) -> list[tuple[str, str | None]]:
+        out = [(SOURCE_LABEL.get(g.get('source', 'nexus'), ''), None),
+               ("Not installed", 'muted') if not is_installed(g) else ('', None),
+               ("Playing now", 'success') if g.get('playing') else ('', None),
+               ("Starting…", 'accent') if g.get('launching') and not g.get('playing')
+               else ('', None)]
+        if g.get('repack_online') and not g.get('repack_update'):
+            out.append(("Update posted", 'warning'))
+        elif g.get('update_pending'):
+            out.append(("Update ready", 'warning'))
+        if g.get('dup_also'):
+            out.append(("Also in " + " & ".join(SOURCE_LABEL.get(x, x)
+                                                for x in g['dup_also']), None))
+        rel = status_pill(self._context_facts())
+        if rel:
+            out.append(rel)
+        return [(t, r) for t, r in out if t]
+
     def _fill(self):
         g = self.game
         if not g:
@@ -1815,27 +2132,16 @@ class DetailsPanel(QFrame):
         self.name.setText(g.get('display_name', g['slug']))
         self.name.setVisible(not self.hero.has_logo())     # the logo already names it
         src = g.get('source', 'nexus')
-        while self.chips.count():
-            it = self.chips.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
-        for text, role, on in (
-                (SOURCE_LABEL.get(src, ''), None, True),
-                ("Not installed", 'muted', not is_installed(g)),
-                ("Playing now", 'success', g.get('playing')),
-                ("Starting…", 'accent', g.get('launching') and not g.get('playing')),
-                ("Update ready", 'warning', g.get('update_pending')
-                 and not (g.get('repack_online') and not g.get('repack_update'))),
-                ("Update posted", 'warning', g.get('repack_online') and not g.get('repack_update')),
-                ("Also in " + " & ".join(SOURCE_LABEL.get(x, x) for x in g.get('dup_also') or []),
-                 None, g.get('dup_also')),
-                ("Custom launch options", 'accent', g.get('launch_options'))):
-            if on and text:
-                self.chips.addWidget(_pill(text, role or 'muted'))
-        rel = status_pill(self._context_facts())
-        if rel:
-            self.chips.addWidget(_pill(*rel))
-        self.chips_host.setVisible(self.chips.count() > 0)
+        pills = self._pills(g)
+        if pills != getattr(self, '_pills_shown', None):
+            self._pills_shown = pills
+            clear_layout(self.chips)
+            for text, role in pills:
+                lab = label(text, None)
+                lab.setStyleSheet(pill_qss(P['glass_hi'], P[role] if role and role != 'muted'
+                                           else P['on_art']))
+                lab.setFixedHeight(PILL_H)
+                self.chips.addWidget(lab)
         external = src != 'nexus'
         self._launch_full = not external and has('launch_profiles')
         for w in (self.runtime_box, self.perf, self.adv_box):
@@ -1848,11 +2154,16 @@ class DetailsPanel(QFrame):
             self.sec_launch.setVisible(False)
         if external:
             self.confirm.setVisible(False)
-        self._fill_quick(g)
-        self._fill_context()
+        steam = src == 'steam'
+        self.steam_tools.setVisible(steam)
+        for act in ('steam-props', 'protongen'):
+            self.tool_btns[act].setVisible(steam and is_installed(g)
+                                           and (act != 'protongen' or has('protongen')))
+        self._fill_fav(g)
         self.btn_play.setText(play_label(g))
         self.btn_play.setEnabled(play_enabled(g))
-        self._fill_stats(g)
+        self._fill_summary(g)
+        self._fill_overview()
         if self._launch_full:
             self.sec_launch.set_summary(g.get('proton') or '')
         self.sec_files.set_summary(" · ".join(x for x in (
@@ -1874,6 +2185,7 @@ class DetailsPanel(QFrame):
             self.ed_opts.setText(g.get('launch_options') or '')
         self.btn_copy_opts.setVisible(bool(self.ed_opts.text()))
         self._update_pending()
+        self._sync_tabs()
 
     def _context_facts(self) -> dict | None:
         """The game's facts: the index first; else what --store-info brought
@@ -1890,108 +2202,122 @@ class DetailsPanel(QFrame):
             rec = {**(rec or {}), 'length': {**live, 'source': live.get('source') or 'hltb'}}
         return rec
 
-    def _fill_context(self):
-        self.context.set_facts(self._context_facts(), self.game.get('playtime_minutes') or 0)
-        # Tab order: Play, ⋮, the quick buttons, the tags, More, then the rest.
-        prev = self.btn_more
-        for w in [*self._quick_btns.values(), *self.context.tag_btns, self.context.more]:
-            QWidget.setTabOrder(prev, w)
-            prev = w
+    def _fill_overview(self):
+        """Overview from what is known now: the context block, At a glance,
+        More like this; a plain line when nothing is known."""
+        rec = self._context_facts() or {}
+        st = (self._store or {}).get('store') or {}
+        ctx = self.context.set_facts(rec, st.get('blurb') or '')
+        glance = self._fill_glance(rec)
+        similar = self._fill_similar()
+        self.bare_note.setVisible(not (ctx or glance or similar))
 
-    def _open_about(self):
-        self.open_section('about')
+    # Kept for older callers: the context block now lives in Overview.
+    _fill_context = _fill_overview
 
-    def _fill_quick(self, g):
-        """Round buttons for the handful of things you'd actually do here.
-        Rebuilt only when the set of actions changes: a refresh (or pressing
-        the star with a pad) keeps the buttons — and the focus on them."""
-        src = g.get('source', 'nexus')
+    def _fill_glance(self, rec: dict) -> bool:
+        rows = glance_rows(self._store, self._tips, rec.get('length'),
+                           self.game.get('protondb'), linux=has('proton'))
+        deal = self._gamedb_line((self._tips or {}).get('gamedb'), head=False)
+        if deal:
+            rows.append(("Game-db", deal, ''))
+        keys = [r[0] for r in rows]
+        if rows != getattr(self, '_glance_rows', None):
+            self._glance_rows = rows
+            clear_layout(self.glance)
+            for i, (name, value, tip) in enumerate(rows):
+                k = label(name, "GlanceKey")
+                k.setMinimumWidth(92)
+                self.glance.addWidget(k, i, 0, Qt.AlignmentFlag.AlignTop)
+                v = label(value, "GlanceValue", wrap=True)
+                v.setTextFormat(Qt.TextFormat.RichText)
+                v.setOpenExternalLinks(True)
+                v.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                v.setToolTip(tip)
+                self.glance.addWidget(v, i, 1)
+        self.glance_keys = keys
+        self.glance_box.setVisible(bool(rows))
+        return bool(rows)
+
+    def _fill_similar(self) -> bool:
+        similar = []
+        for s in ((self._store or {}).get('similar') or [])[:6]:
+            if s.get('owned_slug'):
+                similar.append((f"{s['name']}  · in your library", 'reveal', s['owned_slug']))
+            elif str(s.get('url', '')).startswith('https://store.steampowered.com/'):
+                similar.append((f"{s['name']}  ↗", 'url', s['url']))
+        if similar != getattr(self, '_similar_shown', None):
+            self._similar_shown = similar
+            clear_layout(self.similar)
+            for text, kind, target in similar:
+                b = QPushButton(amp(text))
+                b.setObjectName("TagChip")
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                if kind == 'reveal':
+                    b.setToolTip("Show it in your library")
+                    b.clicked.connect(lambda _=False, sl=target: self.reveal.emit(sl))
+                else:
+                    b.setToolTip("Open its Steam store page")
+                    b.clicked.connect(lambda _=False, u=target: QDesktopServices.openUrl(QUrl(u)))
+                self.similar.addWidget(b)
+        self.similar_box.setVisible(bool(similar))
+        return bool(similar)
+
+    def _fill_fav(self, g):
         fav = bool(g.get('favorite'))
-        acts = [(G['star'] if fav else G['star_outline'],
-                 "Remove from favourites" if fav else "Add to favourites", 'favorite')]
-        if not is_installed(g):
-            if src == 'steam':
-                acts.append((G['steam'], "Open in Steam", 'steam-page'))
-        elif src == 'steam':
-            acts += [(G['steam'], "Open in Steam", 'steam-page'),
-                     (G['settings'], "Steam properties", 'steam-props'),
-                     (G['wrench'], "Tune in protongen", 'protongen')]
-        elif src == 'nexus':
-            acts += [(G['tune'], "Launch", '__launch'),
-                     (G['log'], "Log", '__log')]
-        if is_installed(g):
-            acts.append((G['folder'], "Open game folder", 'open-folder'))
-        acts.append((G['image'], "Change artwork", 'artwork'))
-        keys = tuple(a[2] for a in acts)
-        if keys == getattr(self, '_quick_keys', None):
-            star = self._quick_btns.get('favorite')
-            if star is not None and bool(star.property('on')) != fav:
-                star.setText(acts[0][0])
-                star.setToolTip(acts[0][1])
-                star.setProperty('on', fav)
-                star.style().unpolish(star)
-                star.style().polish(star)
-            return
-        clear_layout(self.quick)
-        self._quick_keys, self._quick_btns = keys, {}
-        for glyph, tip, act in acts:
-            b = icon_button(glyph, tip, 38, "QuickAction", round_=True)
-            self._quick_btns[act] = b
-            if act == 'favorite' and fav:
-                b.setProperty('on', True)
-            if act == '__launch':
-                b.clicked.connect(lambda: self.open_section('launch'))
-            elif act == '__log':
-                b.clicked.connect(lambda: self.open_section('log'))
-            else:
-                b.clicked.connect(lambda _=False, a=act: self._act(a))
-            self.quick.addWidget(b)
-        self.quick.addStretch()
+        b = self.btn_fav
+        if bool(b.property('on')) != fav or not b.toolTip():
+            b.setText(G['star'] if fav else G['star_outline'])
+            b.setProperty('on', fav)
+            b.style().unpolish(b)
+            b.style().polish(b)
+        b.setToolTip("Remove from favourites" if fav else "Add to favourites")
 
-    def _fill_stats(self, g):
+    def _fill_summary(self, g):
+        """The quiet fact line and the progress strip."""
         mins = g.get('playtime_minutes') or 0
-        self.st_played.set(fmt_hours(mins) or "0 h", "Play time")
         last = g.get('last_played')
-        self.st_last.set(fmt_relative(last) or "Never", "Last played",
-                         tip=last.replace('T', ' ') if last else '')
+        bits = [f"{fmt_hours(mins)} played" if mins else "Never played",
+                f"last played {fmt_relative(last)}" if last and fmt_relative(last) else '']
         if is_installed(g):
-            self.st_size.set(fmt_size(g.get('disk_bytes')) or "—", "On disk")
-            added = g.get('added_at')
-            self.st_added.set(fmt_relative(added) or "—", "Installed",
-                              tip=added.replace('T', ' ') if added else '')
-        else:
-            self.st_size.set(fmt_size(g.get('download_bytes')) or "—", "Download")
-            self.st_added.set(play_label(g) if g.get('installing') else "No", "Installed")
+            bits.append(fmt_size(g.get('disk_bytes')) or '')
+        elif g.get('download_bytes'):
+            bits.append(f"{fmt_size(g['download_bytes'])} download")
+        self.facts_line.setText(" · ".join(b for b in bits if b))
         proton = (self.info.get('proton') if self.info else None) or g.get('proton')
-        src = g.get('source', 'nexus')
-        self.st_proton.set(proton or ("Steam's choice" if src == 'steam' else "Default"),
-                           "Proton")
-        ach = g.get('achievements')
-        self.st_ach.setVisible(bool(ach))
-        self._about_parts['ach'] = bool(ach)
-        self._sync_about()
+        added = g.get('added_at')
+        tier = ((self._tips or {}).get('protondb') or {}).get('tier') or g.get('protondb')
+        self.facts_line.setToolTip("\n".join(x for x in (
+            f"Last played {last.replace('T', ' ')[:16]}" if last else '',
+            f"Installed {fmt_relative(added)}" if added and is_installed(g) else '',
+            f"Proton: {proton}" if proton and has('proton') else '',
+            f"ProtonDB: {str(tier).capitalize()}" if tier and has('proton') else '') if x))
+        length = (self._context_facts() or {}).get('length') or {}
+        story = bool(length.get('main')) and mins > 0
+        if story:
+            _text, note, frac, tip = GameContext.length_line(length, mins)
+            self.meter_story.set(note, frac or 0.0, tip)
+        self.meter_story.setVisible(story)
+        ach = self._ach()
         if ach:
             done, total = ach
-            self.st_ach.set(f"{done} of {total}", f"Achievements · {round(100 * done / total)}%",
-                            P['success'] if done == total else None)
-            if self.sec_about.is_open and self._ach_for != (g['slug'], done):
-                self._load_achievements()
-        tier = g.get('protondb')
-        if tier in TIER_COLORS:
-            self.st_rating.set(tier.capitalize(), "ProtonDB", TIER_COLORS[tier])
-        else:
-            self.st_rating.set(SOURCE_LABEL.get(src, ''), "Library" if src != 'steam'
-                               else "ProtonDB")
+            self.meter_ach.set(f"{done} / {total}", done / total,
+                               f"{round(100 * done / total)}% of this game's achievements")
+            self.meter_ach.value.setStyleSheet(f"color: {P['success']};" if done == total else "")
+        self.meter_ach.setVisible(ach is not None)
+        self.progress.setVisible(story or ach is not None)
 
     def _load_achievements(self):
-        """The list, from Steam's stats cache via the CLI — only once the
-        section is opened (and again when the count changes)."""
-        g = self.game
-        if not g.get('achievements') or g.get('source', 'nexus') not in ('steam', 'nexus'):
+        """The list, from Steam's stats cache via the CLI (or a repack's
+        emulator files): only once the tab is opened, and again when the
+        count changes."""
+        ach = self._ach()
+        if not ach:
             return
-        if self._ach_for == (g['slug'], g['achievements'][0]):
+        g = self.game
+        if self._ach_for == (g['slug'], ach[0]):
             return                                  # already listed
-        self._ach_for = (g['slug'], g['achievements'][0])
+        self._ach_for = (g['slug'], ach[0])
         clear_layout(self.ach_rows)
         self.ach_rows.addWidget(label("Loading…", "Muted"))
         slug = g['slug']
@@ -1999,34 +2325,71 @@ class DetailsPanel(QFrame):
         def done(data, err):
             if self.game.get('slug') != slug:
                 return
-            self._fill_achievements(data or {}, err)
+            try:
+                self._fill_achievements(data or {}, err)
+            except RuntimeError:
+                pass
         ident = str(g['appid']) if g.get('source') == 'steam' else g['slug']
         cli_json(['--achievements', ident, '--json'], done, 30000, ttl=120)
 
     ACH_SHOWN = 60
 
     def _fill_achievements(self, data, err):
+        """Recently unlocked first (newest at the top), then still to get."""
         clear_layout(self.ach_rows)
         items = data.get('items') or []
         if not items:
             self.ach_rows.addWidget(label(err or "Steam hasn't recorded any yet.", "Muted"))
             return
-        for a in items[:self.ACH_SHOWN]:
-            self.ach_rows.addWidget(AchievementRow(a))
+        got = sorted((a for a in items if a.get('unlocked')), key=lambda a: -(a.get('time') or 0))
+        todo = [a for a in items if not a.get('unlocked')]
+        left = self.ACH_SHOWN
+        for title, group in (("Recently unlocked", got), ("Still to get", todo)):
+            if not group or left <= 0:
+                continue
+            if self.ach_rows.count():
+                self.ach_rows.addSpacing(SP['2'])
+            self.ach_rows.addWidget(kicker(title))
+            for a in group[:left]:
+                self.ach_rows.addWidget(AchievementRow(a))
+            left -= len(group[:left])
         if len(items) > self.ACH_SHOWN:
             self.ach_rows.addWidget(label(f"…and {len(items) - self.ACH_SHOWN} more", "Muted"))
 
+    # Older keys (menus, shortcuts, the five sections before w-54) -> (tab, section).
+    SECTION_KEYS = {'launch': ('manage', 'launch'), 'tune': ('manage', 'launch'),
+                    'files': ('manage', 'files'), 'snapshots': ('manage', 'files'),
+                    'troubleshoot': ('manage', 'troubleshoot'), 'log': ('manage', 'troubleshoot'),
+                    'about': ('overview', 'about'), 'compat': ('overview', 'glance'),
+                    'achievements': ('achievements', None), 'media': ('media', None),
+                    'trailers': ('media', None), 'notes': ('overview', 'notes'),
+                    'overview': ('overview', None), 'manage': ('manage', None)}
+
     def open_section(self, key):
-        # Older keys still work: they name what moved into the five sections.
-        sec = {'launch': self.sec_launch, 'tune': self.sec_launch,
-               'files': self.sec_files, 'snapshots': self.sec_files,
-               'troubleshoot': self.sec_trouble, 'log': self.sec_trouble,
-               'about': self.sec_about, 'compat': self.sec_about,
-               'achievements': self.sec_about, 'notes': self.sec_notes}.get(key)
-        if sec is None or sec.isHidden():
+        """Show the tab `key` lives in, and open (and scroll to) its section."""
+        tab, part = self.SECTION_KEYS.get(key, (None, None))
+        if tab is None or self.tabs.item(tab).isHidden():
             return
-        sec.set_open(True)
-        QTimer.singleShot(0, lambda: alive(sec.head) and focus_and_reveal(sec.head))
+        sec = {'launch': self.sec_launch, 'files': self.sec_files,
+               'troubleshoot': self.sec_trouble}.get(part)
+        if sec is not None and sec.isHidden():
+            return
+        self.show_tab(tab)
+        target = None
+        if sec is not None:
+            sec.set_open(True)
+            target = sec.head
+        elif part == 'notes':
+            self.notes_link.setVisible(False)
+            self.notes_box.setVisible(True)
+            self.notes_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+            target = self.notes_edit
+        elif part == 'glance' and not self.glance_box.isHidden():
+            target = self.glance_box
+        elif tab != 'overview' or part == 'about':
+            target = self.tabs.item(tab)
+        if target is not None:
+            QTimer.singleShot(0, lambda: alive(target) and focus_and_reveal(target))
 
     def _refresh_info(self, force: bool = False):
         slug = self.slug
@@ -2125,7 +2488,7 @@ class DetailsPanel(QFrame):
         if self.sec_trouble.is_open:
             self._load_log()
         if self.game:
-            self._fill_stats(self.game)
+            self._fill_summary(self.game)
         self._update_pending()
 
     def _load_bench(self):
@@ -2331,14 +2694,13 @@ def _hide_row(row):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .actions import about_html  # noqa: E402
+from .actions import glance_rows  # noqa: E402
 from .app import main  # noqa: E402
 from .art import (ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS, placeholder_pixmap,
     rounded_pixmap)  # noqa: E402
 from .dashboard import ClickRow  # noqa: E402
-from .deals import _pill  # noqa: E402
-from .gameinfo import (anticheat_warning, compat_facts, is_installed, play_enabled,
-    play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: E402
+from .gameinfo import (anticheat_warning, is_installed, play_enabled, play_label,
+    SOURCE_LABEL)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .widgets import (amp, ask, clear_layout, FlowLayout, icon_button, icon_label, label,

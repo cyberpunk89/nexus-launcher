@@ -143,7 +143,7 @@ class Regressions(unittest.TestCase):
             hb.set_game(b)                                 # moved on before A finished
             QThreadPool.globalInstance().waitForDone()
             QApplication.processEvents()
-            self.assertEqual(hb._pm.width(), 600)          # at banner size, not 2400
+            self.assertEqual(hb._pm.width(), nx.HeroBanner.DECODE_W)   # panel's widest, not 2400
             self.assertEqual(colour(), 0x0000ff)           # B's, not A's late one
             self.assertLessEqual(hb._logo.height(), 176)
             self.assertEqual(logos[-1], True)
@@ -967,7 +967,8 @@ INFO = {'proton': 'GE-Proton10-1', 'proton_pinned': None, 'protons': ['GE-Proton
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class GamePanel(unittest.TestCase):
-    """The game panel's five sections, and Launch's one Apply bar (w-29)."""
+    """The game panel's tabs and Manage's sections (w-54), and Launch's one
+    Apply bar (w-29)."""
     REPACK = {'slug': 'r', 'display_name': 'R', 'source': 'nexus', 'launcher': '/r',
               'installed': True, 'launch_options': 'X=1 %command%', 'steam': False}
 
@@ -997,15 +998,71 @@ class GamePanel(unittest.TestCase):
         return [lay.itemAt(i).widget().key for i in range(lay.count())
                 if not lay.itemAt(i).widget().isHidden()]
 
+    def visible_tabs(self):
+        return [k for k in self.p.tabs.keys() if not self.p.tabs.item(k).isHidden()]
+
     @linux_features
-    def test_a_repack_has_five_sections_and_old_keys_still_open_them(self):
+    def test_a_repack_has_four_tabs_and_old_keys_still_open_them(self):
         self.repack(achievements=[1, 4])
-        self.assertEqual(self.visible_sections(),
-                         ['launch', 'files', 'troubleshoot', 'about', 'notes'])
-        for old, new in (('log', self.p.sec_trouble), ('snapshots', self.p.sec_files),
-                         ('achievements', self.p.sec_about), ('tune', self.p.sec_launch)):
-            self.p.open_section(old)
-            self.assertTrue(new.is_open, old)
+        p = self.p
+        self.assertEqual(self.visible_tabs(), ['overview', 'achievements', 'manage'])  # no media yet
+        self.assertEqual(self.visible_sections(), ['launch', 'files', 'troubleshoot'])
+        self.assertEqual(p.current_tab(), 'overview')
+        for old, tab, sec in (('log', 'manage', p.sec_trouble), ('snapshots', 'manage', p.sec_files),
+                              ('tune', 'manage', p.sec_launch), ('achievements', 'achievements', None),
+                              ('about', 'overview', None), ('notes', 'overview', None)):
+            p.open_section(old)
+            self.assertEqual(p.current_tab(), tab, old)
+            self.assertFalse(p.tab_bodies[tab].isHidden(), old)
+            self.assertEqual([k for k, w in p.tab_bodies.items() if not w.isHidden()], [tab])
+            if sec is not None:
+                self.assertTrue(sec.is_open, old)
+        self.assertFalse(p.notes_box.isHidden())                 # 'notes' opened the box
+        self.assertIn(['--achievements', 'r', '--json'], self.asked)   # asked when it opened
+        p._fill_about({'store': {'screenshots': ['https://x.test/a.jpg', 'https://x.test/b.jpg'],
+                                 'trailers': [{'name': 'T', 'url': 'https://x.test/t.m3u8'}]}})
+        self.assertIn('media', self.visible_tabs())
+        p.open_section('media')
+        self.assertEqual(p.current_tab(), 'media')
+        self.assertEqual(len(p.media.thumbs), 2)
+        p.media.thumbs[1].click()
+        self.assertEqual(p.media.big.url, 'https://x.test/b.jpg')
+        got = []
+        p.trailer.connect(got.append)
+        p.media.trailer_rows.itemAt(0).widget().clicked.emit()
+        self.assertEqual(got[0]['name'], 'T')
+        self.assertEqual(got[0]['game'], 'R')
+
+    @linux_features
+    def test_new_game_starts_on_overview_and_tabs_with_nothing_hide(self):
+        self.repack(achievements=[1, 4])
+        self.p.open_section('launch')
+        self.assertEqual(self.p.current_tab(), 'manage')
+        self.p.show_games([{'slug': 'h', 'display_name': 'H', 'source': 'heroic',
+                            'installed': True}])
+        self.assertEqual(self.p.current_tab(), 'overview')
+        self.assertEqual(self.visible_tabs(), ['overview'])     # nothing else to show
+        self.assertTrue(self.p.tabs.isHidden())                 # so no tab bar at all
+        self.p.open_section('launch')                           # hidden: nothing happens
+        self.assertEqual(self.p.current_tab(), 'overview')
+
+    @linux_features
+    def test_header_line_progress_and_favourite(self):
+        p = self.p
+        p.show_games([dict(self.REPACK, playtime_minutes=150, disk_bytes=3 * 1024 ** 3,
+                           achievements=[3, 12], favorite=True, update_pending=True)])
+        self.assertEqual(p.facts_line.text(), f"2.5 h played · {nx.fmt_size(3 * 1024 ** 3)}")
+        self.assertTrue(not p.meter_ach.isHidden() and p.meter_story.isHidden())
+        self.assertEqual(p.meter_ach.value.text(), "3 / 12")
+        self.assertEqual([p.chips.itemAt(i).widget().text() for i in range(p.chips.count())],
+                         ["Repack", "Update ready"])
+        self.assertTrue(p.btn_fav.property('on'))
+        self.assertEqual(p.btn_fav.toolTip(), "Remove from favourites")
+        p.btn_fav.click()
+        self.assertEqual(self.sent[-1], ['__action__', 'favorite'])
+        p.show_games([dict(self.REPACK, installed=False, launcher='', download_bytes=2 ** 30)])
+        self.assertEqual(p.facts_line.text(), f"Never played · {nx.fmt_size(2 ** 30)} download")
+        self.assertTrue(p.progress.isHidden())
 
     @linux_features
     def test_apply_bar_counts_changes_and_queues_jobs_in_order(self):
@@ -1083,8 +1140,10 @@ class GamePanel(unittest.TestCase):
             self.assertTrue(w.isHidden(), w)
         self.assertFalse(p.sugg_box.isHidden())
         self.assertIn("1 suggestion", p.sec_launch.summary.text())
-        self.assertFalse(p.compat_box.isHidden())            # ProtonDB moved to About
+        self.assertIn("On Linux", p.glance_keys)             # ProtonDB is in At a glance
         self.assertTrue(p.sec_files.isHidden() and p.sec_trouble.isHidden())
+        self.assertFalse(p.steam_tools.isHidden())           # Steam's own tools, in Manage
+        self.assertIn('manage', self.visible_tabs())
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

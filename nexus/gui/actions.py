@@ -731,6 +731,100 @@ def about_html(store: dict | None, reviews: dict | None, hltb: dict | None,
     return "".join(out)
 
 
+def _count(n) -> str:
+    """712345 -> '712k', 1834 -> '1.8k', 95 -> '95'."""
+    n = int(n or 0)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace('.0M', 'M')
+    if n >= 10_000:
+        return f"{n // 1000}k"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k".replace('.0k', 'k')
+    return str(n)
+
+
+def glance_rows(info: dict | None, tips: dict | None, length: dict | None,
+                protondb: str | None = None, linux: bool = True) -> list[tuple[str, str, str]]:
+    """The game page's "At a glance" (w-54): (name, rich text, tooltip) rows,
+    each only when its facts exist. `info` is --store-info's answer, `tips`
+    --game-tips', `length` the facts' play length, `protondb` the library's
+    tier (used until tips have one). 'On Linux' only where it matters
+    (`linux`). Everything is escaped; links only to the sites they name."""
+    from .gameinfo import PCGW_COLORS, TIER_COLORS
+    esc, info, tips = html.escape, info or {}, tips or {}
+    st, rv = info.get('store') or {}, info.get('reviews') or {}
+    rows = []
+    bits = []
+    if rv.get('desc'):
+        good = (rv.get('percent') or 0) >= 70
+        bits.append(f"<span style='color:{P['success'] if good else P['warning']}'>"
+                    f"{esc(rv['desc'])}</span>")
+        if rv.get('percent') is not None:
+            bits.append(f"{int(rv['percent'])}% of {_count(rv.get('total'))}")
+    mc = st.get('metacritic') or {}
+    if mc.get('score'):
+        bits.append(f"Metacritic {int(mc['score'])}")
+    if bits:
+        rows.append(("Reviews", " · ".join(bits), ''))
+    ln = length or {}
+    if ln.get('main'):
+        text = f"Main story {ln['main']:g} h"
+        if ln.get('complete'):
+            text += f" · everything {ln['complete']:g} h"
+        if ln.get('source') == 'igdb':
+            n = ln.get('count')
+            tip = "From IGDB" + (f", {int(n)} submission{'s' if n != 1 else ''}" if n else '')
+        else:
+            tip = "From HowLongToBeat"
+        if ln.get('plus'):
+            tip += f"\nMain story and extras about {ln['plus']:g} h"
+        rows.append(("Length", esc(text), tip))
+    if linux:
+        bits = []
+        pdb = tips.get('protondb') or {}
+        tier = str(pdb.get('tier') or protondb or '')
+        if tier:
+            bits.append(f"ProtonDB <b style='color:{TIER_COLORS.get(tier, P['muted'])}'>"
+                        f"{esc(tier.capitalize())}</b>")
+        deck = (tips.get('deck') or {}).get('deck')
+        if deck:
+            col = {'Verified': P['success'], 'Playable': P['warning'],
+                   'Unsupported': P['danger']}.get(deck, P['subtext'])
+            bits.append(f"Steam Deck <span style='color:{col}'>{esc(deck)}</span>")
+        ac = tips.get('anticheat') or {}
+        if ac.get('status'):
+            what = esc(', '.join(ac.get('anticheats') or []) or "Anti-cheat")
+            word = {'Supported': "works", 'Running': "works", 'Broken': "broken",
+                    'Denied': "blocked", 'Planned': "planned"}.get(ac['status'],
+                                                                 ac['status'].lower())
+            bad = ac['status'] in ('Broken', 'Denied')
+            bits.append(f"{what} <span style='color:{P['danger']}'>{esc(word)}</span>"
+                        if bad else f"{what} {esc(word)}")
+        if bits:
+            tip = (f"ProtonDB: {int(pdb.get('total') or 0)} reports"
+                   + (f", trending {pdb['trending']}" if pdb.get('trending') not in
+                      (None, pdb.get('tier')) else '') if pdb.get('tier') else '')
+            rows.append(("On Linux", " · ".join(bits), tip))
+    sup = (tips.get('pcgw') or {}).get('support') or {}
+    if sup:
+        rows.append(("PC", " · ".join(
+            f"<span style='color:{P[PCGW_COLORS.get(v, 'muted')]}'>{esc(k)}</span>"
+            for k, v in list(sup.items())[:5]), "From PCGamingWiki"))
+    links = []
+    for name, url, site in (
+            ("Steam store", st.get('url'), 'https://store.steampowered.com/'),
+            ("ProtonDB", (tips.get('protondb') or {}).get('url') if linux else None,
+             'https://www.protondb.com/'),
+            ("PCGamingWiki", (tips.get('pcgw') or {}).get('url'), 'https://www.pcgamingwiki.com/'),
+            ("HowLongToBeat", (tips.get('hltb') or {}).get('url'), 'https://howlongtobeat.com/')):
+        if str(url or '').startswith(site):
+            links.append(f"<a href='{esc(url)}' style='color:{P['accent']};"
+                         f" text-decoration: none'>{name}</a>")
+    if links:
+        rows.append(("Links", " · ".join(links), ''))
+    return rows
+
+
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
