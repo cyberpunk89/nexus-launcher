@@ -91,6 +91,8 @@ ICONS = {
     'magnet':         '\ue2b5',  # magnet
     'power':          '\ue140',  # power
     'log_out':        '\ue10e',  # log-out
+    'moon':           '\ue11e',  # moon
+    'restart':        '\ue149',  # rotate-cw
     'pin':            '\ue259',  # pin
     'pin_off':        '\ue2b6',  # pin-off
 }

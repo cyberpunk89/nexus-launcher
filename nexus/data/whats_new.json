@@ -11,6 +11,30 @@
       "icon": "play",
       "title": "Now playing",
       "text": "While a game runs, Theatre's Home and the quick menu show it with Resume and Quit game. Quit game works for repacks, Steam and Heroic games."
+    },
+    {
+      "kind": "new",
+      "icon": "power",
+      "title": "Sleep, Restart and Shut down",
+      "text": "The Theatre quick menu has a power section. Sleep acts at once; Restart and Shut down ask first."
+    },
+    {
+      "kind": "new",
+      "icon": "trophy",
+      "title": "Session summary",
+      "text": "When a game closes in Theatre, its page shows how long you played, your total and any achievements you unlocked."
+    },
+    {
+      "kind": "new",
+      "icon": "list",
+      "title": "Theatre Library: sort and filter",
+      "text": "Press View on the Library tab to sort by name, last played, play time, date added or collection, and filter what shows."
+    },
+    {
+      "kind": "new",
+      "icon": "download",
+      "title": "Downloads in Theatre",
+      "text": "A Downloads tab lists your repack downloads, installs and Steam downloads. A banner tells you when one is ready."
     }
   ],
   "0.5.1": [

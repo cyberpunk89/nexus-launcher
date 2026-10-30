@@ -46,6 +46,79 @@ class Pure(unittest.TestCase):
         self.assertEqual(f(0, 1000, 100, 162, 1), 162)         # at least one tile
         self.assertEqual(f(10, 1000, 300, 0, 1), 310)          # no pitch: a viewport
 
+    def test_theatre_rows_per_source(self):
+        import time as _t
+        now = _t.time()
+        mono = _t.monotonic()
+
+        def job(slug, state, **kw):
+            j = nx.Job(['x'], f"Installing {slug}", slug, 'install', slug.title())
+            j.state = state
+            for k, v in kw.items():
+                setattr(j, k, v)
+            return j
+        run = job('run', 'running', progress=(1, 4), step="Unpacking")
+        q1, q2 = job('q1', 'queued'), job('q2', 'queued')
+        bad = job('bad', 'failed', ended=mono - 60, step="Failed (exit 1)")
+        old = job('old', 'failed', ended=mono - 90000, step="Failed (exit 1)")
+        torrents = [
+            {'hash': 'h1', 'name': 'Downloading', 'tracked': True, 'percent': 40, 'rate': 5e6,
+             'eta': 600},
+            {'hash': 'h2', 'name': 'Paused', 'tracked': True, 'percent': 10, 'state': 'paused'},
+            {'hash': 'h3', 'name': 'Finished', 'tracked': True, 'done': True, 'path': '/p'},
+            {'hash': 'h4', 'name': 'Installed', 'tracked': True, 'done': True, 'installed': True},
+            {'hash': 'h5', 'name': 'Not mine', 'percent': 5},
+            {'hash': 'h6', 'name': 'Queued', 'tracked': True, 'percent': 0, 'state': 'queued'}]
+        games = [{'slug': 'steam-1', 'display_name': 'Beta', 'installing': {'done': 50, 'total': 200}},
+                 {'slug': 'heroic', 'display_name': 'Heroic', 'installing': {'done': 0, 'total': 0}},
+                 {'slug': 'done1', 'display_name': 'Fresh', 'last_played': ''},
+                 {'slug': 'played', 'display_name': 'Played',
+                  'last_played': '2999-01-01T00:00:00'},
+                 {'slug': 'run', 'display_name': 'Run', 'installing': {'done': 1, 'total': 2}}]
+        ready_at = {'done1': now - 60, 'played': now - 60, 'stale': now - 90000}
+        rows = nx.theatre_rows(torrents, [run, q1, q2, bad, old], games, ready_at, now, mono)
+        by = {r['key']: r for r in rows}
+        self.assertEqual([r['group'] for r in rows],
+                         sorted((r['group'] for r in rows),
+                                key=('ready', 'progress', 'queue').index))
+        self.assertEqual(by['game:done1']['primary'], 'play')
+        self.assertNotIn('game:played', by)                  # played since it finished
+        self.assertNotIn('game:stale', by)
+        self.assertEqual(by['torrent:h3']['primary'], 'install')
+        self.assertEqual(by['torrent:h3']['group'], 'ready')
+        self.assertNotIn('torrent:h4', by)                   # installed: it's a game now
+        self.assertNotIn('torrent:h5', by)                   # not added by Nexus
+        self.assertEqual((by['torrent:h1']['primary'], by['torrent:h1']['big']), ('pause', '10 min left'))
+        self.assertEqual((by['torrent:h2']['primary'], by['torrent:h2']['paused']), ('resume', True))
+        self.assertEqual(by['torrent:h6']['group'], 'queue')
+        self.assertEqual(by[f'job:{id(run)}']['big'], "25%")
+        self.assertEqual(by[f'job:{id(q1)}']['big'], "#1 in line")
+        self.assertEqual(by[f'job:{id(q2)}']['big'], "#2 in line")
+        self.assertEqual(by[f'job:{id(bad)}']['primary'], 'retry')
+        self.assertNotIn(f'job:{id(old)}', by)               # a day old: gone
+        self.assertEqual(by['game:steam-1']['big'], "25%")
+        self.assertEqual(by['game:heroic']['frac'], None)    # no total: a busy bar
+        self.assertNotIn('game:run', [k for k in by if by[k]['kind'] == 'game'
+                                      and by[k]['group'] == 'progress'])   # its install job has it
+
+    def test_fmt_duration(self):
+        f = nx.fmt_duration
+        self.assertEqual([f(0), f(42), f(60), f(61), f(120), f(125.4)],
+                         ["0 min", "42 min", "1 h", "1 h 1 min", "2 h", "2 h 5 min"])
+
+    def test_session_unlocks(self):
+        t0 = datetime(2026, 10, 30, 20, 0, 0)
+        ts = t0.timestamp()
+        items = [{'unlocked': True, 'time': ts + 10, 'title': 'a'},
+                 {'unlocked': True, 'time': ts - 59, 'title': 'slack'},
+                 {'unlocked': True, 'time': ts - 61, 'title': 'before'},
+                 {'unlocked': True, 'time': 0, 'title': 'no time'},
+                 {'unlocked': False, 'time': ts + 5, 'title': 'locked'},
+                 {'unlocked': True, 'time': ts + 99, 'title': 'last'}]
+        self.assertEqual([a['title'] for a in nx.session_unlocks(items, t0)],
+                         ['last', 'a', 'slack'])
+        self.assertEqual(nx.session_unlocks(None, t0), [])
+
     def test_featured_games_order(self):
         games = fake_games()
         games[2]['playing'] = True
@@ -235,6 +308,12 @@ class Window(unittest.TestCase):
         set_gui('CliQuery', cls._saved[2])
 
     def setUp(self):
+        # The real machine's power rows would change every quick-menu list,
+        # and power() must never run for real.
+        for name, ret in (('power_caps', set()), ('power', True)):
+            p = mock.patch(f'nexus.platform.{name}', return_value=ret)
+            setattr(self, name, p.start())
+            self.addCleanup(p.stop)
         self.win = nx.MainWindow()
         self.win.resize(1300, 850)
         self.win.show()
@@ -1879,6 +1958,411 @@ class Window(unittest.TestCase):
             self.assertFalse(q.now.isVisibleTo(q))
             self.assertIs(QApplication.focusWidget(), q.buttons['exit-theatre'])
             w.toggle_quick()
+        w.set_theatre(False)
+
+    def test_quick_menu_power_rows(self):
+        """POWER rows follow power_caps() at the bottom; Sleep acts at once,
+        Restart and Shut down ask in the panel (Cancel focused, B backs out),
+        prefs are saved before power() runs, and a refusal only toasts."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        q = w.quick
+        w.toggle_quick()
+        self.assertEqual(list(q.buttons), ['exit-theatre', 'quit'])     # no caps: no section
+        w.toggle_quick()
+        self.power_caps.return_value = {'sleep', 'restart', 'shutdown'}
+        order = []
+        self.power.side_effect = lambda a: order.append(('power', a)) or True
+        with mock.patch.object(w.prefs, 'save', lambda: order.append(('save',))):
+            w.toggle_quick()
+            self.assertEqual(list(q.buttons), ['exit-theatre', 'quit', 'power-sleep',
+                                               'power-restart', 'power-shutdown'])
+            self.assertIs(QApplication.focusWidget(), q.buttons['exit-theatre'])
+            q.buttons['power-restart'].setFocus()
+            q.buttons['power-restart'].click()
+            self.assertEqual(q.state, 'confirm')
+            self.assertEqual(QApplication.focusWidget().text(), "Cancel")
+            self.power.assert_not_called()
+            w._escape()                                         # B: back on the row
+            self.assertEqual(q.state, 'list')
+            self.assertIs(QApplication.focusWidget(), q.buttons['power-restart'])
+            q.buttons['power-shutdown'].click()
+            next(b for b in q.findChildren(QPushButton)
+                 if b.text() == "Shut down" and b.isVisible()).click()
+            self.assertEqual(order, [('save',), ('power', 'shutdown')])
+            self.assertFalse(q.isVisible())
+            order.clear()
+            w.toggle_quick()
+            q.buttons['power-sleep'].click()                    # no question
+            self.assertEqual(order, [('save',), ('power', 'sleep')])
+            self.power.side_effect = None
+            self.power.return_value = False
+            with mock.patch.object(w, 'toast') as toast:
+                w.toggle_quick()
+                q.buttons['power-sleep'].click()
+                toast.assert_called_once()
+        w.set_theatre(False)
+
+    def _close_game(self, w, g, minutes):
+        """`g` ran for `minutes` and has just closed (history not written)."""
+        self._play(w, g, minutes)
+        with mock.patch('nexus.history.record'):
+            w._apply_running(set())
+
+    def test_session_band_after_a_long_session(self):
+        """>= 60 s in Theatre: the page opens with SESSION ENDED, the length
+        and total, Play again focused; A is ignored for a second, then plays;
+        B on the band goes Home."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        g = w._games[0]                                     # 120 min played before
+        td = w.theatre.details
+        with mock.patch('nexus.gui.win_play.cli_json') as cj, \
+                mock.patch.object(td, 'play') as play:          # never start a real game
+            self._close_game(w, g, 61)
+            self.assertIsNotNone(w._session_pending)
+            w._back_from_game()
+            QApplication.processEvents()
+            self.assertTrue(td.isVisible())
+            self.assertTrue(td.session_shown())
+            self.assertEqual(td.game['slug'], g['slug'])
+            self.assertIn("SESSION ENDED", td.kicker.text())
+            self.assertEqual(td.session._values['session'].text(), "1 h 1 min")
+            self.assertEqual(td.session._values['total'].text(), "3 h 1 min")
+            self.assertFalse(td.session._values['ach_box'].isVisibleTo(td.session))
+            self.assertFalse(td.actions.isVisibleTo(td))
+            self.assertIs(QApplication.focusWidget(), td.session.again)
+            self.assertEqual(cj.call_args[0][0], ['--achievements', 'alpha', '--json'])
+            td.session.again.click()                        # inside the 1 s guard
+            play.emit.assert_not_called()
+            self.assertTrue(td.session_shown())
+            td._shown_at -= 2
+            td.session.again.click()
+            play.emit.assert_called_once_with(td.game)
+            self.assertFalse(td.session_shown())
+            self.assertTrue(td.actions.isVisibleTo(td))
+            self._close_game(w, g, 61)
+            w._back_from_game()
+            self.assertTrue(td.session_shown())
+            w.theatre.back()                                # B: Home, the band gone
+            self.assertFalse(td.isVisible())
+            self.assertEqual(w.theatre.tabs.current(), 'home')
+        w.set_theatre(False)
+
+    def test_no_session_band_when_short_or_on_the_desktop(self):
+        w = self.win
+        w.activateWindow()
+        g = w._games[1]
+        w.set_theatre(True)
+        with mock.patch('nexus.history.record'):
+            w._apply_running({g['slug']})
+            w._apply_running(set())                         # seconds: not a session
+        self.assertIsNone(w._session_pending)
+        self.assertFalse(w.theatre.details.session_shown())
+        w.set_theatre(False)
+        self._close_game(w, g, 90)                          # the desktop: nothing
+        self.assertIsNone(w._session_pending)
+        self.assertFalse(w.theatre.details.isVisible())
+
+    def test_session_band_waits_for_the_quick_menu(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        g = w._games[0]
+        td = w.theatre.details
+        with mock.patch('nexus.gui.win_play.cli_json'):
+            self._close_game(w, g, 30)
+            w.toggle_quick()
+            w._back_from_game()                             # menu open: the band waits
+            self.assertFalse(td.session_shown())
+            self.assertIsNotNone(w._session_pending)
+            w.quick.close_menu()                            # closing it brings the band
+            self.assertTrue(td.session_shown())
+            self.assertIsNone(w._session_pending)
+            w.theatre.go_home()
+            self._close_game(w, g, 30)
+            w.set_theatre(False)                            # left Theatre: dropped
+            self.assertFalse(w._show_session())
+            self.assertIsNone(w._session_pending)
+        w.set_theatre(False)
+
+    def test_session_band_achievements(self):
+        """Only unlocks since the session began (a minute of slack) count; the
+        line shows only with at least one; chips need a tall page."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        g = w._games[1]                                     # a Steam game
+        td = w.theatre.details
+        with mock.patch('nexus.gui.win_play.cli_json') as cj:
+            self._close_game(w, g, 45)
+            t0 = w._session_pending['t0']
+            w._back_from_game()
+            self.assertEqual(cj.call_args[0][0], ['--achievements', '1', '--json'])
+            cb = cj.call_args[0][1]
+            ts = t0.timestamp()
+            cb({'items': [{'unlocked': False, 'time': 0}, {'unlocked': True, 'time': ts - 3600}]},
+               None)
+            self.assertFalse(td.session._values['ach_box'].isVisibleTo(td.session))
+            items = [{'unlocked': True, 'time': ts + 60 * i, 'title': f"A{i}", 'desc': 'd'}
+                     for i in range(5)] + [{'unlocked': True, 'time': ts - 30, 'title': 'early'}]
+            cb({'items': items}, None)
+            self.assertTrue(td.session._values['ach_box'].isVisibleTo(td.session))
+            self.assertEqual(td.session._values['ach'].text(), "6")
+            td.session.set_achievements(nx.session_unlocks(items, t0), True)
+            self.assertEqual(td.session.chips.count() - 1, 3)       # three, and a stretch
+            td.session.set_achievements(nx.session_unlocks(items, t0), False)
+            self.assertEqual(td.session.chips.count() - 1, 0)
+        w.set_theatre(False)
+
+    def test_theatre_tabs_hide_and_cycle(self):
+        """Home, Library, Discover, Downloads; LB/RB skip the hidden ones and
+        wrap; a tab that goes away sends you Home; View no longer cycles."""
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        keys = lambda: [k for k in th.tabs.keys() if not th.tabs.item(k).isHidden()]  # noqa: E731
+        th.sync_tabs(True, True)
+        self.assertEqual(keys(), ['home', 'library', 'discover', 'downloads'])
+        th.cycle_tab(1)
+        self.assertEqual(th.tabs.current(), 'library')
+        th.cycle_tab(-1)
+        th.cycle_tab(-1)                                    # wraps to the last
+        self.assertEqual(th.tabs.current(), 'downloads')
+        self.assertIs(th.pages.currentWidget(), th.downloads_page)
+        th.sync_tabs(True, False)                           # repack features off, here
+        self.assertEqual(th.tabs.current(), 'home')
+        th.cycle_tab(-1)
+        self.assertEqual(th.tabs.current(), 'discover')     # Downloads skipped
+        th.sync_tabs(False, False)
+        self.assertEqual(keys(), ['home', 'library'])
+        th.cycle_tab(1)
+        th.cycle_tab(1)
+        self.assertEqual(th.tabs.current(), 'home')
+        th.tabs.set_current('library', emit=True)
+        w._pad_action('view')                               # opens Sort & filter, no tab change
+        self.assertEqual(th.tabs.current(), 'library')
+        self.assertTrue(w.theatre_sheet.isVisible())
+        w._pad_action('view')                               # View closes it again
+        self.assertFalse(w.theatre_sheet.isVisible())
+        th.tabs.set_current('home', emit=True)
+        w._pad_action('view')                               # nothing on Home
+        self.assertFalse(w.theatre_sheet.isVisible())
+        self.assertEqual(th.tabs.current(), 'home')
+        w.set_theatre(False)
+
+    def test_theatre_tab_gates_follow_settings(self):
+        w = self.win
+        w.config = {**w.config, 'news': False, 'gamedb_enabled': False, 'repacks': False}
+        w._sync_theatre_tabs()
+        th = w.theatre
+        self.assertTrue(th.tabs.item('discover').isHidden())
+        self.assertTrue(th.tabs.item('downloads').isHidden())
+        w.config = {**w.config, 'gamedb_enabled': True, 'repacks': True}
+        w._sync_theatre_tabs()
+        self.assertFalse(th.tabs.item('discover').isHidden())
+        self.assertFalse(th.tabs.item('downloads').isHidden())
+
+    def _downloads(self, w, torrents=(), jobs=()):
+        w._mine_torrents = list(torrents)
+        w.jobs.jobs[:] = list(jobs)
+        w._feed_theatre_downloads()
+
+    def test_theatre_downloads_tab_rows_empty_and_focus(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        page = th.downloads_page
+        self._downloads(w, [
+            {'hash': 'h1', 'name': 'Repack', 'tracked': True, 'percent': 40, 'eta': 600},
+            {'hash': 'h3', 'name': 'Finished', 'tracked': True, 'done': True, 'path': '/p'}])
+        th.tabs.set_current('downloads', emit=True)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        self.assertEqual(list(page.rows), ['torrent:h3', 'torrent:h1'])      # ready first
+        self.assertFalse(page.empty.isVisibleTo(page))
+        self.assertTrue(page.heads['ready'].isVisibleTo(page))
+        self.assertTrue(page.heads['progress'].isVisibleTo(page))
+        self.assertFalse(page.heads['queue'].isVisibleTo(page))
+        self.assertIs(QApplication.focusWidget(), page.rows['torrent:h3'])
+        page.rows['torrent:h1'].setFocus()
+        self._downloads(w, [{'hash': 'h1', 'name': 'Repack', 'tracked': True, 'percent': 55}])
+        self.assertIs(page.rows['torrent:h1'], page.first_row())             # reused, not rebuilt
+        self.assertIn('55%', page.rows['torrent:h1'].big.text())
+        self.assertNotIn('torrent:h3', page.rows)
+        self.assertIs(QApplication.focusWidget(), page.rows['torrent:h1'])   # focus stayed
+        self._downloads(w)
+        self.assertTrue(page.empty.isVisibleTo(page))
+        self.assertEqual(page.rows, {})
+        w.set_theatre(False)
+
+    def test_theatre_download_options_and_stop_confirm(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th, sheet = w.theatre, w.theatre_sheet
+        sent = []
+        self._downloads(w, [{'hash': 'h1', 'name': 'Repack', 'tracked': True, 'percent': 40}])
+        th.tabs.set_current('downloads', emit=True)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        row = th.downloads_page.rows['torrent:h1']
+        names = lambda: [b.text() for b in sheet.findChildren(QPushButton) if b.isVisible()]  # noqa: E731
+        with mock.patch.object(w, '_torrent_send', lambda *a: sent.append(a)):
+            row.action.emit('options', row.r)                  # X
+            self.assertEqual(names(), ["Pause", "Stop…"])
+            next(b for b in sheet.findChildren(QPushButton) if b.text() == "Stop…").click()
+            QApplication.processEvents()
+            self.assertEqual(names(), ["Keep downloading", "Stop and delete what's downloaded",
+                                       "Stop, keep the files"])
+            self.assertEqual(QApplication.focusWidget().text(), "Keep downloading")
+            self.assertEqual(sent, [])
+            next(b for b in sheet.findChildren(QPushButton)
+                 if b.text() == "Stop and delete what's downloaded").click()
+            self.assertEqual(sent, [('remove', ['h1'], True)])
+            row.action.emit('pause', row.r)                    # A
+            self.assertEqual(sent[-1], ('pause', ['h1'], False))
+        # An install: queued ones can move; an elevated one cannot be stopped.
+        a = nx.Job(['x'], "Installing A", 'a', 'install', 'A')
+        b = nx.Job(['x'], "Installing B", 'b', 'install', 'B')
+        run = nx.Job(['x'], "Installing R", 'r', 'install', 'R')
+        run.state, run.elevated = 'running', True
+        self._downloads(w, jobs=[run, a, b])
+        rows = th.downloads_page.rows
+        rows[f'job:{id(b)}'].action.emit('options', rows[f'job:{id(b)}'].r)
+        self.assertEqual(names(), ["Move up", "Remove from the queue"])
+        next(x for x in sheet.findChildren(QPushButton) if x.text() == "Move up").click()
+        self.assertEqual(w.jobs.queued_installs(), [b, a])
+        sheet.close_sheet()
+        rows = th.downloads_page.rows
+        rows[f'job:{id(run)}'].action.emit('options', rows[f'job:{id(run)}'].r)
+        self.assertEqual(names(), [])                          # no Stop: the reason shows instead
+        self.assertTrue(sheet.isVisible() is False or "administrator" in " ".join(
+            lab.text() for lab in sheet.findChildren(QLabel)))
+        sheet.close_sheet()
+        w.jobs.jobs.clear()
+        w.set_theatre(False)
+
+    def test_theatre_moment_banner_never_takes_focus(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        g = w._games[0]
+        th.hero.btn.setFocus()
+        QApplication.processEvents()
+        before = QApplication.focusWidget()
+        th.moment("Alpha is ready to play", g, 'game:alpha')
+        QApplication.processEvents()
+        self.assertTrue(th.moment_banner.isVisible())
+        self.assertIs(QApplication.focusWidget(), before)      # A in flight can't hit it
+        w._update_hints()
+        self.assertIn("Show Alpha", [t for _b, t in w.hints._shown[1]])
+        w._pad_action('view')                                  # View: the game's page
+        self.assertFalse(th.moment_banner.isVisible())
+        self.assertTrue(th.details.isVisible())
+        self.assertEqual(th.details.game['slug'], 'alpha')
+        th.close_game()
+        th.moment("Repack is ready to install", None, 'torrent:h3')
+        w._pad_action('view')                                  # no game: the Downloads tab
+        self.assertEqual(th.tabs.current(), 'downloads')
+        th.moment("x", g, None)
+        th.moment_banner._timer.stop()
+        th.moment_banner.dismiss()                             # what the 10 s timer does
+        self.assertFalse(th.moment_banner.isVisible())
+        w.set_theatre(False)
+
+    def test_finished_install_is_a_banner_in_theatre_and_a_toast_on_the_desktop(self):
+        w = self.win
+        w.activateWindow()
+        job = nx.Job(['x'], "Installing Alpha", 'alpha', 'install', 'Alpha')
+        job.state = 'done'
+        job.events = {'installed': {'slug': 'alpha'}}
+        with mock.patch.object(w, 'toast') as toast:
+            w._install_followups(job)
+            toast.assert_called_once()                         # the desktop is as it was
+            self.assertFalse(w.theatre.moment_banner.isVisible())
+            toast.reset_mock()
+            w.set_theatre(True)
+            w._install_followups(job)
+            toast.assert_not_called()
+            self.assertTrue(w.theatre.moment_banner.isVisible())
+        self.assertIn('alpha', w._ready_at)
+        self._downloads(w)                                     # the ready row follows
+        self.assertIn('game:alpha', w.theatre.downloads_page.rows)
+        w._ready_at.clear()
+        w.set_theatre(False)
+
+    def test_downloads_tab_shows_while_something_is_ready_even_without_repacks(self):
+        w = self.win
+        w.config = {**w.config, 'repacks': False, 'news': True}
+        w._theatre_rows = []
+        w._sync_theatre_tabs()
+        self.assertTrue(w.theatre.tabs.item('downloads').isHidden())
+        w._ready_at['alpha'] = __import__('time').time()
+        w._feed_theatre_downloads()
+        self.assertFalse(w.theatre.tabs.item('downloads').isHidden())
+        w._ready_at.clear()
+        w._feed_theatre_downloads()
+        self.assertTrue(w.theatre.tabs.item('downloads').isHidden())
+
+    def test_theatre_library_sort_filter_and_group(self):
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th = w.theatre
+        sheet = w.theatre_sheet
+        games = fake_games() + [
+            {'slug': 'delta', 'display_name': 'Delta', 'source': 'steam', 'appid': 4,
+             'launcher': 'steam://rungameid/4', 'playtime_minutes': 500,
+             'last_played': '2026-10-01T10:00:00', 'collections': ['Couch', 'Co-op'],
+             'added_at': '2026-10-02T10:00:00'},
+            {'slug': 'eps', 'display_name': 'Epsilon', 'source': 'nexus', 'launcher': None,
+             'collections': ['Couch']}]
+        for g in games:
+            g.setdefault('installed', True)
+
+        def order():
+            flows = [th.lib_flow] + [g.flow for g in th._lib_groups]    # layout order
+            return [flow.itemAt(i).widget().game['slug'] for flow in flows
+                    for i in range(flow.count())]
+        with mock.patch.object(w.prefs, 'save'), \
+                mock.patch('nexus.gui.theatre.is_installed', lambda g: g['slug'] != 'eps'), \
+                mock.patch('nexus.gui.theatre.COLLECTION_NAMES', ['Couch', 'Co-op']):
+            th.set_games(games)
+            th.set_library_state({'sort': 'name', 'show': 'installed'})
+            QApplication.processEvents()
+            self.assertEqual(order(), ['alpha', 'steam-1', 'delta', 'gamma'])
+            self.assertEqual(th.lib_chip.text(), "A to Z  ·  Installed  ·  4 games")
+            w._pad_action('view') if th.tabs.current() == 'library' else None
+            th.tabs.set_current('library', emit=True)
+            w._open_library_sheet()
+            self.assertTrue(sheet.isVisible())
+            rows = [b.text() for b in sheet.findChildren(QPushButton) if b.isVisible()]
+            self.assertEqual(rows[:5], ["A to Z", "Recently played", "Most played",
+                                        "Recently added", "By collection"])
+            saved = []
+            th.library_changed.connect(saved.append)
+            next(b for b in sheet.findChildren(QPushButton) if b.text() == "Most played").click()
+            QApplication.processEvents()
+            self.assertTrue(sheet.isVisible())                  # stays up
+            self.assertEqual(order(), ['delta', 'alpha', 'steam-1', 'gamma'])
+            self.assertEqual(saved[-1], {'sort': 'most', 'show': 'installed'})
+            self.assertEqual(th.lib_chip.text(), "Most played  ·  Installed  ·  4 games")
+            next(b for b in sheet.findChildren(QPushButton) if b.text() == "Everything").click()
+            QApplication.processEvents()
+            self.assertEqual(len(order()), 5)
+            next(b for b in sheet.findChildren(QPushButton) if b.text() == "By collection").click()
+            QApplication.processEvents()
+            self.assertEqual(order().count('delta'), 2)         # under both collections
+            heads = [lab.text() for lab in th.lib_page.findChildren(QLabel)
+                     if lab.objectName() == "TheatreLabel"]
+            self.assertEqual(heads, ["COUCH", "CO-OP", "NO COLLECTION"])
+            sheet.close_sheet()
         w.set_theatre(False)
 
     def test_spotlight_pins_the_running_game(self):

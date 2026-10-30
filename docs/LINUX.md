@@ -344,19 +344,34 @@ Deck/Controller via Steam, most generic pads; no extra Python packages):
 | Y / △ | search — in Theatre, Nexus's own on-screen keyboard; on the desktop, Steam's when Steam is running |
 | LB / RB | previous / next tab (Home · Library · Deals · News) |
 | LT / RT, right stick | scroll |
-| View / Share | switch Shelves · Grid · List |
+| View / Share | switch Shelves · Grid · List; in Theatre's Library: **Sort & filter** |
 | Menu / Options, or Guide (Xbox / PS button) | on the desktop: **Theatre mode**; in Theatre: the **quick menu** |
 | F11 | **Theatre mode** on / off |
 
 **Theatre mode** is Nexus for the TV: full screen, a big hero, rows of large tiles (plus
 *Ready to install* for games you own), a full Library grid, a clock, bigger type and focus
-glow, and the pointer hidden until the mouse moves. LB/RB switch Home and Library, A opens a
+glow, and the pointer hidden until the mouse moves. LB/RB switch between the tabs (Home, Library, and Discover and Downloads while their
+features are on); Library has a chip, or View, for **Sort & filter** (A to Z, recently played,
+most played, recently added, or grouped by collection; installed, not installed or everything),
+and Nexus remembers your choice. A opens a
 game, B goes back (never out of Theatre), F11 leaves. Start it directly with `nexus --theatre`
 or the desktop entry's *Theatre mode (TV)* action.
 
 The **quick menu** (Start or Guide on a pad, F10 or a remote's Home key) opens on the left from
 any Theatre screen: the time and date, your controllers and their battery, **Exit Theatre**
-and **Quit Nexus** (which asks first only while a job is running). B closes it.
+and **Quit Nexus** (which asks first only while a job is running). Below them, when your
+system allows it (logind), **Sleep**, **Restart PC** and **Shut down**: Sleep acts at once, the
+other two ask first. B closes it.
+
+When a game you played for a minute or more closes while Theatre is on, its page opens with
+**Session ended**: this session's length, your total, and the achievements you unlocked, with
+**Play again** and **Back to Home** (B also goes Home).
+
+The **Downloads** tab lists the repacks Nexus is downloading, installs running or waiting, and
+Steam and Heroic downloads, grouped *Ready to play*, *In progress* and *Up next* (A does a row's
+main action, X opens its options: pause, stop, move up or down in the install queue). When a
+download or install finishes, a banner under the clock says so for ten seconds instead of a
+toast; View jumps to the game or the row.
 
 **Theatre search** (Y, or the search button by the clock) is full screen: the query, an
 on-screen keyboard driven with the D-pad (A types, X deletes, Y adds a space, B closes) and

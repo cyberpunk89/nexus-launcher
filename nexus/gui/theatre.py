@@ -8,8 +8,8 @@ from PyQt6.QtCore import (pyqtSignal, QEvent, QObject, QPoint, QRectF, Qt, QTime
     QVariantAnimation)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter,
     QPixmap, QRadialGradient)
-from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QPushButton,
-    QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QProgressBar,
+    QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, SP
@@ -510,6 +510,179 @@ class TheatreSpotlight(HeroCarousel):
         pass
 
 
+class TheatreDownloadRow(QFrame):
+    """One line on the Downloads tab: a glyph, the title, one line of state, a
+    bar and one big number. A runs the row's main action (or its options when
+    it has none), X always its options."""
+    action = pyqtSignal(str, dict)
+
+    GLYPHS = {'torrent': 'download', 'job': 'download', 'game': 'play'}
+
+    def __init__(self, r: dict):
+        super().__init__()
+        self.setObjectName("TheatreRow")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.r: dict = {}
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(SP['5'], SP['4'], SP['6'], SP['4'])
+        lay.setSpacing(SP['5'])
+        self.glyph = icon_label(G['download'], 40, P['on_art'])
+        lay.addWidget(self.glyph)
+        col = QVBoxLayout()
+        col.setSpacing(SP['1'])
+        self.title = plain_label("", "TheatreMeta")
+        self.state = plain_label("", "TheatreSub")
+        self.bar = QProgressBar()
+        self.bar.setObjectName("CardProgress")
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(int(SP['2'] * 1.25))
+        self.bar.setRange(0, 1000)
+        for w in (self.title, self.state, self.bar):
+            col.addWidget(w)
+        lay.addLayout(col, 1)
+        self.big = label("", "TheatreBig")
+        lay.addWidget(self.big)
+        self.set(r)
+
+    def set(self, r: dict):
+        self.r = r
+        self.glyph.setPixmap(glyph_pixmap(G[self.GLYPHS.get(r['kind'], 'download')],
+                                          P['on_art'], 40))
+        self.title.setText(r['title'])
+        self.state.setText(r['state'])
+        self.big.setText(r['big'])
+        self.bar.setVisible(r['frac'] is not None or r['group'] == 'progress')
+        self.bar.setRange(0, 1000 if r['frac'] is not None else 0)   # 0..0: busy
+        if r['frac'] is not None:
+            self.bar.setValue(int(max(0.0, min(1.0, r['frac'])) * 1000))
+        self.bar.setProperty('paused', bool(r['paused']))
+        self.bar.style().unpolish(self.bar)
+        self.bar.style().polish(self.bar)
+
+    def _run(self):
+        self.action.emit(self.r['primary'] or 'options', self.r)
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._run()
+        elif ev.key() == Qt.Key.Key_Menu:
+            self.action.emit('options', self.r)
+        else:
+            super().keyPressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._run()
+        super().mouseReleaseEvent(ev)
+
+
+class TheatreDownloads(QScrollArea):
+    """The Downloads tab: Ready to play, In progress, Up next. Rows are kept
+    by key, so a refresh every couple of seconds moves no focus."""
+    action = pyqtSignal(str, dict)
+    TITLES = {'ready': "READY TO PLAY", 'progress': "IN PROGRESS", 'queue': "UP NEXT"}
+
+    def __init__(self):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        host = QWidget()
+        self.col = QVBoxLayout(host)
+        self.col.setContentsMargins(0, SP['2'], 0, SP['8'])
+        self.col.setSpacing(SP['3'])
+        self.heads = {g: plain_label(t, "TheatreLabel") for g, t in self.TITLES.items()}
+        for head in self.heads.values():
+            head.setParent(host)               # never a window of its own while unplaced
+        self.rows: dict[str, TheatreDownloadRow] = {}
+        self.empty = EmptyState(G['download'], "Nothing downloading",
+                                "Repacks you download and games Steam is fetching show up here")
+        self.empty.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.col.addWidget(self.empty)
+        self.col.addStretch()
+        self.setWidget(host)
+
+    def set_downloads(self, rows: list[dict]):
+        """`rows` from downloads.theatre_rows, in order."""
+        for key in [k for k in self.rows if k not in {r['key'] for r in rows}]:
+            w = self.rows.pop(key)
+            f = QApplication.focusWidget()
+            if f is w:                         # move focus first, then hide
+                nxt = next((x for x in self.rows.values() if x is not w and not x.isHidden()),
+                           self.empty)
+                focus_and_reveal(nxt)
+            w.hide()
+            w.deleteLater()
+        while self.col.count() > 1:            # re-laid in order below; the stretch stays last
+            self.col.takeAt(0)
+        groups = {r['group'] for r in rows}
+        for g, head in self.heads.items():
+            head.setVisible(g in groups)
+        group = None
+        for r in rows:
+            w = self.rows.get(r['key'])
+            if w is None:
+                w = self.rows[r['key']] = TheatreDownloadRow(r)
+                w.action.connect(self.action)
+            else:
+                w.set(r)
+            if r['group'] != group:
+                group = r['group']
+                self.col.insertWidget(self.col.count() - 1, self.heads[group])
+            self.col.insertWidget(self.col.count() - 1, w)
+            w.setVisible(True)
+        self.empty.setVisible(not rows)
+        if not rows:
+            self.col.insertWidget(0, self.empty)
+
+    def first_row(self):
+        return next((self.col.itemAt(i).widget() for i in range(self.col.count())
+                     if isinstance(self.col.itemAt(i).widget(), TheatreDownloadRow)), None)
+
+
+class TheatreMoment(QFrame):
+    """A banner for something that just finished (a download, an install):
+    under the clock for ten seconds, and it never takes focus, so an A in
+    flight can't act on it. View acts on it (TheatreView.view_pressed)."""
+    changed = pyqtSignal()
+    TIMEOUT_MS = 10_000
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("TheatreMoment")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(SP['5'], SP['3'], SP['6'], SP['3'])
+        lay.setSpacing(SP['3'])
+        lay.addWidget(icon_label(G['check'], 26, P['success']))
+        self.text = plain_label("", "TheatreMeta")
+        lay.addWidget(self.text)
+        self.game: dict | None = None
+        self.row_key: str | None = None
+        self.name = ''
+        self._timer = QTimer(self)               # a child: it goes with the banner
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.dismiss)
+        self.hide()
+
+    def show_moment(self, text: str, game: dict | None, row_key: str | None):
+        self.text.setText(text)
+        self.game, self.row_key = game, row_key
+        self.name = (game or {}).get('display_name') or ''
+        self.adjustSize()
+        self.show()
+        self.raise_()
+        self._timer.start(self.TIMEOUT_MS)
+        self.changed.emit()
+
+    def dismiss(self):
+        if self.isVisible():
+            self.hide()
+            self._timer.stop()
+            self.changed.emit()
+
+
 class TheatreView(QWidget):
     """Theatre mode: one big hero, rows of big tiles, a clock, and nothing
     that needs a mouse. LB/RB switch Home and Library, A opens a game, B goes
@@ -520,6 +693,10 @@ class TheatreView(QWidget):
     menu = pyqtSignal(dict, QPoint)
     exit = pyqtSignal()
     surprise = pyqtSignal()
+    library_sheet = pyqtSignal()                 # View on Library: the window opens Sort & filter
+    library_changed = pyqtSignal(dict)           # a pick in that sheet: save it
+    download_action = pyqtSignal(str, dict)      # a Downloads row: its action key, its row
+    moment_changed = pyqtSignal()                # the banner came or went (the hints follow)
 
     TILE = 230
     WIDE = 440
@@ -538,6 +715,8 @@ class TheatreView(QWidget):
         self.tabs = SegmentedControl('underline', 56)
         self.tabs.add('home', "Home")
         self.tabs.add('library', "Library")
+        self.tabs.add('discover', "Discover")
+        self.tabs.add('downloads', "Downloads")
         self.tabs.changed.connect(self._tab)
         top.addWidget(self.tabs)
         top.addStretch()
@@ -583,14 +762,47 @@ class TheatreView(QWidget):
         self.home_lay.addStretch()
         self.home.setWidget(host)
         self.pages.addWidget(self.home)
-        # Library: every game, big tiles
+        # Library: your games, big tiles, under a chip that opens Sort & filter
+        self.lib_page = QWidget()
+        lp = QVBoxLayout(self.lib_page)
+        lp.setContentsMargins(0, 0, 0, 0)
+        lp.setSpacing(SP['3'])
+        chip_row = QHBoxLayout()
+        self.lib_chip = QPushButton()
+        self.lib_chip.setObjectName("StateChip")
+        self.lib_chip.clicked.connect(self.library_sheet)
+        chip_row.addWidget(self.lib_chip)
+        chip_row.addStretch()
+        lp.addLayout(chip_row)
         self.lib = QScrollArea()
         self.lib.setWidgetResizable(True)
         self.lib.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         lhost = QWidget()
-        self.lib_flow = FlowLayout(lhost, margin=SP['2'], spacing=SP['5'], justify=True)
+        self.lib_col = QVBoxLayout(lhost)         # the plain grid, or one block per collection
+        self.lib_col.setContentsMargins(0, 0, 0, 0)
+        self.lib_col.setSpacing(SP['6'])
+        self.lib_plain = QWidget()
+        self.lib_flow = FlowLayout(self.lib_plain, margin=SP['2'], spacing=SP['5'],
+                                   justify=True)
+        self.lib_col.addWidget(self.lib_plain)
+        self.lib_col.addStretch()
+        self._lib_groups: list[QWidget] = []
+        self.lib_state = {'sort': 'name', 'show': 'installed'}
         self.lib.setWidget(lhost)
-        self.pages.addWidget(self.lib)
+        lp.addWidget(self.lib, 1)
+        self.pages.addWidget(self.lib_page)
+        # Discover and Downloads: stubs until their cards (w-62, w-61) fill them.
+        self.discover_page = EmptyState(G['news'], "Discover",
+                                        "News and deals are coming to Theatre")
+        self.discover_page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # the pad needs somewhere to land
+        self.pages.addWidget(self.discover_page)
+        self.downloads_page = TheatreDownloads()
+        self.downloads_page.action.connect(self.download_action)
+        self.pages.addWidget(self.downloads_page)
+        self._pages = {'home': self.home, 'library': self.lib_page,
+                       'discover': self.discover_page, 'downloads': self.downloads_page}
+        self.moment_banner = TheatreMoment(self)
+        self.moment_banner.changed.connect(self.moment_changed)
         self.search = TheatreSearch(self)
         self.search.picked.connect(self._search_picked)
         self.search.closed.connect(self._search_closed)
@@ -604,6 +816,7 @@ class TheatreView(QWidget):
         self.details.action.connect(self._detail_action)
         self.details.back_asked.connect(self.back)
         self.details.trailer.connect(self._play_trailer)
+        self.details.home_asked.connect(self.go_home)
         self._store: dict[str, dict] = {}
         # Trailers from the game page's Media play here, over Theatre (the
         # desktop's overlay lives in the hidden desk shell).
@@ -654,26 +867,148 @@ class TheatreView(QWidget):
             if title == "Jump back in":
                 row.focused.connect(self._spot_focus)
             self.rows.addWidget(row)
-        spare: dict[str, GameTile] = {}
-        while self.lib_flow.count():
-            w = self.lib_flow.takeAt(0).widget()
-            if isinstance(w, GameTile):
-                spare[w.game.get('slug')] = w
-        for g in sorted(games, key=lambda g: (g.get('display_name') or '').lower()):
-            t = spare.pop(g['slug'], None)
-            if t is not None:
-                t.set_game(g)
-            else:
-                t = self._tile(g, self.TILE, 'cover')
-            self.lib_flow.addWidget(t)
-        for w in spare.values():
-            w.hide()
-            w.deleteLater()
+        self._fill_library()
         if self.details.isVisible():
             cur = next((g for g in everything
                         if g['slug'] == self.details.game.get('slug')), None)
             if cur:
                 self.details.open(cur, refocus=False)
+
+    # ---- the Library tab ----
+    SORTS = (('name', "A to Z"), ('played', "Recently played"), ('most', "Most played"),
+             ('added', "Recently added"), ('collection', "By collection"))
+    SHOWS = (('installed', "Installed"), ('missing', "Not installed"), ('all', "Everything"))
+
+    def set_library_state(self, state: dict):
+        """The saved sort and filter (prefs.theatre_library)."""
+        self.lib_state = {'sort': state.get('sort', 'name'), 'show': state.get('show', 'installed')}
+        self._fill_library()
+
+    def _lib_games(self) -> list[dict]:
+        pool = {'installed': self.games,
+                'missing': [g for g in self.everything if not is_installed(g)],
+                'all': self.everything}[self.lib_state['show']]
+        name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
+        sort = self.lib_state['sort']
+        by_name = sorted(pool, key=name)                 # stable: ties keep A to Z
+        if sort == 'played':
+            return sorted(by_name, key=lambda g: g.get('last_played') or '', reverse=True)
+        if sort == 'most':
+            return sorted(by_name, key=lambda g: g.get('playtime_minutes') or 0, reverse=True)
+        if sort == 'added':
+            return sorted(by_name, key=lambda g: g.get('added_at') or g.get('installed_at') or '',
+                          reverse=True)
+        return by_name
+
+    def _fill_library(self):
+        """The Library grid for the saved sort and filter, reusing tiles so a
+        refresh keeps focus. By collection: a block per collection (a game in
+        two shows in both), the rest last."""
+        games = self._lib_games()
+        sort, show = self.lib_state['sort'], self.lib_state['show']
+        name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
+        if sort == 'collection':
+            groups = [(n, [g for g in games if n in (g.get('collections') or ())])
+                      for n in COLLECTION_NAMES]
+            groups.append(("No collection", [g for g in games if not g.get('collections')]))
+            groups = [(t, sorted(gs, key=name)) for t, gs in groups if gs]
+        else:
+            groups = [(None, games)]
+        spare: dict[str, list[GameTile]] = {}
+        flows = [self.lib_flow] + [w.flow for w in self._lib_groups]
+        for flow in flows:
+            while flow.count():
+                w = flow.takeAt(0).widget()
+                if isinstance(w, GameTile):
+                    spare.setdefault(w.game.get('slug'), []).append(w)
+        old, self._lib_groups = self._lib_groups, []
+
+        def tile(g):
+            t = spare.get(g['slug'], []).pop() if spare.get(g['slug']) else None
+            if t is not None:
+                t.set_game(g)
+                return t
+            return self._tile(g, self.TILE, 'cover')
+        if groups and groups[0][0] is None:
+            for g in groups[0][1]:
+                self.lib_flow.addWidget(tile(g))
+            self.lib_plain.setVisible(True)
+        else:
+            self.lib_plain.setVisible(False)
+            for title, gs in groups:
+                grp = QWidget()
+                v = QVBoxLayout(grp)
+                v.setContentsMargins(0, 0, 0, 0)
+                v.setSpacing(SP['2'])
+                v.addWidget(plain_label(title.upper(), "TheatreLabel"))
+                host = QWidget()
+                grp.flow = FlowLayout(host, margin=SP['2'], spacing=SP['5'], justify=True)
+                v.addWidget(host)
+                self.lib_col.insertWidget(self.lib_col.count() - 1, grp)
+                for g in gs:
+                    grp.flow.addWidget(tile(g))
+                self._lib_groups.append(grp)
+        for w in old:
+            w.hide()
+            w.deleteLater()
+        for tiles in spare.values():
+            for w in tiles:
+                w.hide()
+                w.deleteLater()
+        sort_t = dict(self.SORTS)[sort]
+        n = len(games)
+        self.lib_chip.setText(f"{sort_t}  ·  {dict(self.SHOWS)[show]}  ·  "
+                              f"{n} game{'s' if n != 1 else ''}")
+
+    def open_library_sheet(self, sheet, focus: int = 0):
+        """Sort & filter in `sheet` (Theatre's ActionSheet): a pick updates
+        the grid and the chip behind it and the sheet stays up."""
+        def row(kind, key, text, i):
+            on = self.lib_state[kind] == key
+            return (text, G['check'] if on else G['list'],
+                    lambda: self._pick_library(sheet, kind, key, i), on)
+        items = ["Sort by"] + [row('sort', k, t, i) for i, (k, t) in enumerate(self.SORTS)] \
+            + ["Show"] + [row('show', k, t, len(self.SORTS) + i)
+                          for i, (k, t) in enumerate(self.SHOWS)]
+        sheet.choose("Sort & filter", items, focus=focus, keep_open=True)
+
+    def _pick_library(self, sheet, kind: str, key: str, index: int):
+        self.lib_state = {**self.lib_state, kind: key}
+        self._fill_library()
+        self.library_changed.emit(dict(self.lib_state))
+        self.open_library_sheet(sheet, index)
+
+    def moment(self, text: str, game: dict | None = None, row_key: str | None = None):
+        """A finished download or install: the banner (never a toast on the
+        TV). View shows `game`'s page, or the Downloads row `row_key`."""
+        self.moment_banner.show_moment(text, game, row_key)
+        self._place_moment()
+
+    def _place_moment(self):
+        m = self.moment_banner
+        m.adjustSize()
+        m.move(max(0, self.width() - m.width() - SP['8'] * 2), SP['6'] + 44)
+        m.raise_()
+
+    def view_pressed(self) -> bool:
+        """The View button, as a context button: with a banner up it shows
+        what finished; on Library it opens Sort & filter. True if it did
+        something."""
+        m = self.moment_banner
+        if m.isVisible() and not self.search.isVisible() and not self.trailer.isVisible():
+            g, key = m.game, m.row_key
+            m.dismiss()
+            if g is not None:
+                self.open_game(g)                      # Play is focused there
+            elif key:
+                self.tabs.set_current('downloads', emit=True)
+                QTimer.singleShot(0, lambda: self._focus_download(key))
+            return True
+        if self.tabs.current() == 'library' and not self.details.isVisible() \
+                and not self.search.isVisible() and not self.trailer.isVisible():
+            self.library_sheet.emit()
+            return True
+        return False
 
     # Set by the main window from Settings → Controls: whether A (and a
     # double click) play a game straight away instead of opening its page.
@@ -763,21 +1098,56 @@ class TheatreView(QWidget):
 
     # ---- navigation ----
     def _tab(self, key):
-        self.pages.setCurrentWidget(self.home if key == 'home' else self.lib)
+        self.pages.setCurrentWidget(self._pages[key])
         self._sync_art()
         QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
     def cycle_tab(self, d):
-        keys = self.tabs.keys()
-        i = (keys.index(self.tabs.current()) + d) % len(keys)
+        """LB / RB: the next tab that is showing, wrapping round."""
+        keys = [k for k in self.tabs.keys() if not self.tabs.item(k).isHidden()]
+        cur = self.tabs.current()
+        i = (keys.index(cur) + d) % len(keys) if cur in keys else 0
         self.tabs.set_current(keys[i], emit=True)
+
+    def sync_tabs(self, discover: bool, downloads: bool):
+        """Which of Discover and Downloads show (Settings: news and Game-db
+        for Discover, repack features for Downloads). A tab that goes away
+        under you sends you Home."""
+        self.tabs.set_item_visible('discover', discover)
+        self.tabs.set_item_visible('downloads', downloads)
+        if self.tabs.current() not in [k for k in self.tabs.keys()
+                                       if not self.tabs.item(k).isHidden()]:
+            self.tabs.set_current('home', emit=True)
+
+    def _focus_download(self, key: str):
+        row = self.downloads_page.rows.get(key)
+        if alive(self) and row is not None and row.isVisible() and not self.details.isVisible():
+            focus_and_reveal(row)
 
     def open_game(self, g):
         # What's behind the game page is out of reach (D-pad and Tab alike).
         self.pages.setEnabled(False)
         self.tabs.setEnabled(False)
         self.details.open(g)
+        if self.moment_banner.isVisible():
+            self.moment_banner.raise_()
         self._load_info(g)
+
+    def show_session(self, g, summary: dict):
+        """A game just closed: its page with the session band (w-60)."""
+        if self.trailer.isVisible():
+            self.trailer.stop()
+        self.search.setVisible(False)
+        self._from_search = False
+        self.open_game(g)
+        self.details.show_session(summary)
+
+    def go_home(self):
+        """The session band's Back to Home (and B on it)."""
+        self.details.clear_session()
+        if self.details.isVisible():
+            self.close_game()
+        self.tabs.set_current('home', emit=True)
 
     def _load_info(self, g):
         """The drawer's data: cached per game for the session (the CLI caches
@@ -858,6 +1228,9 @@ class TheatreView(QWidget):
             self.search.close_search()
             return True
         if self.details.isVisible():
+            if self.details.session_shown() and not self.details.expanded():
+                self.go_home()                  # B on the session band: Home
+                return True
             if self.details.back():
                 return True
             if getattr(self, '_from_search', False):
@@ -890,7 +1263,12 @@ class TheatreView(QWidget):
             if not self.hero.isHidden() and self.hero.btn.isEnabled():
                 return self.hero.btn
         page = self.pages.currentWidget()
-        return next((t for t in page.findChildren(GameTile) if not t.isHidden()), None)
+        if page is self.downloads_page:
+            return page.first_row() or page.empty
+        tile = next((t for t in page.findChildren(GameTile) if not t.isHidden()), None)
+        if tile is None and page is self.lib_page:
+            return self.lib_chip
+        return tile or (page if page.focusPolicy() != Qt.FocusPolicy.NoFocus else None)
 
     def _tick(self):
         now = datetime.now().strftime('%H:%M')
@@ -918,6 +1296,8 @@ class TheatreView(QWidget):
             self.details.setGeometry(self.rect())
         if self.search.isVisible():
             self.search.setGeometry(self.rect())
+        if self.moment_banner.isVisible():
+            self._place_moment()
 
 
 class CursorHider(QObject):
@@ -977,6 +1357,6 @@ from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label,
-    SegmentedControl, set_glyph_icon)  # noqa: E402
+from .widgets import (clear_layout, EmptyState, FlowLayout, glyph_pixmap, icon_button,  # noqa: E402
+    icon_label, label, plain_label, SegmentedControl, set_glyph_icon)
 from .topbar import Wordmark  # noqa: E402

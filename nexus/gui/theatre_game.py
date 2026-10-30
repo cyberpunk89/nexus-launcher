@@ -8,6 +8,7 @@ Compatibility, each hidden while it has nothing to show. While the drawer
 is open the game shrinks to a band at the top, with Play one Up away."""
 
 import html
+import time
 from datetime import datetime
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QVariantAnimation
@@ -309,12 +310,95 @@ class TheatreDrawer(QFrame):
             self.show_section('overview')
 
 
+class SessionBand(QWidget):
+    """After a game closes (w-60): what the session was, in place of the
+    facts and the Play row. Session length, total play time and, when there
+    are any, the achievements unlocked, with Play again and Back to Home."""
+    CHIP_MIN_HEIGHT = 900            # chips need a taller page than 720p
+    MAX_CHIPS = 3
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("SessionBand")
+        self.items: list[dict] = []
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SP['6'])
+        self.stats = QHBoxLayout()
+        self.stats.setSpacing(SP['8'] * 2)
+        self._values: dict[str, QLabel] = {}
+        for key, cap in (('session', "THIS SESSION"), ('total', "TOTAL PLAYED"),
+                         ('ach', "ACHIEVEMENTS")):
+            col = QVBoxLayout()
+            col.setSpacing(SP['1'])
+            val = label("", "SessionBig")
+            self._values[key] = val
+            col.addWidget(val)
+            col.addWidget(label(cap, "SessionUnit"))
+            holder = QWidget()
+            holder.setLayout(col)
+            self._values[key + '_box'] = holder
+            self.stats.addWidget(holder)
+        self.stats.addStretch()
+        v.addLayout(self.stats)
+        self.chips = QHBoxLayout()
+        self.chips.setSpacing(SP['4'])
+        v.addLayout(self.chips)
+        row = QHBoxLayout()
+        row.setSpacing(SP['5'])
+        self.again = QPushButton("Play again")
+        self.again.setObjectName("PlayBig")
+        set_glyph_icon(self.again, G['play'], int(96 * 0.36), 'on_accent', hover_role=None)
+        self.again.setFixedSize(420, 96)
+        self.home = QPushButton("Back to Home")
+        self.home.setObjectName("Glass")
+        set_glyph_icon(self.home, G['home'], 28, 'on_art')
+        self.home.setFixedSize(300, 96)
+        row.addWidget(self.again)
+        row.addWidget(self.home)
+        row.addStretch()
+        v.addLayout(row)
+        self.set_stats("", "", 0)
+
+    def set_stats(self, session: str, total: str, n: int):
+        self._values['session'].setText(session)
+        self._values['total'].setText(total)
+        self._values['ach'].setText(str(n))
+        self._values['ach_box'].setVisible(n > 0)     # a count only when there is one
+
+    def set_achievements(self, items: list[dict], tall: bool):
+        self.items = items[:]
+        self.set_stats(self._values['session'].text(), self._values['total'].text(),
+                       len(items))
+        clear_layout(self.chips)
+        if tall:
+            for a in items[:self.MAX_CHIPS]:
+                self.chips.addWidget(self._chip(a))
+        self.chips.addStretch()
+
+    def _chip(self, a: dict) -> QFrame:
+        c = QFrame()
+        c.setObjectName("AchChip")
+        h = QHBoxLayout(c)
+        h.setContentsMargins(SP['4'], SP['3'], SP['5'], SP['3'])
+        h.setSpacing(SP['3'])
+        h.addWidget(icon_label(G['trophy'], 26, P['warning']))
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(plain_label(a.get('title') or "Achievement", "AchTitle"))
+        if a.get('desc'):
+            col.addWidget(plain_label(a['desc'], "TheatreSub"))
+        h.addLayout(col)
+        return c
+
+
 class TheatreDetails(QWidget):
     """A game, full screen: the stage, and the drawer below it."""
     play = pyqtSignal(dict)
     action = pyqtSignal(str, dict)
     back_asked = pyqtSignal()                    # the (mouse-only) ‹ in the corner
     trailer = pyqtSignal(dict)
+    home_asked = pyqtSignal()                    # the session band's Back to Home
 
     LOGO = (760, 280)
     BAND_LOGO = (420, 150)
@@ -334,6 +418,8 @@ class TheatreDetails(QWidget):
         self._ach_asked: set[tuple] = set()
         self._filling = False
         self._reader_from = None
+        self._session: dict | None = None        # the band's text while it shows
+        self._shown_at = 0.0
         m = SP['8'] * 3
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, SP['6'], 0, 0)
@@ -370,7 +456,9 @@ class TheatreDetails(QWidget):
         self.facts = fact_line()
         sv.addWidget(self.facts)
         sv.addSpacing(SP['8'])
-        row = QHBoxLayout()
+        self.actions = QWidget()                 # Play, Favourite, Options: hides as one
+        row = QHBoxLayout(self.actions)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SP['5'])
         self.btn_play = self._play_button(420, 96)
         row.addWidget(self.btn_play)
@@ -382,7 +470,12 @@ class TheatreDetails(QWidget):
         self.btn_opts.clicked.connect(lambda: self.action.emit('options', self.game))
         row.addWidget(self.btn_opts)
         row.addStretch()
-        sv.addLayout(row)
+        sv.addWidget(self.actions)
+        self.session = SessionBand()
+        self.session.again.clicked.connect(lambda: self._band_clicked(self._play))
+        self.session.home.clicked.connect(lambda: self._band_clicked(self.home_asked.emit))
+        sv.addWidget(self.session)
+        self.session.hide()
         sv.addStretch(1)
         lay.addWidget(self.stage, 1)
         # Drawer open: the game as one band at the top, Play one Up away.
@@ -424,6 +517,7 @@ class TheatreDetails(QWidget):
         return b
 
     def _play(self):
+        self.clear_session()
         if self.game.get('playing'):             # Resume: back to the running game
             self.action.emit('resume', self.game)
         else:
@@ -455,6 +549,7 @@ class TheatreDetails(QWidget):
         self.btn_fav.setStyleSheet(f"border-radius: 40px; color: {P['warning']};" if fav
                                    else "border-radius: 40px;")
         if not same:
+            self.clear_session()
             self.tips, self.launch, self.store, self.news = None, None, None, []
             self.collapse(instant=True, refocus=False)
             self.drawer.show_section('overview')
@@ -481,6 +576,13 @@ class TheatreDetails(QWidget):
         """Above the logo: where the game comes from, or NOW PLAYING · 42 MIN
         while it runs (STARTING… while it starts)."""
         live = bool(g.get('playing'))
+        if self._session is not None and not live:
+            self.kicker.setText(html.escape(f"SESSION ENDED · {self._session['ended']}"))
+            if self.kicker.property('live'):
+                self.kicker.setProperty('live', False)
+                self.kicker.style().unpolish(self.kicker)
+                self.kicker.style().polish(self.kicker)
+            return
         self.kicker.setText(live_kicker(g) if live or g.get('launching') else
                             html.escape(SOURCE_LABEL.get(g.get('source', 'nexus'), '').upper()))
         if self.kicker.property('live') != live:
@@ -495,11 +597,64 @@ class TheatreDetails(QWidget):
         for b in (self.btn_play, self.band_play):
             b.setText("Resume" if g.get('playing') else play_label(g))
             b.setEnabled(bool(g.get('playing')) or play_enabled(g))
+        self.session.again.setEnabled(bool(g.get('playing')) or play_enabled(g))
 
     def default_focus(self):
         if self.drawer.is_open():
             return self.drawer.tabs.item(self.drawer.tabs.current())
+        if self._session is not None:
+            return self.session.again if self.session.again.isEnabled() else self.session.home
         return self.btn_play if self.btn_play.isEnabled() else self.btn_fav
+
+    # ---- the session band (w-60) ----
+    A_GUARD = 1.0            # seconds A is ignored: the press that ended the game
+
+    def show_session(self, summary: dict):
+        """Replace the facts and the Play row with the band. `summary` has
+        'ended' (HH:MM), 'session' and 'total' (text)."""
+        self._session = dict(summary)
+        self._shown_at = time.monotonic()
+        self.session.set_stats(summary['session'], summary['total'], 0)
+        self.session.set_achievements([], False)
+        self.session.show()
+        self.set_kicker(self.game)
+        # Focus first: hiding the focused Play would throw it into the drawer.
+        f = QApplication.focusWidget()
+        if f is not None and self.actions.isAncestorOf(f):
+            self.default_focus().setFocus()
+        self.facts.hide()
+        self.actions.hide()
+        QTimer.singleShot(0, self._focus_default)
+
+    def set_session_achievements(self, items: list[dict]):
+        if self._session is not None:
+            self.session.set_achievements(items, self.height() >= SessionBand.CHIP_MIN_HEIGHT)
+
+    def clear_session(self):
+        if self._session is None:
+            return
+        f = QApplication.focusWidget()
+        had_focus = f is not None and self.session.isAncestorOf(f)
+        self._session = None
+        self.facts.show()
+        self.actions.show()
+        if had_focus:                    # hiding the focused button would throw focus into the drawer
+            self.default_focus().setFocus()
+        self.session.hide()
+        self.set_kicker(self.game)
+
+    def session_shown(self) -> bool:
+        return self._session is not None
+
+    def _band_clicked(self, act):
+        """A band button, unless the press is the one that closed the game."""
+        if time.monotonic() - self._shown_at >= self.A_GUARD:
+            act()
+
+    def hideEvent(self, ev):
+        if not ev.spontaneous():
+            self.clear_session()
+        super().hideEvent(ev)
 
     def set_info(self, tips=None, launch=None, news=None, store=None):
         """Data for the drawer as it arrives (each part is optional)."""
@@ -767,6 +922,7 @@ class TheatreDetails(QWidget):
         """Slide the drawer up over the lower half; the game becomes a band."""
         if self.expanded():
             return
+        self.clear_session()
         self.top.hide()
         self.stage.hide()
         self.band.show()
@@ -882,6 +1038,9 @@ class TheatreDetails(QWidget):
             return [('a', a), ('LB RB', 'Section'),
                     ('↓', 'More') if f is self.band_play else ('↑', 'Play'),
                     ('b', 'Back to game')]
+        if self._session is not None:
+            return [('a', "Play again" if f is self.session.again else "Select"),
+                    ('x', 'Options'), ('↓', 'More about this game'), ('b', 'Home')]
         return [('a', self._play_word() if f is self.btn_play else "Select"), ('x', 'Options'),
                 ('↓', 'More about this game'), ('b', 'Back')]
 
@@ -957,5 +1116,5 @@ from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # n
     played_minutes, SOURCE_LABEL, TIER_COLORS)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
-from .widgets import (clear_layout, glyph_pixmap, icon_button, label, plain_label,
+from .widgets import (clear_layout, glyph_pixmap, icon_button, icon_label, label, plain_label,
     SegmentedControl, set_glyph_icon)  # noqa: E402

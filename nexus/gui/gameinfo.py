@@ -139,6 +139,16 @@ def played_minutes(g: dict, now: datetime | None = None) -> int:
     return cur if s is None else max(cur, int(g.get('session_base') or 0) + s)
 
 
+def session_unlocks(items, since: datetime) -> list[dict]:
+    """The achievements unlocked since `since` (a minute of slack for clocks
+    and Steam's write delay), newest first. `items` is --achievements --json's
+    list; an unlock with no time is never counted."""
+    cut = since.timestamp() - 60
+    out = [a for a in items or [] if a.get('unlocked') and a.get('time')
+           and a['time'] >= cut]
+    return sorted(out, key=lambda a: a['time'], reverse=True)
+
+
 def now_playing(games: list[dict]) -> dict | None:
     """The game Now playing is about (the quick menu, Theatre's spotlight):
     of those running, the one that started last; else one that's starting."""

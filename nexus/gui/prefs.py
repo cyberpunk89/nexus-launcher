@@ -109,6 +109,15 @@ class LibraryPrefs:
         # and how wide the details panel was dragged.
         lib = self._data.get('library_state')
         self.library_state = lib if isinstance(lib, dict) else {}
+        # Theatre's Library as it was left (its own: the desktop's is above):
+        # {'sort': 'name'|'played'|'most'|'added'|'collection',
+        #  'show': 'installed'|'missing'|'all'}
+        tl = self._data.get('theatre_library')
+        self.theatre_library = {
+            'sort': tl.get('sort') if isinstance(tl, dict) and tl.get('sort') in (
+                'name', 'played', 'most', 'added', 'collection') else 'name',
+            'show': tl.get('show') if isinstance(tl, dict) and tl.get('show') in (
+                'installed', 'missing', 'all') else 'installed'}
         # Smart shelves you hid (keys like 'smart:never', 'genre:RPG', 'user:<id>').
         sh = self._data.get('smart_hidden')
         self.smart_hidden = list(dict.fromkeys(
@@ -145,6 +154,7 @@ class LibraryPrefs:
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view, 'controls': self.controls,
                     'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
+                    'theatre_library': self.theatre_library,
                     'smart_shelves': self.smart_shelves,
                     'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,

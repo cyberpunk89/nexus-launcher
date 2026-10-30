@@ -328,6 +328,44 @@ def inhibit_sleep(why: str):
     return None
 
 
+_POWER_LOGIND = {'sleep': ('CanSuspend', 'suspend'), 'restart': ('CanReboot', 'reboot'),
+                 'shutdown': ('CanPowerOff', 'poweroff')}
+
+
+def power_caps() -> set[str]:
+    """What logind (systemd or elogind) lets this session do: 'yes' or
+    'challenge' (polkit may ask) on CanSuspend, CanReboot, CanPowerOff, asked
+    over D-Bus with busctl (loginctl has no query). No busctl, no answer or
+    'no' hides the action."""
+    caps = set()
+    for action, (query, _verb) in _POWER_LOGIND.items():
+        try:
+            out = subprocess.run(
+                ['busctl', '--system', 'call', 'org.freedesktop.login1',
+                 '/org/freedesktop/login1', 'org.freedesktop.login1.Manager', query],
+                capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        words = out.stdout.split()
+        if out.returncode == 0 and words and words[-1].strip('"') in ('yes', 'challenge'):
+            caps.add(action)
+    return caps
+
+
+def power(action: str) -> bool:
+    """Sleep, restart or shut down: `loginctl suspend|reboot|poweroff`. It
+    returns once logind took the request; False when it refused (polkit from
+    an SSH or Sunshine session) or isn't there."""
+    verb = _POWER_LOGIND.get(action, ('', ''))[1]
+    if not verb:
+        return False
+    try:
+        return subprocess.run(['loginctl', verb], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def top_windows() -> list[dict]:
     """Windows' own window list; Linux asks the compositor (winfocus, niri)."""
     return []

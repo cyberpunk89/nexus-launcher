@@ -762,6 +762,24 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#TheatreSub { color: $on_art; font-size: ${fs_sm}px; }
     QLabel#TheatreBig { color: $on_art; font-size: ${fs_big}px; font-weight: 600; }
     QLabel#TheatreLabel { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    /* Theatre Downloads rows and the ready banner (w-61) */
+    #Theatre #TheatreMoment { background: $glass_hi; border: 1px solid $glass;
+                              border-radius: ${r_card}px; }
+    #Theatre #TheatreRow { background: $glass; border: 1px solid $glass_hi;
+                           border-radius: ${r_card}px; }
+    #Theatre #TheatreRow:hover { background: $glass_hi; }
+    #Theatre QProgressBar#CardProgress { background: $glass_hi; }
+    #Theatre QProgressBar#CardProgress[paused="true"]::chunk { background: $muted; }
+    /* Theatre Library chip (w-56) */
+    #Theatre QPushButton#StateChip { background: $glass; color: $on_art; border: 1px solid $glass_hi;
+                                     border-radius: ${r_card}px; padding: ${sp_2}px ${sp_5}px;
+                                     font-size: ${fs_base}px; font-weight: 500; }
+    #Theatre QPushButton#StateChip:hover { background: $glass_hi; }
+    /* Session end band (w-60) */
+    QLabel#SessionBig { color: $on_art; font-size: ${fs_display}px; font-weight: 600; }
+    QLabel#SessionUnit { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    #AchChip { background: $glass; border: 1px solid $glass_hi; border-radius: ${r_card}px; }
+    QLabel#AchTitle { color: $on_art; font-size: ${fs_base}px; font-weight: 600; }
     #TheatreShot { background: $glass; border-radius: ${r_tile}px; }
     #TheatreDrawer { background: transparent; border: none; }
     #TheatreDrawer[open="true"] { background: $glass_hi; border: 1px solid $glass;

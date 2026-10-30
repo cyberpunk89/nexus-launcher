@@ -39,7 +39,7 @@ from .theme import (
     SCALES, scaled, SETUP_THEMES, ui_scale)  # noqa: F401
 from .theme import collection_look  # noqa: F401
 from .fmt import (
-    fmt_ago, fmt_bytes, fmt_elapsed, fmt_eta, fmt_hours, fmt_relative, fmt_size)  # noqa: F401
+    fmt_ago, fmt_bytes, fmt_duration, fmt_elapsed, fmt_eta, fmt_hours, fmt_relative, fmt_size)  # noqa: F401
 from .widgets import (
     _role_of, _SOFT_BREAK, _style_icon_label, ask, clear_layout, empty_state_text, EmptyState,
     FlowLayout, glyph_pixmap, GradientBackground, icon_button, icon_label, label,
@@ -65,7 +65,7 @@ from .prefs import clean_collection_look, MAX_PINNED  # noqa: F401
 from .gameinfo import (
     anticheat_warning, can_quick_play, compat_facts, install_fraction, is_installed,
     live_kicker, now_playing, PCGW_COLORS, PCGW_WORDS, play_enabled, play_label,
-    played_minutes, session_minutes, SOURCE_LABEL, TIER_COLORS)  # noqa: F401
+    played_minutes, session_minutes, session_unlocks, SOURCE_LABEL, TIER_COLORS)  # noqa: F401
 from .actions import (
     _gate_actions, about_html, action_glyph, ACTION_GLYPHS, ActionSheet, build_game_menu,
     COUCH_SKIP, game_actions, GameAction, NOT_WHILE_BUSY, NOT_WHILE_PLAYING,
@@ -95,7 +95,7 @@ from .deals import (
     _pill, deal_links, deal_meta, deal_sort_key, deal_was, DealArt, DealCard, DealsPage,
     DealSpotlight, meta_html, steam_hero_url)  # noqa: F401
 from .downloads import (
-    DownloadRow, DownloadsPage, torrent_state)  # noqa: F401
+    DownloadRow, DownloadsPage, theatre_rows, torrent_state)  # noqa: F401
 from .artpicker import (
     ART_KIND_LABEL, ART_THUMB, ArtPickerPage, ArtThumb)  # noqa: F401
 from .system import (
@@ -112,7 +112,8 @@ from .input import (
     InputMode, install_input_mode, NAV_KEYS, SpatialNav)  # noqa: F401
 from .theatre import (
     _SEARCH_JUNK, _search_norm, AttractOverlay, CursorHider, search_games,
-    THEATRE_SCALE, TheatreSearch, TheatreSpotlight, TheatreView)  # noqa: F401
+    THEATRE_SCALE, TheatreDownloadRow, TheatreDownloads, TheatreMoment, TheatreSearch,
+    TheatreSpotlight, TheatreView)  # noqa: F401
 from .theatre_game import (_news_html, fact_text, SECTIONS, TheatreDetails, TheatreDrawer,
     TheatreRow, TheatreShot)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401

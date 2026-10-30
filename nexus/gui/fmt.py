@@ -12,6 +12,15 @@ def fmt_hours(minutes) -> str | None:
     return f"{minutes / 60:.1f} h"
 
 
+def fmt_duration(minutes) -> str:
+    """'42 min', '1 h 42 min', '2 h': a length of time, in whole minutes."""
+    m = max(0, int(round(minutes or 0)))
+    if m < 60:
+        return f"{m} min"
+    h, m = divmod(m, 60)
+    return f"{h} h {m} min" if m else f"{h} h"
+
+
 def fmt_elapsed(seconds: float) -> str:
     seconds = int(seconds)
     if seconds < 60:

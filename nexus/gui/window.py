@@ -111,6 +111,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._install_query = False
         self._running_query = False
         self._watch_finish: set[str] = set()
+        self._ready_at: dict[str, float] = {}      # slug -> when its download/install finished
+        self._mine_torrents: list[dict] = []        # the torrents Nexus added, last poll
+        self._theatre_rows: list[dict] = []         # Theatre's Downloads rows, last feed
         self._protondb: dict[str, str] = {}             # asked once per session
         self._install_timer = QTimer(self)
         self._install_timer.setInterval(5000)
@@ -197,6 +200,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.quick = QuickMenu(self.theatre, THEATRE_SCALE)
         self.quick.chosen.connect(self._quick_chosen)
         self.quick.closed.connect(self._update_hints)
+        self.quick.closed.connect(self._show_session)
+        self.theatre.library_sheet.connect(self._open_library_sheet)
+        self.theatre.download_action.connect(self._theatre_download)
+        self.theatre.moment_changed.connect(self._update_hints)
+        self.theatre.library_changed.connect(self._save_theatre_library)
+        self.theatre.set_library_state(self.prefs.theatre_library)
+        self.theatre_sheet.closed.connect(self._show_session)
         # Y on the desktop without Steam's on-screen keyboard: Theatre's
         # D-pad keyboard, over the desk.
         self.palette = CommandPalette(
@@ -691,8 +701,26 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                                        "Add a game (Ctrl+N)")
         self.install.set_repacks(on)
         self.dealspage.set_repacks(on)
+        self._sync_theatre_tabs()
         if hasattr(self, 'repacks'):            # the folder watcher (made in _start)
             self.repacks.set_enabled(on)
+
+    def _sync_theatre_tabs(self):
+        """Theatre's Discover follows News and Game-db, its Downloads the
+        repack features (the same switches as the desktop's pages)."""
+        if hasattr(self, 'theatre'):
+            self.theatre.sync_tabs(
+                bool(self.config.get('news', True) or self.config.get('gamedb_enabled', False)),
+                self.repacks_on() or bool(getattr(self, '_theatre_rows', None)))
+
+    def _open_library_sheet(self):
+        if self._theatre and not self.theatre.details.isVisible():
+            self.theatre.open_library_sheet(self.theatre_sheet)
+            self._update_hints()
+
+    def _save_theatre_library(self, state: dict):
+        self.prefs.theatre_library = dict(state)
+        self.prefs.save()
 
     def _note_version(self, used_before: bool):
         """Remember this version; on the first start of a newer one, show its

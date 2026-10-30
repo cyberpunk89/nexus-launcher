@@ -45,6 +45,15 @@ processes
                                             (force: SIGKILL); taskkill (force:
                                             /F) on Windows
 
+power (the quick menu's POWER rows)
+    power_caps() -> set[str]                which of 'sleep', 'restart',
+                                            'shutdown' this machine offers
+                                            (logind's Can* answers; Windows'
+                                            power capabilities); empty hides
+                                            the section
+    power(action) -> bool                   do one of them now, detached; False
+                                            when it couldn't be started
+
 console
     console_encoding()                      what other programs' output is in
                                             when it isn't UTF-8: 'utf-8'; the
@@ -215,6 +224,8 @@ top_windows = _impl.top_windows
 focus_window = _impl.focus_window
 sdl_library_paths = _impl.sdl_library_paths
 sdl_hints = _impl.sdl_hints
+power_caps = _impl.power_caps
+power = _impl.power
 
 
 def spawn_detached(cmd, **kw) -> subprocess.Popen:

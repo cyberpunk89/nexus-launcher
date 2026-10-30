@@ -426,6 +426,53 @@ class QuietSetup(unittest.TestCase):
         self.assertTrue(muted)
 
 
+class Power(unittest.TestCase):
+    """power_caps() and power() on this OS's implementation, with the
+    subprocess calls patched: no real sleep, restart or shutdown."""
+
+    @linux_only
+    def test_linux_caps_follow_logind(self):
+        from nexus.platform import linux
+        answers = {'CanSuspend': 's "yes"\n', 'CanReboot': 's "challenge"\n',
+                   'CanPowerOff': 's "no"\n'}
+        run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, answers[cmd[-1]], '')  # noqa: E731
+        with mock.patch.object(linux.subprocess, 'run', run):
+            self.assertEqual(linux.power_caps(), {'sleep', 'restart'})
+        with mock.patch.object(linux.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertEqual(linux.power_caps(), set())     # no busctl: no rows
+
+    @linux_only
+    def test_linux_power_runs_loginctl(self):
+        from nexus.platform import linux
+        with mock.patch.object(linux.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            self.assertTrue(linux.power('sleep'))
+            self.assertEqual(run.call_args[0][0], ['loginctl', 'suspend'])
+            linux.power('restart')
+            self.assertEqual(run.call_args[0][0], ['loginctl', 'reboot'])
+            linux.power('shutdown')
+            self.assertEqual(run.call_args[0][0], ['loginctl', 'poweroff'])
+            run.return_value.returncode = 1                 # polkit said no
+            self.assertFalse(linux.power('sleep'))
+            self.assertFalse(linux.power('hibernate'))
+        with mock.patch.object(linux.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertFalse(linux.power('sleep'))
+
+    @windows_only
+    def test_windows_power_command_lines(self):
+        from nexus.platform import windows
+        with mock.patch.object(windows.subprocess, 'Popen') as popen:
+            self.assertTrue(windows.power('restart'))
+            self.assertEqual(popen.call_args[0][0], ['shutdown', '/r', '/t', '0'])
+            self.assertTrue(windows.power('shutdown'))
+            self.assertEqual(popen.call_args[0][0], ['shutdown', '/s', '/t', '0'])
+            self.assertFalse(windows.power('hibernate'))
+        with mock.patch.object(windows.threading, 'Thread') as thread:
+            self.assertTrue(windows.power('sleep'))
+            self.assertIs(thread.call_args[1]['target'], windows._powrprof.SetSuspendState)
+        self.assertLessEqual({'restart', 'shutdown'}, windows.power_caps())
+
+
 class Memory(unittest.TestCase):
     def test_meminfo_has_what_the_memory_check_reads(self):
         m = platform.meminfo()

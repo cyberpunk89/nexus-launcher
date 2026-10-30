@@ -305,6 +305,27 @@ class JobManager(QObject):
         if nxt:
             nxt.start()
 
+    def queued_installs(self) -> list[Job]:
+        """The installs waiting their turn, first to run first."""
+        return [j for j in self.jobs if j.kind == 'install' and j.state == 'queued']
+
+    def move(self, job: Job, index: int) -> bool:
+        """Put a queued install at `index` among the queued installs (0 runs
+        next). A running, finished or non-install job stays where it is."""
+        queued = self.queued_installs()
+        if job not in queued:
+            return False
+        index = max(0, min(index, len(queued) - 1))
+        if queued.index(job) == index:
+            return False
+        queued.remove(job)
+        queued.insert(index, job)
+        slots = [i for i, j in enumerate(self.jobs) if j.kind == 'install' and j.state == 'queued']
+        for slot, j in zip(slots, queued):          # only the queued installs trade places
+            self.jobs[slot] = j
+        self.changed.emit()
+        return True
+
     def active(self) -> list[Job]:
         return [j for j in self.jobs if j.active and j.kind not in Job.PARALLEL]
 

@@ -51,6 +51,20 @@ class Prefs(unittest.TestCase):
         self.assertEqual(data['future_key'], {'x': 1})
         self.assertEqual(data['collection_look'], {})
 
+    def test_theatre_library_defaults_bad_values_and_round_trip(self):
+        self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'name', 'show': 'installed'})
+        self.path.write_text(json.dumps({'theatre_library': {'sort': 'nope', 'show': 'all'},
+                                         'library_state': {'sort': 'most'}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.theatre_library, {'sort': 'name', 'show': 'all'})
+        p.theatre_library = {'sort': 'collection', 'show': 'missing'}
+        p.save()
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data['theatre_library'], {'sort': 'collection', 'show': 'missing'})
+        self.assertEqual(data['library_state'], {'sort': 'most'})   # the desktop's, untouched
+        self.assertEqual(nx.LibraryPrefs().theatre_library,
+                         {'sort': 'collection', 'show': 'missing'})
+
     def test_look_order_and_pin_round_trip(self):
         p = nx.LibraryPrefs()
         for n in ('Couch', 'Short', 'Spooky'):

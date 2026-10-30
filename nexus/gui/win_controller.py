@@ -6,7 +6,7 @@ import os
 from PyQt6.QtCore import QProcess, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QLineEdit
 
-from nexus import winfocus
+from nexus import platform, winfocus
 
 from .common import alive
 from .theme import build_stylesheet, G, GLYPHS
@@ -111,7 +111,14 @@ class ControllerMixin:
                 self.theatre.details.cycle_section(-1 if act == 'page-prev' else 1)
                 self._update_hints()
             return
-        if self._theatre and act in ('page-prev', 'page-next', 'view'):
+        if self._theatre and act == 'view':             # a context button, not a tab switch
+            if self._open_sheet() is not None:
+                self._open_sheet().close_sheet()            # View closes Sort & filter
+            elif not self.theatre.trailer.isVisible():
+                self.theatre.view_pressed()
+            self._update_hints()
+            return
+        if self._theatre and act in ('page-prev', 'page-next'):
             self.theatre.cycle_tab(-1 if act == 'page-prev' else 1)
             return
         if self._theatre and act == 'search':
@@ -191,8 +198,15 @@ class ControllerMixin:
             rows.append(QuickRow('resume', "Resume", G['play']))
             if game.get('playing'):
                 rows.append(QuickRow('quit-game', "Quit game", G['stop'], danger=True))
-        return rows + [QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=bool(rows)),
-                       QuickRow('quit', "Quit Nexus", G['close'])]
+        rows += [QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=bool(rows)),
+                 QuickRow('quit', "Quit Nexus", G['close'])]
+        caps = platform.power_caps()
+        for action, label, glyph in (('sleep', "Sleep", 'moon'), ('restart', "Restart PC", 'restart'),
+                                     ('shutdown', "Shut down", 'power')):
+            if action in caps:
+                rows.append(QuickRow(f'power-{action}', label, G[glyph], section='POWER',
+                                     danger=action != 'sleep'))
+        return rows
 
     def _quick_pads(self) -> list[dict]:
         """The connected pads for the menu's strip (Steam's virtual copy of
@@ -218,6 +232,10 @@ class ControllerMixin:
         elif key == 'exit-theatre':
             self.quick.close_menu(restore=False)
             self.set_theatre(False)
+        elif key == 'power-sleep':
+            self._power_now('sleep')
+        elif key in ('power-restart', 'power-shutdown'):
+            self._ask_power(key[6:])
         elif key == 'quit':
             reasons = self._quit_reasons()
             if reasons:                                 # asks only with work to lose
@@ -228,6 +246,27 @@ class ControllerMixin:
             self.quick.close_menu(restore=False)
             self._tray_quit = True                      # quit for real, not to the tray
             self.close()
+
+    def _power_now(self, action: str):
+        """Save what Nexus keeps, then ask the OS. close() would only go to
+        the tray, so the window stays; a refusal toasts and the row stays."""
+        self.quick.close_menu(restore=False)
+        self.prefs.save()
+        if not platform.power(action):
+            self.toast("Couldn't " + {'sleep': "sleep", 'restart': "restart",
+                                      'shutdown': "shut down"}[action] + " — the system refused.",
+                       'error')
+
+    def _ask_power(self, action: str):
+        game = self.quick.now_game
+        title = "Restart this PC?" if action == 'restart' else "Shut down this PC?"
+        text = (f"{game.get('display_name', game['slug'])} is running; anything you haven't "
+                f"saved will be lost." if game is not None and game.get('playing')
+                else "Anything you haven't saved will be lost.")
+        self.quick.ask(title, text, "Restart" if action == 'restart' else "Shut down",
+                       G['restart' if action == 'restart' else 'power'],
+                       lambda: self._power_now(action))
+        self._update_hints()
 
     def handle_remote(self, argv: list):
         """Another `nexus` launch handed us its arguments (see InstanceServer),
@@ -379,9 +418,23 @@ class ControllerMixin:
                          ('x', 'Options'), ('↓', 'Your games')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
+            elif th.tabs.current() in ('discover', 'downloads'):
+                hints = [('b', 'Home')]                 # a page with nothing to act on yet
             else:
                 hints = [('a', 'Select'), ('b', 'Home')]
-            hints += [('y', 'Search'), ('LB RB', 'Home / Library'), ('Menu', 'Quick menu')]
+            if th.tabs.current() == 'downloads':
+                from .downloads import PRIMARY_LABELS
+                if isinstance(f, TheatreDownloadRow):
+                    hints = [('a', PRIMARY_LABELS.get(f.r['primary'], 'Options')),
+                             ('x', 'Options'), ('b', 'Home')]
+                else:
+                    hints = [('b', 'Home')]
+            if th.moment_banner.isVisible():
+                hints.insert(-1, ('View', f"Show {th.moment_banner.name}" if th.moment_banner.name
+                                  else "Show it"))
+            elif th.tabs.current() == 'library':
+                hints.insert(-1, ('View', 'Sort & filter'))
+            hints += [('y', 'Search'), ('LB RB', 'Tabs'), ('Menu', 'Quick menu')]
             self.hints.show_hints(hints)
             return
         if isinstance(f, GameTile) or isinstance(f, ListView):
@@ -413,5 +466,5 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
 from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
-from .theatre import THEATRE_SCALE  # noqa: E402
+from .theatre import THEATRE_SCALE, TheatreDownloadRow  # noqa: E402
 from .tiles import GameTile  # noqa: E402

@@ -193,6 +193,29 @@ class Regressions(unittest.TestCase):
         lv.show()
         self.assertTrue(tile._spinner.isActive())
 
+    def test_job_manager_move_reorders_queued_installs_only(self):
+        jm = nx.JobManager()
+        run = nx.Job(['r'], 'Run', 'r', 'install')
+        a, b, c = (nx.Job(['x'], n, n, 'install') for n in 'abc')
+        tool = nx.Job(['t'], 'Tool', 't', 'tool')
+        run.state = 'running'
+        for j in (a, run, b, tool, c):
+            jm.jobs.append(j)
+        for j in (a, b, c):
+            self.assertEqual(j.state, 'queued')
+        order = lambda: [j.slug for j in jm.jobs]                       # noqa: E731
+        changed = []
+        jm.changed.connect(lambda: changed.append(1))
+        self.assertTrue(jm.move(c, 0))                                  # first in line
+        self.assertEqual(order(), ['c', 'r', 'a', 't', 'b'])            # others keep their slots
+        self.assertEqual(jm.queued_installs(), [c, a, b])
+        self.assertTrue(jm.move(c, 99))                                 # clamped to the end
+        self.assertEqual(jm.queued_installs(), [a, b, c])
+        self.assertFalse(jm.move(a, 0))                                 # already there
+        self.assertFalse(jm.move(run, 0))                               # running: stays
+        self.assertFalse(jm.move(tool, 0))                              # not an install
+        self.assertEqual(len(changed), 2)
+
     def test_elapsed_timers_tick_while_output_streams(self):
         import time
         jm = nx.JobManager()
@@ -581,7 +604,7 @@ class Behaviour(unittest.TestCase):
             QApplication.processEvents()
             th.hero.btn.setFocus()
             self.assertEqual(shown(), ['Play', 'Options', 'Your games', 'Search',
-                                       'Home / Library', 'Quick menu'])
+                                       'Tabs', 'Quick menu'])
             th.open_game(w.game('steam-1'))
             d = th.details
             d.set_info(news=[{'appid': 1, 'title': 'Patch', 'summary': 'Fixes'}])

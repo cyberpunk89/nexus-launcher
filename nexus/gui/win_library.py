@@ -3,6 +3,7 @@ filters, selection, collections, and loading the library from the CLI."""
 
 import json
 import random
+import time
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QCursor
@@ -699,8 +700,14 @@ class LibraryMixin:
             for g in [] if cached else self._games:
                 if g['slug'] in self._watch_finish and is_installed(g):
                     self._install_req.pop(g['slug'], None)
-                    self.toast(f"{g['display_name']} is installed — ready to play.", 'success',
-                               ("Play", lambda g=g: self.on_game_action('launch', g)), 8000)
+                    self._ready_at[g['slug']] = time.time()
+                    if self._theatre:                  # a pad can't reach a toast
+                        self.theatre.moment(f"{g['display_name']} is ready to play", g,
+                                            f"game:{g['slug']}")
+                    else:
+                        self.toast(f"{g['display_name']} is installed — ready to play.",
+                                   'success',
+                                   ("Play", lambda g=g: self.on_game_action('launch', g)), 8000)
             if not cached:
                 self._watch_finish = set()
             if not self._steam_resumed and not cached:

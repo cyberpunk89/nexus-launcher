@@ -817,6 +817,50 @@ def inhibit_sleep(why: str):
     return _Awake()
 
 
+_powrprof = ctypes.WinDLL('powrprof')
+_powrprof.CallNtPowerInformation.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+                                             ctypes.c_void_p, ctypes.c_ulong]
+_powrprof.CallNtPowerInformation.restype = ctypes.c_long
+_powrprof.SetSuspendState.argtypes = [wintypes.BOOLEAN, wintypes.BOOLEAN, wintypes.BOOLEAN]
+_powrprof.SetSuspendState.restype = wintypes.BOOLEAN
+_SYSTEM_POWER_CAPABILITIES = 4          # CallNtPowerInformation level
+_S3_OFFSET = 5                          # SYSTEM_POWER_CAPABILITIES.SystemS3
+
+
+def power_caps() -> set[str]:
+    """Restart and Shut down always; Sleep only with classic S3 sleep. Modern
+    Standby PCs report no S3, and SetSuspendState isn't dependable there."""
+    caps = {'restart', 'shutdown'}
+    buf = ctypes.create_string_buffer(128)
+    try:
+        if _powrprof.CallNtPowerInformation(_SYSTEM_POWER_CAPABILITIES, None, 0, buf, 128) == 0 \
+                and buf.raw[_S3_OFFSET]:
+            caps.add('sleep')
+    except OSError:
+        pass
+    return caps
+
+
+def power(action: str) -> bool:
+    """`shutdown /r|/s /t 0` with no console window; Sleep through
+    SetSuspendState (rundll32 would hibernate) on a thread, since the call
+    returns only after the PC wakes."""
+    if action == 'sleep':
+        threading.Thread(target=_powrprof.SetSuspendState, args=(False, False, False),
+                         daemon=True).start()
+        return True
+    flag = {'restart': '/r', 'shutdown': '/s'}.get(action)
+    if flag is None:
+        return False
+    try:
+        subprocess.Popen(['shutdown', flag, '/t', '0'], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    except OSError:
+        return False
+    return True
+
+
 _user32 = ctypes.WinDLL('user32', use_last_error=True)
 _WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 _user32.EnumWindows.argtypes = [_WNDENUMPROC, wintypes.LPARAM]

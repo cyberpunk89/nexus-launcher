@@ -38,6 +38,98 @@ def torrent_state(r: dict) -> str:
     return " · ".join(bits)
 
 
+READY_HOURS = 24            # a finished download or install stays a row this long
+PRIMARY_LABELS = {'install': "Install", 'play': "Play", 'pause': "Pause", 'resume': "Resume",
+                  'retry': "Retry", 'show': "Show game"}
+
+
+def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: float,
+                 mono: float) -> list[dict]:
+    """What Theatre's Downloads tab lists, grouped Ready to play / In progress
+    / Up next. Pure, so each source is tested with fake data. Rows:
+    group, key, kind (torrent|job|game), title, state (a line), big (the one
+    number), frac (0..1 or None), paused, primary (an action key or None),
+    slug, ref (what the action needs: the torrent row, the job, the game).
+    `torrents` are Nexus's own (tracked); `jobs` all of them (installs are
+    looked at); `ready_at` is {slug: epoch} for installs that just finished;
+    `mono` is time.monotonic() (jobs stamp their end with it)."""
+    rows: list[dict] = []
+    by_slug = {g.get('slug'): g for g in games}
+
+    def row(group, key, kind, title, state, big, frac=None, paused=False, primary=None,
+            slug=None, ref=None):
+        rows.append({'group': group, 'key': key, 'kind': kind, 'title': title, 'state': state,
+                     'big': big, 'frac': frac, 'paused': paused, 'primary': primary,
+                     'slug': slug, 'ref': ref})
+
+    for slug, t in ready_at.items():                   # installs that finished
+        g = by_slug.get(slug)
+        if g is None or now - t > READY_HOURS * 3600:
+            continue
+        played = g.get('last_played') or ''
+        if played and played >= _iso(t):
+            continue                                   # played since: done with
+        row('ready', f'game:{slug}', 'game', g.get('display_name') or slug,
+            "Installed · ready to play", "Ready", 1.0, primary='play', slug=slug, ref=g)
+    installing = {j.slug for j in jobs if j.kind == 'install' and j.active}
+    for r in torrents:
+        if not r.get('tracked') or r.get('gone') or r.get('installed'):
+            continue
+        title = r.get('name') or r.get('title') or str(r.get('hash', ''))[:12]
+        key = f"torrent:{r.get('hash')}"
+        pct = float(r.get('percent') or 0)
+        if r.get('error'):
+            row('progress', key, 'torrent', title, torrent_state(r), "Error", pct / 100, ref=r)
+        elif r.get('done'):
+            row('ready', key, 'torrent', title, torrent_state(r), "Downloaded", 1.0,
+                primary='install' if r.get('path') else None, ref=r)
+        elif (r.get('state') == 'paused') or (r.get('paused') and not r.get('state')):
+            row('progress', key, 'torrent', title, torrent_state(r), f"{pct:.0f}%", pct / 100,
+                paused=True, primary='resume', ref=r)
+        elif r.get('state') in ('queued', 'checking'):
+            row('queue', key, 'torrent', title, torrent_state(r), f"{pct:.0f}%", pct / 100,
+                primary='pause', ref=r)
+        else:
+            row('progress', key, 'torrent', title, torrent_state(r),
+                fmt_eta(r['eta']) if r.get('eta') else f"{pct:.0f}%", pct / 100,
+                primary='pause', ref=r)
+    waiting = [j for j in jobs if j.kind == 'install' and j.state == 'queued']
+    for j in jobs:
+        if j.kind != 'install':
+            continue
+        key = f'job:{id(j)}'
+        title = j.name or j.title
+        if j.state in ('running', 'cancelling'):
+            frac = (j.progress[0] / j.progress[1]) if j.progress and j.progress[1] else None
+            row('progress', key, 'job', title, j.step or "Installing",
+                f"{int(frac * 100)}%" if frac is not None else "Installing", frac,
+                slug=j.slug, ref=j)
+        elif j.state == 'queued':
+            n = waiting.index(j) + 1
+            row('queue', key, 'job', title, "Waiting for the current job",
+                f"#{n} in line", slug=j.slug, ref=j)
+        elif j.state == 'failed' and j.slug not in installing and j.ended \
+                and mono - j.ended < READY_HOURS * 3600:
+            row('progress', key, 'job', title, j.step, "Failed", primary='retry',
+                slug=j.slug, ref=j)
+    for g in games:                                     # Steam and Heroic downloads
+        inst = g.get('installing')
+        if not isinstance(inst, dict) or g.get('slug') in installing:
+            continue
+        done, total = int(inst.get('done') or 0), int(inst.get('total') or 0)
+        frac = done / total if total else None
+        row('progress', f"game:{g.get('slug')}", 'game', g.get('display_name') or g['slug'],
+            "Downloading", f"{int(frac * 100)}%" if frac is not None else "Downloading",
+            frac, primary='show', slug=g['slug'], ref=g)
+    rows.sort(key=lambda r: ('ready', 'progress', 'queue').index(r['group']))
+    return rows
+
+
+def _iso(epoch: float) -> str:
+    from datetime import datetime
+    return datetime.fromtimestamp(epoch).isoformat(timespec='seconds')
+
+
 class DownloadRow(QFrame):
     """One torrent: name, state, progress, a pause/resume button and ⋮."""
     action = pyqtSignal(str, dict)   # pause|resume|remove|delete|folder|install, row

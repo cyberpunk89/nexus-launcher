@@ -549,6 +549,7 @@ class ActionsMixin:
         else:
             self.views.currentWidget().set_jobs(self.jobs)
             self.homeview.set_jobs(self.jobs)
+        self._feed_theatre_downloads()
 
     def _job_done(self, job):
         name = job.name

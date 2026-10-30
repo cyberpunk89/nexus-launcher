@@ -5,7 +5,7 @@ import os
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QEvent, QTimer
 
 from nexus import history, steamlib, winfocus
 
@@ -57,7 +57,7 @@ class PlayMixin:
             self._session_base[slug] = int((g or {}).get('playtime_minutes') or 0)
         for slug in stopped:
             t0 = self._session_start.pop(slug, None)
-            self._session_base.pop(slug, None)
+            base = self._session_base.pop(slug, None)
             g = self.game(slug)
             # Repacks are recorded by their launch tracker; the rest here.
             if t0 and g and (g.get('source', 'nexus') != 'nexus'
@@ -65,6 +65,7 @@ class PlayMixin:
                 history.record(slug, g['source'], t0, now, g.get('display_name'))
             if t0 and g:
                 self._after_session(g, (now - t0).total_seconds())
+                self._session_ended(g, (now - t0).total_seconds(), t0, now, base)
         if not self._launching:
             self._fast_timer.stop()
         changed = playing != self._playing or started
@@ -81,6 +82,63 @@ class PlayMixin:
                     self._sync_selection()
             except RuntimeError:
                 pass
+
+    _session_pending = None       # w-60: the band waiting for its moment
+
+    def _session_ended(self, g: dict, secs: float, t0, ended, base):
+        """A game closed after a real session (a minute or more) while Theatre
+        is on: remember it for the session band, shown once Nexus is back in
+        front (see _back_from_game / _show_session)."""
+        if not self._theatre or not history.is_session(secs):
+            return
+        minutes = max(1, round(secs / 60))
+        total = max(int(g.get('playtime_minutes') or 0), int(base or 0) + minutes)
+        g['playtime_minutes'] = total               # the library only catches up at next load
+        self._session_pending = {'slug': g['slug'], 't0': t0, 'ended': ended.strftime('%H:%M'),
+                                 'session': fmt_duration(minutes), 'total': fmt_duration(total)}
+
+    def _back_from_game(self):
+        """400 ms after a game closed: the session band if there is one, else
+        focus back where it belongs."""
+        if not self._show_session():
+            focus_and_reveal(self.default_focus())
+
+    def _show_session(self) -> bool:
+        """Open the pending session's page. It waits (stays pending) while
+        Nexus is minimised or hidden or the quick menu or an options sheet is
+        open, and is dropped when Theatre has been left."""
+        pend = self._session_pending
+        if pend is None:
+            return False
+        if not self._theatre or self.game(pend['slug']) is None:
+            self._session_pending = None
+            return False
+        if self.isMinimized() or not self.isVisible() or self.quick.isVisible() \
+                or self.theatre_sheet.isVisible():
+            return False
+        self._session_pending = None
+        g = self.game(pend['slug'])
+        self.theatre.show_session(g, pend)
+        if g.get('source', 'nexus') in ('steam', 'nexus') and (g.get('appid') or
+                                                              g.get('source', 'nexus') == 'nexus'):
+            ident = str(g['appid']) if g.get('source') == 'steam' else g['slug']
+            cli_json(['--achievements', ident, '--json'],
+                     lambda data, _e, pend=pend: alive(self)
+                     and self._session_achievements(pend, data or {}), 30000)
+        return True
+
+    def _session_achievements(self, pend: dict, data: dict):
+        """The fresh list: the ones unlocked this session, if the band is
+        still showing this session."""
+        td = self.theatre.details
+        if td.session_shown() and td.game.get('slug') == pend['slug']:
+            td.set_session_achievements(session_unlocks(data.get('items'), pend['t0']))
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if self._session_pending is not None and ev.type() in (
+                QEvent.Type.WindowStateChange, QEvent.Type.ActivationChange):
+            QTimer.singleShot(0, self._show_session)       # Nexus came back to the front
 
     CRASH_SECONDS = 20          # a repack that closes this soon most likely crashed
     KEEP_SECONDS = 60           # a tried Proton that runs this long is worth keeping
@@ -226,6 +284,7 @@ class PlayMixin:
         """Play pressed: show "Starting…" right away, poll until the game is
         really running, and get ready to give its window the focus."""
         slug = game['slug']
+        self._session_pending = None
         self._launching[slug] = time.monotonic()
         self._mark_states()
         game['launching'] = True
@@ -286,7 +345,7 @@ class PlayMixin:
             in_thread(lambda: winfocus.focus(nexus), lambda *_: None)
         elif self.isMinimized():
             self._unminimize()
-        QTimer.singleShot(400, lambda: alive(self) and focus_and_reveal(self.default_focus()))
+        QTimer.singleShot(400, self._back_from_game)
 
 
 def last_exit_code(slug: str) -> int | None:
@@ -307,7 +366,8 @@ def last_exit_code(slug: str) -> int | None:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
-from .gameinfo import is_installed, play_enabled, play_label  # noqa: E402
+from .fmt import fmt_duration  # noqa: E402
+from .gameinfo import is_installed, play_enabled, play_label, session_unlocks  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread, match_running  # noqa: E402
 from .theme import G  # noqa: E402

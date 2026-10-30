@@ -356,14 +356,18 @@ class ActionSheet(QFrame):
         self.show()
         no.setFocus(Qt.FocusReason.TabFocusReason)
 
-    def choose(self, title: str, items: list, sub: str = '', text: str = '', focus: int = 0):
+    def choose(self, title: str, items: list, sub: str = '', text: str = '', focus: int = 0,
+               keep_open: bool = False):
         """The sheet as a plain list of choices — anything that isn't a game
         action (a deal's links, a game's collections). `items` are
         (text, glyph, fn) or (text, glyph, fn, checked or a colour role); fn runs once the
         sheet has closed. A widget among them is placed as it is (a
-        collection's colour and icon picker). `text`, plain, explains above
-        them (a failed install's cause). `focus`: which row (of the rows that
-        are choices) starts focused."""
+        collection's colour and icon picker). A plain string among them is a
+        section header (SORT BY). A role of 'danger' paints a row red.
+        `text`, plain, explains above them (a failed install's cause).
+        `focus`: which row (of the rows that are choices) starts focused.
+        `keep_open`: a pick runs its fn and leaves the sheet up; fn calls
+        choose() again with the new ticks (Theatre's Sort & filter)."""
         f = QApplication.focusWidget()
         self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
         self.game = {}
@@ -379,6 +383,11 @@ class ActionSheet(QFrame):
             if isinstance(item, QWidget):
                 self.rows.addWidget(item)
                 continue
+            if isinstance(item, str):
+                if self.rows.count():
+                    self.rows.addSpacing(int(SP['2'] * self.scale))
+                self.rows.addWidget(label(item.upper(), "SheetSection"))
+                continue
             text, glyph, fn, *rest = item
             b = QPushButton(amp(text))
             b.setObjectName("SheetRow")
@@ -387,7 +396,10 @@ class ActionSheet(QFrame):
             b.setProperty('danger', role == 'danger')
             set_glyph_icon(b, glyph, px, role, hover_role=None)
             b.setMinimumHeight(int(44 * self.scale))
-            b.clicked.connect(lambda _=False, fn=fn: (self.close_sheet(), fn()))
+            if keep_open:
+                b.clicked.connect(lambda _=False, fn=fn: fn())
+            else:
+                b.clicked.connect(lambda _=False, fn=fn: (self.close_sheet(), fn()))
             self.rows.addWidget(b)
             rows.append(b)
         if rows:

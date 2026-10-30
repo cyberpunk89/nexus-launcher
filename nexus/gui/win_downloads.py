@@ -14,6 +14,7 @@ from nexus.features import has
 
 from .common import alive, CLI, cli_args, DATA_DIR
 from .fmt import fmt_bytes
+from .downloads import theatre_rows
 from .theme import G
 
 UAC_TITLE = "Windows will ask for permission"
@@ -51,11 +52,14 @@ class DownloadsMixin:
             text, verb = f"A new release of {name} has finished downloading.", "Update"
         else:
             text, verb = f"{name} has finished downloading and is ready to install.", "Install"
-        self.toast(text, 'info', [
-            (verb, lambda: self._start_install(self._default_install_cmd(path), name,
-                                               c.get('slug') or '')),
-            ("Options…", lambda: (self.open_install(), self.install._pick(path, name)))],
-            30000)
+        if self._theatre:
+            self.theatre.moment(text, None, f"torrent:{c.get('hash')}" if c.get('hash') else None)
+        else:
+            self.toast(text, 'info', [
+                (verb, lambda: self._start_install(self._default_install_cmd(path), name,
+                                                   c.get('slug') or '')),
+                ("Options…", lambda: (self.open_install(), self.install._pick(path, name)))],
+                30000)
         if not self.isActiveWindow():
             notify_desktop(f"{name} is ready to install", "Open Nexus to install it.")
         if self.tray is not None and not self.isVisible():
@@ -92,10 +96,12 @@ class DownloadsMixin:
             data = data or {}
             rows = data.get('torrents') or []
             mine = [r for r in rows if r.get('tracked')]
+            self._mine_torrents = mine
             try:
                 self.downloads.set_data(data)
                 self.install.set_downloads(mine)
                 self.dealspage.set_downloads(mine)
+                self._feed_theatre_downloads()
             except RuntimeError:
                 return
             if data.get('configured') is False and self.downloads._detected is None \
@@ -116,13 +122,102 @@ class DownloadsMixin:
             self.icons[self.DOWNLOADS].set_badge(active or None)
             if data.get('configured') is False:
                 self._torrent_timer.stop()
-            elif self._showing(self.DOWNLOADS):
-                self._torrent_timer.start(2000)
+            elif self._showing(self.DOWNLOADS) or (
+                    self._theatre and self.theatre.tabs.current() == 'downloads'
+                    and any(r['group'] != 'ready' for r in self._theatre_rows)):
+                self._torrent_timer.start(2000)       # Theatre idles at 60 s on a finished list
             elif active or any(not r.get('done') and r.get('auto_install') for r in mine):
                 self._torrent_timer.start(10_000)
             else:
                 self._torrent_timer.start(60_000)
         cli_json(['--torrents', '--all', '--json'], done, 20000)
+
+    # ---- Theatre's Downloads tab ----
+    def _feed_theatre_downloads(self):
+        """Rebuild the rows from the last torrent poll, the install jobs and
+        Steam/Heroic's downloads, and give them to Theatre."""
+        rows = theatre_rows(self._mine_torrents, self.jobs.jobs, self._games, self._ready_at,
+                            time.time(), time.monotonic())
+        had = bool(self._theatre_rows)
+        self._theatre_rows = rows
+        if had != bool(rows):
+            self._sync_theatre_tabs()                 # Downloads shows while there's something
+        if self._theatre:
+            self.theatre.downloads_page.set_downloads(rows)
+
+    def _theatre_download(self, action: str, r: dict):
+        """A Downloads row's action (A) or options (X)."""
+        ref = r['ref']
+        if action == 'options':
+            self._download_options(r)
+        elif action in ('pause', 'resume'):
+            self._torrent_send(action, [ref['hash']], False)
+        elif action == 'install':
+            self._install_download(ref)
+        elif action == 'play':
+            self.on_game_action('launch', ref)
+        elif action == 'show':
+            self.theatre.open_game(ref)
+        elif action == 'retry':
+            self._resubmit(ref, ref.argv)
+
+    def _download_options(self, r: dict, focus: int = 0):
+        """X on a row: its choices in the sheet. Move up / down keep it open
+        (the row moves, the sheet follows it)."""
+        sheet, ref, items, text = self.theatre_sheet, r['ref'], [], ''
+        title = r['title']
+        if r['primary'] and r['primary'] != 'options':
+            from .downloads import PRIMARY_LABELS
+            glyph = {'pause': 'pause', 'resume': 'play', 'play': 'play', 'install': 'download',
+                     'show': 'search', 'retry': 'reset'}.get(r['primary'], 'check')
+            items.append((PRIMARY_LABELS[r['primary']], G.get(glyph, G['check']),
+                          lambda: self._theatre_download(r['primary'], r)))
+        if r['kind'] == 'torrent' and not ref.get('done'):
+            items.append(("Stop…", G['close'], lambda: self._ask_stop_download(r)))
+        elif r['kind'] == 'job':
+            queued = self.jobs.queued_installs()
+            if ref in queued:
+                i = queued.index(ref)
+                if i > 0:
+                    items.append(("Move up", G['chevron_up'],
+                                  lambda: self._move_install(r, i - 1)))
+                if i < len(queued) - 1:
+                    items.append(("Move down", G['chevron_down'],
+                                  lambda: self._move_install(r, i + 1)))
+                items.append(("Remove from the queue", G['close'], lambda: ref.cancel()))
+            elif ref.active:
+                if ref.stoppable:
+                    items.append(("Stop…", G['close'], lambda: self._ask_stop_download(r)))
+                else:
+                    text = ("An administrator installer is running. It can't be stopped from "
+                            "here; finish or cancel it on the PC.")
+        if not items and not text:
+            return
+        sheet.choose(title, items, text=text, focus=focus, keep_open=False)
+
+    def _move_install(self, r: dict, index: int):
+        self.jobs.move(r['ref'], index)
+        self._feed_theatre_downloads()
+        self._theatre_download('options', next((x for x in self._theatre_rows
+                                                if x['key'] == r['key']), r))
+
+    def _ask_stop_download(self, r: dict):
+        """Stop on a torrent or an install, asked in the sheet with Keep
+        downloading focused (A out of habit changes nothing)."""
+        sheet, ref = self.theatre_sheet, r['ref']
+        if r['kind'] == 'torrent':
+            h = ref['hash']
+            sheet.choose(f"Stop {r['title']}?", [
+                ("Keep downloading", G['check'], lambda: None),
+                ("Stop and delete what's downloaded", G['trash'],
+                 lambda: self._torrent_send('remove', [h], True), 'danger'),
+                ("Stop, keep the files", G['close'],
+                 lambda: self._torrent_send('remove', [h], False))], focus=0)
+        else:
+            sheet.choose(f"Stop installing {r['title']}?", [
+                ("Keep installing", G['check'], lambda: None),
+                ("Stop the install", G['close'], ref.cancel, 'danger')],
+                text="What it has done so far is left as it is.", focus=0)
 
     def _install_download(self, r: dict):
         """Install a finished download; the CLI records on the download that
@@ -567,7 +662,14 @@ class DownloadsMixin:
             text = f"{name} is installed"
             if len(cands) > 1 and picked.get('chosen'):
                 text += f" — it starts {Path(picked['chosen']).name}"
-            self.toast(text, 'success', actions or None, 12000)
+            if slug:
+                self._ready_at[slug] = time.time()
+            if self._theatre:                              # a pad can't reach a toast
+                self.theatre.moment(text, self.game(slug) if slug else None,
+                                    f"game:{slug}" if slug else None)
+                self._feed_theatre_downloads()
+            else:
+                self.toast(text, 'success', actions or None, 12000)
             if not self.isActiveWindow():
                 notify_desktop(f"{name} is installed", "Ready to play.")
             if inst.get('steam_pending') and slug:
