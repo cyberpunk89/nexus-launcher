@@ -504,6 +504,13 @@ class SaveData(unittest.TestCase):
         self.put('AppData/Local/Game/ShaderCache/a.bin')
         self.put('AppData/Local/Game/GPUCache/data_0')
         self.put('Documents/desktop.ini')
+        # Seen in real prefixes 2026-10-30: Unreal's pipeline cache beside the
+        # saves, FNA's shader blobs, an analytics database, Godot's .cache.
+        self.put('AppData/Local/Game/Saved/Game_PCD3D_SM6.upipelinecache')
+        self.put('AppData/Roaming/FNA3D/FNA3D_Driver_Vulkan_PipelineCache.blob')
+        self.put('AppData/Local/GameAnalytics/IL2CPP Root Domain/ga.sqlite3')
+        self.put('AppData/Roaming/Godot/app_userdata/Game/vulkan/pipelines.cache')
+        self.put('AppData/Local/NVIDIA Corporation/GLCache/x.bin')
         self.assertEqual(fi.find_prefix_savedata(self.root / 'game'), [])
         save = self.put('AppData/Local/Game/Saved/SaveGames/slot1.sav')
         doc = self.put('Documents/My Games/Game/profile.dat')

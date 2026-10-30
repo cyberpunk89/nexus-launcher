@@ -42,7 +42,9 @@ _SAVE_CONTAINERS = {'my games', 'saved games', 'savegames', 'documents', 'steam'
                     'godot', 'app_userdata'}
 _SAVE_NOISE = {'microsoft', 'temp', 'd3dscache', 'nvidia', 'amd', 'mesa_shader_cache',
                'crashdumps', 'packages', 'connecteddevicesplatform', 'unrealengine',
-               'cef', 'unity', 'openal', 'fontconfig', 'dxvk', 'vkd3d', 'mangohud'}
+               'cef', 'unity', 'openal', 'fontconfig', 'dxvk', 'vkd3d', 'mangohud',
+               'nvidia corporation', 'fna3d', 'gameanalytics', 'crashreportclient',
+               'squirreltemp'}
 # Below a game's own folder: logs and crash reports, not progress.
 _SAVE_NOISE_ANY = {'logs', 'crashes', 'crashreports', 'crash reports', 'temp', 'tmp'}
 _SAVE_NOISE_EXT = {'.lnk', '.url', '.log', '.dmp', '.tmp'}
@@ -51,8 +53,11 @@ _SAVE_NOISE_EXT = {'.lnk', '.url', '.log', '.dmp', '.tmp'}
 def _is_save_noise(rel: Path) -> bool:
     """`rel` is relative to one of _SAVE_DIRS. Caches, shader caches, Start
     Menu shortcuts, logs and crash dumps live there too, but aren't saves —
-    counting them made every prefix "have save data" and swelled backups."""
-    if rel.name.lower() == 'desktop.ini' or rel.suffix.lower() in _SAVE_NOISE_EXT:
+    counting them made every prefix "have save data" and swelled backups.
+    Cache files sit beside real saves too (Unreal's `.upipelinecache` in
+    Saved/, Godot's `.cache`), so a "cache" extension is noise as well."""
+    ext = rel.suffix.lower()
+    if rel.name.lower() == 'desktop.ini' or ext in _SAVE_NOISE_EXT or 'cache' in ext:
         return True
     dirs = [p.lower() for p in rel.parts[:-1]]
     if dirs and dirs[0] in _SAVE_NOISE:
