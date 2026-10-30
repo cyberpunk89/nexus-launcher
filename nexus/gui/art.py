@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -40,6 +41,13 @@ def hidpi_pixmap(img: QImage, dpr: float) -> QPixmap:
     pm = QPixmap.fromImage(img)
     pm.setDevicePixelRatio(dpr)
     return pm
+
+
+def pixmap_bytes(pm: QPixmap | None) -> int:
+    """What a decoded pixmap costs in memory (device pixels x depth)."""
+    if pm is None or pm.isNull():
+        return 0
+    return pm.width() * pm.height() * max(8, pm.depth()) // 8
 
 
 _TINTS: dict[str, QColor] = {}
@@ -182,19 +190,27 @@ def rounded_pixmap(src: QPixmap, radius: float) -> QPixmap:
     return out
 
 
-_PLACEHOLDERS: dict[tuple, QPixmap] = {}
+_PLACEHOLDERS: dict[tuple, QPixmap] = {}     # oldest first
+PLACEHOLDER_BYTES = 16 << 20
+
+
+def _initials(name: str) -> str:
+    return ''.join(word[0] for word in name.split()[:3] if word).upper()[:3]
 
 
 def placeholder_pixmap(name: str, w: int, h: int) -> QPixmap:
     """Stand-in art: the spec's `{color.surface-2}` tile fill with a faint accent
-    wash and the game's initials in muted text. Memoised (it's painted on
-    every hero repaint while a game has no art)."""
-    key = (name, w, h, P['surface_2'], P['accent'], screen_dpr())
-    pm = _PLACEHOLDERS.get(key)
+    wash and the game's initials in muted text. Memoised per initials (it's
+    painted on every hero repaint while a game has no art, and by every tile
+    of a game without art), the most recent PLACEHOLDER_BYTES of them."""
+    key = (_initials(name), w, h, P['surface_2'], P['accent'], screen_dpr())
+    pm = _PLACEHOLDERS.pop(key, None)
     if pm is None:
-        if len(_PLACEHOLDERS) > 400:
-            _PLACEHOLDERS.clear()
-        pm = _PLACEHOLDERS[key] = _paint_placeholder(name, w, h, key[-1])
+        pm = _paint_placeholder(name, w, h, key[-1])
+        used = sum(pixmap_bytes(p) for p in _PLACEHOLDERS.values()) + pixmap_bytes(pm)
+        while _PLACEHOLDERS and used > PLACEHOLDER_BYTES:
+            used -= pixmap_bytes(_PLACEHOLDERS.pop(next(iter(_PLACEHOLDERS))))
+    _PLACEHOLDERS[key] = pm
     return pm
 
 
@@ -210,7 +226,7 @@ def _paint_placeholder(name: str, w: int, h: int, dpr: float = 1.0) -> QPixmap:
     g.setColorAt(1.0, QColor(P['surface_2']))
     pt.fillRect(0, 0, w, h, QBrush(g))
 
-    initials = ''.join(word[0] for word in name.split()[:3] if word).upper()[:3]
+    initials = _initials(name)
     pt.setPen(QColor(P['muted']))
     pt.setFont(QFont(FONTS.ui, 26, QFont.Weight.Medium))
     pt.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, initials or '?')
@@ -261,7 +277,10 @@ LOGO_KINDS = ('logo',)
 class ArtCache(QObject):
     """Remote cover/hero art (Steam CDN, Epic/GOG URLs) cached on disk under
     ~/.cache/nexus/art, fetched asynchronously so a tile never waits on the
-    network. Decoded pixmaps are memoised per (path, size)."""
+    network. Decoded pixmaps are memoised per (path, size) in an LRU capped
+    by bytes (BUDGET), not by count: a hero costs ten covers. Widgets ask
+    for theirs when they paint (get / request) and don't keep their own copy,
+    or the cap wouldn't cap anything."""
 
     def __init__(self):
         super().__init__()
@@ -272,12 +291,17 @@ class ArtCache(QObject):
         # every tile would wait out a timeout), but not given up on for good.
         self.failed: dict[str, float] = {}
         self.pix: dict[tuple, QPixmap] = {}    # insertion order = recency (LRU)
+        self.used = 0                          # bytes in self.pix
+        self.budget = self.BUDGET
         # Decodes asked for by tiles: on the thread pool, so a grid of a few
         # hundred games appears at once and fills in without stalling.
         self.queue: dict[tuple, list] = {}
+        self.queued = 0                        # bytes those decodes will take
         self.thumbs = THUMB_DIR
 
-    MAX_PIX = 900                              # decoded pixmaps kept (~a few hundred MB max)
+    # Decoded art kept: about 680 grid tiles at 100 % scaling, 170 at 200 %;
+    # a screenful is a few dozen.
+    BUDGET = 160 << 20
     RETRY_AFTER = 600                          # seconds before a failed download is retried
 
     def forget_failures(self):
@@ -341,6 +365,38 @@ class ArtCache(QObject):
             except RuntimeError:                 # the tile is gone
                 pass
 
+    # ---- the decoded LRU ----
+    def _keep(self, key, pm: QPixmap):
+        """Store pm as the most recent entry, then drop the oldest until the
+        total fits the budget (the newest always stays, however big)."""
+        old = self.pix.pop(key, None)
+        self.used -= pixmap_bytes(old)
+        self.pix[key] = pm
+        self.used += pixmap_bytes(pm)
+        while self.used > self.budget and len(self.pix) > 1:
+            self.used -= pixmap_bytes(self.pix.pop(next(iter(self.pix))))
+
+    def get(self, key) -> QPixmap | None:
+        """The pixmap decoded for key (see key()), now the most recent; None
+        if it isn't decoded (or was dropped). Cheap: no file access."""
+        pm = self.pix.pop(key, None)
+        if pm is not None:
+            self.pix[key] = pm
+        return pm
+
+    def has_room(self) -> bool:
+        """Decoding ahead (art not on screen yet) is only worth it while what
+        is decoded and on its way still fits: past that it would push out
+        art that is on screen."""
+        return self.used + self.queued < self.budget * 3 // 4
+
+    @staticmethod
+    def key(path, w, h, grey=False):
+        """The cache key of path decoded at w x h logical px (None: no such
+        file). It holds the file's mtime, so a newly picked image replaces
+        the old one."""
+        return ArtCache._key(path, w, h, 0, grey)
+
     @staticmethod
     def _key(path, w, h, radius, grey):
         try:
@@ -351,7 +407,7 @@ class ArtCache(QObject):
     def peek(self, path: str, w: int, h: int, grey: bool = False) -> QPixmap | None:
         """Already decoded? (No decoding here.)"""
         key = self._key(path, w, h, 0, grey)
-        return self.pix.get(key) if key else None
+        return self.get(key) if key else None
 
     def request(self, path: str, w: int, h: int, callback, grey: bool = False):
         """Decode on the thread pool, then callback(pixmap or None) here."""
@@ -359,9 +415,17 @@ class ArtCache(QObject):
         if key is None:
             callback(None)
             return
+        self.request_key(key, callback)
+
+    def request_key(self, key, callback=None):
+        """request() for a key from key(); no callback: just decode it into
+        the cache (decoding ahead)."""
         first = key not in self.queue
-        self.queue.setdefault(key, []).append(callback)
+        cbs = self.queue.setdefault(key, [])
+        if callback is not None:
+            cbs.append(callback)
         if first:
+            self.queued += _device(key[2], key[6]) * _device(key[3], key[6]) * 4
             thumbs = self.thumbs
             in_thread(lambda k=key: thumb_image(k[0], k[1], _device(k[2], k[6]),
                                                 _device(k[3], k[6]), k[5], thumbs),
@@ -369,12 +433,10 @@ class ArtCache(QObject):
 
     def _decoded(self, key, img):
         cbs = self.queue.pop(key, [])
+        self.queued = max(0, self.queued - _device(key[2], key[6]) * _device(key[3], key[6]) * 4)
         pm = hidpi_pixmap(img, key[6]) if img is not None else None
         if pm is not None:
-            self.pix.pop(key, None)
-            while len(self.pix) >= self.MAX_PIX:
-                self.pix.pop(next(iter(self.pix)))
-            self.pix[key] = pm
+            self._keep(key, pm)
         for cb in cbs:
             try:
                 cb(pm)
@@ -393,7 +455,7 @@ class ArtCache(QObject):
         if mtime is None:
             return None
         key = (path, mtime, w, h, radius, grey, screen_dpr())
-        pm = self.pix.pop(key, None)
+        pm = self.get(key)
         if pm is None:
             pm = cover_pixmap(path, w, h)
             if pm is None:
@@ -402,9 +464,7 @@ class ArtCache(QObject):
                 pm = hidpi_pixmap(pm.toImage().convertToFormat(
                     QImage.Format.Format_Grayscale8), pm.devicePixelRatio())
             pm = rounded_pixmap(pm, radius)
-            while len(self.pix) >= self.MAX_PIX:
-                self.pix.pop(next(iter(self.pix)))
-        self.pix[key] = pm
+            self._keep(key, pm)
         return pm
 
     def pixmap_async(self, path: str, w: int, h: int, radius: float, callback):
@@ -422,14 +482,30 @@ class ArtCache(QObject):
             if pm is None:
                 return
             pm = rounded_pixmap(pm, radius)
-            while len(self.pix) >= self.MAX_PIX:
-                self.pix.pop(next(iter(self.pix)))
-            self.pix[key] = pm
+            self._keep(key, pm)
             callback(pm)
         self.request(path, w, h, done)
 
 
 ART = ArtCache()
+
+
+def return_freed_images():
+    """Linux (glibc): give a freed decoded image's memory back to the system
+    at once. glibc raises its mmap threshold after the first big free, so
+    later tile-sized buffers (a few hundred KB) come from heap arenas that
+    keep freed memory: scrolling a 3,000-game grid with the cache capped at
+    160 MB still grew RSS to ~900 MB. A fixed threshold keeps every buffer of
+    128 KB or more in its own mapping, unmapped on free. Called once, from
+    main(); harmless where it doesn't apply."""
+    if not sys.platform.startswith('linux'):
+        return
+    try:
+        import ctypes
+        M_MMAP_THRESHOLD = -3
+        ctypes.CDLL('libc.so.6').mallopt(M_MMAP_THRESHOLD, 128 * 1024)
+    except (OSError, AttributeError):          # not glibc (musl has no mallopt)
+        pass
 
 
 # Siblings, imported last: they import this module too, and every use

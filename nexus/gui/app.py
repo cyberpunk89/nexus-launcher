@@ -259,6 +259,7 @@ def main():
         if not instance.listen(argv):
             return
     app.setStyle('Fusion')
+    return_freed_images()
     NX.migrate()                          # fitgirl-install dirs -> nexus (once)
     app.setApplicationName("Nexus")
     # The Wayland app-id: lets niri/docks match the icon and lets users write
@@ -306,7 +307,7 @@ if __name__ == '__main__':
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .art import rounded_pixmap  # noqa: E402
+from .art import return_freed_images, rounded_pixmap  # noqa: E402
 from .prefs import LibraryPrefs  # noqa: E402
 from .widgets import PopupRounder  # noqa: E402
 from .window import MainWindow  # noqa: E402

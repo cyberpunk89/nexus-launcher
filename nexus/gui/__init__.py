@@ -46,8 +46,8 @@ from .widgets import (
 from .art import (
     _paint_placeholder, _PLACEHOLDERS, _TINTS, anim_ms, ART, art_lookup, art_source, ArtCache,
     cover_image, COVER_KINDS, cover_pixmap, dominant_color, fit_image, HERO_KINDS, LOGO_KINDS,
-    MOTION, placeholder_pixmap, rounded_pixmap, THUMB_DIR, thumb_image, THUMB_MIN_BYTES,
-    WIDE_KINDS)  # noqa: F401
+    MOTION, PLACEHOLDER_BYTES, placeholder_pixmap, pixmap_bytes, rounded_pixmap,
+    THUMB_DIR, thumb_image, THUMB_MIN_BYTES, WIDE_KINDS)  # noqa: F401
 from .jobs import (
     _cli_env, _CLI_MEMO, _CLI_WAITING, _DISPATCH, _Dispatch, _EVENT_RE, _FILE_RE,
     _INSTALL_STEPS, _SILENT_STEP, _STEP_RE, _Task, cli_cache_clear, cli_json, CliQuery,
