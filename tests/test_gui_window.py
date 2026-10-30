@@ -1707,6 +1707,14 @@ class Window(unittest.TestCase):
         cb({'items': [{'title': 'First', 'unlocked': True}]}, '')
         row = d.drawer.sections['achievements'].findChild(nx.TheatreRow)
         self.assertIn('First', row.more)
+        # A fresh memo answers inside the fill: still one list, not two.
+        g2 = dict(g, slug='steam-9', appid=9)
+        with patch_gui('cli_json', lambda args, cb, *a, **k: cb(
+                {'items': [{'title': 'Now', 'unlocked': True}]}, '')):
+            w.theatre.open_game(g2)
+        QApplication.processEvents()
+        rows = d.drawer.sections['achievements'].findChildren(nx.TheatreRow)
+        self.assertEqual([r.title for r in rows if not r.isHidden()], ["Every achievement"])
         w.set_theatre(False)
 
     def test_theatre_media_plays_trailers_in_theatre(self):

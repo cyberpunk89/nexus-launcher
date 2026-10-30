@@ -86,9 +86,11 @@ class TheatreRow(QFrame):
     the drawer's reader."""
     activated = pyqtSignal(object)
 
-    def __init__(self, title: str, sub: str = '', more: str = ''):
+    def __init__(self, title: str, sub: str = '', more: str = '', heading: str = '',
+                 wrap: bool = True):
         super().__init__()
         self.title, self.more = title, more
+        self.heading = heading or title          # the reader's title
         self.setObjectName("TheatreNewsRow")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -98,7 +100,7 @@ class TheatreRow(QFrame):
         lay.addWidget(plain_label(title, "TheatreMeta"))
         if sub:
             s = plain_label(sub, "TheatreSub")
-            s.setWordWrap(True)
+            s.setWordWrap(wrap)
             lay.addWidget(s)
 
     def keyPressEvent(self, ev):
@@ -329,6 +331,8 @@ class TheatreDetails(QWidget):
         self.store: dict | None = None           # --store-info
         self.news: list[dict] = []
         self._ach_html: dict[tuple, str] = {}    # (slug, unlocked) -> the list, as HTML
+        self._ach_asked: set[tuple] = set()
+        self._filling = False
         self._reader_from = None
         m = SP['8'] * 3
         lay = QVBoxLayout(self)
@@ -498,11 +502,15 @@ class TheatreDetails(QWidget):
     def fill(self):
         d = self.drawer
         reading = d.reader_open()
-        self._fill_overview()
-        self._fill_media()
-        self._fill_news()
-        self._fill_achievements()
-        self._fill_compat()
+        self._filling = True
+        try:
+            self._fill_overview()
+            self._fill_media()
+            self._fill_news()
+            self._fill_achievements()
+            self._fill_compat()
+        finally:
+            self._filling = False
         if reading:
             d.pages.setCurrentWidget(d.reader)
         else:
@@ -513,8 +521,8 @@ class TheatreDetails(QWidget):
         clear_layout(lay)
         return lay
 
-    def _row(self, title, sub='', more='') -> 'TheatreRow':
-        r = TheatreRow(title, sub, more)
+    def _row(self, title, sub='', more='', heading='', wrap=True) -> 'TheatreRow':
+        r = TheatreRow(title, sub, more, heading, wrap)
         r.activated.connect(self._open_row)
         return r
 
@@ -612,7 +620,7 @@ class TheatreDetails(QWidget):
             summary = i.get('summary') or ''
             lay.addWidget(self._row(i.get('title') or '', " · ".join(
                 x for x in (when, summary[:160] + ("…" if len(summary) > 160 else '')) if x),
-                _news_html([i])))
+                _news_html([i]), "News"))
         lay.addStretch()
         self.drawer.set_section_visible('news', bool(mine))
 
@@ -625,6 +633,15 @@ class TheatreDetails(QWidget):
         """Steam games, and repacks' emulator files: the count now, the
         list when it arrives."""
         g, ach = self.game, self._achievements()
+        key = (g.get('slug'), ach[0]) if ach else None
+        if ach and key not in self._ach_html and key not in self._ach_asked:
+            # Asked before drawing: a fresh memo answers right away, and the
+            # answer only stores the list while this fill runs (the Qt pitfall).
+            self._ach_asked.add(key)
+            cli_json(['--achievements', str(g['appid']) if g.get('source') == 'steam'
+                      else g['slug'], '--json'],
+                     lambda data, _e, key=key: self._ach_arrived(key, data or {}),
+                     30000, ttl=120)
         lay = self._rows('achievements')
         self.drawer.set_section_visible('achievements', ach is not None)
         if not ach:
@@ -639,16 +656,11 @@ class TheatreDetails(QWidget):
         lay.addWidget(bar)
         lay.addWidget(label(f"{round(100 * done / total)}% of this game's achievements",
                             "TheatreSub"))
-        key = (g['slug'], done)
         if key in self._ach_html:
             lay.addSpacing(SP['4'])
-            lay.addWidget(self._row("Every achievement", "Unlocked first, with dates",
-                                    self._ach_html[key]), 0, Qt.AlignmentFlag.AlignLeft)
-        else:
-            cli_json(['--achievements', str(g['appid']) if g.get('source') == 'steam'
-                      else g['slug'], '--json'],
-                     lambda data, _e, key=key: self._ach_arrived(key, data or {}),
-                     30000, ttl=120)
+            lay.addWidget(self._row("Every achievement", "The full list, with dates",
+                                    self._ach_html[key], "Achievements", wrap=False),
+                          0, Qt.AlignmentFlag.AlignLeft)
         lay.addStretch()
 
     def _ach_arrived(self, key, data):
@@ -669,8 +681,8 @@ class TheatreDetails(QWidget):
             return
         self._ach_html[key] = "".join(rows)
         try:
-            if (self.game.get('slug'), (self.game.get('achievements') or [None])[0]) == key \
-                    and not self.drawer.reader_open():
+            if not self._filling and not self.drawer.reader_open() and \
+                    (self.game.get('slug'), (self.game.get('achievements') or [None])[0]) == key:
                 self._fill_achievements()
         except RuntimeError:
             pass
@@ -721,7 +733,8 @@ class TheatreDetails(QWidget):
             lay.addSpacing(SP['4'])
             lay.addWidget(self._row("Details", "Everything above, and the settings behind it",
                                     "".join([f"<p>{html.escape(t)}</p>" for t, _c, _b in lines]
-                                            + more)), 0, Qt.AlignmentFlag.AlignLeft)
+                                            + more), "Compatibility", wrap=False),
+                          0, Qt.AlignmentFlag.AlignLeft)
         lay.addStretch()
         self.drawer.set_section_visible('compat', bool(lines))
 
@@ -820,7 +833,7 @@ class TheatreDetails(QWidget):
     # ---- the reader ----
     def _open_row(self, row: 'TheatreRow'):
         if row.more:
-            self.open_reader(row.title, row.more, row)
+            self.open_reader(row.heading, row.more, row)
 
     def open_reader(self, title: str, body: str, origin: QWidget | None = None):
         d = self.drawer
