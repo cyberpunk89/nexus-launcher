@@ -280,6 +280,16 @@ class GameTile(QFrame):
         self._anim.setEndValue(to)
         self._anim.start()
 
+    def rest(self):
+        """Back at rest at once, no glide: a tile the Library grid recycles
+        for another game must not bring the lift of where it was."""
+        if self.hasFocus() or self.underMouse():
+            return
+        self._anim.stop()
+        self._hover = 0.0
+        self._place_buttons()
+        self._sync_buttons()
+
     def _hovered(self, on: bool):
         self._animate(1.0 if on else 0.0)
         self._sync_buttons()
