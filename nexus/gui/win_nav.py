@@ -203,6 +203,8 @@ class NavigationMixin:
             slug = self.selected[0] if self.selected else None
             self.clear_selection()
             self._focus_view(slug)
+        elif self.current() == self.LIBRARY and not self.shelf_editor.isHidden():
+            self._shelf_done()                  # the shelf builder (w-51): done, saved
         elif self.current() == self.LIBRARY and self.search.text():
             self.search.clear()                 # a search first, then the page
             self._focus_view()

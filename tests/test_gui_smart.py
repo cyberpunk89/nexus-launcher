@@ -204,9 +204,14 @@ class SmartShelves(unittest.TestCase):
             w.close()
             w.deleteLater()
 
-    def test_no_divider_with_nothing_to_show(self):
+    def test_nothing_to_show_leaves_the_divider_with_new_shelf(self):
+        # w-51: the divider stays for its "New shelf" button, with no rows.
         self.load([games()[0], games()[3]], facts_for('play0'))
-        self.assertEqual(self.win.home._smart, [])
+        smart = self.win.home._smart
+        self.assertEqual(len(smart), 1)
+        self.assertIsInstance(smart[0], SmartDivider)
+        self.assertIsNotNone(smart[0].btn_new)
+        self.assertIsNone(smart[0].btn_hidden)
 
     def test_shelf_menu_offers_three_actions(self):
         w = self.win

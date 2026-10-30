@@ -49,8 +49,25 @@ DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'jump', 'collections': 'fav
 
 
 def _dash_shelf(value) -> str:
-    """The smart shelf the Home widget shows (an item's `shelf` key)."""
-    return value if value in smart.WIDGET_RULES else smart.WIDGET_DEFAULT
+    """The smart shelf the Home widget shows (an item's `shelf` key): a
+    rule, or `user:<id>` for a shelf you built (w-51; checked when shown)."""
+    ok = value in smart.WIDGET_RULES or (smart.is_user(value) and len(value) <= 40)
+    return value if ok else smart.WIDGET_DEFAULT
+
+
+def _user_shelf(hub, key) -> dict | None:
+    """A shelf you built (w-51) by its `user:<id>` key, unless removed."""
+    s = smart.find_user(getattr(getattr(hub, 'prefs', None), 'smart_shelves', ()), key)
+    return s if s and not s['removed'] else None
+
+
+def dash_shelf_label(hub, value) -> str:
+    """The Home widget's shelf as Customise names it."""
+    mine = _user_shelf(hub, value)
+    if mine:
+        return smart.title_of(mine)
+    rule = _dash_shelf(value)
+    return smart.label(f'smart:{smart.WIDGET_DEFAULT if smart.is_user(rule) else rule}')
 
 
 def dash_default() -> list[dict]:
@@ -372,7 +389,7 @@ class DashWidget(QFrame):
         self.btn_size.setVisible(len(sizes) > 1)
         self.btn_shelf.setVisible(shelf is not None)
         if shelf is not None:
-            self.btn_shelf.setText(f"Shelf: {smart.label(shelf)}")
+            self.btn_shelf.setText(f"Shelf: {shelf}")
         self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width"}[size])
         self.setProperty('editing', on)
         self.style().unpolish(self)
@@ -593,14 +610,22 @@ class SmartShelfWidget(ShelfWidget):
     otherwise in Customise. Gone while that shelf is empty."""
     KIND, TITLE = 'smart', "Smart shelf"
 
-    def rule(self, hub) -> str:
+    def key(self, hub) -> str:
+        """`smart:<rule>`, or `user:<id>` while that shelf of yours exists."""
         it = next((i for i in hub.prefs.dashboard if i['id'] == self.KIND), None)
-        return _dash_shelf((it or {}).get('shelf'))
+        shelf = _dash_shelf((it or {}).get('shelf'))
+        if smart.is_user(shelf):
+            if _user_shelf(hub, shelf):
+                return shelf
+            shelf = smart.WIDGET_DEFAULT
+        return f'smart:{shelf}'
 
     def games(self, hub):
         get = getattr(hub, '_smart_facts', None)
-        return smart.games_for(f'smart:{self.rule(hub)}', _visible_games(hub),
-                               get() if get else {}, linux=has('proton'))[:24]
+        facts, key = get() if get else {}, self.key(hub)
+        if smart.is_user(key):
+            return smart.user_games(_user_shelf(hub, key), _visible_games(hub), facts)[:24]
+        return smart.games_for(key, _visible_games(hub), facts, linux=has('proton'))[:24]
 
     def fill(self, hub):
         view = hub.homeview
@@ -612,9 +637,11 @@ class SmartShelfWidget(ShelfWidget):
         self._tiles = []
         games = self.games(hub)
         if games:
-            key = f'smart:{self.rule(hub)}'
-            row = view.make_shelf(smart.label(key), games, self.KIND_TILE, smart=key,
-                                  tip=smart.tip(key))
+            key = self.key(hub)
+            mine = _user_shelf(hub, key)
+            row = view.make_shelf(smart.title_of(mine) if mine else smart.label(key), games,
+                                  self.KIND_TILE, smart=key,
+                                  tip=smart.describe(mine) if mine else smart.tip(key))
             row.btn_menu.hide()                # hide/save live in the Library; Customise here
             self._tiles = row.tiles
             self.body.addWidget(row)
@@ -1316,7 +1343,8 @@ class Dashboard(QWidget):
         on = {k for k, *_ in placed}
         for k, r, c, span in placed:
             it = next(i for i in self.items if i['id'] == k)
-            self.widgets[k].set_editing(self.editing, it['size'], it.get('shelf'))
+            self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
+                                        else dash_shelf_label(self.hub, it['shelf']))
             self.grid.addWidget(self.widgets[k], r, c, 1, span)
         for k, w in self.widgets.items():
             w.setVisible(k in on)
@@ -1368,7 +1396,8 @@ class Dashboard(QWidget):
                 sizes = DASH_SIZES[kind]
                 it['size'] = sizes[(sizes.index(it['size']) + 1) % len(sizes)]
             elif action == 'shelf':
-                rules = [r for r in smart.WIDGET_RULES if r != 'linux' or has('proton')]
+                rules = [r for r in smart.WIDGET_RULES if r != 'linux' or has('proton')] + \
+                    [smart.USER + s['id'] for s in self.hub.prefs.user_shelves()]   # w-51
                 cur = _dash_shelf(it.get('shelf'))
                 it['shelf'] = rules[(rules.index(cur) + 1) % len(rules)] if cur in rules \
                     else rules[0]
