@@ -588,6 +588,7 @@ class DealSpotlight(QFrame):
         self.btn_prev = icon_button(G['chevron_left'], "Previous deal", 30, "GlassIcon")
         self.btn_prev.clicked.connect(lambda: self.step(-1))
         self.counter = label("", "HeroKicker")
+        self.counter.setContentsMargins(SP['2'], 0, SP['2'], 0)   # inside its backing
         self.btn_next = icon_button(G['chevron_right'], "Next deal", 30, "GlassIcon")
         self.btn_next.clicked.connect(lambda: self.step(1))
         nrow.addWidget(self.btn_prev)
@@ -734,6 +735,17 @@ class DealSpotlight(QFrame):
             c = QColor(base); c.setAlphaF(alpha)
             s.setColorAt(at, c)
         pt.fillRect(r, QBrush(s))
+        if self.counter.isVisible():
+            # "2 / 5" sits where the scrim has faded out: over light art, or
+            # a light theme's light fallback, its white text needs a backing
+            # of its own (dark like the glass ‹ › beside it, in every theme).
+            g, h = self.counter.geometry(), self.btn_prev.height()
+            box = QRectF(g.x(), g.center().y() + 0.5 - h / 2, g.width(), h)
+            bg = QColor(P['scrim'])
+            bg.setAlphaF(0.78)
+            pt.setPen(Qt.PenStyle.NoPen)
+            pt.setBrush(bg)
+            pt.drawRoundedRect(box, h / 2, h / 2)
         pt.end()
 
     def activate(self):
