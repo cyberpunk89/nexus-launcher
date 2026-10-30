@@ -377,6 +377,34 @@ class Window(unittest.TestCase):
         self.assertEqual(rows, ["Open in Steam", "Open on Game-db", "Copy link"])
         self.win.sheet.close_sheet()
 
+    def test_pad_opens_the_spotlight_options_in_the_sheet(self):
+        spot = nx.DealSpotlight()
+        self.win.dealspage.layout().addWidget(spot)
+        spot.set_items([{'appid': 10, 'title': 'Deal Game',
+                         'steamUrl': 'https://store.steampowered.com/app/10/',
+                         'price': {'best': {'url': 'https://shop.example/10', 'shop': 'Shop'},
+                                   'ggUrl': 'https://gg.deals/game/10/'}},
+                        {'appid': 11, 'title': 'Other'}],
+                       {'10': {'slug': 'deal-game', 'title': 'Deal Game'}}, None)
+        self.win.go(self.win.DEALS)
+        self.win.input.set('pad')
+        got = []
+        spot.activated.connect(got.append)
+        spot.setFocus()
+        # X on a pad arrives as the Menu key. Straight to the widget: a sent
+        # key event would flip the input mode to 'keyboard' (and a QMenu).
+        from PyQt6.QtGui import QKeyEvent
+        spot.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Menu,
+                                     Qt.KeyboardModifier.NoModifier))
+        self.assertTrue(self.win.sheet.isVisible())
+        rows = [b for b in self.win.sheet.findChildren(QPushButton)]
+        self.assertEqual([b.text() for b in rows],
+                         ["Open deal", "Grab from FitGirl", "Steam page", "Compare on GG.deals",
+                          "Next deal", "Previous deal"])
+        rows[3].click()                         # runs once the sheet has closed
+        self.assertFalse(self.win.sheet.isVisible())
+        self.assertEqual(got, ['https://gg.deals/game/10/'])
+
     WISH = {'configured': True, 'url': None, 'summary': {'wishlist': [
         {'appid': 10, 'title': 'Hollow Knight: Silksong', 'price': {'onSale': True,
                                                                      'currentStr': '9 €'}},

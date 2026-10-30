@@ -764,8 +764,51 @@ class DealSpotlight(QFrame):
             self.step(1)
         elif ev.key() == Qt.Key.Key_BracketLeft:
             self.step(-1)
+        elif ev.key() == Qt.Key.Key_Menu:
+            self._menu(self.mapToGlobal(QPoint(self.width() // 3, self.height() // 2)))
         else:
             super().keyPressEvent(ev)
+
+    def contextMenuEvent(self, ev):
+        self._menu(ev.globalPos())
+
+    def menu_items(self) -> list[tuple]:
+        """What the buttons do, plus the deal's links: (text, glyph, fn)."""
+        g = self.current()
+        if not g:
+            return []
+        items = []
+        if self.primary:
+            items.append(("Open deal", G['external'], self.activate))
+        if self.repacks.get(str(g.get('appid'))):
+            items.append(("Grab from FitGirl", G['download'], self._grab))
+        steam = gamedb.safe_url(g.get('steamUrl'))
+        if steam:
+            items.append(("Steam page", G['external'], self._steam))
+        seen = {self.primary, steam}
+        for text, url in self.links:
+            if url not in seen:
+                seen.add(url)
+                items.append((text, G['external'], lambda u=url: self.activated.emit(u)))
+        if len(self.items) > 1:
+            items += [("Next deal", G['chevron_right'], lambda: self.step(1)),
+                      ("Previous deal", G['chevron_left'], lambda: self.step(-1))]
+        return items
+
+    def _menu(self, pos):
+        items = self.menu_items()
+        if not items:
+            return
+        sheet = getattr(self.window(), 'sheet', None)
+        if input_mode() == 'pad' and isinstance(sheet, ActionSheet):
+            # A controller gets the sheet, never a desktop menu.
+            sheet.choose(self.current().get('title') or "Deal", items)
+            return
+        m = QMenu(self)
+        for text, _glyph, fn in items:
+            m.addAction(text, fn)
+        m.exec(pos)
+        m.deleteLater()
 
 
 class DealsPage(QWidget):

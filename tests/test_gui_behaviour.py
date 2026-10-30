@@ -415,6 +415,34 @@ class Behaviour(unittest.TestCase):
         self.assertFalse(self.win.sheet.isVisible())
         self.assertEqual(ran[0][0], ['--restore-saves', 'alpha'])
 
+    def test_changed_files_offer_a_new_integrity_baseline(self):
+        job = nx.Job(['nexus-cli', '--check-integrity', 'alpha'], "Checking", 'alpha')
+        job.state = 'failed'
+        job.log = ["  [!] 1 file(s) changed:\n",
+                   "    nexus-cli --check-integrity alpha --rebaseline\n"]
+        other = nx.Job(['nexus-cli', '--check-integrity', 'alpha'], "Checking", 'alpha')
+        other.state = 'failed'
+        other.log = ["'alpha' is not a managed game with a prefix\n"]
+        with mock.patch.object(self.win, 'reload_library', lambda: None):
+            self.win._job_done(other)                 # another failure: the plain toast
+            self.assertEqual(self.toasts[-1][2][0], "Show log")
+            self.win._job_done(job)
+        text, kind, (label, review) = self.toasts[-1]
+        self.assertEqual((kind, label), ('warn', "Review"))
+        self.assertIn("files changed", text)
+        ran = []
+        with mock.patch.object(self.win, 'run', lambda *a, **k: ran.append(a)):
+            review()
+            sheet = self.win.sheet
+            self.assertTrue(sheet.isVisible())
+            rows = {b.text(): b for b in sheet.findChildren(QPushButton)}
+            self.assertEqual(list(rows), ["Show the changed files",
+                                          "Accept them as the new baseline",
+                                          "Keep the old baseline"])
+            rows["Accept them as the new baseline"].click()
+        self.assertFalse(sheet.isVisible())
+        self.assertEqual(ran[0][0], ['--check-integrity', 'alpha', '--rebaseline'])
+
     def test_launch_that_never_shows_up_is_cleared(self):
         # Long ago. Not 0.0: monotonic() counts from boot, and on a freshly
         # started CI runner that can be less than LAUNCH_WAIT.
