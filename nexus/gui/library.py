@@ -1055,8 +1055,8 @@ def surprise_pick(games: list[dict], rng, recent=(), now: datetime | None = None
 
 
 def featured_games(games: list[dict], n: int = 5) -> list[dict]:
-    """What the hero shows: the game being played, then the most recently
-    played, then a favourite, an update or something new — no repeats."""
+    """What the hero shows: the game being played (or starting), then the
+    most recently played, then a favourite, an update or something new — no repeats."""
     out: list[dict] = []
 
     def add(g):
@@ -1064,6 +1064,9 @@ def featured_games(games: list[dict], n: int = 5) -> list[dict]:
             out.append(g)
     for g in games:
         if g.get('playing'):
+            add(g)
+    for g in games:                     # then one that's starting (Theatre pins it)
+        if g.get('launching'):
             add(g)
     played = sorted((g for g in games if g.get('last_played')),
                     key=lambda g: g['last_played'], reverse=True)

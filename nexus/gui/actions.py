@@ -184,6 +184,8 @@ def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
     out += [A(f'col:{n}', n, 'prefs', checked=n in mine, sub="Collections")
             for n in COLLECTION_NAMES]
     out.append(A('col-new', "New collection…", 'prefs', sub="Collections"))
+    if theatre and game.get('playing'):  # the game page's Play became Resume
+        out.append(A('quit-game', "Quit game", 'danger', danger=True))
     if src == 'nexus':
         out.append(A('uninstall', "Uninstall…", 'danger', danger=True, desk=True))
     elif src == 'steam':

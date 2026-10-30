@@ -6,8 +6,8 @@ from datetime import datetime
 
 from PyQt6.QtCore import (pyqtSignal, QEvent, QObject, QPoint, QRectF, Qt, QTimer, QUrl,
     QVariantAnimation)
-from PyQt6.QtGui import (QBrush, QColor, QFont, QImage, QLinearGradient, QPainter, QPixmap,
-    QRadialGradient)
+from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter,
+    QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QPushButton,
     QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -395,37 +395,71 @@ class TheatreSpotlight(HeroCarousel):
     """Theatre Home's spotlight: one game, full screen behind the top bar
     (kicker, logo, its line of facts, Play and Details). It follows focus
     in the first shelf, "Jump back in": no arrows, no dots, no rotation.
-    TheatreView paints the art edge to edge; this widget paints nothing."""
+    TheatreView paints the art edge to edge; this widget paints nothing.
+
+    While a game runs (or starts) it's pinned here: "NOW PLAYING · 42 MIN",
+    when it started and the time played, and Resume / Quit game in place
+    of Play / Details (`resume`, `quit_game`)."""
     art_changed = pyqtSignal()
+    resume = pyqtSignal(dict)
+    quit_game = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__(scale=THEATRE_SCALE)
         self.timer.stop()
+        self.pinned: dict | None = None          # the running game, while there is one
         for w in (self.btn_prev, self.btn_next, self.dots, self.btn_more):
             w.hide()
             w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.layout().setContentsMargins(0, 0, 0, SP['2'])
+        self.kicker.setTextFormat(Qt.TextFormat.RichText)
         self.fact = fact_line()
         self.facts.addWidget(self.fact)
         self.btn.setFixedSize(336, 84)
         set_glyph_icon(self.btn, G['play'], 30, 'on_accent', hover_role=None)
         self.btn_details.setFixedHeight(84)
         self.btn_details.setMinimumWidth(200)
+        # The carousel's own lambdas would always Play / open: these ask
+        # whether the game shown is the pinned one first.
+        self.btn.clicked.disconnect()
+        self.btn.clicked.connect(self._primary)
+        self.btn_details.clicked.disconnect()
+        self.btn_details.clicked.connect(self._secondary)
 
     def set_games(self, games: list[dict]):
-        """The game to show first (the fresh copy of the one shown, if it's
-        still there); focus in "Jump back in" moves it from then on."""
+        """The game to show first: the one running or starting (pinned),
+        else the fresh copy of the one shown, if it's still there; focus
+        in "Jump back in" moves it from then on, unless one is pinned."""
+        self.pinned = now_playing(games)
         keep = self.game.get('slug')
-        cur = next((g for g in games if g.get('slug') == keep), None) or \
+        cur = self.pinned or next((g for g in games if g.get('slug') == keep), None) or \
             (games[0] if games else None)
+        moved = cur is not None and cur.get('slug') != keep and self._cur is not None
         self.games, self.i = ([cur] if cur else []), 0
         if self.games:
-            self._show(animate=False)
+            self._show(animate=moved)
 
     def show_game(self, g: dict):
+        if self.pinned is not None:
+            return                               # the running game stays
         if g.get('slug') != self.game.get('slug'):
             self.games, self.i = [g], 0
             self._show(animate=True)
+
+    def is_pinned(self) -> bool:
+        return self.pinned is not None and self.pinned.get('slug') == self.game.get('slug')
+
+    def _primary(self):
+        (self.resume if self.is_pinned() else self.play).emit(self.game)
+
+    def _secondary(self):
+        (self.quit_game if self.is_pinned() else self.open).emit(self.game)
+
+    def tick(self):
+        """The minute changed (TheatreView's clock): "42 MIN" moves on."""
+        if self.is_pinned():
+            self.kicker.setText(live_kicker(self.game))
+            self._fill_facts(self.game)
 
     def step(self, d: int):
         pass                                     # no rotation
@@ -434,10 +468,32 @@ class TheatreSpotlight(HeroCarousel):
         ev.ignore()
 
     def _fill_facts(self, g: dict):
-        self.fact.setText(fact_text(g))
+        t0 = g.get('session_start') if self.is_pinned() else None
+        if t0 is None:
+            self.fact.setText(fact_text(g))
+            return
+        hours = fmt_hours(played_minutes(g))
+        self.fact.setText(f"Started at {t0:%H:%M}"
+                          + (f"&nbsp;&nbsp;·&nbsp;&nbsp;{hours} played" if hours else ""))
 
     def _show(self, animate: bool):
         super()._show(animate)
+        g, pinned = self.game, self.is_pinned()
+        if pinned:
+            playing = bool(g.get('playing'))
+            self.kicker.setText(live_kicker(g))
+            self.kicker.setProperty('live', playing)       # green once it really runs
+            self.kicker.style().unpolish(self.kicker)
+            self.kicker.style().polish(self.kicker)
+            self.btn.setText("Resume" if playing else "Starting…")
+            self.btn.setEnabled(playing)         # nothing to go back to yet
+        self.btn_details.setText("Quit game" if pinned else "Details")
+        if pinned:
+            set_glyph_icon(self.btn_details, G['stop'], 26, 'on_art', hover_role=None)
+        elif getattr(self.btn_details, '_glyph_spec', None):
+            self.btn_details._glyph_spec = None
+            self.btn_details.setIcon(QIcon())
+        self.btn_details.setVisible(not pinned or bool(g.get('playing')))
         self.art_changed.emit()
 
     def _faded(self, v):
@@ -511,6 +567,8 @@ class TheatreView(QWidget):
         self.hero.play.connect(self.play)
         self.hero.open.connect(self.open_game)
         self.hero.menu.connect(self.menu)
+        self.hero.resume.connect(lambda g: self.action.emit('resume', g))
+        self.hero.quit_game.connect(lambda g: self.action.emit('quit-game', g))
         self.hero.art_changed.connect(self.update)
         self.home.verticalScrollBar().valueChanged.connect(self._home_scrolled)
         # Focus in "Jump back in" moves the spotlight (once it settles there).
@@ -838,6 +896,11 @@ class TheatreView(QWidget):
         now = datetime.now().strftime('%H:%M')
         self.clock.setText(now)
         self.details.clock.setText(now)
+        if self.hero.pinned is not None:         # "42 min" on the spotlight and tiles
+            self.hero.tick()
+            for t in self.findChildren(GameTile):
+                if t.game.get('playing'):
+                    t.update()
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -905,7 +968,9 @@ class CursorHider(QObject):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import anim_ms, ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
-from .gameinfo import can_quick_play, is_installed  # noqa: E402
+from .fmt import fmt_hours  # noqa: E402
+from .gameinfo import (can_quick_play, is_installed, live_kicker, now_playing,  # noqa: E402
+    played_minutes)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402

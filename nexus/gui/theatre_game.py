@@ -32,7 +32,7 @@ def fact_text(g: dict) -> str:
     ProtonDB tier and an update waiting. The stage, the drawer's band and
     Home's spotlight all show it instead of a row of pills."""
     parts = []
-    hours = fmt_hours(g.get('playtime_minutes'))
+    hours = fmt_hours(played_minutes(g))         # a running session counted in
     last = fmt_relative(g.get('last_played'))
     if hours:
         parts.append(html.escape(f"{hours} played"))
@@ -357,6 +357,7 @@ class TheatreDetails(QWidget):
         sv.setSpacing(0)
         sv.addStretch(3)
         self.kicker = label("", "HeroKicker")
+        self.kicker.setTextFormat(Qt.TextFormat.RichText)
         sv.addWidget(self.kicker)
         sv.addSpacing(SP['4'])
         self.logo = QLabel()
@@ -423,7 +424,10 @@ class TheatreDetails(QWidget):
         return b
 
     def _play(self):
-        self.play.emit(self.game)
+        if self.game.get('playing'):             # Resume: back to the running game
+            self.action.emit('resume', self.game)
+        else:
+            self.play.emit(self.game)
 
     # ---- the game ----
     def keyPressEvent(self, ev):
@@ -435,9 +439,7 @@ class TheatreDetails(QWidget):
     def open(self, g: dict, refocus: bool = True):
         same = g.get('slug') == self.game.get('slug') and self.isVisible()
         self.game = g
-        playing = bool(g.get('playing'))
-        self.kicker.setText(("Now playing" if playing else SOURCE_LABEL.get(
-            g.get('source', 'nexus'), '')).upper())
+        self.set_kicker(g)
         logo, url = art_source(g, LOGO_KINDS)
         self._set_logo(logo)
         if not logo and url:
@@ -475,11 +477,24 @@ class TheatreDetails(QWidget):
         if self.isVisible() and t is not None and t.isVisible():
             t.setFocus()
 
+    def set_kicker(self, g: dict):
+        """Above the logo: where the game comes from, or NOW PLAYING · 42 MIN
+        while it runs (STARTING… while it starts)."""
+        live = bool(g.get('playing'))
+        self.kicker.setText(live_kicker(g) if live or g.get('launching') else
+                            html.escape(SOURCE_LABEL.get(g.get('source', 'nexus'), '').upper()))
+        if self.kicker.property('live') != live:
+            self.kicker.setProperty('live', live)
+            self.kicker.style().unpolish(self.kicker)
+            self.kicker.style().polish(self.kicker)
+
     def set_play(self, g: dict):
-        """Play's text and state, on the stage and in the band."""
+        """Play's text and state, on the stage and in the band. A running
+        game gets Resume (Quit game is under Options)."""
+        self.set_kicker(g)
         for b in (self.btn_play, self.band_play):
-            b.setText(play_label(g))
-            b.setEnabled(play_enabled(g))
+            b.setText("Resume" if g.get('playing') else play_label(g))
+            b.setEnabled(bool(g.get('playing')) or play_enabled(g))
 
     def default_focus(self):
         if self.drawer.is_open():
@@ -863,12 +878,15 @@ class TheatreDetails(QWidget):
         if self.expanded():
             a = ("Watch trailer" if isinstance(f, TheatreShot) else
                  "Read" if isinstance(f, TheatreRow) else
-                 "Play" if f is self.band_play else "Select")
+                 self._play_word() if f is self.band_play else "Select")
             return [('a', a), ('LB RB', 'Section'),
                     ('↓', 'More') if f is self.band_play else ('↑', 'Play'),
                     ('b', 'Back to game')]
-        return [('a', "Play" if f is self.btn_play else "Select"), ('x', 'Options'),
+        return [('a', self._play_word() if f is self.btn_play else "Select"), ('x', 'Options'),
                 ('↓', 'More about this game'), ('b', 'Back')]
+
+    def _play_word(self) -> str:
+        return "Resume" if self.game.get('playing') else "Play"
 
     def eventFilter(self, obj, ev):
         # Up from the top of the reader goes back to the tabs (the reader
@@ -935,8 +953,8 @@ class TheatreDetails(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import (anim_ms, ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS,
     screen_pixmap)  # noqa: E402
-from .gameinfo import (compat_facts, play_enabled, play_label, SOURCE_LABEL,
-    TIER_COLORS)  # noqa: E402
+from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # noqa: E402
+    played_minutes, SOURCE_LABEL, TIER_COLORS)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .widgets import (clear_layout, glyph_pixmap, icon_button, label, plain_label,

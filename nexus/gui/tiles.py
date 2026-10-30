@@ -501,21 +501,31 @@ class GameTile(QFrame):
             pt.setPen(QColor(P['on_art']))
             pt.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
+    def caption_sub(self) -> str:
+        """The muted line under the title: progress, "Playing · 42 min", or
+        when it was last played and for how long."""
+        g = self.game
+        if self.pending:
+            return self.job.step if self.job else "Queued"
+        if not is_installed(g):
+            return play_label(g) if g.get('installing') else " · ".join(
+                s for s in ("Not installed", fmt_hours(g.get('playtime_minutes'))) if s)
+        if g.get('playing'):
+            mins = session_minutes(g)
+            return "Playing" + (f" · {mins} min" if mins is not None else "")
+        if g.get('launching'):
+            return "Starting…"
+        return " · ".join(s for s in (fmt_relative(g.get('last_played')),
+                                      fmt_hours(g.get('playtime_minutes'))) if s) \
+            or "Not played yet"
+
     def _paint_caption(self, pt: QPainter, body: QRectF):
         """Title (2-line clamp) plus a muted stats line, over the caption gradient."""
         pad = SP['2_5']
         avail = self.tw - pad * 2
         sub_f = QFont(FONTS.ui, -1)
         sub_f.setPixelSize(FS['2xs'] + 1)
-        if self.pending:
-            sub = self.job.step if self.job else "Queued"
-        elif not is_installed(self.game):
-            sub = play_label(self.game) if self.game.get('installing') else " · ".join(
-                s for s in ("Not installed", fmt_hours(self.game.get('playtime_minutes'))) if s)
-        else:
-            sub = " · ".join(s for s in (fmt_relative(self.game.get('last_played')),
-                                         fmt_hours(self.game.get('playtime_minutes'))) if s) \
-                or "Not played yet"
+        sub = self.caption_sub()
         pt.setFont(sub_f)
         sfm = pt.fontMetrics()
         sub = sfm.elidedText(sub, Qt.TextElideMode.ElideRight, avail)
@@ -558,6 +568,6 @@ class GameTile(QFrame):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART, art_lookup, COVER_KINDS, placeholder_pixmap, WIDE_KINDS  # noqa: E402
-from .gameinfo import install_fraction, is_installed, play_label  # noqa: E402
+from .gameinfo import install_fraction, is_installed, play_label, session_minutes  # noqa: E402
 from .input import input_mode  # noqa: E402
 from .jobs import Job  # noqa: E402

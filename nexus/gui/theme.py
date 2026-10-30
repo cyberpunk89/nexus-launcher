@@ -101,6 +101,7 @@ P = {
     'attention':     PAL['rose'],
     'info':          PAL['pine'],
     'on_art':        PAL['white'],
+    'live_on_art':   PAL['foam'],     # "Now playing" over art (white on a light theme)
     # Accent tints (§2.8) — Qt understands rgba() in stylesheets.
     'accent_09':     'rgba(196,167,231,0.09)',
     'accent_16':     'rgba(196,167,231,0.16)',
@@ -372,6 +373,9 @@ def apply_appearance(ap: dict) -> dict:
         'accent_09': _rgba(accent, 0.09), 'accent_16': _rgba(accent, 0.16),
         'accent_22': _rgba(accent, 0.22), 'accent_35': _rgba(accent, 0.35),
         'success': PAL['foam'], 'danger': PAL['love'], 'warning': PAL['gold'],
+        # A light theme's green is too faint over dark art: white, with a
+        # green dot in front (gameinfo.live_kicker).
+        'live_on_art': PAL['white'] if light_theme else PAL['foam'],
         'attention': PAL['rose'], 'info': PAL['pine'],
         'success_18': _rgba(PAL['foam'], 0.18), 'danger_18': _rgba(PAL['love'], 0.18),
         'warning_18': _rgba(PAL['gold'], 0.18),
@@ -678,7 +682,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                         font-size: ${fs_sm}px; font-weight: 500; }
     QPushButton#Glass:hover { background: $overlay; }
     QLabel#HeroKicker { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
-    QLabel#HeroKicker[live="true"] { color: $success; }
+    QLabel#HeroKicker[live="true"] { color: $live_on_art; }
     QLabel#HeroTitle { color: $on_art; font-weight: 600; }
     QLabel#TheatreClock { color: $subtext; font-size: ${fs_lg}px; font-weight: 500; }
     #StatTile { background: $surface_1; border: 1px solid $border_card;
@@ -778,6 +782,10 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #QuickPanel #QuickPad { background: $surface_1; border-radius: ${r_card}px; }
     #QuickPanel QLabel#QuickPadName { color: $text; font-size: ${fs_sm}px; }
     #QuickPanel QLabel#QuickPadPct { color: $subtext; font-size: ${fs_sm}px; font-weight: 600; }
+    /* Now playing (w-59): the running game above its Resume / Quit game. */
+    #QuickPanel #NowCard { background: $surface_1; border-radius: ${r_card}px; }
+    #QuickPanel QLabel#NowSub { color: $success; font-size: ${fs_xs}px; font-weight: 600; }
+    #QuickPanel QLabel#NowTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
 
     /* ---- Theatre search: on-screen keyboard ------------------------------ */
     QLabel#SearchQuery { color: $text; font-size: ${fs_display}px; font-weight: 600; }
