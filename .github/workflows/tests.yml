@@ -30,6 +30,8 @@ jobs:
       PYTHONUTF8: '1'
       QT_QPA_PLATFORM: offscreen
       NEXUS_DEV_WINDOWS: '1'      # bin/ would otherwise stop with "Linux only"
+      NEXUS_NO_MOTION: '1'        # timers the tests wait on (Theatre's spotlight) run at 0 ms
+      NEXUS_NO_GAMEPAD: '1'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

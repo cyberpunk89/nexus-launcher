@@ -73,6 +73,7 @@ os.environ.setdefault('NEXUS_NO_SETUP', '1')
 # Theatre's menu sounds (w-65) never open the audio device in a test. Forced,
 # not setdefault: a shell that exported 0 must not make the suite beep.
 os.environ['NEXUS_NO_SOUND'] = '1'
+os.environ.setdefault('NEXUS_NO_MOTION', '1')   # the tests wait on 0 ms timers (CI had them at 140 ms)
 # Unset, not pointed at HOME: then every path follows HOME, including in the
 # subprocess tests that give the CLI a HOME of their own (a real
 # XDG_CACHE_HOME would otherwise leak the user's cache into every test).
