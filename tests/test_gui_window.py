@@ -2928,6 +2928,9 @@ class Window(unittest.TestCase):
             w._escape()
             self.assertFalse(w.theatre_sheet.isVisible())
             w._apply_running(set())                         # closed: the pin lets go
+            # A 42 min session opens its band once the game closes, which
+            # disables the stage; the test_session_band_* tests cover that.
+            w._session_pending = None
             w._launching[g['slug']] = time.monotonic()      # starting again
             w._mark_states()
             w._home_sig = None

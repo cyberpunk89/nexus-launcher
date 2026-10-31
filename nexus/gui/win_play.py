@@ -9,6 +9,7 @@ from PyQt6.QtCore import QEvent, QTimer
 
 from nexus import history, steamlib, winfocus
 
+from .art import anim_ms
 from .common import alive
 
 
@@ -347,7 +348,9 @@ class PlayMixin:
             in_thread(lambda: winfocus.focus(nexus), lambda *_: None)
         elif self.isMinimized():
             self._unminimize()
-        QTimer.singleShot(400, self._back_from_game)
+        # anim_ms: a wall-clock 400 ms outlived the test that closed the
+        # game and opened the session page in the middle of it (CI, 0.5.2).
+        QTimer.singleShot(anim_ms(400), self._back_from_game)
 
 
 def last_exit_code(slug: str) -> int | None:
