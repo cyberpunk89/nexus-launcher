@@ -59,7 +59,11 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
 ![Theatre mode: the Home page at TV size with the Play button focused](docs/screenshots/theatre.jpg)
 
 - **Quick menu:** press Menu or Guide anywhere for a panel of big rows: a *Now playing* card
-  with **Resume** and **Quit game**, your controllers and their battery, Exit Theatre.
+  with **Resume** and **Quit game**, your controllers and their battery, Sleep, Restart and
+  Shut down, Exit Theatre. When a game closes, a short summary of the session shows.
+- **Tabs:** Home with a *Your week* card, Library with sort and filter, Downloads, and
+  Discover with news and deals. Theatre's own settings are one button away, and Nexus can
+  start in Theatre on a TV or when a controller is plugged in.
 - **Game page:** Play, favourite, Options, and cards for achievements, compatibility, news
   and trailers, all reachable with the D-pad.
 - **On-screen keyboard** for search, a **screensaver** that shows your games' art or trailers
