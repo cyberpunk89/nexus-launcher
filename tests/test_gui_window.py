@@ -315,6 +315,12 @@ class Window(unittest.TestCase):
             p = mock.patch(f'nexus.platform.{name}', return_value=ret)
             setattr(self, name, p.start())
             self.addCleanup(p.stop)
+        # The window polls /proc 800 ms after it is built; on a slow machine
+        # that answer (nothing running) lands mid-test and ends a game the
+        # test just marked as running. Tests that need a poll call it.
+        p = mock.patch.object(nx.MainWindow, '_poll_running', lambda self: None)
+        p.start()
+        self.addCleanup(p.stop)
         self.win = nx.MainWindow()
         self.win.resize(1300, 850)
         self.win.show()
