@@ -22,19 +22,23 @@ os.environ['NEXUS_NO_GAMEPAD'] = '1'
 
 REPO = Path(__file__).resolve().parent.parent
 
+sys.path.insert(0, str(REPO))
+# Before the QApplication: Qt reads fonts and settings from HOME when it
+# starts, and CI always has a clean one. With the real HOME first, a run
+# here could pass on timing CI never sees (0.5.2's focus flakes).
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+
 try:
     from PyQt6.QtCore import QPoint, QRect, Qt
     from PyQt6.QtWidgets import QApplication, QWidget, QWidgetItem
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
 
-sys.path.insert(0, str(REPO))
 from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402,F401  (the GUI tests import them from here too)
 
 nx = None
 if QApplication is not None:
     _app = QApplication.instance() or QApplication([])
-    import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
     nx = importlib.import_module('nexus.gui')
     _app.setStyleSheet(nx.build_stylesheet())
     # Window tests must never read or rewrite the real Steam to-do list.

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication, QLineEdit
 
 from nexus import platform, winfocus
 
+from .art import anim_ms
 from .common import alive
 from .theme import build_stylesheet, G, GLYPHS
 
@@ -228,11 +229,11 @@ class ControllerMixin:
             cur = self.current()
             i = order.index(cur) if cur in order else 0
             self.go(order[(i + (1 if act == 'page-next' else -1)) % len(order)])
-            QTimer.singleShot(50, lambda: alive(self) and focus_and_reveal(self.default_focus()))
+            QTimer.singleShot(anim_ms(50), lambda: alive(self) and focus_and_reveal(self.default_focus()))
         elif act == 'view' and self.current() == self.LIBRARY:
             views = ['home', 'grid', 'list']
             self.set_view(views[(views.index(self._view) + 1) % 3])
-            QTimer.singleShot(50, self._focus_view)
+            QTimer.singleShot(anim_ms(50), self._focus_view)
         elif act == 'search':
             if self.desk_search.isVisible():
                 self.desk_search.type(' ')           # Y on the keyboard: a space
@@ -463,7 +464,9 @@ class ControllerMixin:
             if not was & Qt.WindowState.WindowFullScreen:
                 self.setWindowState(was)         # maximised stays maximised
         self._sync_hints()
-        QTimer.singleShot(80, lambda: alive(self) and focus_and_reveal(self.default_focus()))
+        # anim_ms: a wall-clock 80 ms outlived the tests that left Theatre and
+        # moved the focus inside whichever test ran next (CI, 0.5.2).
+        QTimer.singleShot(anim_ms(80), lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
     # Actions that open a page of the desktop app: Theatre steps aside first,
     # or they'd happen invisibly behind it.

@@ -504,6 +504,26 @@ class Behaviour(unittest.TestCase):
         self.assertIsNot(f, tile)                         # a new tile…
         self.assertEqual(f.game['slug'], slug)            # …for the same game
 
+    def test_leaving_theatre_leaves_no_focus_move_behind(self):
+        """Leaving Theatre focuses the default target within the pass under
+        NEXUS_NO_MOTION. A wall-clock 80 ms there fired in whichever test ran
+        next and moved its focus to Home's Play (CI, 0.5.2)."""
+        w = self.win
+        w.go(w.HOME)
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        w.set_theatre(False)
+        QApplication.processEvents()
+        tile = [t for t in w.homeview.findChildren(nx.GameTile)
+                if not t.isHidden() and not t.pending][-1]
+        tile.setFocus()
+        end = time.monotonic() + 0.2
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        self.assertIs(QApplication.focusWidget(), tile)
+
     def test_library_waits_while_off_screen(self):
         w = self.win
         w.go(w.HOME)
