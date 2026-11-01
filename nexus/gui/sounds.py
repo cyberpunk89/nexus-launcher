@@ -78,6 +78,7 @@ class WavEffect(QObject):
         Null, Loading, Ready, Error = range(4)
 
     statusChanged = pyqtSignal()
+    TAIL_MS = 400             # after Idle, before the sink is stopped
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -87,6 +88,9 @@ class WavEffect(QObject):
         self._format = None                      # QAudioFormat
         self._sink = None
         self._buf = None
+        # Child timer: dies with the effect, so it never fires after release().
+        self._tail = QTimer(self, singleShot=True, interval=self.TAIL_MS)
+        self._tail.timeout.connect(self._idle_stop)
 
     def status(self):
         return self._status
@@ -140,17 +144,25 @@ class WavEffect(QObject):
             self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format, self)
             self._sink.stateChanged.connect(self._state)
         self._sink.setVolume(self._volume)
+        self._tail.stop()
         self._buf = QBuffer(self._data, self)
         self._buf.open(QIODevice.OpenModeFlag.ReadOnly)
         self._sink.start(self._buf)
 
     def _state(self, state):
         from PyQt6.QtMultimedia import QAudio
-        if state == QAudio.State.IdleState:            # the buffer ran out: done
-            self._sink.stop()
+        if state == QAudio.State.IdleState:
+            # The buffer is read, not yet heard (a short sound reports Idle
+            # before its end; Bluetooth lags ~200 ms): stop() now would cut it.
+            self._tail.start()
         elif state == QAudio.State.StoppedState \
                 and self._sink.error() in (QAudio.Error.OpenError, QAudio.Error.FatalError):
             self._set_status(self.Status.Error)
+
+    def _idle_stop(self):
+        from PyQt6.QtMultimedia import QAudio
+        if self._sink is not None and self._sink.state() == QAudio.State.IdleState:
+            self.stop()
 
     def stop(self):
         if self._sink is not None:
