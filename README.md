@@ -60,7 +60,9 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
 
 - **Quick menu:** press Menu or Guide anywhere for a panel of big rows: a *Now playing* card
   with **Resume** and **Quit game**, your controllers and their battery, Sleep, Restart and
-  Shut down, Exit Theatre. When a game closes, a short summary of the session shows.
+  Shut down, Exit Theatre, and on Linux **Turn off controller** for a Bluetooth pad. Holding
+  Guide to switch a pad off leaves Nexus where it was. When a game closes, a short summary of
+  the session shows.
 - **Tabs:** Home with a *Your week* card, Library with sort and filter, Downloads, and
   Discover with news and deals. Theatre's own settings are one button away, and Nexus can
   start in Theatre on a TV or when a controller is plugged in.

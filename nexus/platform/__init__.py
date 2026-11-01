@@ -53,6 +53,17 @@ power (the quick menu's POWER rows)
                                             the section
     power(action) -> bool                   do one of them now, detached; False
                                             when it couldn't be started
+    bluetooth_pads(ids) -> list[str]        the Bluetooth addresses of connected
+                                            devices with these (vendor,
+                                            product) ids (Linux: sysfs HID
+                                            devices on bus 0005, their
+                                            HID_UNIQ); empty, which hides
+                                            "Turn off controller", without
+                                            bluetoothctl, for a wired pad, and
+                                            always on Windows (no public
+                                            disconnect call)
+    bluetooth_disconnect(address) -> bool   `bluetoothctl disconnect`,
+                                            detached; False on Windows
 
 console
     console_encoding()                      what other programs' output is in
@@ -226,6 +237,8 @@ sdl_library_paths = _impl.sdl_library_paths
 sdl_hints = _impl.sdl_hints
 power_caps = _impl.power_caps
 power = _impl.power
+bluetooth_pads = _impl.bluetooth_pads
+bluetooth_disconnect = _impl.bluetooth_disconnect
 
 
 # the screen (Theatre's "On a TV" start)

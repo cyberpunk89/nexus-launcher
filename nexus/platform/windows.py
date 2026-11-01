@@ -957,6 +957,17 @@ _MONITOR_DEFAULTTONEAREST = 2
 _EDD_GET_DEVICE_INTERFACE_NAME = 1
 
 
+def bluetooth_pads(ids) -> list[str]:
+    """Nothing: Windows has no public call that disconnects one Bluetooth
+    device (BluetoothRemoveDevice unpairs it, IOCTL_BTH_DISCONNECT_DEVICE is
+    undocumented), so the quick menu shows no "Turn off controller"."""
+    return []
+
+
+def bluetooth_disconnect(address: str) -> bool:
+    return False
+
+
 def screen_size_mm(x: int, y: int) -> tuple[int, int] | None:
     """The monitor at (x, y): its display device (\\\\.\\DISPLAY1), that
     device's monitor interface (\\\\?\\DISPLAY#<model>#<instance>#{...}),

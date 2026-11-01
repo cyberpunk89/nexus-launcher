@@ -242,6 +242,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         # Theatre a pad connect brought leaves when the last pad goes (w-64).
         self._theatre_auto = False
         self._pad_suppressed = False                # left Theatre by hand with a pad on
+        # Pads turned off on purpose (w-74): name -> when, then the names that
+        # went, whose next power-on brings no Theatre.
+        self._pad_off: dict[str, float] = {}
+        self._pad_off_gone: set[str] = set()
         self._pad_leave_timer = QTimer(self)
         self._pad_leave_timer.setSingleShot(True)
         self._pad_leave_timer.timeout.connect(self._pad_leave_timeout)
@@ -374,6 +378,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.spatial.moved.connect(self._sound_move)
         self.ctrl = ControllerInput(self)
         self.ctrl.connected.connect(self._pad_connected)
+        self.ctrl.turned_off.connect(self._pad_turned_off)
         self.ctrl.disconnected.connect(self._pad_disconnected)
         self.ctrl.action.connect(self._pad_action)
         self.ctrl.used.connect(lambda: self.input.set('pad'))

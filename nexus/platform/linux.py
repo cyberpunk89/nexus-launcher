@@ -3,6 +3,7 @@
 import fcntl
 import functools
 import os
+import re
 import shutil
 import signal
 import socket
@@ -364,6 +365,52 @@ def power(action: str) -> bool:
                               capture_output=True, timeout=15).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+HID_DEVICES = Path('/sys/bus/hid/devices')
+_BT_ADDRESS = re.compile(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}')
+
+
+def bluetooth_pads(ids, root: Path = HID_DEVICES) -> list[str]:
+    """The Bluetooth addresses of the connected HID devices with these
+    (vendor, product) ids (the open pads, from SDL's GUIDs): devices on the
+    Bluetooth bus (0005:VVVV:PPPP.NNNN) and their HID_UNIQ, which the kernel
+    sets to the device's address. Empty without bluetoothctl or a match (a
+    wired pad), which hides the quick menu's "Turn off controller"."""
+    if not ids or not shutil.which('bluetoothctl'):
+        return []
+    want = {f'0005:{v:04X}:{p:04X}' for v, p in ids}
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return []
+    out = []
+    for d in entries:
+        if d.name.split('.')[0].upper() not in want:
+            continue
+        try:
+            uevent = (d / 'uevent').read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        for line in uevent.splitlines():
+            addr = line.removeprefix('HID_UNIQ=').strip().lower()
+            if line.startswith('HID_UNIQ=') and _BT_ADDRESS.fullmatch(addr) and addr not in out:
+                out.append(addr)
+    return out
+
+
+def bluetooth_disconnect(address: str) -> bool:
+    """`bluetoothctl disconnect <address>`, detached (it waits on BlueZ). The
+    pad stays paired: its PS / Guide button connects it again. False for
+    something that isn't an address or when bluetoothctl can't start."""
+    if not _BT_ADDRESS.fullmatch(address):
+        return False
+    try:
+        subprocess.Popen(['bluetoothctl', 'disconnect', address], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **new_group())
+    except OSError:
+        return False
+    return True
 
 
 def screen_size_mm(x: int, y: int) -> tuple[int, int] | None:

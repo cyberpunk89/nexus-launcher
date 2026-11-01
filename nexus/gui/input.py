@@ -232,9 +232,12 @@ class ControllerInput(QObject):
     B = back, X = menu, Y = search, LB/RB = previous/next page, triggers = page
     scroll, right stick = scroll, View/Share = switch library view, Menu/Options
     (Start) and Guide (Xbox / PS button) = the window decides: Theatre's quick
-    menu, or into Theatre from the desktop."""
+    menu, or into Theatre from the desktop. Guide acts when it's let go after
+    a short press: holding it is how a pad is turned off."""
     connected = pyqtSignal(str, str, str, bool)    # name, kind, guid, hot-plug
     disconnected = pyqtSignal(str)
+    turned_off = pyqtSignal(str)           # a pad went away while Guide was held (just before
+                                           # its `disconnected`)
     used = pyqtSignal()
     action = pyqtSignal(str)               # page-prev/next, view, start, quick, search
 
@@ -243,6 +246,10 @@ class ControllerInput(QObject):
             'left': Qt.Key.Key_Left, 'right': Qt.Key.Key_Right}
 
     IDLE_POLL = 500                     # ms between checks while no pad is connected
+    # Guide held this long (s) is not a press: a DualSense turns off after a
+    # ~10 s PS hold, an Xbox pad after ~6 s. A pad that goes away while Guide
+    # is held, or within GUIDE_AFTER of a long hold, was turned off on purpose.
+    GUIDE_HOLD, GUIDE_AFTER = 1.0, 2.0
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -254,6 +261,8 @@ class ControllerInput(QObject):
         self.stick = {'lx': 0.0, 'ly': 0.0, 'rx': 0.0, 'ry': 0.0, 'lt': 0.0, 'rt': 0.0}
         self.trig_down = {'lt': False, 'rt': False}
         self.synth: dict[int, float] = {}  # key -> time we posted it (Steam desktop dedupe)
+        self.guide_at: float | None = None  # when Guide went down (it acts on release)
+        self.guide_long_at = 0.0            # when a long Guide hold ended
         self.timer = QTimer(self)
         self.timer.setInterval(self.IDLE_POLL)
         self.timer.timeout.connect(self._tick)
@@ -288,6 +297,7 @@ class ControllerInput(QObject):
             # A game (or anything else) has focus: hand the controller back.
             self.timer.stop()
             self.held.clear()
+            self.guide_at = None
             self.pads.suspend()
 
     # Steam's "Desktop" controller layout also types arrow/enter/escape keys;
@@ -333,6 +343,9 @@ class ControllerInput(QObject):
                 self.connected.emit(*ev[1:5])
                 continue
             if kind == 'removed':
+                if self._guide_held(now):
+                    self.turned_off.emit(ev[1])
+                self.guide_at = None
                 self.disconnected.emit(ev[1])
                 continue
             if not self.parent().isActiveWindow():
@@ -345,6 +358,8 @@ class ControllerInput(QObject):
                         self._press_dir(name)
                     else:
                         self.held.pop(name, None)
+                elif name == 'guide':
+                    self._guide(down, now)
                 elif down:
                     self.used.emit()
                     self._button(name)
@@ -369,6 +384,27 @@ class ControllerInput(QObject):
         ry = self.stick['ry']
         if abs(ry) > 0.25:
             self._scroll(ry * 0.05)
+
+    def _guide(self, down: bool, now: float):
+        """Guide acts on release, and only after a short press: the press that
+        starts turning a pad off must not open the quick menu or Theatre."""
+        if down:
+            self.used.emit()
+            self.guide_at = now
+            return
+        if self.guide_at is None:                   # went down before we were looking
+            return
+        held, self.guide_at = now - self.guide_at, None
+        if held < self.GUIDE_HOLD:
+            self._button('guide')
+        else:
+            self.guide_long_at = now
+
+    def _guide_held(self, now: float) -> bool:
+        """Guide is held long, or a long hold just ended: a pad going away
+        now is being turned off."""
+        return (self.guide_at is not None and now - self.guide_at >= self.GUIDE_HOLD) \
+            or (self.guide_long_at > 0 and now - self.guide_long_at < self.GUIDE_AFTER)
 
     def _stick_dirs(self):
         x, y = self.stick['lx'], self.stick['ly']

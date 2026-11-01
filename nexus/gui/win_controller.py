@@ -2,6 +2,7 @@
 second `nexus` launch."""
 
 import os
+import time
 
 from PyQt6.QtCore import QProcess, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QLineEdit
@@ -17,6 +18,7 @@ from .theme import build_stylesheet, G, GLYPHS
 # TVs an aspect ratio like 16x9 cm), so they count as "not a TV".
 TV_INCHES = 32
 PAD_LEAVE_MS = 10_000          # last pad gone after a pad brought Theatre: back after this
+PAD_OFF_S = 10                 # a pad turned off on purpose goes away within this (s)
 
 
 def screen_inches(w_mm, h_mm) -> float | None:
@@ -90,7 +92,9 @@ class ControllerMixin:
         self._battery_timer.start(1500)                 # sysfs appears just after
         self.hints.kind = kind
         self.input.set('pad')
-        if hotplug and self._pad_may_enter():
+        back_on = name in self._pad_off_gone            # turned off on purpose: switching
+        self._pad_off_gone.discard(name)                # it on again doesn't bring Theatre
+        if hotplug and not back_on and self._pad_may_enter():
             self.set_theatre(True)
             self._theatre_auto = True                   # so it leaves the way it came
             self.toast("Theatre mode. Start opens the menu, F11 leaves.", 'info', None, 4000)
@@ -116,6 +120,17 @@ class ControllerMixin:
     def _pad_disconnected(self, name):
         self._battery_timer.start(500)
         self._sync_hints()
+        off = self._pad_off.pop(name, None)
+        if off is not None and time.monotonic() - off < PAD_OFF_S:
+            # Turned off on purpose (the quick menu, or a long Guide hold):
+            # no toast, Theatre stays and is the user's now (no leave timer),
+            # and its next power-on doesn't bring Theatre.
+            self._pad_off_gone.add(name)
+            self._theatre_auto = False
+            self._pad_leave_timer.stop()
+            if not self.ctrl.pads.physical:
+                self._pad_suppressed = False
+            return
         if self.ctrl.pads.physical:
             self.toast(f"{name} disconnected.", 'info', None, 3000)
             return
@@ -128,6 +143,43 @@ class ControllerMixin:
                        'info', None, 6000)
         else:
             self.toast(f"{name} disconnected.", 'info', None, 3000)
+
+    def _pad_turned_off(self, name):
+        """The pad went away while its Guide button was held: it's being
+        turned off, so _pad_disconnected (next) takes it quietly."""
+        self._pad_off[name] = time.monotonic()
+
+    def _pad_off_target(self) -> tuple[str, str] | None:
+        """What "Turn off controller" turns off: (name, Bluetooth address) of
+        the one real pad that's connected, when this platform can disconnect
+        it. None (no row) with two pads (sysfs can't say which is which), a
+        wired pad, an SDL without GUIDs, or on Windows."""
+        ctrl = getattr(self, 'ctrl', None)
+        if ctrl is None:
+            return None
+        from nexus import gamepad
+        g = ctrl.pads
+        real = [iid for iid in g.pads if iid not in g.virtual]
+        if len(real) != 1:
+            return None
+        ids = gamepad.guid_ids(g.guids.get(real[0], ''))
+        if ids is None or ids[0] != gamepad.BUS_BLUETOOTH:
+            return None
+        addrs = platform.bluetooth_pads([ids[1:]])
+        return (g.pads[real[0]][1], addrs[0]) if len(addrs) == 1 else None
+
+    def _turn_pad_off(self):
+        """The quick menu's Turn off controller: mark the pad first, so its
+        removal is quiet, then ask BlueZ to disconnect it."""
+        self.quick.close_menu()
+        target = self._pad_off_target()
+        if target is not None:
+            name, address = target
+            self._pad_off[name] = time.monotonic()
+            if platform.bluetooth_disconnect(address):
+                return
+            self._pad_off.pop(name, None)
+        self.toast("Couldn't turn the controller off.", 'error')
 
     def _pad_leave_timeout(self):
         """The last pad didn't come back: Theatre leaves the way it came."""
@@ -289,8 +341,9 @@ class ControllerMixin:
     def _quick_rows(self, game: dict | None = None) -> list:
         """The menu's rows, top to bottom: Resume (and Quit game) while `game`
         runs or starts (Now playing), Settings (Theatre's sheet), then Exit
-        Theatre and Quit Nexus. Rows
-        with a section (POWER) sit at the bottom of the panel."""
+        Theatre and Quit Nexus. Rows with a section (POWER: Turn off
+        controller, Sleep, Restart PC, Shut down) sit at the bottom of the
+        panel."""
         rows = []
         if game is not None:                    # Quit game once it's really running
             rows.append(QuickRow('resume', "Resume", G['play']))
@@ -299,6 +352,8 @@ class ControllerMixin:
         rows += [QuickRow('settings', "Settings", G['settings'], gap=bool(rows)),
                  QuickRow('exit-theatre', "Exit Theatre", G['log_out'], gap=True),
                  QuickRow('quit', "Quit Nexus", G['close'])]
+        if self._pad_off_target() is not None:          # Bluetooth, Linux
+            rows.append(QuickRow('pad-off', "Turn off controller", G['gamepad'], section='POWER'))
         caps = platform.power_caps()
         for action, label, glyph in (('sleep', "Sleep", 'moon'), ('restart', "Restart PC", 'restart'),
                                      ('shutdown', "Shut down", 'power')):
@@ -334,6 +389,8 @@ class ControllerMixin:
         elif key == 'exit-theatre':
             self.quick.close_menu(restore=False)
             self.set_theatre(False)
+        elif key == 'pad-off':
+            self._turn_pad_off()
         elif key == 'power-sleep':
             self._power_now('sleep')
         elif key in ('power-restart', 'power-shutdown'):
