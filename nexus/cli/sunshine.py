@@ -497,6 +497,38 @@ def _defender_notes(entry: dict, since: datetime) -> list[str]:
             if d['at'] >= since.isoformat(timespec='seconds')]
 
 
+# Windows: CreateProcess of an exe whose manifest asks for admin (HoYo games'
+# anti-cheat, ...) fails with this; Explorer shows the UAC prompt instead.
+_ERROR_ELEVATION_REQUIRED = 740
+_ERROR_CANCELLED = 1223
+
+
+def _start_game(launcher: str, exe: bool, fh) -> int:
+    """Run the launcher and wait for it; its exit code. Anything that stops it
+    from starting goes into the log: the tracker's own stderr goes nowhere,
+    so an uncaught error would only show as "exited with code 1"."""
+    cwd = Path(launcher).parent if exe else None
+    try:
+        return subprocess.run([launcher] if exe else ['bash', launcher], cwd=cwd,
+                              stdout=fh, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL).returncode
+    except OSError as e:
+        if getattr(e, 'winerror', None) != _ERROR_ELEVATION_REQUIRED:
+            fh.write(f"# couldn't start {launcher}: {e}\n")
+            return 1
+    fh.write("# the game asks for admin rights: started through the Windows admin "
+             "prompt (its output isn't logged)\n")
+    fh.flush()
+    try:
+        return platform.run_elevated(launcher, [], cwd=cwd).wait()
+    except platform.ElevationCancelled:
+        fh.write("# the admin prompt was declined, so the game didn't start\n")
+        return _ERROR_CANCELLED
+    except OSError as e:
+        fh.write(f"# couldn't start {launcher} as admin: {e}\n")
+        return 1
+
+
 def _run_session(slug: str, launcher: str, out: Path, started: datetime,
                  notes: list[str] = ()) -> tuple[int, float]:
     """Run launch.sh (Linux) or the game's exe from its own folder (Windows),
@@ -512,10 +544,7 @@ def _run_session(slug: str, launcher: str, out: Path, started: datetime,
         if packaged:                # a Store app: Windows starts it, we follow its folder
             rc = 0 if platform.open_url(launcher) else 1
         else:
-            rc = subprocess.run([launcher] if exe else ['bash', launcher],
-                                cwd=Path(launcher).parent if exe else None,
-                                stdout=fh, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL).returncode
+            rc = _start_game(launcher, exe, fh)
         # A launcher stub can start the real game and exit; the session lasts
         # as long as anything still runs in the game's prefix (or folder).
         entry = registry_get(slug) or {}

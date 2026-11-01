@@ -740,11 +740,17 @@ class WindowsDoctor(unittest.TestCase):
         self.assertTrue(any(c['title'] == 'Install folder' and 'OneDrive' in c['detail']
                             and c['status'] == 'warn' for c in checks))
 
+class NeedsAdmin(OSError):
+    """What CreateProcess raises for an exe whose manifest asks for admin
+    (winerror is set by hand: Linux's OSError has none)."""
+    winerror = 740
+
+
 class Session(unittest.TestCase):
     """Play time on Windows: a launcher stub that exits at once hands over to
     the real game, which is followed by its folder until it's gone."""
 
-    def run_session(self, rc, alive_polls):
+    def run_session(self, rc, alive_polls, raises=None, elevated=None):
         polls = iter([[7]] * alive_polls + [[]] * 1000)
         clock = [0.0]
 
@@ -754,7 +760,9 @@ class Session(unittest.TestCase):
                 mock.patch.object(fi.sunshine, 'game_processes', lambda e: next(polls)), \
                 mock.patch.object(fi.sunshine.time, 'sleep', sleep), \
                 mock.patch.object(fi.sunshine.time, 'monotonic', lambda: clock[0]), \
-                mock.patch.object(fi.sunshine.subprocess, 'run',
+                mock.patch.object(fi.sunshine.platform, 'run_elevated',
+                                  **(elevated or {})) as self.run_elevated, \
+                mock.patch.object(fi.sunshine.subprocess, 'run', side_effect=raises,
                                   return_value=mock.Mock(returncode=rc)) as run:
             exe = Path(d) / 'Game' / 'Launcher.exe'
             got = fi.sunshine._run_session('g', str(exe), Path(d) / 'out.log',
@@ -798,6 +806,36 @@ class Session(unittest.TestCase):
         self.assertGreaterEqual(waited, 10 + fi.sunshine.HANDOVER_GRACE)   # last seen at 10 s
         self.assertIn("waited for the game's processes", log)
         self.assertEqual(self.elapsed, 10)          # play time stops at last seen, not the grace
+
+    def test_a_game_that_asks_for_admin_goes_through_the_uac_prompt(self):
+        """w-75: Zenless Zone Zero's exe asks for admin, so CreateProcess fails
+        with 740; it starts through run_elevated and is waited for."""
+        game = mock.Mock(**{'wait.return_value': 0})
+        rc, _, log = self.run_session(0, alive_polls=0, raises=NeedsAdmin('elevation'),
+                                      elevated={'return_value': game})
+        self.assertEqual(rc, 0)
+        args = self.run_elevated.call_args
+        self.assertEqual(args.args[0], str(args.kwargs['cwd'] / 'Launcher.exe'))
+        self.assertEqual(args.args[1], [])
+        game.wait.assert_called_once_with()
+        self.assertIn('admin prompt', log)
+
+    def test_a_declined_admin_prompt_says_so(self):
+        rc, _, log = self.run_session(0, alive_polls=0, raises=NeedsAdmin('elevation'),
+                                      elevated={'side_effect': platform.ElevationCancelled(
+                                          1223, 'cancelled')})
+        self.assertEqual(rc, fi.sunshine._ERROR_CANCELLED)
+        self.assertIn('admin prompt was declined', log)
+
+    def test_a_start_error_lands_in_the_log(self):
+        """Before w-75 an OSError here killed the tracker, whose stderr goes
+        nowhere: the user saw "code 1" and a log with only its header."""
+        rc, _, log = self.run_session(0, alive_polls=0,
+                                      raises=FileNotFoundError(2, 'No such file'))
+        self.assertEqual(rc, 1)
+        self.assertIn("couldn't start", log)
+        self.assertIn('No such file', log)
+        self.run_elevated.assert_not_called()
 
     def test_nothing_left_ends_after_the_grace(self):
         rc, waited, _ = self.run_session(0, alive_polls=0)
