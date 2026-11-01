@@ -980,15 +980,6 @@ class SettingsPage(QWidget):
             'backup', "Back up & move", 'save',
             "Your settings in one file, for a new PC or a reinstall. Saves aren't in it — "
             "each game has its own save backups."))
-        self.bk_art = Switch()
-        self._row(sec, "Include artwork images", "The covers and heroes you picked, not just "
-                  "which ones (bigger file).", self.bk_art, keywords="backup export")
-        self.bk_secrets = Switch()
-        self._row(sec, "Include keys and passwords",
-                  "SteamGridDB key, Game-db token, torrent password, ntfy token. Off: the file "
-                  "is safe to "
-                  "share; this machine's own are kept on import.", self.bk_secrets,
-                  keywords="backup export secrets token")
         row = QHBoxLayout()
         exp = QPushButton("Export…")
         set_glyph_icon(exp, G['download'], 14)
@@ -1000,7 +991,7 @@ class SettingsPage(QWidget):
         row.addWidget(imp)
         self._row(sec, "Settings file", "Settings, favourites, collections, notes, the "
                   "dashboard, the look, your game list and play history.", row,
-                  keywords="backup export import move new pc restore")
+                  keywords="backup export import move new pc restore artwork secrets token")
         again = QPushButton("Run setup again")
         again.clicked.connect(self.setup_wanted)
         self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
@@ -1078,6 +1069,39 @@ class SettingsPage(QWidget):
                                     ('version', 'url', 'page', 'installer', 'sums')})
 
     def _export(self):
+        """Export…: a modal (w-67) with what goes in the file, both off each
+        time; its Export opens the system's save dialog, then the CLI writes
+        the file."""
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['3'])
+        art, secrets = Switch(), Switch()
+        for sw, title, desc in (
+                (art, "Include artwork images",
+                 "The covers and heroes you picked, not just which ones (bigger file)."),
+                (secrets, "Include keys and passwords",
+                 "SteamGridDB key, Game-db token, torrent password, ntfy token. Off: the "
+                 "file is safe to share; this machine's own are kept on import.")):
+            line = QHBoxLayout()
+            line.setSpacing(SP['3'])
+            col = QVBoxLayout()
+            col.setSpacing(SP['0_5'])
+            col.addWidget(label(title, "RowTitle", wrap=True))
+            col.addWidget(label(desc, "Muted", wrap=True))
+            line.addLayout(col, 1)
+            sw.setAccessibleName(title)
+            line.addWidget(sw, 0, Qt.AlignmentFlag.AlignVCenter)
+            lay.addLayout(line)
+        m = open_modal(self, "Export your settings", body, "Export",
+                       lambda: self._export_to(art.isChecked(), secrets.isChecked()),
+                       glyph=G['download'], sub="One file for a new PC or a reinstall. "
+                       "Saves aren't in it.")
+        if m is not None:
+            for sw in (art, secrets):
+                sw.toggled.connect(m.touched)
+
+    def _export_to(self, art: bool, secrets: bool):
         import datetime
         default = str(HOME / f"nexus-settings-{datetime.date.today():%Y-%m-%d}.tar.gz")
         path, _ = QFileDialog.getSaveFileName(self, "Save your Nexus settings", default,
@@ -1085,9 +1109,9 @@ class SettingsPage(QWidget):
         if not path:
             return
         args = ['--export-settings', path]
-        if self.bk_art.isChecked():
+        if art:
             args.append('--with-art')
-        if self.bk_secrets.isChecked():
+        if secrets:
             args.append('--with-secrets')
         self.request.emit(args, "Saving your settings", False, 'task')
 
@@ -1633,4 +1657,4 @@ from .config import ConfigError, load_config, save_config  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402
-    label, NoWheelCombo, SegmentedControl, set_glyph_icon)
+    label, NoWheelCombo, open_modal, SegmentedControl, set_glyph_icon)

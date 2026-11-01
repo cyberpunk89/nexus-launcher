@@ -866,6 +866,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
              border-radius: ${r_panel}px; }
     QLabel#ModalSub { color: $muted; font-size: ${fs_xs}px; }
     QLabel#ModalText { color: $subtext; font-size: ${fs_sm}px; }
+    #ModalWell { background: $surface_1; border: 1px solid $border; border-radius: ${r_xl}px; }
     #NoteCard { background: $surface_1; border: 1px solid $border; border-radius: ${r_xl}px; }
     #NoteIcon { background: $accent_16; border-radius: ${r_control}px; }
     QLabel#NoteTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }

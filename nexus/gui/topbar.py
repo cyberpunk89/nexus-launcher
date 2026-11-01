@@ -414,10 +414,12 @@ class _NoColour(QToolButton):
 
 
 class CollectionLookPicker(QWidget):
-    """A collection's colour and icon, chosen inline in its sheet (no
-    dialog): a row of swatches (the theme's accent presets) and a grid of
-    Lucide icons. Every piece takes focus, so the D-pad walks it like any
-    other row; a pick applies at once (`picked`) and the sheet stays open."""
+    """A collection's colour and icon, chosen inline (no dialog): a row of
+    swatches (the theme's accent presets) and a grid of Lucide icons. Every
+    piece takes focus, so the D-pad walks it like any other row. In the
+    Manage collection sheet a pick applies at once (`picked`) and the sheet
+    stays open; in the new / rename modal (w-67) `.color` and `.icon` are
+    read on Save."""
     picked = pyqtSignal(str, object)            # 'color' | 'icon', key or None
     COLS = 6
 

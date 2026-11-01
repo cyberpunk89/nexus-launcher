@@ -303,31 +303,30 @@ class LibraryPrefs:
     def find_shelf(self, sid: str) -> dict | None:
         return next((s for s in self.smart_shelves if s['id'] == sid), None)
 
-    def new_shelf(self, fields=('playtime',)) -> dict | None:
-        """Make a shelf with one starting rule; None when there are already
-        MAX_USER_SHELVES (removed ones count: they're kept)."""
+    def add_shelf(self, draft: dict) -> dict | None:
+        """Save a shelf made in the New shelf modal (w-67) under a fresh id,
+        cleaned, in one write; None when there are already MAX_USER_SHELVES
+        (removed ones count: they're kept)."""
         if len(self.smart_shelves) >= smart.MAX_USER_SHELVES:
             return None
         taken = {s['id'] for s in self.smart_shelves}
         sid = uuid.uuid4().hex[:8]
         while sid in taken:
             sid = uuid.uuid4().hex[:8]
-        shelf = smart.new_shelf(sid, fields)
+        shelf = smart.clean_shelf({**draft, 'id': sid, 'removed': False})
         self.smart_shelves.append(shelf)
         self.save()
         return shelf
 
-    def update_shelf(self, shelf: dict, save: bool = True) -> dict | None:
-        """Put an edited shelf back in place (cleaned); the window saves a
-        burst of edits once."""
+    def update_shelf(self, shelf: dict) -> dict | None:
+        """Put an edited shelf back in place (cleaned) and save."""
         clean = smart.clean_shelf(shelf)
         i = next((i for i, s in enumerate(self.smart_shelves)
                   if clean and s['id'] == clean['id']), None)
         if i is None:
             return None
         self.smart_shelves[i] = clean
-        if save:
-            self.save()
+        self.save()
         return clean
 
     def set_shelf_removed(self, sid: str, removed: bool):

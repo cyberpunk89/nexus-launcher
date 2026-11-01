@@ -129,7 +129,7 @@ class ActionsMixin:
                        'success', None, 2500)
         elif action == 'col-new':
             self.ask_collection_name("New collection", "",
-                                     lambda n: self._create_collection(n, slug))
+                                     lambda n, look: self._create_collection(n, slug, look))
         elif action in ('favorite', 'hide'):
             on = self.prefs.toggle(action, slug)
             for g in self._games:
@@ -350,8 +350,14 @@ class ActionsMixin:
                 self.toast(f"Added {len(ok)} games to “{cname}”.", 'success', None, 3000)
 
             def new():
-                self.ask_collection_name("New collection", "", lambda n: (
-                    (made := self.prefs.add_collection(n)) and add_to(made)))
+                def made(n, look):
+                    new = self.prefs.find_collection(n) is None
+                    cname = self.prefs.add_collection(n)
+                    if cname:
+                        if new and any(look.values()):
+                            self.prefs.set_collection_look(cname, **look)
+                        add_to(cname)
+                self.ask_collection_name("New collection", "", made)
             looks = {n: collection_look(n) or (G['collection'], 'subtext')
                      for n in self.prefs.collections}
             self.sheet.choose(f"Add {len(ok)} games to…", [
@@ -469,6 +475,16 @@ class ActionsMixin:
         self._clear_for_modal()
         self._modal().ask(title, text, yes, on_yes, danger)
         self._update_hints()
+
+    def open_modal(self, title, body, primary, on_primary, **kw) -> 'Modal':
+        """A form in the modal (w-67: shelves, collections, Export): see
+        Modal.open for `kw`. Build `body` at `self._modal().scale`. Returns
+        the modal, so the body's own signals can reach it."""
+        self._clear_for_modal()
+        m = self._modal()
+        m.open(title, body, primary, on_primary, **kw)
+        self._update_hints()
+        return m
 
     def _clear_for_modal(self):
         """One thing at a time: a modal closes the palette, an open sheet

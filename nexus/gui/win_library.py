@@ -7,12 +7,12 @@ import time
 
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QCursor
-from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QMenu, QPushButton, QSlider,
+from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QMenu, QPushButton, QSlider,
     QStackedWidget, QVBoxLayout, QWidget)
 
 from nexus import facts, net, paths as NX, smart
 
-from .common import alive, COLLECTION_LOOK, COLLECTION_NAMES
+from .common import alive, COLLECTION_LOOK, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import G, SP
 
 
@@ -166,23 +166,6 @@ class LibraryMixin:
         chips.set_right(self.own_seg)
         self.own_seg.setVisible(self.prefs.show_owned)
         lay.addWidget(chips)
-        # The shelf builder (w-51): under the chips while open; the grid
-        # below is its live preview.
-        self.shelf_editor = ShelfEditor()
-        self.shelf_editor.setVisible(False)
-        self.shelf_editor.changed.connect(self._shelf_edited)
-        self.shelf_editor.done.connect(self._shelf_done)
-        self.shelf_editor.hide_asked.connect(lambda sid: self._hide_smart(smart.USER + sid))
-        self.shelf_editor.remove_asked.connect(self._remove_shelf)
-        ed = QHBoxLayout()
-        ed.setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
-        ed.addWidget(self.shelf_editor, 10)       # up to its MAX_W, then the stretch
-        ed.addStretch(1)
-        lay.addLayout(ed)
-        self._shelf_save = QTimer(self)        # a burst of edits saves library.json once
-        self._shelf_save.setSingleShot(True)
-        self._shelf_save.setInterval(600)
-        self._shelf_save.timeout.connect(self.prefs.save)
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
 
@@ -485,19 +468,40 @@ class LibraryMixin:
             self.set_view('grid', save=False)
         self._set_chip(f'col:{cname}')
 
-    def ask_collection_name(self, title: str, initial: str, on_done):
-        """A name, in the modal's text field (w-66); with a pad, A on the
-        field brings the on-screen keyboard over it."""
-        self._clear_for_modal()
-        self._modal().prompt(title, initial, "Save", on_done)
-        self._update_hints()
+    def ask_collection_name(self, title: str, initial: str, on_done, look: dict | None = None):
+        """A collection's name and look in one modal (w-67): the text field
+        (with a pad, A brings the on-screen keyboard over it), then its
+        colour and icon (`look`, the current one when renaming). Nothing
+        applies until Save: `on_done(name, {'color', 'icon'})`."""
+        m = self._modal()
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(int(SP['2'] * m.scale))
+        ed = QLineEdit(initial)
+        ed.setMaxLength(MAX_COLLECTION_NAME)
+        ed.setMinimumHeight(int(40 * m.scale))
+        ed.setAccessibleName("Collection name")
+        lay.addWidget(ed)
+        picker = CollectionLookPicker(look or {}, m.scale)
+        lay.addWidget(picker)
+        self.open_modal(title, body, "Save",
+                        lambda: on_done(ed.text().strip(),
+                                        {'color': picker.color, 'icon': picker.icon}),
+                        glyph=G['collection'], can_submit=lambda: bool(ed.text().strip()))
+        picker.picked.connect(m.touched)
 
-    def _create_collection(self, cname, slug=None):
+    def _create_collection(self, cname, slug=None, look: dict | None = None):
+        """Make `cname` (or find it), with `slug` in it; `look` is the new
+        collection's colour and icon (one that already existed keeps its own)."""
+        new = self.prefs.find_collection(cname) is None
         made = self.prefs.add_collection(cname)
         if made is None:
             return
         if slug and slug not in self.prefs.collections[made]:
             self.prefs.toggle_member(made, slug)
+        if look and new and any(look.values()):
+            self.prefs.set_collection_look(made, **look)
         self._collections_changed()
         g = self.game(slug) if slug else None
         self.toast(f"Added {g['display_name']} to “{made}”." if g else
@@ -514,7 +518,9 @@ class LibraryMixin:
         i = names.index(cname)
         pinned = bool(self.prefs.look_of(cname).get('pinned'))
         rows = [("Rename…", G['pencil'], lambda: self.ask_collection_name(
-                    "Rename collection", cname, lambda new: self._rename_collection(cname, new))),
+                    "Rename collection", cname,
+                    lambda new, look: self._rename_collection(cname, new, look),
+                    self.prefs.look_of(cname))),
                 ("Unpin from the top bar" if pinned else "Pin to the top bar",
                  G['pin_off' if pinned else 'pin'], lambda: self._pin_collection(cname, not pinned))]
         if i > 0:
@@ -561,11 +567,13 @@ class LibraryMixin:
         self.toast(f"Pinned “{cname}” to the top bar." if on else
                    f"Unpinned “{cname}”.", 'success' if on else 'info', None, 2500)
 
-    def _rename_collection(self, old, new):
+    def _rename_collection(self, old, new, look: dict | None = None):
         made = self.prefs.rename_collection(old, new)
         if made is None:
             self.toast(f"There's already a collection called “{new}”.", 'warn', None, 3500)
             return
+        if look is not None:
+            self.prefs.set_collection_look(made, **look)
         if self._chip == f'col:{old}':
             self._chip = f'col:{made}'
         self._collections_changed()
@@ -751,7 +759,7 @@ class LibraryMixin:
         q = self.search.text().strip().lower()
         status = self.filter.currentData() or 'all'
         self.btn_clear_filter.setVisible(status != 'all')
-        self.btn_edit_shelf.setVisible(smart.is_user(status) and self.shelf_editor.isHidden())
+        self.btn_edit_shelf.setVisible(smart.is_user(status))
         if status.startswith(smart.KEY_PREFIXES):
             hit = {g['slug'] for g in self._smart_games(
                 status, [g for g in self._games if not g.get('hidden')])}
@@ -769,8 +777,7 @@ class LibraryMixin:
             and not g.get('hidden'),
         }[status]
         own = self.prefs.owned_view if self.prefs.show_owned else 'installed'
-        in_own = {'installed': is_installed, 'owned': lambda g: not is_installed(g),
-                  'all': lambda g: True}[own]
+        in_own = self._in_own()
         chip = self._chip
         in_chip = (lambda g: True) if chip == 'all' else \
             (lambda g: g.get('favorite')) if chip == 'favorite' else \
@@ -830,9 +837,14 @@ class LibraryMixin:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
-        if not self.shelf_editor.isHidden():
-            self.shelf_editor.set_count(n)
         self._refresh_home(empty, pending)
+
+    def _in_own(self):
+        """The Installed / Not installed / Everything switch as a test on a
+        game (Installed while owned games are off)."""
+        own = self.prefs.owned_view if self.prefs.show_owned else 'installed'
+        return {'installed': is_installed, 'owned': lambda g: not is_installed(g),
+                'all': lambda g: True}[own]
 
     # ---- smart shelves (nexus/smart.py) ----
     def _sync_facts(self) -> bool:
@@ -1036,8 +1048,6 @@ class LibraryMixin:
         if key not in self.prefs.smart_hidden:
             self.prefs.smart_hidden.append(key)
             self.prefs.save()
-        if smart.is_user(key) and not self.shelf_editor.isHidden():
-            self._shelf_done()
         self.apply_filter()
         self.dash_update('smart')
         self.toast(f"Hid “{self._smart_label(key)}”.", 'info',
@@ -1055,54 +1065,66 @@ class LibraryMixin:
         return [g for g in self._games if not g.get('hidden') and not g.get('dup_of')]
 
     def _new_shelf(self):
-        shelf = self.prefs.new_shelf(smart.fields_offered(self._shelf_pool(),
-                                                          self._smart_facts()))
-        if shelf is None:
+        """New shelf (the divider's button): the shelf modal on a blank
+        draft. Nothing is made until Create shelf."""
+        if len(self.prefs.smart_shelves) >= smart.MAX_USER_SHELVES:
             self.toast(f"That's {smart.MAX_USER_SHELVES} shelves, the most Nexus keeps. "
                        "Edit one instead.", 'warn', None, 5000)
             return
-        self._edit_shelf(shelf['id'], new=True)
+        fields = self._shelf_fields()
+        self._shelf_modal(smart.from_template(smart.BLANK, fields), fields, new=True)
 
-    def _edit_shelf(self, sid: str, new: bool = False):
-        """Open the builder on a shelf: the Library shows it as the filter,
-        so the grid below is the live preview."""
+    def _edit_shelf(self, sid: str):
+        """Edit shelf (the pencil by the filter, the ⋮ menu): the shelf
+        modal on a copy; Save writes it, Remove shelf sits in the footer."""
         shelf = self.prefs.find_shelf(sid)
         if shelf is None or shelf['removed']:
             return
-        ed = self.shelf_editor
-        ed.open(shelf, self._shelf_pool(), self._smart_facts(), new=new)
-        ed.setVisible(True)
-        self._smart_sig = None
-        self._show_filter(smart.USER + sid, from_page=True)
-        target = ed.name if new and self.input.mode != 'pad' else \
-            (ed.rows[0].field if ed.rows else ed.btn_done)
-        QTimer.singleShot(0, lambda: alive(target) and target.setFocus(
-            Qt.FocusReason.OtherFocusReason))
+        self._shelf_modal(shelf, self._shelf_fields(), new=False)
 
-    def _shelf_edited(self, shelf: dict):
-        """Every edit: keep it (library.json a moment later), re-filter."""
-        if self.prefs.update_shelf(shelf, save=False) is None:
+    def _shelf_fields(self) -> list[str]:
+        return smart.fields_offered(self._shelf_pool(), self._smart_facts(),
+                                    linux=has('proton'))
+
+    def _shelf_modal(self, shelf: dict, fields: list[str], new: bool):
+        m = self._modal()
+        in_own = self._in_own()
+        pool = self._shelf_pool()
+        form = ShelfForm(shelf, pool, [g for g in pool if in_own(g)], self._smart_facts(),
+                         fields, new=new, scale=m.scale)
+        sid = shelf.get('id')
+        self.open_modal(
+            "New shelf" if new else "Edit shelf", form,
+            "Create shelf" if new else "Save",
+            lambda: self._save_shelf(form.draft(), new),
+            glyph=G['sparkles'] if new else G['pencil'],
+            sub="Fills itself with the games that match your rules.", width=600,
+            extra=None if new else ("Remove shelf", G['trash'],
+                                    lambda: self._remove_shelf(sid)))
+        # The form dies with the modal's body, first: bound methods on the
+        # modal, nothing on the window.
+        form.touched.connect(m.touched)
+        form.relayout.connect(m.relayout)
+
+    def _save_shelf(self, draft: dict, new: bool):
+        """Save from the shelf modal: one write to library.json, then the
+        Library, the filter menu and Home follow."""
+        shelf = self.prefs.add_shelf(draft) if new else self.prefs.update_shelf(draft)
+        if shelf is None:
             return
-        self._shelf_save.start()
+        key = smart.USER + shelf['id']
+        self._smart_sig = None
         self.apply_filter()
-
-    def _shelf_done(self):
-        """Close the builder and go back to the shelves."""
-        if self._shelf_save.isActive():
-            self._shelf_save.stop()
-            self.prefs.save()
-        key = smart.USER + (self.shelf_editor.shelf or {}).get('id', '')
-        self.shelf_editor.setVisible(False)
-        if smart.is_user(self.filter.currentData()):
-            self._clear_filter()
-        else:
-            self.apply_filter()
+        self.dash_update('smart')
         # Its row in the Shelves view, scrolled into sight (the focus goes there too).
         row = next((x for x in self.home._smart if isinstance(x, ShelfRow)
                     and x.title == self._smart_label(key)), None)
-        if row is not None and self.views.currentWidget() is self.home:
+        if row is not None and self.current() == self.LIBRARY \
+                and self.views.currentWidget() is self.home:
             QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.btn_menu))
-        self.dash_update('smart')
+        elif new:
+            self.toast(f"Made the shelf “{smart.title_of(shelf)}”.", 'success',
+                       ("Show", lambda: self._show_filter(key)), 4000)
 
     def _remove_shelf(self, sid: str):
         """Remove: off the Library, the filter menu and Home; kept in
@@ -1110,9 +1132,6 @@ class LibraryMixin:
         shelf = self.prefs.find_shelf(sid)
         if shelf is None:
             return
-        if not self.shelf_editor.isHidden() and \
-                (self.shelf_editor.shelf or {}).get('id') == sid:
-            self._shelf_done()
         self.prefs.set_shelf_removed(sid, True)
         if self.filter.currentData() == smart.USER + sid:
             self._clear_filter()
@@ -1222,7 +1241,7 @@ from .jobs import cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     ShelfRow, surprise_pick)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .shelfedit import ShelfEditor  # noqa: E402
+from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import amp, icon_button, label, SegmentedControl, WrapRow  # noqa: E402

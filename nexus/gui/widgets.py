@@ -513,6 +513,16 @@ def ask(widget: QWidget, title: str, text: str, yes: str, on_yes, danger: bool =
         on_yes()
 
 
+def open_modal(widget: QWidget, title: str, body: QWidget, primary: str, on_primary, **kw):
+    """A form in the main window's modal (MainWindow.open_modal); returns
+    the modal. A widget outside one (a test) gets None and nothing opens."""
+    win = widget.window()
+    if hasattr(win, 'open_modal'):
+        return win.open_modal(title, body, primary, on_primary, **kw)
+    body.deleteLater()
+    return None
+
+
 def protongen_code_preview(text: str) -> str | None:
     """What a pasted protongen:v1: share code would set, for a confirmation
     (None when the text isn't one). The CLI validates it again on apply."""

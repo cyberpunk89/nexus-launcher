@@ -243,11 +243,13 @@ _DEFAULTS = {'hours': 5, 'days': 30, 'gb': 25, 'length': 10}
 STORES = (('nexus', "Repacks"), ('steam', "Steam"), ('heroic', "Heroic"), ('epic', "Epic"))
 MODE_NAMES = (('single', "Single-player"), ('coop', "Co-op"), ('online', "Online"),
               ('local', "Local multiplayer"))
-_NAMES = dict(STORES) | dict(MODE_NAMES)
+TIERS = (('platinum', "Platinum"), ('gold', "Gold"), ('silver', "Silver"), ('bronze', "Bronze"))
+_NAMES = dict(STORES) | dict(MODE_NAMES) | dict(TIERS)
 
 # field -> (label, ((op, op label, value kind or None), ...), needs facts).
 # Value kinds: 'hours', 'days', 'gb', 'length' (numbers from the lists
-# above), 'store', 'genre', 'mode' (names). The first op is the default.
+# above), 'store', 'genre', 'mode', 'tier' (names). The first op is the
+# default. ProtonDB (w-67) is offered only with Proton (fields_offered).
 FIELDS = {
     'playtime': ("Play time", (('none', "none yet", None), ('some', "any", None),
                                ('atleast', "at least", 'hours'), ('under', "under", 'hours')),
@@ -259,6 +261,7 @@ FIELDS = {
     'store': ("Store", (('is', "is", 'store'), ('not', "is not", 'store')), False),
     'size': ("Size on disk", (('over', "over", 'gb'), ('under', "under", 'gb')), False),
     'favorite': ("Favourite", (('yes', "yes", None), ('no', "no", None)), False),
+    'protondb': ("ProtonDB rating", (('is', "is", 'tier'), ('not', "is not", 'tier')), False),
     'genre': ("Genre", (('is', "is", 'genre'), ('not', "is not", 'genre')), True),
     'mode': ("Mode", (('has', "has", 'mode'), ('lacks', "doesn't have", 'mode')), True),
     'length': ("Main story", (('under', "under", 'length'), ('over', "over", 'length')), True),
@@ -376,6 +379,9 @@ def rule_match(rule: dict, g: dict, fact: dict | None, now: datetime) -> bool:
         return b / 1e9 > value if op == 'over' else b / 1e9 < value
     if field == 'favorite':
         return bool(g.get('favorite')) == (op == 'yes')
+    if field == 'protondb':
+        tier = str(g.get('protondb') or '').lower()
+        return bool(tier) and (tier == value) == (op == 'is')
     if field == 'genre':
         genres = (fact or {}).get('genres')
         return bool(genres) and (value in genres) == (op == 'is')
@@ -404,16 +410,18 @@ def user_games(shelf: dict, games: list[dict], facts: dict,
     return _order('user', hit, facts)
 
 
-def fields_offered(games: list[dict], facts: dict) -> list[str]:
+def fields_offered(games: list[dict], facts: dict, linux: bool = False) -> list[str]:
     """The fields the builder offers for this library: Nexus's own data
-    always (Added and Size once some game has them), and a store fact only
-    once the facts index has it for at least one of your games."""
+    always (Added and Size once some game has them, the ProtonDB rating
+    with Proton once some game has one), and a store fact only once the
+    facts index has it for at least one of your games."""
     facts = facts or {}
     recs = [facts.get(g.get('slug')) or {} for g in games]
     known = {
         'added': any(g.get('added_at') for g in games),
         'size': any(isinstance(g.get('disk_bytes'), (int, float)) and g['disk_bytes'] > 0
                     for g in games),
+        'protondb': linux and any(g.get('protondb') for g in games),
         'genre': any(r.get('genres') for r in recs),
         'mode': any(r.get('modes') for r in recs),
         'length': any(main_hours(r) is not None for r in recs),
@@ -422,8 +430,8 @@ def fields_offered(games: list[dict], facts: dict) -> list[str]:
 
 
 def values_for(kind: str, games: list[dict], facts: dict, current=None) -> list[tuple]:
-    """(value, label) choices for a value kind. Stores, genres and modes are
-    the ones your library has; a rule's current value stays offered even
+    """(value, label) choices for a value kind. Stores, genres, modes and
+    ProtonDB tiers are the ones your library has; a rule's current value stays offered even
     when no game has it any more."""
     facts = facts or {}
     if kind in _NUMBERS:
@@ -431,6 +439,9 @@ def values_for(kind: str, games: list[dict], facts: dict, current=None) -> list[
     elif kind == 'store':
         have = {g.get('source', 'nexus') for g in games}
         out = [(k, t) for k, t in STORES if k in have]
+    elif kind == 'tier':
+        have = {str(g.get('protondb') or '').lower() for g in games}
+        out = [(k, t) for k, t in TIERS if k in have]
     elif kind in ('genre', 'mode'):
         key = 'genres' if kind == 'genre' else 'modes'
         have = {x for g in games for x in (facts.get(g.get('slug')) or {}).get(key) or ()}
@@ -469,6 +480,39 @@ def new_shelf(sid: str, fields=('playtime',), name: str = '') -> dict:
     """A fresh shelf with one rule on the first offered field."""
     return {'id': sid, 'name': clean_name(name), 'match': 'all',
             'rules': [default_rule(fields[0] if fields else 'playtime')], 'removed': False}
+
+
+# "Start from" in the New shelf modal (w-67): (key, title, match, rules as
+# (field, op, value)). Offered only when every field it uses is (so Quick
+# games waits for main-story lengths, Runs great on Linux for Proton).
+# Blank is the plain new_shelf, always last.
+TEMPLATES = (
+    ('quick', "Quick games", 'all', (('length', 'under', SHORT_HOURS),)),
+    ('unfinished', "Unfinished", 'all', (('playtime', 'atleast', UNFINISHED_MIN // 60),
+                                         ('last', 'over', IDLE_DAYS))),
+    ('never', "Never played", 'all', (('playtime', 'none', None),)),
+    ('favourites', "Favourites", 'all', (('favorite', 'yes', None),)),
+    ('linux', "Runs great on Linux", 'all', (('protondb', 'is', 'platinum'),)),
+)
+BLANK = 'blank'
+
+
+def templates(fields) -> list[tuple[str, str]]:
+    """[(key, title)] of the templates this library can use, Blank last."""
+    return [(k, t) for k, t, _m, rules in TEMPLATES
+            if all(f in fields for f, _op, _v in rules)] + [(BLANK, "Blank")]
+
+
+def from_template(key: str, fields=('playtime',)) -> dict:
+    """A template's name, match and rules (no id: the shelf gets one when
+    it is saved). An unknown key, or Blank, is a fresh shelf with no name."""
+    t = next((t for t in TEMPLATES if t[0] == key), None)
+    if t is None:
+        s = new_shelf('', fields)
+        return {'name': '', 'match': s['match'], 'rules': s['rules']}
+    _k, title, match, rules = t
+    return {'name': title, 'match': match,
+            'rules': [{'field': f, 'op': op, 'value': v} for f, op, v in rules]}
 
 
 def find_user(shelves: list[dict], key) -> dict | None:

@@ -19,8 +19,10 @@ from tests.oskind import linux_only  # noqa: E402
 if nx is not None:
     from PyQt6.QtCore import Qt, QPoint
     from PyQt6.QtGui import QFont, QFontMetrics, QShortcut
+    from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
     from nexus import features, winfocus
+    from nexus.gui.shelfedit import ShelfForm
 
 
 def fake_games():
@@ -1208,7 +1210,7 @@ class Window(unittest.TestCase):
         with patch_gui('cli_json', lambda *a, **k: None):
             w._torrent_control('remove', ['a' * 40], True)
         self.assertTrue(w.modal.isVisible())
-        rows = [b.text() for b in w.modal.findChildren(QPushButton)]
+        rows = [b.text() for b in w.modal.findChildren(QPushButton) if not b.isHidden()]
         self.assertEqual(rows, ["Cancel", "Remove and delete files"])
         self.assertIs(QApplication.focusWidget(), w.modal.btn_cancel)    # danger: Cancel first
         w.modal.cancel()
@@ -1842,13 +1844,28 @@ class Window(unittest.TestCase):
             w.details._fill_tips({'recipes': [
                 {'name': f'r{i}', 'launch_options': 'X=1 %command%'} for i in range(7)]})
             w.confirm("Delete it?", "It can't be undone.", "Delete", lambda: None)   # w-66
-            w.ask_collection_name("New collection", "x", lambda n: None)     # replaces it
+            w.ask_collection_name("New collection", "x", lambda n, look: None)  # replaces it
+            w.modal.cancel()
+            # w-67: the shelf, collection and Export modals.
+            w.go(w.LIBRARY)
+            w.set_view('home', save=False)
+            QApplication.processEvents()
+            w._new_shelf()
+            form = next(f for f in w.modal.findChildren(ShelfForm) if not f.isHidden())
+            form.btn_add.click()
+            form.templates['never'].click()
+            w.modal.primary.click()
+            w._edit_shelf(w.prefs.user_shelves()[-1]['id'])
+            w.modal.cancel()
+            w.settings._export()
             w.modal.cancel()
             w.set_theatre(True)
             w.theatre.open_game(w._games[0])
             w.toggle_quick()
             w.confirm("Quit it?", "Unsaved work is lost.", "Quit", lambda: None)
-            w.ask_collection_name("New collection", "x", lambda n: None)
+            w.ask_collection_name("New collection", "x", lambda n, look: None)
+            w.theatre_modal.cancel()
+            w._new_shelf()
             w.theatre_modal.cancel()
             w.set_theatre(False)
             QApplication.processEvents()
@@ -1945,7 +1962,7 @@ class Window(unittest.TestCase):
         w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(1), danger=False)
         self._key(QApplication.focusWidget(), Qt.Key.Key_Return)      # on the primary
         self.assertEqual(ran, [1])
-        w.ask_collection_name("New collection", "", names.append)
+        w.ask_collection_name("New collection", "", lambda n, look: names.append(n))
         self.assertIs(QApplication.focusWidget(), m.field)
         self.assertIs(w.default_focus(), m.field)
         self.assertFalse(m.primary.isEnabled())                       # no name yet
@@ -1964,7 +1981,7 @@ class Window(unittest.TestCase):
         w.activateWindow()
         QApplication.processEvents()
         m = w.modal
-        w.ask_collection_name("New collection", "x", lambda n: None)
+        w._modal().prompt("Name in your library", "x", "Save", lambda n: None)
         chain = [m.field, m.btn_cancel, m.primary, m.btn_close]
         for want in chain[1:] + chain[:1]:
             self._key(QApplication.focusWidget(), Qt.Key.Key_Tab)
@@ -1984,10 +2001,10 @@ class Window(unittest.TestCase):
         w.activateWindow()
         QApplication.processEvents()
         m = w.modal
-        w.ask_collection_name("New collection", "", lambda n: None)
+        w.ask_collection_name("New collection", "", lambda n, look: None)
         QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
         self.assertFalse(m.isVisible())                       # nothing typed: it goes
-        w.ask_collection_name("New collection", "", lambda n: None)
+        w.ask_collection_name("New collection", "", lambda n, look: None)
         QTest.keyClicks(m.field, "Co-op")
         QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
         self.assertTrue(m.isVisible())                        # typed: a stray click keeps it
@@ -2038,7 +2055,7 @@ class Window(unittest.TestCase):
         QApplication.processEvents()
         m, kb, names = w.theatre_modal, w.theatre.search, []
         with mock.patch.object(w, '_steam_up', lambda: False):
-            w.ask_collection_name("New collection", "", names.append)
+            w.ask_collection_name("New collection", "", lambda n, look: names.append(n))
             self.assertTrue(m.isVisible())
             self.assertFalse(kb.isVisible())
             self.assertIs(QApplication.focusWidget(), m.field)
@@ -2066,7 +2083,7 @@ class Window(unittest.TestCase):
             self.assertIs(QApplication.focusWidget(), m.primary)
             m.primary.click()
             self.assertEqual(names, ["Couch x"])
-            w.ask_collection_name("New collection", "", names.append)
+            w.ask_collection_name("New collection", "", lambda n, look: names.append(n))
             w._pad_action('keyboard')
             for _ in range(MAX_COLLECTION_NAME + 5):
                 kb.type('a')
@@ -2091,6 +2108,129 @@ class Window(unittest.TestCase):
             m.field.setText("My   own  name")
             m.primary.click()
         self.assertEqual(w.prefs.overrides[g['slug']], {'name': "My own name"})
+
+    def test_modal_extra_button_cancels_then_runs(self):
+        """open(extra=...): a danger button at the footer's left; it closes
+        the modal (no primary) and then runs its function."""
+        w = self.win
+        m, ran = w.modal, []
+        w.open_modal("Edit it", QLabel("body"), "Save", lambda: ran.append('save'),
+                     extra=("Remove it", nx.G['trash'], lambda: ran.append(m.isVisible())))
+        self.assertFalse(m.btn_extra.isHidden())
+        self.assertEqual(m.btn_extra.text(), "Remove it")
+        self.assertIn(m.btn_extra, m._focusables())
+        m.btn_extra.click()
+        self.assertEqual(ran, [False])                        # closed first, then run
+        w.confirm("Sure?", "Really.", "Yes", lambda: None)
+        self.assertTrue(m.btn_extra.isHidden())               # not carried to the next one
+        self.assertNotIn(m.btn_extra, m._focusables())
+        m.cancel()
+
+    def test_collection_modal_name_and_look_apply_on_save(self):
+        from nexus.gui.topbar import CollectionLookPicker
+        w = self.win
+        w.prefs.collections = {}
+        w.prefs.collection_look = {}
+        m = w.modal
+        w.on_game_action('col-new', w._games[0])
+        self.assertTrue(m.isVisible())
+        self.assertEqual(m.title.text(), "New collection")
+        picker = next(p for p in m.findChildren(CollectionLookPicker) if p.isVisible())
+        self.assertIn(picker.swatches['love'], m._focusables())     # the pad walks it
+        self.assertIn(picker.icons['sofa'], m._focusables())
+        m.field.setText("Couch")
+        picker.swatches['love'].click()
+        picker.icons['sofa'].click()
+        self.assertEqual(w.prefs.collections, {})                    # nothing until Save
+        QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+        self.assertTrue(m.isVisible())                               # a pick isn't thrown away
+        m.primary.click()
+        self.assertEqual(w.prefs.collections, {'Couch': ['alpha']})
+        self.assertEqual(w.prefs.look_of('Couch'), {'color': 'love', 'icon': 'sofa'})
+        # Rename from the Manage sheet: the same modal, on the current look.
+        w._manage_collection('Couch')
+        rename = next(b for b in w.sheet.findChildren(QPushButton)
+                      if b.objectName() == 'SheetRow' and b.text() == "Rename…")
+        rename.click()
+        self.assertEqual(m.title.text(), "Rename collection")
+        self.assertEqual(m.field.text(), "Couch")
+        picker = next(p for p in m.findChildren(CollectionLookPicker) if p.isVisible())
+        self.assertEqual((picker.color, picker.icon), ('love', 'sofa'))
+        m.field.setText("Sofa")
+        picker.swatches['gold'].click()
+        m.primary.click()
+        self.assertEqual(list(w.prefs.collections), ['Sofa'])
+        self.assertEqual(w.prefs.look_of('Sofa'), {'color': 'gold', 'icon': 'sofa'})
+        # A name that already exists keeps its own look.
+        w.ask_collection_name("New collection", "", lambda n, look: w._create_collection(
+            n, 'steam-1', look))
+        m.field.setText("sofa")
+        next(p for p in m.findChildren(CollectionLookPicker)
+             if p.isVisible()).swatches['love'].click()
+        m.primary.click()
+        self.assertEqual(w.prefs.collections, {'Sofa': ['alpha', 'steam-1']})
+        self.assertEqual(w.prefs.look_of('Sofa')['color'], 'gold')
+
+    def test_collection_modal_cancel_applies_nothing(self):
+        from nexus.gui.topbar import CollectionLookPicker
+        w = self.win
+        w.prefs.collections = {'Couch': []}
+        w.prefs.collection_look = {'Couch': {'color': 'love'}}
+        m = w.modal
+        for how in ('esc', 'b', 'cancel'):
+            w.ask_collection_name("Rename collection", "Couch",
+                                  lambda n, look: w._rename_collection('Couch', n, look),
+                                  w.prefs.look_of('Couch'))
+            m.field.setText("Other")
+            next(p for p in m.findChildren(CollectionLookPicker)
+                 if p.isVisible()).swatches['gold'].click()
+            if how == 'esc':
+                self._key(QApplication.focusWidget(), Qt.Key.Key_Escape)
+            elif how == 'b':
+                w._escape()
+            else:
+                m.btn_cancel.click()
+            self.assertFalse(m.isVisible(), how)
+            self.assertEqual(w.prefs.collections, {'Couch': []}, how)
+            self.assertEqual(w.prefs.collection_look, {'Couch': {'color': 'love'}}, how)
+
+    def test_export_settings_is_a_modal(self):
+        """Export…: a modal with the art and secrets switches (both off each
+        time), then the system's save dialog, then the CLI."""
+        from nexus.gui.settings import Switch
+        w = self.win
+        w.go(w.SETTINGS)
+        QApplication.processEvents()
+        page, m = w.settings, w.modal
+        self.assertFalse(hasattr(page, 'bk_art'))                  # no longer Settings rows
+        sent = []
+        page.request.connect(lambda args, *rest: sent.append(args))
+        for pick, want in (((), []), ((0, 1), ['--with-art', '--with-secrets'])):
+            page._export()
+            self.assertTrue(m.isVisible())
+            self.assertEqual(m.title.text(), "Export your settings")
+            self.assertEqual(m.primary.text(), "Export")
+            sws = [x for x in m.findChildren(Switch) if x.isVisible()]
+            self.assertEqual([x.accessibleName() for x in sws],
+                             ["Include artwork images", "Include keys and passwords"])
+            self.assertFalse(any(x.isChecked() for x in sws))       # off each open
+            for i in pick:
+                sws[i].click()
+            with mock.patch('nexus.gui.settings.QFileDialog.getSaveFileName',
+                            return_value=('/tmp/x.tar.gz', '')) as dlg:
+                m.primary.click()
+            self.assertEqual(dlg.call_count, 1)
+            self.assertFalse(m.isVisible())
+            self.assertEqual(sent[-1], ['--export-settings', '/tmp/x.tar.gz', *want])
+        # Cancel: no save dialog, nothing sent; the dialog's Cancel: nothing sent.
+        page._export()
+        with mock.patch('nexus.gui.settings.QFileDialog.getSaveFileName') as dlg:
+            w._escape()
+            self.assertEqual(dlg.call_count, 0)
+            page._export()
+            dlg.return_value = ('', '')
+            m.primary.click()
+        self.assertEqual(len(sent), 2)
 
     def test_switching_theatre_cancels_a_modal(self):
         w = self.win

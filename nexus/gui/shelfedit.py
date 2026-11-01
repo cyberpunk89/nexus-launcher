@@ -1,17 +1,21 @@
-"""The shelf builder (w-51): an inline panel on the Library page for a shelf
-you make from rules (nexus/smart.py "shelves you build"). No dialog: it
-opens under the chips, the grid below shows the games that match as you
-edit, and every change is saved as you go. Numbers are picked from lists,
-not typed, so a controller can drive all of it."""
+"""The shelf builder (w-51, a modal since w-67): the body of the New shelf
+and Edit shelf modals for a shelf you make from rules (nexus/smart.py
+"shelves you build"). It edits a draft and never touches prefs: the window
+saves the draft once, on Save; Cancel, Esc or B leave nothing behind. A
+match count and the first covers show what the shelf will hold. Numbers
+are picked from lists, not typed, so a controller can drive all of it."""
 
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QWidget)
 
 from nexus import smart
 
-from .theme import G, P, SP
-from .widgets import (icon_button, icon_label, label, NoWheelCombo, SegmentedControl,
-    set_glyph_icon)
+from .art import art_lookup, ART, COVER_KINDS, placeholder_pixmap
+from .common import alive
+from .theme import G, P, R, SP
+from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label, NoWheelCombo,
+    SegmentedControl, set_glyph_icon)
 
 
 class RuleRow(QWidget):
@@ -19,13 +23,14 @@ class RuleRow(QWidget):
     changed = pyqtSignal()
     remove = pyqtSignal(object)
 
-    def __init__(self, rule: dict, fields: list[str], games: list[dict], facts: dict):
+    def __init__(self, rule: dict, fields: list[str], games: list[dict], facts: dict,
+                 scale: float = 1.0):
         super().__init__()
         self.rule = dict(rule)
         self._games, self._facts = games, facts
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(SP['2'])
+        lay.setSpacing(int(SP['2'] * scale))
         self.field = NoWheelCombo()
         self.field.setAccessibleName("Rule")
         for f in fields if rule['field'] in fields else [*fields, rule['field']]:
@@ -41,9 +46,11 @@ class RuleRow(QWidget):
         keep = self.value.sizePolicy()           # columns stay put when an op needs no value
         keep.setRetainSizeWhenHidden(True)
         self.value.setSizePolicy(keep)
-        self.btn_remove = icon_button(G['close'], "Remove this rule", 30, "Ghost", round_=True)
+        self.btn_remove = icon_button(G['close'], "Remove this rule", int(30 * scale), "Ghost",
+                                      round_=True)
         self.btn_remove.clicked.connect(lambda: self.remove.emit(self))
         for w, stretch in ((self.field, 3), (self.op, 3), (self.value, 3)):
+            w.setMinimumHeight(int(34 * scale))
             lay.addWidget(w, stretch)
         lay.addWidget(self.btn_remove)
         self._fill_ops()
@@ -92,64 +99,77 @@ class RuleRow(QWidget):
         self.changed.emit()
 
 
-class ShelfEditor(QFrame):
-    """The builder panel. The window owns the shelf list: this edits one
-    shelf dict and emits `changed(shelf)` on every edit (the window saves
-    it and re-filters the grid, then calls set_count)."""
-    changed = pyqtSignal(dict)
-    done = pyqtSignal()
-    hide_asked = pyqtSignal(str)          # the shelf id
-    remove_asked = pyqtSignal(str)
-    MAX_W = 820                           # rules read as sentences, not across a wide window
+class ShelfForm(QWidget):
+    """The modal's body: name, "Start from" templates (a new shelf only),
+    All / Any, the rule rows, "Add a rule", and a well with the match count
+    and the first covers. `draft()` is the shelf as it stands. `games` and
+    `fields` decide what the rows offer; the count is taken over `pool` (what
+    the Shelves view shows). `touched` (a pick that isn't typing) and
+    `relayout` (rows added or removed) are for the modal."""
+    touched = pyqtSignal()
+    relayout = pyqtSignal()
+    COVERS = 6
 
-    def __init__(self):
+    def __init__(self, shelf: dict, games: list[dict], pool: list[dict], facts: dict,
+                 fields: list[str], new: bool = False, scale: float = 1.0):
         super().__init__()
-        self.setObjectName("Card")
-        self.setMaximumWidth(self.MAX_W)
-        self.shelf: dict | None = None
-        self._fields: list[str] = []
-        self._games: list[dict] = []
-        self._facts: dict = {}
+        sc = self._sc = lambda v: int(v * scale)        # noqa: E731
+        self.scale = scale
+        self.shelf = {**shelf, 'rules': [dict(r) for r in shelf.get('rules') or ()]}
+        self._games, self._pool, self._facts = games, pool, facts or {}
+        self._fields = fields
+        self._auto = self.shelf.get('name') or ''        # a template's name, until you type one
+        self._strip_slugs: list[str] | None = None
+        self._more: QLabel | None = None          # "+N" after the covers
         self.rows: list[RuleRow] = []
+        self.templates: dict[str, QPushButton] = {}
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(SP['4'], SP['3'], SP['4'], SP['3'])
-        lay.setSpacing(SP['3'])
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(sc(SP['3']))
 
-        head = QHBoxLayout()
-        head.setSpacing(SP['2'])
-        head.addWidget(icon_label(G['sparkles'], 16, P['accent']), 0,
-                       Qt.AlignmentFlag.AlignVCenter)
-        self.kicker = label("Your shelf", "SmartHead")
-        head.addWidget(self.kicker)
-        head.addStretch()
-        self.count = label("", "ShelfCount")
-        head.addWidget(self.count)
-        lay.addLayout(head)
-
-        self.name = QLineEdit()
+        self.name = QLineEdit(self.shelf.get('name') or '')
         self.name.setPlaceholderText("Shelf name, e.g. “Quick RPGs”")
         self.name.setMaxLength(smart.MAX_NAME)
         self.name.setAccessibleName("Shelf name")
-        self.name.textEdited.connect(self._name_edited)
+        self.name.setMinimumHeight(sc(40))
         lay.addWidget(self.name)
 
+        if new:
+            lay.addWidget(label("START FROM", "SheetSection"))
+            host = QWidget()
+            flow = FlowLayout(host, 0, sc(SP['1_5']))
+            for key, title in smart.templates(fields):
+                b = QPushButton(title)
+                b.setObjectName("Chip")
+                b.setCheckable(True)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.clicked.connect(lambda _=False, k=key: self._template(k))
+                flow.addWidget(b)
+                self.templates[key] = b
+            self._mark_template(smart.BLANK)
+            lay.addWidget(host)
+
+        lay.addWidget(label("RULES", "SheetSection"))
         self.match_row = QWidget()
         ml = QHBoxLayout(self.match_row)
         ml.setContentsMargins(0, 0, 0, 0)
-        ml.setSpacing(SP['2'])
+        ml.setSpacing(sc(SP['2']))
         ml.addWidget(label("Show games that match", "Muted"))
-        self.match = SegmentedControl('pill', 30)
+        self.match = SegmentedControl('pill', sc(30))
         self.match.add('all', "All", tip="Every rule must match")
         self.match.add('any', "Any", tip="One matching rule is enough")
+        self.match.set_current(self.shelf.get('match', 'all'), animate=False)
         self.match.changed.connect(self._match_changed)
         ml.addWidget(self.match)
         ml.addWidget(label("of these rules", "Muted"))
         ml.addStretch()
         lay.addWidget(self.match_row)
 
-        self.rules_box = QVBoxLayout()
-        self.rules_box.setSpacing(SP['2'])
-        lay.addLayout(self.rules_box)
+        rules = QWidget()                        # the rows, in order (Tab follows them)
+        self.rules_box = QVBoxLayout(rules)
+        self.rules_box.setContentsMargins(0, 0, 0, 0)
+        self.rules_box.setSpacing(sc(SP['2']))
+        lay.addWidget(rules)
 
         add = QHBoxLayout()
         self.btn_add = QPushButton("Add a rule")
@@ -160,62 +180,50 @@ class ShelfEditor(QFrame):
         add.addStretch()
         lay.addLayout(add)
 
-        rule = QFrame()
-        rule.setObjectName("SmartRule")
-        rule.setFixedHeight(1)
-        lay.addWidget(rule)
+        # What the shelf will hold: the count and up to COVERS covers.
+        well = QFrame()
+        well.setObjectName("ModalWell")
+        wl = QVBoxLayout(well)
+        m = sc(SP['3'])
+        wl.setContentsMargins(m, m, m, m)
+        wl.setSpacing(sc(SP['2']))
+        top = QHBoxLayout()
+        top.setSpacing(sc(SP['2']))
+        top.addWidget(icon_label(G['sparkles'], sc(16), P['accent']), 0,
+                      Qt.AlignmentFlag.AlignVCenter)
+        self.count = label("", "SmartHead")
+        top.addWidget(self.count, 1)
+        wl.addLayout(top)
+        self.strip_host = QWidget()
+        self.strip = QHBoxLayout(self.strip_host)
+        self.strip.setContentsMargins(0, 0, 0, 0)
+        self.strip.setSpacing(sc(SP['2']))
+        wl.addWidget(self.strip_host)
+        lay.addWidget(well)
 
-        foot = QHBoxLayout()
-        foot.setSpacing(SP['2'])
-        self.note = label("Saved as you go", "SavedNote")
-        foot.addWidget(self.note)
-        foot.addStretch()
-        self.btn_hide = QPushButton("Hide shelf")
-        self.btn_hide.setObjectName("Ghost")
-        self.btn_hide.setToolTip("Take it off the Shelves view; it stays in the filter menu")
-        set_glyph_icon(self.btn_hide, G['eye_off'], 15, 'subtext', hover_role='text')
-        self.btn_hide.clicked.connect(lambda: self.shelf and self.hide_asked.emit(self.shelf['id']))
-        self.btn_remove = QPushButton("Remove shelf")
-        self.btn_remove.setObjectName("Danger")
-        self.btn_remove.setToolTip("Your games stay; the shelf can be brought back")
-        set_glyph_icon(self.btn_remove, G['trash'], 15, 'danger', hover_role='on_accent')
-        self.btn_remove.clicked.connect(
-            lambda: self.shelf and self.remove_asked.emit(self.shelf['id']))
-        self.btn_done = QPushButton("Done")
-        self.btn_done.setObjectName("Primary")
-        set_glyph_icon(self.btn_done, G['check'], 15, 'on_accent', hover_role=None)
-        self.btn_done.clicked.connect(self.done)
-        for b in (self.btn_hide, self.btn_remove, self.btn_done):
-            foot.addWidget(b)
-        lay.addLayout(foot)
-
-    # ---- filling ----
-    def open(self, shelf: dict, games: list[dict], facts: dict, new: bool = False):
-        """Edit `shelf` (a copy is kept); `games` and `facts` decide which
-        fields and values are offered."""
-        self.shelf = {**shelf, 'rules': [dict(r) for r in shelf.get('rules') or ()]}
-        self._games, self._facts = games, facts or {}
-        self._fields = smart.fields_offered(games, self._facts)
-        self.kicker.setText("New shelf" if new else "Edit shelf")
-        self.name.setText(self.shelf.get('name') or '')
-        self.match.set_current(self.shelf.get('match', 'all'), animate=False)
-        self._build_rows()
-
-    def _build_rows(self):
-        for r in self.rows:
-            self.rules_box.removeWidget(r)
-            r.hide()
-            r.deleteLater()
-        self.rows = []
+        self.name.textChanged.connect(self._update)
         for rule in self.shelf['rules']:
             self._append(rule)
         self._sync()
+        self._update()
 
-    def _append(self, rule: dict) -> RuleRow:
-        row = RuleRow(rule, self._fields, self._games, self._facts)
+    # ---- the draft ----
+    def draft(self) -> dict:
+        """The shelf as edited: what Save keeps."""
+        return {'id': self.shelf.get('id') or '', 'name': smart.clean_name(self.name.text()),
+                'match': self.match.current() or 'all',
+                'rules': [dict(r.rule) for r in self.rows], 'removed': False}
+
+    def matches(self) -> list[dict]:
+        return smart.user_games(self.draft(), self._pool, self._facts)
+
+    # ---- rows ----
+    def _append(self, rule: dict) -> 'RuleRow':
+        row = RuleRow(rule, self._fields, self._games, self._facts, self.scale)
         row.changed.connect(self._rules_changed)
         row.remove.connect(self._remove_rule)
         self.rules_box.addWidget(row)
+        row.show()                               # now: focus may go there at once
         self.rows.append(row)
         return row
 
@@ -226,25 +234,15 @@ class ShelfEditor(QFrame):
         for r in self.rows:
             r.btn_remove.setVisible(n > 1)
 
-    def set_count(self, n: int):
-        self.count.setText("No games match yet" if not n else
-                           f"{n} game{'s' if n != 1 else ''} match{'es' if n == 1 else ''}")
-
-    # ---- edits ----
-    def _emit(self):
-        self.shelf['rules'] = [dict(r.rule) for r in self.rows]
-        self.changed.emit({**self.shelf, 'rules': [dict(r) for r in self.shelf['rules']]})
-
-    def _name_edited(self, text: str):
-        self.shelf['name'] = smart.clean_name(text)
-        self._emit()
-
-    def _match_changed(self, key: str):
-        self.shelf['match'] = key
-        self._emit()
-
-    def _rules_changed(self):
-        self._emit()
+    def _set_rules(self, rules: list[dict]):
+        for r in self.rows:
+            self.rules_box.removeWidget(r)
+            r.hide()
+            r.deleteLater()
+        self.rows = []
+        for rule in rules:
+            self._append(rule)
+        self._sync()
 
     def _add_rule(self):
         if len(self.rows) >= smart.MAX_RULES:
@@ -254,24 +252,95 @@ class ShelfEditor(QFrame):
                      if self._fields else 'playtime')
         row = self._append(smart.default_rule(field))
         self._sync()
-        self._emit()
+        self._edited()
+        self.relayout.emit()
         row.field.setFocus(Qt.FocusReason.OtherFocusReason)
 
-    def _remove_rule(self, row: RuleRow):
+    def _remove_rule(self, row: 'RuleRow'):
         if len(self.rows) <= 1:
             return
         i = self.rows.index(row)
         self.rows.remove(row)
+        # Focus moves first: hiding the focused ✕ would throw it anywhere (w-60).
+        nxt = self.rows[min(i, len(self.rows) - 1)]
+        nxt.field.setFocus(Qt.FocusReason.OtherFocusReason)
         self.rules_box.removeWidget(row)
         row.hide()
         row.deleteLater()
         self._sync()
-        self._emit()
-        nxt = self.rows[min(i, len(self.rows) - 1)]
-        nxt.field.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._edited()
+        self.relayout.emit()
 
-    def keyPressEvent(self, ev):
-        if ev.key() == Qt.Key.Key_Escape:
-            self.done.emit()
+    # ---- templates ----
+    def _template(self, key: str):
+        """Start from a template: its rules (and its name, unless you named
+        the shelf yourself)."""
+        t = smart.from_template(key, self._fields)
+        name = self.name.text().strip()
+        if not name or name == self._auto:
+            self.name.setText(t['name'])
+            self._auto = t['name']
+        self.match.set_current(t['match'], animate=False)
+        self._set_rules(t['rules'])
+        self._mark_template(key)
+        self.touched.emit()
+        self._update()
+        self.relayout.emit()
+
+    def _mark_template(self, key: str | None):
+        for k, b in self.templates.items():
+            b.setChecked(k == key)
+
+    # ---- edits ----
+    def _edited(self):
+        """A rule or the match changed by hand: no template is it any more."""
+        self._mark_template(None)
+        self.touched.emit()
+        self._update()
+
+    def _match_changed(self, _key: str):
+        self._edited()
+
+    def _rules_changed(self):
+        self._edited()
+
+    # ---- the count and the covers ----
+    def _update(self, *_):
+        hit = self.matches()
+        n = len(hit)
+        self.count.setText("No games match yet" if not n else
+                           f"{n} game{'s' if n != 1 else ''} match{'es' if n == 1 else ''}")
+        slugs = [g['slug'] for g in hit[:self.COVERS]]
+        more = f"+{n - len(slugs)}" if n > len(slugs) else ""
+        if slugs == self._strip_slugs:           # the same covers: only "+N" moves
+            self._more.setText(more)
             return
-        super().keyPressEvent(ev)
+        self._strip_slugs = slugs
+        clear_layout(self.strip)
+        sc = self._sc
+        made = [self._cover(g, sc(56), sc(84)) for g in hit[:self.COVERS]]
+        if not hit:
+            made.append(label("Pick rules that some of your games meet.", "Muted"))
+        self._more = label(more, "Muted")
+        made.append(self._more)
+        for w in made:
+            self.strip.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
+            w.show()                             # it has its parent now: never a window
+        self.strip.addStretch()
+
+    def _cover(self, g: dict, w: int, h: int) -> QLabel:
+        """One cover, from the disk only (never fetched here); a stand-in
+        until it is decoded, or when the game has none."""
+        lab = QLabel()
+        lab.setFixedSize(w, h)
+        name = g.get('display_name') or g.get('slug') or ''
+        lab.setToolTip(name)
+        # Two initials, not three: a third doesn't fit this narrow.
+        lab.setPixmap(placeholder_pixmap(' '.join(name.split()[:2]), w, h))
+        path, _url, _kind = art_lookup(g, COVER_KINDS)
+        if path:
+            ART.pixmap_async(path, w, h, R['sm'],
+                             lambda pm, lab=lab: alive(lab) and lab.setPixmap(pm))
+        return lab
+
+

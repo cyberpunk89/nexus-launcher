@@ -1,8 +1,9 @@
 """The in-window modal (w-66): a centred card over a dimmed page for
-anything that ends in one yes/no or one commit — every confirm(), a name
-for a collection, a game's name in the library. A child overlay like
-ActionSheet, never a dialog (niri floats those). The header, the
-scrolling body and the footer are built once; each open refills the body.
+anything that ends in one yes/no or one commit — every confirm(), a
+collection's name and look, a game's name in the library, a shelf's rules
+and Export settings (w-67). A child overlay like ActionSheet, never a
+dialog (niri floats those). The header, the scrolling body and the footer
+are built once; each open refills the body.
 
 Mouse, keyboard and pad alike: Enter runs the focused button (from a text
 field, the primary when allowed), Esc / B / ✕ cancel, Tab stays inside,
@@ -32,7 +33,8 @@ class Modal(Overlay):
         self._width = 440
         self._on_primary = None
         self._can_submit = None
-        self._typed = False                      # a field was typed in: the scrim keeps it
+        self._typed = False                      # something was typed or picked: the scrim keeps it
+        self._extra = None                       # the footer-left action's function
         self._start = None                       # where focus started (default_focus)
         self._kb = None                          # the on-screen keyboard typing for the field
         self.field: QLineEdit | None = None
@@ -69,6 +71,13 @@ class Modal(Overlay):
         lay.addWidget(self.scroll, 1)
         foot = QHBoxLayout()
         foot.setSpacing(sc(SP['2']))
+        # Footer left: one more way out, such as Remove shelf (open's `extra`).
+        self.btn_extra = QPushButton()
+        self.btn_extra.setObjectName("Danger")
+        self.btn_extra.setMinimumHeight(sc(36))
+        self.btn_extra.clicked.connect(self._extra_clicked)
+        self.btn_extra.hide()
+        foot.addWidget(self.btn_extra)
         foot.addStretch()
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("Ghost")
@@ -87,12 +96,14 @@ class Modal(Overlay):
     # ---- open ----
     def open(self, title: str, body: QWidget | None, primary: str, on_primary, *,
              glyph: str = '', sub: str = '', danger: bool = False, can_submit=None,
-             width: int = 440, text: str = ''):
+             width: int = 440, text: str = '', extra: tuple | None = None):
         """Show the modal. `body` (any widget, or None) becomes the modal's
         and is deleted when it closes; `text`, plain, explains above it.
         `on_primary()` runs once the modal has closed, so it may open
         another overlay. `can_submit()` says whether the primary is allowed
         (refresh() asks again; any QLineEdit in the body does on each edit).
+        `extra` = (text, glyph, fn) puts a danger button at the footer's
+        left: it cancels the modal, then runs `fn()`.
         Focus starts on Cancel when `danger`, else on the first text field,
         else on the primary."""
         if self.isVisible():
@@ -101,6 +112,11 @@ class Modal(Overlay):
             self._remember_focus()
         self._on_primary, self._can_submit = on_primary, can_submit
         self._typed, self._width = False, width
+        self._extra = extra[2] if extra else None
+        if extra:
+            self.btn_extra.setText(amp(extra[0]))
+            set_glyph_icon(self.btn_extra, extra[1], 15, 'danger', hover_role='on_accent')
+        self.btn_extra.setVisible(bool(extra))
         clear_layout(self.body)
         self.title.setText(title)
         self.sub.setText(sub)
@@ -159,6 +175,25 @@ class Modal(Overlay):
     def _edited(self, *_):
         self._typed = True
 
+    def touched(self, *_):
+        """Something other than a text field changed in the body (a combo,
+        a pick): a stray click on the scrim no longer throws it away."""
+        self._typed = True
+
+    def relayout(self, *_):
+        """The body grew or shrank while open (a rule added): fit the card
+        to it again."""
+        if self.isVisible():
+            # Its layouts haven't heard yet (the change only posts a layout
+            # request), and each layout item caches its widget's size hint:
+            # drop both before measuring.
+            host = self.scroll.widget()
+            for w in (host, *host.findChildren(QWidget)):
+                if w.layout() is not None:
+                    w.layout().invalidate()
+                    w.updateGeometry()
+            self._place()
+
     def _place(self):
         """The card: centred, `width` (scaled) or narrower on a small window,
         as tall as its content up to 85 % of the window, the body scrolling
@@ -196,6 +231,12 @@ class Modal(Overlay):
     def _close_clicked(self):
         self.cancel()
 
+    def _extra_clicked(self):
+        fn = self._extra
+        self.cancel()
+        if fn is not None:
+            fn()
+
     def cancel(self, restore: bool = True):
         """Close without the primary: ✕, Cancel, Esc / B, the scrim, Theatre
         switched on or off."""
@@ -205,7 +246,7 @@ class Modal(Overlay):
         self._close(restore)
 
     def _close(self, restore: bool):
-        self._on_primary = self._can_submit = None
+        self._on_primary = self._can_submit = self._extra = None
         # Focus goes back before the hide: hiding the focused button would
         # throw it to whatever is next (Theatre's drawer, w-60).
         self._restore_focus(restore)
@@ -270,11 +311,14 @@ class Modal(Overlay):
             kb.close_search()
 
     def _focusables(self) -> list[QWidget]:
-        body = [w for w in self.scroll.widget().findChildren(QWidget)
-                if not w.isHidden() and w.isEnabled()
+        # isVisibleTo, not isHidden: a combo's list lives in its own hidden
+        # popup and must not count (w-67). Bodies are shown when added.
+        host = self.scroll.widget()
+        body = [w for w in host.findChildren(QWidget)
+                if w.isVisibleTo(host) and w.isEnabled()
                 and w.focusPolicy() & Qt.FocusPolicy.TabFocus]
-        return body + [b for b in (self.btn_cancel, self.primary, self.btn_close)
-                       if b.isEnabled()]
+        return body + [b for b in (self.btn_extra, self.btn_cancel, self.primary,
+                                   self.btn_close) if not b.isHidden() and b.isEnabled()]
 
     def focusNextPrevChild(self, next_: bool) -> bool:
         """Tab and Shift+Tab go round inside the card, never behind it."""
@@ -308,4 +352,4 @@ class Modal(Overlay):
 # below is inside a method, so the cycle resolves at call time.
 from .dashboard import GlyphBadge  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .widgets import amp, clear_layout, icon_button, plain_label  # noqa: E402
+from .widgets import amp, clear_layout, icon_button, plain_label, set_glyph_icon  # noqa: E402

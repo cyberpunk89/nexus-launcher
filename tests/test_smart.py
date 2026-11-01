@@ -328,6 +328,58 @@ class UserShelves(unittest.TestCase):
                     if kind else None
                 smart.user_games(shelf((field, op, value or 'RPG')), games, facts, NOW)
 
+    # ---- "Start from" templates and the ProtonDB rule (w-67) ----
+    def test_templates_offered_by_fields(self):
+        base = ['playtime', 'last', 'store', 'favorite']
+        self.assertEqual([k for k, _t in smart.templates(base)],
+                         ['unfinished', 'never', 'favourites', 'blank'])
+        self.assertEqual([k for k, _t in smart.templates(base + ['length', 'protondb'])],
+                         ['quick', 'unfinished', 'never', 'favourites', 'linux', 'blank'])
+        self.assertEqual(smart.templates([])[-1], ('blank', "Blank"))
+        blank = smart.from_template('blank', ['genre'])
+        self.assertEqual(blank, {'name': '', 'match': 'all',
+                                 'rules': [smart.default_rule('genre')]})
+        self.assertEqual(smart.from_template('nope'), smart.from_template('blank'))
+
+    def test_template_rules_are_clean(self):
+        for key, title, match, _rules in smart.TEMPLATES:
+            t = smart.from_template(key)
+            self.assertEqual(t['name'], title)
+            s = smart.clean_shelf({'id': 'x1', **t})
+            self.assertEqual(s['rules'], t['rules'], key)        # nothing dropped or blanked
+            self.assertTrue(all(smart.rule_ready(r) for r in s['rules']), key)
+            for r in s['rules']:
+                kind = smart.value_kind(r['field'], r['op'])
+                if kind in ('hours', 'days', 'length'):
+                    self.assertIn(r['value'], [v for v, _l in smart.values_for(kind, [], {})])
+        games = [game('short', 0), game('idle', 120, days_ago=60), game('fresh', 120, days_ago=2),
+                 game('fav', 30, days_ago=1, favorite=True)]
+        facts = {'short': fact(main=3)}
+        got = {k: slugs(smart.user_games({'id': 'x', **smart.from_template(k)}, games, facts,
+                                         NOW)) for k, *_ in smart.TEMPLATES}
+        self.assertEqual(got['quick'], ['short'])
+        self.assertEqual(got['unfinished'], ['idle'])
+        self.assertEqual(got['never'], ['short'])
+        self.assertEqual(got['favourites'], ['fav'])
+
+    def test_protondb_rule_and_linux_only_offer(self):
+        games = [game('a', protondb='platinum'), game('b', protondb='Gold'), game('c')]
+        self.assertNotIn('protondb', smart.fields_offered(games, {}))
+        self.assertIn('protondb', smart.fields_offered(games, {}, linux=True))
+        self.assertNotIn('protondb', smart.fields_offered([game('c')], {}, linux=True))
+        self.assertEqual(smart.values_for('tier', games, {}),
+                         [('platinum', "Platinum"), ('gold', "Gold")])
+        self.assertEqual(slugs(smart.user_games(shelf(('protondb', 'is', 'gold')), games, {},
+                                                NOW)), ['b'])
+        # "is not" never claims a game without a rating
+        self.assertEqual(slugs(smart.user_games(shelf(('protondb', 'not', 'gold')), games, {},
+                                                NOW)), ['a'])
+        self.assertEqual(smart.describe_rule({'field': 'protondb', 'op': 'is',
+                                              'value': 'platinum'}),
+                         "ProtonDB rating is Platinum")
+        self.assertEqual(smart.clean_rule({'field': 'protondb', 'op': 'is', 'value': 7}),
+                         {'field': 'protondb', 'op': 'is', 'value': None})
+
 
 if __name__ == '__main__':
     unittest.main()
