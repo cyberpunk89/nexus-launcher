@@ -4,8 +4,9 @@ Off by default (`controls.sounds`), Theatre only, and only while Nexus is the
 active app. The WAVs are original, made by tools/make_sounds.py, and live in
 assets/sounds/.
 
-`QSoundEffect` objects are created lazily (the first time a sound is wanted
-in Theatre with sounds on) and released as soon as Nexus goes inactive, leaves
+`WavEffect`s (a QAudioSink each; why not QSoundEffect is in its docstring)
+are created lazily (the first time a sound is wanted in Theatre with sounds
+on) and released as soon as Nexus goes inactive, leaves
 Theatre or sounds are turned off, so a game started from Theatre gets the
 audio device to itself. Silent without QtMultimedia, without the files, and
 under `NEXUS_NO_SOUND=1` (tests/sandbox.py sets it: tests never open audio).
@@ -22,16 +23,19 @@ Where the sounds come from:
 A move right after another sound is the result of it (a page opening
 focuses its Play button), so it stays quiet.
 
-When sounds can't play (no QtMultimedia, no audio output, a QSoundEffect in
+When sounds can't play (no QtMultimedia, no audio output, an effect in
 Status.Error) `problem()` says why, and each reason goes to stderr once a
 session (w-73). Settings shows it under the switch and has a Test sound.
 """
 
+import enum
 import os
 import sys
 import time
+import wave
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import (QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, QTimer, QUrl,
+                          pyqtSignal)
 from PyQt6.QtWidgets import QApplication, QLineEdit
 
 from .common import _REPO
@@ -50,7 +54,7 @@ _logged: set = set()          # reasons already written to stderr this session
 
 
 def gain(volume) -> float:
-    """controls.volume (0-100) as QSoundEffect's linear volume: a log curve
+    """controls.volume (0-100) as the effects' linear volume: a log curve
     (each step sounds like the same change) with a 0.7 ceiling. 0 is silent."""
     try:
         v = max(0, min(100, int(volume)))
@@ -61,14 +65,110 @@ def gain(volume) -> float:
     return CEILING * 10 ** (-(1.0 - v / 100.0) * RANGE_DB / 20.0)
 
 
+class WavEffect(QObject):
+    """The part of QSoundEffect UiSounds uses, played through a QAudioSink.
+
+    QSoundEffect tags its stream media.role=event, and PipeWire/PulseAudio
+    mute that role whenever "System Sounds" is muted (pavucontrol), so the
+    sounds were silent there with no error. A QAudioSink stream is an ordinary
+    one, under Nexus's own volume. The WAV is read once by `wave`; each play
+    starts the sink on a fresh buffer over the same bytes."""
+
+    class Status(enum.Enum):
+        Null, Loading, Ready, Error = range(4)
+
+    statusChanged = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._status = self.Status.Null
+        self._volume = 1.0
+        self._data = None                        # QByteArray of the frames
+        self._format = None                      # QAudioFormat
+        self._sink = None
+        self._buf = None
+
+    def status(self):
+        return self._status
+
+    def _set_status(self, st):
+        if st != self._status:
+            self._status = st
+            self.statusChanged.emit()
+
+    def setSource(self, url):
+        from PyQt6.QtMultimedia import QAudioFormat
+        fmt = {1: QAudioFormat.SampleFormat.UInt8, 2: QAudioFormat.SampleFormat.Int16,
+               4: QAudioFormat.SampleFormat.Int32}
+        try:
+            with wave.open(url.toLocalFile(), 'rb') as w:
+                width, rate, channels = w.getsampwidth(), w.getframerate(), w.getnchannels()
+                frames = w.readframes(w.getnframes())
+        except (OSError, EOFError, wave.Error):
+            self._set_status(self.Status.Error)
+            return
+        if width not in fmt:
+            self._set_status(self.Status.Error)
+            return
+        f = QAudioFormat()
+        f.setSampleRate(rate)
+        f.setChannelCount(channels)
+        f.setSampleFormat(fmt[width])
+        self._format, self._data = f, QByteArray(frames)
+        self._set_status(self.Status.Ready)
+
+    def volume(self) -> float:
+        return self._volume
+
+    def setVolume(self, v: float):
+        self._volume = float(v)
+        if self._sink is not None:
+            self._sink.setVolume(self._volume)
+
+    def isPlaying(self) -> bool:
+        from PyQt6.QtMultimedia import QAudio
+        return self._sink is not None and self._sink.state() == QAudio.State.ActiveState
+
+    def play(self):
+        if self._status != self.Status.Ready:
+            return
+        from PyQt6.QtMultimedia import QAudioSink, QMediaDevices
+        self.stop()
+        if self._sink is None:
+            # The output at the first play: a sink can't follow a device change,
+            # and UiSounds lets go of its effects often enough (inactive, Test).
+            self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format, self)
+            self._sink.stateChanged.connect(self._state)
+        self._sink.setVolume(self._volume)
+        self._buf = QBuffer(self._data, self)
+        self._buf.open(QIODevice.OpenModeFlag.ReadOnly)
+        self._sink.start(self._buf)
+
+    def _state(self, state):
+        from PyQt6.QtMultimedia import QAudio
+        if state == QAudio.State.IdleState:            # the buffer ran out: done
+            self._sink.stop()
+        elif state == QAudio.State.StoppedState \
+                and self._sink.error() in (QAudio.Error.OpenError, QAudio.Error.FatalError):
+            self._set_status(self.Status.Error)
+
+    def stop(self):
+        if self._sink is not None:
+            self._sink.stop()
+        if self._buf is not None:
+            self._buf.close()
+            self._buf.deleteLater()
+            self._buf = None
+
+
 def _sound_effect_class():
-    """QSoundEffect, or None when QtMultimedia can't be imported (a distro
+    """WavEffect, or None when QtMultimedia can't be imported (a distro
     PyQt6 without it, a trimmed build)."""
     try:
-        from PyQt6.QtMultimedia import QSoundEffect
+        from PyQt6.QtMultimedia import QAudioSink  # noqa: F401
     except Exception:                                      # ImportError, a missing plugin lib
         return None
-    return QSoundEffect
+    return WavEffect
 
 
 def _audio_outputs():
@@ -100,7 +200,7 @@ class UiSounds(QObject):
         self._failed = False                      # an effect reached Status.Error
         self.on = False
         self.volume = 50
-        self.effects: dict = {}                    # name -> QSoundEffect, while held
+        self.effects: dict = {}                    # name -> WavEffect, while held
         self._last: dict[str, float] = {}          # name -> monotonic time it played
         self._last_any = ('', 0.0)
         self._watching = False
@@ -145,7 +245,7 @@ class UiSounds(QObject):
             self.problem_found.emit(reason)
 
     def _status(self, e):
-        """A QSoundEffect's status changed: Error is a device or decode failure."""
+        """An effect's status changed: Error is a device or decode failure."""
         if e.status() == type(e).Status.Error and not self._failed:
             self._failed = True
             self.problem()
@@ -232,7 +332,7 @@ class UiSounds(QObject):
                 self._effect(name)
 
     def release(self):
-        """Let go of every QSoundEffect (and with them the audio device)."""
+        """Let go of every effect (and with them the audio device)."""
         effects, self.effects = self.effects, {}
         self._failed = False                       # the next effects get another chance
         for e in effects.values():
