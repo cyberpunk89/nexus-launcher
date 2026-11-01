@@ -5,12 +5,13 @@ import argparse
 import json
 import signal
 import sys
+import time
 from pathlib import Path
 
 from nexus import features, paths as NX, platform
 
-from .common import (_handle_sigterm, INSTALL_BASE, Logger, require_slug, use_logger,
-    watch_gui_cancel)
+from .common import (_handle_sigterm, emit_event, INSTALL_BASE, Logger, require_slug,
+    use_logger, watch_gui_cancel)
 
 
 def main() -> None:
@@ -355,6 +356,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help='Internal (used by the app): which library games are running right now')
     g2.add_argument('--open-url', metavar='URL', dest='open_url',
                     help='Internal (used by the app): launch/open a steam:// or heroic:// URL (e.g. steam://rungameid/APPID)')
+    g2.add_argument('--update-fetch', action='store_true', dest='update_fetch',
+                    help="Internal (used by the app): download the newer Nexus installer and "
+                         "check it against the release's SHA256SUMS (Windows: Update)")
     g3 = parser.add_argument_group('cleanup')
     g3.add_argument('--cleanup-scan', action='store_true', dest='cleanup_scan',
                     help='List what can be cleaned up (stray prefixes, caches, old logs, '
@@ -720,6 +724,36 @@ def _cmd_orphans(args, install_base):
     sys.exit(0)
 
 
+def _cmd_update_fetch(args, install_base):
+    """The app's Update button (installed Windows edition): the newer
+    release's Setup exe into the cache, checked against its SHA256SUMS.
+    Progress as `download` events, then `update-ready` {version, path,
+    sha256} for "Restart to update". The release comes from the update
+    check's daily cache, never from the command line."""
+    from nexus import updates
+    rel = updates.available()
+    if not rel:
+        print("[!] No newer Nexus release to download.")
+        sys.exit(1)
+    print(f"[1/2] Downloading Nexus {rel['version']}")
+    seen = [0.0]
+
+    def progress(done, total):
+        now = time.monotonic()
+        if now - seen[0] >= 0.25 or (total and done >= total):
+            seen[0] = now
+            emit_event('download', {'done': done, 'total': total})
+    try:
+        path, digest = updates.fetch(rel, progress)
+    except updates.UpdateError as e:
+        print(f"[!] {e}")
+        sys.exit(1)
+    print(f"[2/2] Checked against {updates.SUMS}: {path.name}")
+    emit_event('update-ready', {'version': rel['version'], 'path': str(path),
+                                'sha256': digest})
+    sys.exit(0)
+
+
 def _cmd_apply_launch(args, install_base):
     config = load_config()
     slugs = (sorted(load_registry()['games']) if args.apply_launch == 'all'
@@ -840,6 +874,7 @@ COMMANDS = (
     ('library', lambda a, base: cmd_library(base, as_json=a.json, owned=a.owned)),
     ('running', lambda a, base: cmd_running(base, a.json)),
     ('open_url', lambda a, base: cmd_open_url(a.open_url)),
+    ('update_fetch', _cmd_update_fetch),
     ('track_session', lambda a, base: cmd_track_session(*a.track_session)),
     ('orphans', _cmd_orphans),
     ('list_protons', lambda a, base: cmd_list_protons(load_config(), as_json=a.json)),

@@ -553,6 +553,8 @@ class ActionsMixin:
 
     def _job_done(self, job):
         name = job.name
+        if cli_args(job.argv)[:1] == ['--update-fetch']:   # the Updater says how it went
+            return
         if job.kind == 'open':                    # a steam:// / heroic:// hand-off
             if job.state == 'failed':
                 self.toast(f"{job.title} — failed: {job.detail or 'see the log'}", 'error',

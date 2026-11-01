@@ -131,6 +131,7 @@ from .win_actions import ActionsMixin  # noqa: F401
 from .palette import (action_entries, CommandPalette, Entry, fuzzy_score, game_entries,
     page_entries, rank)  # noqa: F401
 from .tray import recent_games, Tray, tray_available  # noqa: F401
+from .updater import Updater  # noqa: F401
 from .setup import SetupPage, STEPS  # noqa: F401
 from .window import MainWindow  # noqa: F401
 from .app import (

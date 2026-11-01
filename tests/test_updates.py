@@ -146,16 +146,30 @@ class Window(unittest.TestCase):
     def test_toast_links_the_release(self):
         from nexus.gui import window
         win = mock.Mock()
+        win.updater.in_app = False                # Linux, a portable zip, a source checkout
         opened = []
+        rel = {'version': '9.1.0', 'url': 'https://x.test/r'}
         with mock.patch.object(window.QDesktopServices, 'openUrl', opened.append):
-            window.MainWindow._update_checked(win, {'version': '9.1.0', 'url': 'https://x.test/r'}, None)
+            window.MainWindow._update_checked(win, rel, None)
             text, _kind, actions, _t = win.toast.call_args.args
             self.assertEqual(text, "Version 9.1.0 is available.")
             actions[0][1]()
         self.assertEqual(opened[0].toString(), 'https://x.test/r')
+        win.updater.offer.assert_called_once_with(rel)    # Health's row stays after the toast
         win.toast.reset_mock()
-        window.MainWindow._update_checked(win, None, None)
+        with patch_gui('in_thread') as in_thread:
+            window.MainWindow._update_checked(win, None, None)
         win.toast.assert_not_called()
+        self.assertIs(in_thread.call_args.args[0], updates.prune)   # an old download goes
+
+    def test_toast_updates_in_place_on_the_installed_windows_edition(self):
+        from nexus.gui import window
+        win = mock.Mock()
+        win.updater.in_app = True
+        window.MainWindow._update_checked(win, {'version': '9.1.0', 'url': SETUP}, None)
+        _text, _kind, actions, _t = win.toast.call_args.args
+        self.assertEqual(actions[0][0], "Update")
+        self.assertIs(actions[0][1], win.updater.act)       # no browser
 
     def page(self, result, calls=None):
         """A SettingsPage whose background work runs at once with `result`
@@ -206,6 +220,348 @@ class Window(unittest.TestCase):
         with mock.patch.object(settings.updates, 'check', return_value={'state': 'off'}) as check:
             calls[0][0]()
         check.assert_called_once_with(force=True)
+
+
+SUMS_URL = SETUP.replace('nexus-launcher-Setup-9.1.0.exe', 'SHA256SUMS')
+SETUP_BYTES = b'MZ fake installer'
+GOOD_SUMS = (f"{'0' * 64}  nexus-launcher-9.1.0-portable.zip\n"
+             f"{__import__('hashlib').sha256(SETUP_BYTES).hexdigest()}  "
+             f"nexus-launcher-Setup-9.1.0.exe\n").encode()
+FULL = json.dumps({'tag_name': 'v9.1.0', 'html_url': PAGE, 'assets': [
+    {'name': 'nexus-launcher-Setup-9.1.0.exe', 'browser_download_url': SETUP},
+    {'name': 'SHA256SUMS', 'browser_download_url': SUMS_URL}]}).encode()
+
+
+class InApp(unittest.TestCase):
+    """w-72: the installed Windows edition downloads its Setup, checks it
+    against SHA256SUMS and runs it silently; the rest keep the link."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='nexus-upd-'))
+        self.addCleanup(__import__('shutil').rmtree, self.tmp, True)
+        for name, val in (('CONFIG_PATH', self.tmp / 'config.toml'),
+                          ('CACHE', self.tmp / 'update-check.json'),
+                          ('DOWNLOADS', self.tmp / 'update')):
+            p = mock.patch.object(updates, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+        self.rel = {'version': '9.1.0', 'url': SETUP, 'page': PAGE, 'installer': SETUP,
+                    'sums': SUMS_URL}
+
+    def fake_download(self, body=SETUP_BYTES):
+        def download(url, dest, progress=None, **kw):
+            self.assertEqual(url, SETUP)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(body)
+            if progress:
+                progress(len(body), len(body))
+            return len(body)
+        return download
+
+    def test_release_assets_are_kept(self):
+        with mock.patch.object(net, 'get', return_value=FULL), \
+                mock.patch.object(features, 'FEATURES', features.WINDOWS):
+            rel = updates.available('0.3.0')
+        self.assertEqual(rel, {**self.rel})
+
+    def test_an_answer_cached_before_sums_is_asked_again(self):
+        updates.CACHE.write_text(json.dumps({'tag': 'v9.1.0', 'url': PAGE, 'installer': SETUP}))
+        with mock.patch.object(net, 'get', return_value=FULL) as get:
+            self.assertEqual(updates.available('0.3.0')['sums'], SUMS_URL)
+        get.assert_called_once()
+
+    def test_fetch_checks_the_download(self):
+        got = []
+        with mock.patch.object(net, 'get', return_value=GOOD_SUMS) as get, \
+                mock.patch.object(net, 'download', side_effect=self.fake_download()):
+            path, digest = updates.fetch(self.rel, lambda d, t: got.append((d, t)))
+        self.assertEqual(get.call_args.args[0], SUMS_URL)
+        self.assertEqual(path, updates.DOWNLOADS / 'nexus-launcher-Setup-9.1.0.exe')
+        self.assertEqual(path.read_bytes(), SETUP_BYTES)
+        self.assertEqual(digest, updates.sha256(path))
+        self.assertEqual(got, [(len(SETUP_BYTES), len(SETUP_BYTES))])
+        # A checked copy is used again, not downloaded twice.
+        with mock.patch.object(net, 'get', return_value=GOOD_SUMS), \
+                mock.patch.object(net, 'download') as download:
+            self.assertEqual(updates.fetch(self.rel)[0], path)
+        download.assert_not_called()
+
+    def test_a_checksum_mismatch_is_refused_and_deleted(self):
+        with mock.patch.object(net, 'get', return_value=GOOD_SUMS), \
+                mock.patch.object(net, 'download', side_effect=self.fake_download(b'tampered')):
+            with self.assertRaises(updates.UpdateError) as e:
+                updates.fetch(self.rel)
+        self.assertIn("doesn't match", str(e.exception))
+        self.assertFalse((updates.DOWNLOADS / 'nexus-launcher-Setup-9.1.0.exe').exists())
+
+    def test_no_sums_or_unlisted_installer_is_refused(self):
+        with self.assertRaises(updates.UpdateError):
+            updates.fetch({**self.rel, 'sums': ''})
+        with mock.patch.object(net, 'get', return_value=b'%s  other.exe\n' % (b'a' * 64)), \
+                mock.patch.object(net, 'download') as download:
+            with self.assertRaises(updates.UpdateError) as e:
+                updates.fetch(self.rel)
+        self.assertIn("doesn't list", str(e.exception))
+        download.assert_not_called()
+
+    def test_older_downloads_go(self):
+        updates.DOWNLOADS.mkdir()
+        old = updates.DOWNLOADS / 'nexus-launcher-Setup-9.0.0.exe'
+        old.write_bytes(b'old')
+        with mock.patch.object(net, 'get', return_value=GOOD_SUMS), \
+                mock.patch.object(net, 'download', side_effect=self.fake_download()):
+            updates.fetch(self.rel)
+        self.assertFalse(old.exists())
+        updates.prune()
+        self.assertEqual(list(updates.DOWNLOADS.iterdir()), [])
+
+    def test_only_the_installed_windows_edition_updates_in_place(self):
+        app = self.tmp / 'app'
+        app.mkdir()
+        exe = str(app / 'nexus-launcher.exe')
+        with mock.patch.object(features, 'FEATURES', features.WINDOWS):
+            self.assertFalse(updates.in_app(exe))           # portable zip: no uninstaller
+            (app / 'unins000.exe').write_bytes(b'')
+            self.assertTrue(updates.in_app(exe))
+            self.assertFalse(updates.in_app())              # from source: not frozen
+        with mock.patch.object(features, 'FEATURES', features.ALL):
+            self.assertFalse(updates.in_app(exe))           # Linux
+
+    def test_the_install_is_silent_and_relaunches(self):
+        argv = updates.install_argv(self.tmp / 'x-Setup-9.1.0.exe')
+        self.assertEqual(argv[0], str(self.tmp / 'x-Setup-9.1.0.exe'))
+        for flag in ('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH'):
+            self.assertIn(flag, argv)
+        self.assertTrue(any(a.startswith('/LOG=') for a in argv))
+
+    def test_the_installer_relaunches_after_a_silent_update_only(self):
+        iss = (REPO / 'packaging' / 'windows' / 'nexus.iss').read_text(encoding='utf-8')
+        run = iss.split('[Run]', 1)[1].split('\n[', 1)[0]
+        entries = [' '.join(e.split()) for e in run.replace('\\\n', ' ').splitlines()
+                   if e.startswith('Filename:')]
+        self.assertTrue(any('postinstall skipifsilent' in e for e in entries))   # the tick box
+        relaunch = [e for e in entries if 'Check: Relaunch' in e]
+        self.assertEqual(len(relaunch), 1)
+        self.assertNotIn('skipifsilent', relaunch[0])
+        self.assertNotIn('postinstall', relaunch[0])
+        code = iss.split('function Relaunch: Boolean;', 1)[1].split('end;\n\n', 1)[0]
+        self.assertIn('WizardSilent', code)
+        self.assertIn("'/RELAUNCH'", code)
+
+    def run_cli(self, rel, fetch):
+        import contextlib
+        import io
+        from nexus.cli import entry
+        out = io.StringIO()
+        with mock.patch.object(updates, 'available', return_value=rel), \
+                mock.patch.object(updates, 'fetch', side_effect=fetch), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ex:
+            entry._cmd_update_fetch(None, None)
+        return ex.exception.code, out.getvalue()
+
+    def test_cli_fetch_says_ready(self):
+        def fetch(rel, progress):
+            progress(5, 10)
+            progress(10, 10)
+            return Path('/c/x-Setup-9.1.0.exe'), 'ab' * 32
+        code, out = self.run_cli(self.rel, fetch)
+        self.assertEqual(code, 0)
+        self.assertIn('@nexus download {"done": 10, "total": 10}', out)
+        ready = json.loads(out.split('@nexus update-ready ', 1)[1].splitlines()[0])
+        self.assertEqual(ready, {'version': '9.1.0', 'path': str(Path('/c/x-Setup-9.1.0.exe')),
+                                 'sha256': 'ab' * 32})
+
+    def test_cli_fetch_refuses_a_bad_download(self):
+        def fetch(rel, progress):
+            raise updates.UpdateError("The download doesn't match the release's SHA256SUMS")
+        code, out = self.run_cli(self.rel, fetch)
+        self.assertEqual(code, 1)
+        self.assertIn("[!] The download doesn't match", out)
+        self.assertNotIn('update-ready', out)
+        code, out = self.run_cli(None, fetch)
+        self.assertEqual(code, 1)
+
+
+@unittest.skipUnless(os.environ.get('QT_QPA_PLATFORM') == 'offscreen',
+                     "GUI test: needs QT_QPA_PLATFORM=offscreen")
+class UpdaterGui(unittest.TestCase):
+    """The Updater behind Health's row and Settings' About (w-72)."""
+
+    REL = {'version': '9.1.0', 'url': SETUP, 'page': PAGE, 'installer': SETUP, 'sums': SUMS_URL}
+
+    def setUp(self):
+        import tests.test_gui_layout  # noqa: F401  (makes the QApplication)
+        from PyQt6.QtCore import QObject
+        from nexus.gui import updater
+
+        class Win(QObject):
+            def __init__(self):
+                super().__init__()
+                self.jobs = mock.Mock()
+                self.toast = mock.Mock()
+                self.confirm = mock.Mock()
+                self.quit_after_jobs = mock.Mock()
+                self.reasons = []
+
+            def _quit_reasons(self):
+                return self.reasons
+        self.updater_mod = updater
+        self.win = Win()
+        self.addCleanup(self.win.deleteLater)
+
+    def make(self, in_app=True):
+        with mock.patch.object(updates, 'in_app', return_value=in_app):
+            u = self.updater_mod.Updater(self.win)
+        u.offer(dict(self.REL))
+        return u
+
+    def finish(self, u, state, detail='', ready=None):
+        job = u.job
+        job.events = {'update-ready': ready} if ready else {}
+        job.state, job.detail = state, detail
+        u._fetched(0 if state == 'done' else 1)
+
+    def test_update_downloads_then_restarts_into_the_silent_installer(self):
+        u = self.make()
+        self.assertEqual(u.view()['button'], "Update")
+        u.act()
+        job = self.win.jobs.submit.call_args.args[0]
+        self.assertEqual(job.argv[-1], '--update-fetch')
+        self.assertEqual(job.kind, 'tool')                  # never waits behind an install
+        self.assertEqual(u.view()['button'], "Downloading…")
+        self.assertFalse(u.view()['enabled'])
+        job._parse('@nexus download {"done": 50, "total": 200}')
+        self.assertEqual(u.view()['progress'], (250, 1000))
+        self.assertIn("downloaded", u.view()['detail'])
+        u.act()                                             # a second click does nothing
+        self.assertEqual(self.win.jobs.submit.call_count, 1)
+        self.finish(u, 'done', ready={'path': '/c/x-Setup-9.1.0.exe', 'sha256': 'ab'})
+        self.assertEqual(u.view()['button'], "Restart to update")
+        self.assertIn("ready", self.win.toast.call_args.args[0])
+        with patch_gui('in_thread', lambda fn, cb: cb(True, None)), \
+                mock.patch.object(self.updater_mod.platform, 'spawn_detached') as spawn:
+            u.act()
+        argv = spawn.call_args.args[0]
+        self.assertEqual(argv[:2], ['/c/x-Setup-9.1.0.exe', '/VERYSILENT'])
+        self.assertIn('/RELAUNCH', argv)
+        self.win.quit_after_jobs.assert_called_once()
+
+    def test_restart_asks_first_while_work_is_running(self):
+        u = self.make()
+        u.act()
+        self.finish(u, 'done', ready={'path': '/c/x.exe', 'sha256': 'ab'})
+        self.win.reasons = ["1 job(s) are still running"]
+        u.act()
+        self.assertEqual(self.win.confirm.call_args.args[2], "Update anyway")
+        self.win.quit_after_jobs.assert_not_called()
+
+    def test_a_download_that_changed_is_not_run(self):
+        u = self.make()
+        u.act()
+        self.finish(u, 'done', ready={'path': '/c/x.exe', 'sha256': 'ab'})
+        with patch_gui('in_thread', lambda fn, cb: cb(False, None)), \
+                mock.patch.object(self.updater_mod.platform, 'spawn_detached') as spawn:
+            u.act()
+        spawn.assert_not_called()
+        self.win.quit_after_jobs.assert_not_called()
+        self.assertEqual(u.view()['button'], "Try again")
+
+    def test_a_checksum_mismatch_says_so_and_can_be_tried_again(self):
+        u = self.make()
+        u.act()
+        self.finish(u, 'failed', "[!] The download doesn't match the release's SHA256SUMS")
+        view = u.view()
+        self.assertEqual(view['button'], "Try again")
+        self.assertTrue(view['detail'].startswith("The download doesn't match"))
+        self.assertEqual(self.win.toast.call_args.args[1], 'error')
+        u.act()
+        self.assertEqual(self.win.jobs.submit.call_count, 2)
+
+    def test_portable_and_linux_keep_the_link(self):
+        opened = []
+        u = self.make(in_app=False)
+        self.assertEqual(u.view()['button'], "Installer")
+        with mock.patch.object(self.updater_mod.QDesktopServices, 'openUrl', opened.append):
+            u.act()
+        self.assertEqual(opened[0].toString(), SETUP)
+        self.win.jobs.submit.assert_not_called()
+        u.rel['url'] = PAGE
+        self.assertEqual(u.view()['button'], "Release page")
+
+    def test_nothing_newer_shows_nothing(self):
+        with mock.patch.object(updates, 'in_app', return_value=True):
+            u = self.updater_mod.Updater(self.win)
+        u.offer(None)
+        self.assertIsNone(u.view())
+
+    def test_health_row_appears_and_counts_until_installed(self):
+        from nexus.gui import system
+        h = system.HealthPage()
+        self.addCleanup(h.deleteLater)
+        counts = []
+        h.counts.connect(lambda p, f: counts.append((p, f)))
+        h.checks = [{'group': 'Requirements', 'status': 'warn', 'title': 'Long paths',
+                     'detail': '', 'fix': '', 'actions': []}]
+        h._render()
+        self.assertTrue(h.update_card.isHidden())
+        self.assertEqual(counts[-1], (1, 0))
+        u = self.make()
+        h.show_update(u.view())
+        self.assertFalse(h.update_card.isHidden())
+        self.assertEqual(h.update_title.text(), "Nexus 9.1.0 is available")
+        self.assertEqual(h.update_btn.text(), "Update")
+        self.assertEqual(counts[-1], (2, 0))
+        h._render()                                         # a re-check keeps it
+        self.assertFalse(h.update_card.isHidden())
+        self.assertEqual(counts[-1], (2, 0))
+        wanted = []
+        h.update_wanted.connect(lambda: wanted.append(1))
+        h.update_btn.click()
+        self.assertEqual(wanted, [1])
+        u.act()
+        u.job._parse('@nexus download {"done": 1, "total": 4}')
+        h.show_update(u.view())
+        self.assertFalse(h.update_bar.isHidden())
+        self.assertFalse(h.update_btn.isEnabled())
+        h.show_update(None)                                 # installed: gone
+        self.assertTrue(h.update_card.isHidden())
+        self.assertEqual(counts[-1], (1, 0))
+
+    def test_settings_update_button_follows_the_updater(self):
+        from nexus.gui import settings
+        page = settings.SettingsPage()
+        self.addCleanup(page.deleteLater)
+        self.assertTrue(page.update_row.isHidden())
+        self.assertFalse(page.update_row.available)
+        u = self.make()
+        page.show_update(u.view())
+        self.assertTrue(page.update_row.available)
+        self.assertFalse(page.update_row.isHidden())
+        self.assertEqual(page.update_btn.text(), "Update")
+        self.assertFalse(page.update_row.desc.isHidden())
+        wanted = []
+        page.update_wanted.connect(lambda: wanted.append(1))
+        page.update_btn.click()
+        self.assertEqual(wanted, [1])
+        u.act()
+        self.finish(u, 'done', ready={'path': '/c/x.exe', 'sha256': 'ab'})
+        page.show_update(u.view())
+        self.assertEqual(page.update_btn.text(), "Restart to update")
+        page.show_update(None)
+        self.assertTrue(page.update_row.isHidden())
+
+    def test_settings_check_hands_what_it_found_to_the_updater(self):
+        from nexus.gui import settings
+        found = []
+        with patch_gui('in_thread', lambda fn, cb: cb({'state': 'available', **self.REL}, None)):
+            page = settings.SettingsPage()
+            self.addCleanup(page.deleteLater)
+            page.update_found.connect(found.append)
+            with mock.patch.object(settings.updates, 'in_app', return_value=True):
+                page.upd_btn.click()
+        self.assertEqual(found, [self.REL])
+        self.assertIn("Update is just above", page.upd_result.text())
+        self.assertNotIn('href', page.upd_result.text())     # no browser on the installed copy
 
 
 class WhatsNew(unittest.TestCase):

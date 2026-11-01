@@ -506,6 +506,8 @@ class SettingsPage(QWidget):
     import_wanted = pyqtSignal(str)              # a settings file to look at, then import
     setup_wanted = pyqtSignal()                  # "Run setup again"
     whats_new_wanted = pyqtSignal()              # About: "What's new"
+    update_found = pyqtSignal(dict)              # "Check for updates" found one (the Updater)
+    update_wanted = pyqtSignal()                 # About: Update / Restart to update
 
     NAV_W, RAIL_W = 228, 60
     COMPACT_BELOW = 960            # narrower: the list becomes an icon rail
@@ -992,6 +994,15 @@ class SettingsPage(QWidget):
     def _build_about(self):
         sec = self._add_section(SettingsSection('about', "About", 'info'))
         self.version_row = self._row(sec, "Nexus version", "", None, keywords="about release")
+        # Only while a newer Nexus is out (MainWindow.updater): the start-up
+        # toast goes, this and Health's row stay until it's installed.
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setObjectName("Primary")
+        set_glyph_icon(self.update_btn, G['update'], 14)
+        self.update_btn.clicked.connect(self.update_wanted)
+        self.update_row = self._row(sec, "Update available", "", self.update_btn,
+                                    keywords="new release upgrade version install")
+        self.update_row.set_available(False)
         self.upd_btn = QPushButton("Check for updates")
         set_glyph_icon(self.upd_btn, G['refresh'], 14)
         self.upd_btn.clicked.connect(self._check_updates)
@@ -1013,6 +1024,15 @@ class SettingsPage(QWidget):
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "never"
         self.version_row.set_description(f"Nexus {__version__} · last checked {when}")
 
+    def show_update(self, view: dict | None):
+        """The Updater's state (Updater.view()); None hides the row."""
+        self.update_row.set_available(view is not None)
+        if view is not None:
+            self.update_row.title.setText(view['title'])
+            self.update_row.set_description(view['detail'])
+            self.update_btn.setText(view['button'])
+            self.update_btn.setEnabled(view['enabled'])
+
     def _check_updates(self):
         """Ask GitHub (skipping the daily cache) off the GUI thread, then say what it found."""
         self.upd_btn.setEnabled(False)
@@ -1023,7 +1043,9 @@ class SettingsPage(QWidget):
         self.upd_btn.setEnabled(True)
         r = r or {'state': 'failed'}
         state = r.get('state')
-        if state == 'available':
+        if state == 'available' and updates.in_app():
+            text = f"Nexus {html.escape(r['version'])} is available: Update is just above."
+        elif state == 'available':
             text = (f"Nexus {html.escape(r['version'])} is available: "
                     f"<a href=\"{html.escape(r['url'], quote=True)}\">"
                     f"{'Download the installer' if r['url'].endswith('.exe') else 'Release page'}"
@@ -1036,6 +1058,9 @@ class SettingsPage(QWidget):
             text = "Couldn't check for updates. Are you online?"
         self.upd_row.set_description(text)
         self._show_version()
+        if state == 'available':
+            self.update_found.emit({k: r.get(k, '') for k in
+                                    ('version', 'url', 'page', 'installer', 'sums')})
 
     def _export(self):
         import datetime

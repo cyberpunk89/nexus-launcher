@@ -98,6 +98,10 @@ Name: "{userstartup}\{#DisplayName}"; Filename: "{app}\{#AppExe}"; Parameters: "
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Start {#DisplayName}"; \
     Flags: nowait postinstall skipifsilent
+; Nexus's own Update (nexus/updates.py install_argv) runs this setup with
+; /VERYSILENT ... /RELAUNCH after quitting itself: start it again. Not part
+; of a normal install (the tick box above), nor of another silent one.
+Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Flags: nowait; Check: Relaunch
 
 [UninstallRun]
 ; Stop Nexus and its CLI jobs so their files can be removed.
@@ -107,6 +111,19 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/f /t /im nexus-cli.exe"; Flags: ru
     RunOnceId: "StopCli"
 
 [Code]
+// /RELAUNCH on the command line (Nexus's in-app update) and a silent run.
+function Relaunch: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if not WizardSilent then
+    Exit;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+      Result := True;
+end;
+
 // The uninstaller keeps settings, the library, artwork and logs, so a
 // reinstall picks up where it left off, unless the user asks otherwise.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

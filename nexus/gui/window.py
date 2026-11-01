@@ -85,6 +85,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._view = 'home'
         self.jobs = JobManager()
         self.jobs.finished.connect(self._job_done)
+        self.updater = Updater(self)          # a newer Nexus: Health, Settings, the toast
+        self.updater.changed.connect(self._update_changed)
         self.jobs.changed.connect(self._jobs_changed)
         self._quitting = False
         self.tray = None                             # Settings → Background (tray.py)
@@ -288,6 +290,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.health.request.connect(self._on_request)
         self.health.counts.connect(self._health_counts)
         self.health.toast.connect(self.toast)
+        self.health.update_wanted.connect(self.updater.act)
         self.playhistory = PlayHistoryPage()
         self.playhistory.reveal.connect(self._reveal_game)
         self.system = SystemPage({'activity': self.activity, 'play': self.playhistory,
@@ -481,6 +484,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         st.appearance.changed.connect(self._queue_appearance)
         st.setup_wanted.connect(self.open_setup)
         st.whats_new_wanted.connect(self.show_whats_new)
+        st.update_found.connect(self.updater.offer)
+        st.update_wanted.connect(self.updater.act)
+        st.show_update(self.updater.view())
         return st
 
     def current(self) -> str | None:
@@ -543,12 +549,29 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         in_thread(updates.available, self._update_checked)
 
     def _update_checked(self, rel, _err):
-        """A newer Nexus release (updates.available): a toast linking its page."""
+        """A newer Nexus release (updates.available): a toast, and Health's
+        row (the Updater) that stays until it's installed. On the installed
+        Windows edition the toast's button updates in place; elsewhere it
+        links the installer or the release page. Nothing newer: drop an old
+        download."""
         if not rel:
+            in_thread(updates.prune, lambda *_: None)
+            return
+        self.updater.offer(rel)
+        if self.updater.in_app:
+            self.toast(f"Version {rel['version']} is available.", 'info', [
+                ("Update", self.updater.act)], 12000)
             return
         name = "Installer" if rel['url'].endswith('.exe') else "Release page"   # Windows: setup
         self.toast(f"Version {rel['version']} is available.", 'info', [
             (name, lambda: QDesktopServices.openUrl(QUrl(rel['url'])))], 12000)
+
+    def _update_changed(self):
+        """The Updater moved on: Health's row and, once built, Settings' About."""
+        view = self.updater.view()
+        self.health.show_update(view)
+        if self.page_built(self.SETTINGS):
+            self.settings.show_update(view)
 
     def _on_activity(self):
         if getattr(self, '_theatre', False) and self.prefs.controls['attract']:
@@ -1116,6 +1139,7 @@ from .jobs import cli_json, in_thread, JobManager  # noqa: E402
 from .setup import SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402
 from .tray import Tray, tray_available  # noqa: E402
+from .updater import Updater  # noqa: E402
 from .library import HomeView  # noqa: E402
 from .newspage import NewsPage  # noqa: E402
 from .prefs import LibraryPrefs  # noqa: E402

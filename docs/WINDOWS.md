@@ -17,8 +17,8 @@ Download from the release page (Windows 10 or 11, 64-bit). Pick one:
 - **Installer:** `nexus-launcher-Setup-<version>.exe`. It installs just for you (no admin
   prompt) into `%LOCALAPPDATA%\Programs\nexus-launcher` and adds a Start Menu entry. It can
   also start Nexus in the tray when you sign in to Windows (a tick box, off by default). To
-  update, run the newer installer over the old one; close Nexus first, or let the installer
-  close it.
+  update, click **Update** when Nexus says a new version is out (see below), or run the
+  newer installer over the old one yourself; close Nexus first, or let the installer close it.
 - **Portable zip:** `nexus-launcher-<version>-portable.zip`. Unzip it anywhere (say
   `C:\Tools`) and run `nexus-launcher.exe` in the `nexus-launcher` folder. Nothing is
   installed. `nexus-cli.exe` beside it is the command line.
@@ -27,9 +27,14 @@ Either way, Nexus keeps its settings under `%APPDATA%\nexus-launcher` and its da
 under `%LOCALAPPDATA%\nexus-launcher`. That holds for the portable zip too, so the zip and
 an installed copy share the same settings and library.
 
-Once a day Nexus asks GitHub whether a newer release is out and, if so, shows a notice with
-a link to it. Nothing is downloaded. To turn that off, put `check = false` under `[updates]`
-in `%APPDATA%\nexus-launcher\config.toml`.
+Once a day Nexus asks GitHub whether a newer release is out and, if so, says so in a notice
+and keeps an **Update** row on System → Health and in Settings → About until you have it.
+In a copy the installer put there, **Update** downloads the new installer in the background
+(you can watch it on Activity), checks it against the release's `SHA256SUMS` and refuses it
+if it doesn't match. **Restart to update** then closes Nexus, installs the new version with
+no wizard and opens Nexus again. The portable zip can't update itself: there the button
+links to the download. To turn the check off, put `check = false` under `[updates]` in
+`%APPDATA%\nexus-launcher\config.toml`.
 
 Uninstalling (Settings → Apps) asks whether to delete that data too. The answer defaults to
 **No**, so a reinstall picks up where you left off. Installed games are never touched.

@@ -31,6 +31,7 @@ class HealthPage(QWidget):
     request = pyqtSignal(list, str, bool, str)
     counts = pyqtSignal(int, int)          # (problems, failures) for the sidebar badge
     toast = pyqtSignal(str, str)
+    update_wanted = pyqtSignal()           # the Nexus update row's button (the Updater)
 
     STATUS = {'ok': (G['check'], 'success'), 'warn': (G['warn'], 'warning'),
               'fail': (G['fail'], 'danger'), 'info': (G['info'], 'muted')}
@@ -57,6 +58,10 @@ class HealthPage(QWidget):
         lay.addLayout(head)
         self.summary = label("Checking…", "Muted")
         lay.addWidget(self.summary)
+        self.update_card = self._build_update_card()
+        lay.addWidget(self.update_card)
+        self.update_card.hide()
+        self._update = None                # the Updater's view while a newer Nexus is out
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -68,6 +73,62 @@ class HealthPage(QWidget):
         lay.addWidget(scroll, 1)
         self.checks: list[dict] = []
         self._checked_at = 0.0
+
+    def _build_update_card(self) -> QFrame:
+        """A newer Nexus: one row above the checks, kept across re-checks
+        (it isn't a --doctor row) until the update is installed."""
+        card = QFrame()
+        card.setObjectName("Card")
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
+        outer.setSpacing(SP['2'])
+        row = QHBoxLayout()
+        row.setSpacing(SP['2_5'])
+        ic = icon_label(G['update'], 14, P['accent'])
+        row.addWidget(ic, 0, Qt.AlignmentFlag.AlignTop)
+        texts = QVBoxLayout()
+        texts.setSpacing(SP['0_5'])
+        self.update_title = plain_label("", wrap=True)
+        texts.addWidget(self.update_title)
+        self.update_detail = label("", "Muted", wrap=True)
+        texts.addWidget(self.update_detail)
+        row.addLayout(texts, 1)
+        self.update_btn = QPushButton()
+        self.update_btn.setObjectName("Primary")
+        self.update_btn.clicked.connect(self.update_wanted)
+        row.addWidget(self.update_btn, 0, Qt.AlignmentFlag.AlignTop)
+        outer.addLayout(row)
+        self.update_bar = QProgressBar()
+        self.update_bar.setObjectName("CardProgress")
+        self.update_bar.setTextVisible(False)
+        self.update_bar.setFixedHeight(6)
+        outer.addWidget(self.update_bar)
+        self.update_bar.hide()
+        return card
+
+    def show_update(self, view: dict | None):
+        """The Updater's state (Updater.view()); None hides the row."""
+        was = self._update is not None
+        self._update = view
+        self.update_card.setVisible(view is not None)
+        if view is not None:
+            self.update_title.setText(view['title'])
+            self.update_detail.setText(view['detail'])
+            self.update_btn.setText(view['button'])
+            self.update_btn.setEnabled(view['enabled'])
+            n_total = view.get('progress')
+            self.update_bar.setVisible(bool(n_total))
+            if n_total:
+                self.update_bar.setRange(0, n_total[1])
+                self.update_bar.setValue(n_total[0])
+        if was != (view is not None):
+            self._emit_counts()
+
+    def _emit_counts(self):
+        """Problems for the badge: warn and fail checks, and a Nexus update."""
+        problems = [c for c in self.checks if c['status'] in ('warn', 'fail')]
+        fails = [c for c in problems if c['status'] == 'fail']
+        self.counts.emit(len(problems) + (self._update is not None), len(fails))
 
     def refresh(self):
         self.btn_recheck.setEnabled(False)
@@ -90,7 +151,7 @@ class HealthPage(QWidget):
         clear_layout(self.body)
         problems = [c for c in self.checks if c['status'] in ('warn', 'fail')]
         fails = [c for c in problems if c['status'] == 'fail']
-        self.counts.emit(len(problems), len(fails))
+        self._emit_counts()
         self.summary.setText("" if not problems else
                              f"{len(problems)} thing(s) need attention"
                              + (f", {len(fails)} serious." if fails else "."))

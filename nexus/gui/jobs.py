@@ -184,6 +184,14 @@ class Job(QObject):
             elif m.group(1) == 'move' and data.get('total'):
                 self.detail = (f"{fmt_bytes(int(data.get('done') or 0))} of "
                                f"{fmt_bytes(int(data['total']))} copied")
+            elif m.group(1) == 'download':              # --update-fetch
+                try:
+                    done, total = int(data.get('done') or 0), int(data.get('total') or 0)
+                except (TypeError, ValueError):
+                    return
+                self.detail = (f"{fmt_bytes(done)} of {fmt_bytes(total)} downloaded" if total
+                               else f"{fmt_bytes(done)} downloaded")
+                self.progress = (min(1000, done * 1000 // total), 1000) if total else None
             return
         m = _STEP_RE.match(line)
         if m:
