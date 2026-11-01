@@ -189,6 +189,7 @@ class TheatreSettings(ActionSheet):
         self.sub.setText("Changes are saved as you make them.")
         self.rows_by_key: dict[str, CouchRow] = {}
         self._last: str | None = None            # the row used last (this session)
+        self.sound_problem = ''                  # why sounds can't play (w-73), for the help line
         group = None
         for grp, key, title, choices in ROWS:
             if grp != group:
@@ -241,7 +242,8 @@ class TheatreSettings(ActionSheet):
 
     def _row_focused(self, row: CouchRow):
         self._last = row.key
-        self.help.setText(HELP.get(row.key, ''))
+        sound = row.key in ('sounds', 'volume') and self.sound_problem
+        self.help.setText(sound or HELP.get(row.key, ''))
 
     def _all(self):
         self.close_sheet(restore=False)

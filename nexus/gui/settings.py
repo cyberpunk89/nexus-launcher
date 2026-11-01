@@ -508,6 +508,7 @@ class SettingsPage(QWidget):
     whats_new_wanted = pyqtSignal()              # About: "What's new"
     update_found = pyqtSignal(dict)              # "Check for updates" found one (the Updater)
     update_wanted = pyqtSignal()                 # About: Update / Restart to update
+    sound_test_wanted = pyqtSignal()             # Controls: "Test sound"
 
     NAV_W, RAIL_W = 228, 60
     COMPACT_BELOW = 960            # narrower: the list becomes an icon rail
@@ -742,12 +743,26 @@ class SettingsPage(QWidget):
         self._row(sec, "Your week on Theatre's Home", "Your play time this week, under "
                   "Jump back in.", self.ctl_week, keywords="playtime stats streak")
         self.ctl_sounds = Switch()
-        self._row(sec, "Menu sounds in Theatre", "Soft clicks as you move and select.",
-                  self.ctl_sounds, keywords="audio sfx")
+        self.sounds_row = self._row(sec, "Menu sounds in Theatre", "Soft clicks as you move "
+                                    "and select. They play in Theatre mode only.",
+                                    self.ctl_sounds, keywords="audio sfx")
         self.ctl_volume = _combo([(f"{v}%", v) for v in VOLUME_STEPS])
-        self.volume_row = self._row(sec, "Menu sound volume", "", self.ctl_volume,
-                                    keywords="audio loud")
+        # Test sound plays here, outside Theatre and with sounds off (w-73).
+        self.sound_test = QPushButton("Test sound")
+        set_glyph_icon(self.sound_test, G['play'], 14)
+        self.sound_test.clicked.connect(self.sound_test_wanted)
+        vol = QHBoxLayout()
+        vol.setSpacing(SP['1_5'])
+        vol.addWidget(self.sound_test)
+        vol.addWidget(self.ctl_volume)
+        self.volume_row = self._row(sec, "Menu sound volume", "", vol,
+                                    keywords="audio loud test")
+        self.row_of[self.ctl_volume] = self.volume_row
         self.ctl_sounds.toggled.connect(self.ctl_volume.setEnabled)
+
+    def set_sound_problem(self, text: str):
+        """Why menu sounds can't play ('' when they can), under the switch."""
+        self.sounds_row.set_note(text)
 
     def _build_installing(self):
         sec = self._add_section(SettingsSection('installing', "Installing games", 'download'))
