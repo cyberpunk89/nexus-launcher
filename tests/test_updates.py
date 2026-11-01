@@ -176,11 +176,13 @@ class Window(unittest.TestCase):
             page = self.page({'state': 'available', 'version': '9.1.0', 'url': SETUP})
         self.assertIn(f"Nexus {__version__}", page.version_row.desc.text())
         self.assertIn("last checked never", page.version_row.desc.text())
+        self.assertTrue(page.upd_result.isHidden())     # nothing to say before a check
         with mock.patch.object(updates, 'check', return_value={
                 'state': 'available', 'version': '9.1.0', 'url': SETUP}) as check:
             page.upd_btn.click()
         check.assert_not_called()                       # runs inside the (faked) thread
         self.assertTrue(page.upd_btn.isEnabled())
+        self.assertFalse(page.upd_result.isHidden())    # w-71: the answer used to stay hidden
         text = page.upd_result.text()
         self.assertIn("Nexus 9.1.0 is available", text)
         self.assertIn(f'href="{SETUP}"', text)
@@ -191,6 +193,7 @@ class Window(unittest.TestCase):
             page = self.page({'state': state, 'version': '0.3.1'})
             page.upd_btn.click()
             self.assertIn(want, page.upd_result.text())
+            self.assertFalse(page.upd_result.isHidden())
 
     def test_settings_check_forces_and_shows_checking(self):
         from nexus.gui import settings
@@ -198,6 +201,7 @@ class Window(unittest.TestCase):
         page = self.page(None, calls)
         page.upd_btn.click()
         self.assertEqual(page.upd_result.text(), "Checking…")
+        self.assertFalse(page.upd_result.isHidden())
         self.assertFalse(page.upd_btn.isEnabled())
         with mock.patch.object(settings.updates, 'check', return_value={'state': 'off'}) as check:
             calls[0][0]()

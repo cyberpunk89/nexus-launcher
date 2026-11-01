@@ -1016,7 +1016,7 @@ class SettingsPage(QWidget):
     def _check_updates(self):
         """Ask GitHub (skipping the daily cache) off the GUI thread, then say what it found."""
         self.upd_btn.setEnabled(False)
-        self.upd_result.setText("Checking…")
+        self.upd_row.set_description("Checking…")       # the row starts with no text, so its label is hidden
         in_thread(lambda: updates.check(force=True), self._updates_checked)
 
     def _updates_checked(self, r, err):
@@ -1034,7 +1034,7 @@ class SettingsPage(QWidget):
             text = "Update checks are off ([updates] check = false in config.toml)."
         else:
             text = "Couldn't check for updates. Are you online?"
-        self.upd_result.setText(text)
+        self.upd_row.set_description(text)
         self._show_version()
 
     def _export(self):
