@@ -473,6 +473,53 @@ class Power(unittest.TestCase):
         self.assertLessEqual({'restart', 'shutdown'}, windows.power_caps())
 
 
+class BluetoothPads(unittest.TestCase):
+    """w-74's "Turn off controller": a pad's Bluetooth address from sysfs, and
+    bluetoothctl started detached (patched: nothing is disconnected)."""
+
+    @linux_only
+    def test_linux_addresses_from_hid_devices(self):
+        from nexus.platform import linux
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name, uniq in (('0005:054C:0CE6.0007', 'A0:AB:51:12:34:56'),   # the pad, Bluetooth
+                               ('0003:054C:0CE6.0002', ''),                      # one on USB
+                               ('0005:046D:B023.0003', '11:22:33:44:55:66'),     # a mouse
+                               ('0005:054C:0CE6.0008', 'not-an-address')):
+                (root / name).mkdir()
+                (root / name / 'uevent').write_text(
+                    f"DRIVER=playstation\nHID_ID=0005:0000054C:00000CE6\nHID_UNIQ={uniq}\n")
+            with mock.patch.object(linux.shutil, 'which', return_value='/usr/bin/bluetoothctl'):
+                self.assertEqual(linux.bluetooth_pads([(0x054c, 0x0ce6)], root),
+                                 ['a0:ab:51:12:34:56'])
+                self.assertEqual(linux.bluetooth_pads([(0x045e, 0x028e)], root), [])
+                self.assertEqual(linux.bluetooth_pads([], root), [])
+                self.assertEqual(linux.bluetooth_pads([(0x054c, 0x0ce6)], root / 'gone'), [])
+            with mock.patch.object(linux.shutil, 'which', return_value=None):   # no bluetoothctl
+                self.assertEqual(linux.bluetooth_pads([(0x054c, 0x0ce6)], root), [])
+
+    @linux_only
+    def test_linux_disconnect_runs_bluetoothctl_detached(self):
+        from nexus.platform import linux
+        with mock.patch.object(linux.subprocess, 'Popen') as popen:
+            self.assertTrue(linux.bluetooth_disconnect('a0:ab:51:12:34:56'))
+            self.assertEqual(popen.call_args[0][0], ['bluetoothctl', 'disconnect',
+                                                     'a0:ab:51:12:34:56'])
+            self.assertTrue(popen.call_args[1]['start_new_session'])
+            popen.reset_mock()
+            self.assertFalse(linux.bluetooth_disconnect('--help'))
+            self.assertFalse(linux.bluetooth_disconnect(''))
+            popen.assert_not_called()
+        with mock.patch.object(linux.subprocess, 'Popen', side_effect=FileNotFoundError):
+            self.assertFalse(linux.bluetooth_disconnect('a0:ab:51:12:34:56'))
+
+    @windows_only
+    def test_windows_has_no_disconnect(self):
+        from nexus.platform import windows
+        self.assertEqual(windows.bluetooth_pads([(0x054c, 0x0ce6)]), [])
+        self.assertFalse(windows.bluetooth_disconnect('a0:ab:51:12:34:56'))
+
+
 class PlatformEdid(unittest.TestCase):
     """Theatre's "On a TV" start: a screen's size from its EDID."""
 

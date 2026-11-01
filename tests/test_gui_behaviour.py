@@ -667,6 +667,55 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(got, ['quick', 'start', 'search'])
         ctrl.deleteLater()
 
+    def test_guide_acts_on_release_after_a_short_press(self):
+        """w-74: Guide acts when let go, only after a press under GUIDE_HOLD;
+        a pad that goes away during a long hold (or just after) was turned
+        off, so `turned_off` comes before `disconnected`. Other buttons still
+        act on press."""
+        from nexus.gui.input import ControllerInput
+        ctrl = ControllerInput(self.win)            # not the window's: nothing acts on it
+        got, off, gone = [], [], []
+        ctrl.action.connect(got.append)
+        ctrl.turned_off.connect(off.append)
+        ctrl.disconnected.connect(gone.append)
+        clock = [1000.0]
+
+        def feed(*events, at=0.0):
+            clock[0] += at
+            with mock.patch.object(ctrl.pads, 'poll', return_value=list(events)), \
+                    mock.patch('nexus.gui.input.time.monotonic', lambda: clock[0]), \
+                    mock.patch.object(self.win, 'isActiveWindow', return_value=True):
+                ctrl._tick()
+        feed(('button', 'guide', True))
+        self.assertEqual(got, [])                               # not on press
+        feed(('button', 'guide', False), at=0.3)
+        self.assertEqual(got, ['quick'])                        # a short press: on release
+        feed(('button', 'guide', True))
+        feed(('button', 'guide', False), at=ctrl.GUIDE_HOLD + 0.5)
+        self.assertEqual(got, ['quick'])                        # a long hold: nothing
+        feed(('button', 'guide', False), at=0.1)                # a release with no press
+        self.assertEqual(got, ['quick'])
+        feed(('button', 'start', True), ('button', 'y', True))
+        self.assertEqual(got, ['quick', 'start', 'search'])     # the rest act on press
+        # Held until the pad went (a DualSense turns off after ~10 s).
+        feed(('button', 'guide', True), at=5)
+        feed(('removed', 'DualSense'), at=9)
+        self.assertEqual((off, gone), (['DualSense'], ['DualSense']))
+        # The pad sent the release first, then went.
+        feed(('button', 'guide', True), at=5)
+        feed(('button', 'guide', False), at=9)
+        feed(('removed', 'DualSense'), at=0.5)
+        self.assertEqual(off, ['DualSense'] * 2)
+        # A pad unplugged after a short press, or long after a hold: not turned off.
+        feed(('removed', 'DualSense'), at=ctrl.GUIDE_AFTER + 1)
+        feed(('button', 'guide', True))
+        feed(('removed', 'Xbox'), at=0.2)
+        self.assertEqual(off, ['DualSense'] * 2)
+        self.assertEqual(gone, ['DualSense'] * 3 + ['Xbox'])
+        self.assertIsNone(ctrl.guide_at)                        # the removal forgot the press
+        self.assertEqual(got, ['quick', 'start', 'search'])
+        ctrl.deleteLater()
+
     def test_connected_signal_carries_hotplug(self):
         """A pad's ADDED reaches the window with its GUID and whether it was
         really plugged in (w-64: only that may bring Theatre)."""

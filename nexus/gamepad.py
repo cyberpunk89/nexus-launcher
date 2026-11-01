@@ -76,6 +76,23 @@ def playstation_mapping(guid: str, product: int, vendor: int = SONY_VENDOR,
     return f"{guid},{SONY_PRODUCTS[product]},{PLAYSTATION_MAP}"
 
 
+BUS_BLUETOOTH = 0x05            # the bus in an SDL GUID (Linux input bus types)
+
+
+def guid_ids(guid: str) -> tuple[int, int, int] | None:
+    """(bus, vendor, product) from an SDL GUID string: little-endian 16-bit
+    words at bytes 0, 4 and 8 (bytes 2-3 are a name CRC on newer SDL, 0 on
+    older). None for '' or a GUID made from the name alone (no vendor)."""
+    try:
+        raw = bytes.fromhex(guid)
+    except ValueError:
+        return None
+    if len(raw) != 16:
+        return None
+    bus, vendor, product = (int.from_bytes(raw[i:i + 2], 'little') for i in (0, 4, 8))
+    return (bus, vendor, product) if vendor else None
+
+
 class _GUID(ctypes.Structure):
     _fields_ = [('data', ctypes.c_uint8 * 16)]
 

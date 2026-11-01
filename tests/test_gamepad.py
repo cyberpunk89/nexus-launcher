@@ -64,6 +64,17 @@ class PlayStationMapping(unittest.TestCase):
                                                       module=Path('/')))
 
 
+class GuidIds(unittest.TestCase):
+    def test_bus_vendor_product_from_a_guid(self):
+        """w-74: "Turn off controller" needs a Bluetooth pad's ids."""
+        from nexus.gamepad import BUS_BLUETOOTH, guid_ids
+        self.assertEqual(guid_ids('050057564c050000e60c000000810000'),
+                         (BUS_BLUETOOTH, 0x054c, 0x0ce6))           # a DualSense over Bluetooth
+        self.assertEqual(guid_ids('030000005e0400008e02000014010000'), (3, 0x045e, 0x028e))  # USB
+        for bad in ('', 'xyz', '0500', '05000000000000000000000000000000'):   # no vendor: by name
+            self.assertIsNone(guid_ids(bad))
+
+
 class FakeSDL(mock.MagicMock):
     """Every SDL call succeeds (0) unless a test says otherwise."""
 

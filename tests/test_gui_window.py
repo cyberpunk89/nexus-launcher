@@ -311,7 +311,8 @@ class Window(unittest.TestCase):
     def setUp(self):
         # The real machine's power rows would change every quick-menu list,
         # and power() must never run for real.
-        for name, ret in (('power_caps', set()), ('power', True)):
+        for name, ret in (('power_caps', set()), ('power', True), ('bluetooth_pads', []),
+                          ('bluetooth_disconnect', True)):
             p = mock.patch(f'nexus.platform.{name}', return_value=ret)
             setattr(self, name, p.start())
             self.addCleanup(p.stop)
@@ -2168,6 +2169,119 @@ class Window(unittest.TestCase):
                 w.toggle_quick()
                 q.buttons['power-sleep'].click()
                 toast.assert_called_once()
+        w.set_theatre(False)
+
+    BT_DUALSENSE = '050057564c050000e60c000000810000'       # SDL GUID: Bluetooth, 054c:0ce6
+
+    def test_quick_menu_turn_off_controller(self):
+        """w-74: POWER's Turn off controller shows for the one Bluetooth pad
+        the platform can disconnect, first in the section; it disconnects
+        that pad's address, its removal is quiet and keeps Theatre, and its
+        next power-on doesn't bring Theatre back after leaving by hand."""
+        w, toasts = self._auto_setup()
+        q = w.quick
+        g = w.ctrl.pads
+        self._pads('DualSense')
+        g.guids = {0: self.BT_DUALSENSE}
+        self.bluetooth_pads.return_value = ['a0:ab:51:12:34:56']
+        self.power_caps.return_value = {'sleep'}
+        w.set_theatre(True)
+        w.toggle_quick()
+        self.assertEqual(list(q.buttons), ['settings', 'exit-theatre', 'quit', 'pad-off',
+                                           'power-sleep'])
+        self.assertEqual(q.buttons['pad-off'].text().strip(), "Turn off controller")
+        self.bluetooth_pads.assert_called_with([(0x054c, 0x0ce6)])
+        q.buttons['pad-off'].click()
+        self.bluetooth_disconnect.assert_called_once_with('a0:ab:51:12:34:56')
+        self.assertFalse(q.isVisible())
+        self._pads()
+        toasts.clear()
+        w._pad_disconnected('DualSense')                    # BlueZ let it go
+        self.assertEqual(toasts, [])
+        self.assertTrue(w._theatre)
+        self.assertFalse(w._pad_leave_timer.isActive())
+        w.set_theatre(False)                                # by the keyboard, later
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', self.BT_DUALSENSE, True)   # the PS button again
+        self.assertFalse(w._theatre)
+        self.assertEqual(len(toasts), 1)                    # the usual "connected"
+        self.assertIn("DualSense connected", toasts[0])
+        self._pads()                                        # only that one power-on
+        w._pad_disconnected('DualSense')
+        self.assertEqual(len(toasts), 2)                    # an ordinary disconnect toasts
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', self.BT_DUALSENSE, True)
+        self.assertTrue(w._theatre and w._theatre_auto)
+        w.set_theatre(False)
+
+    def test_turn_off_controller_hidden(self):
+        """No row without a single Bluetooth pad the platform can
+        disconnect: Windows or no bluetoothctl (empty answer), a wired pad,
+        two pads, a pad SDL gave no GUID for. A failed start toasts."""
+        w, toasts = self._auto_setup()
+        q = w.quick
+        g = w.ctrl.pads
+        w.set_theatre(True)
+
+        def rows():
+            w.toggle_quick()
+            keys = list(q.buttons)
+            w.toggle_quick()
+            return keys
+        self._pads('DualSense')
+        g.guids = {0: self.BT_DUALSENSE}
+        self.assertNotIn('pad-off', rows())                 # the platform found no address
+        self.bluetooth_pads.return_value = ['a0:ab:51:12:34:56']
+        self.assertIn('pad-off', rows())
+        self.bluetooth_pads.reset_mock()
+        g.guids = {0: '030000004c050000e60c000000810000'}   # on USB
+        self.assertNotIn('pad-off', rows())
+        self.bluetooth_pads.assert_not_called()
+        g.guids = {0: ''}
+        self.assertNotIn('pad-off', rows())
+        self._pads('DualSense', 'DualSense')
+        g.guids = {0: self.BT_DUALSENSE, 1: self.BT_DUALSENSE}
+        self.assertNotIn('pad-off', rows())                 # which one?
+        self._pads('DualSense', 'Steam Virtual Gamepad', virtual={1})
+        self.assertIn('pad-off', rows())                    # Steam's copy isn't a second pad
+        self.bluetooth_disconnect.return_value = False
+        w.toggle_quick()
+        q.buttons['pad-off'].click()
+        self.assertEqual(toasts, ["Couldn't turn the controller off."])
+        self.assertEqual(w._pad_off, {})
+        w.set_theatre(False)
+
+    def test_guide_hold_power_off_is_quiet(self):
+        """w-74: a pad turned off by holding Guide goes without a toast, an
+        auto Theatre stays (no leave timer), and switching it on again doesn't
+        enter Theatre. Marked over PAD_OFF_S ago, it's an ordinary disconnect."""
+        from nexus.gui import win_controller
+        w, toasts = self._auto_setup()
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertTrue(w._theatre_auto)
+        toasts.clear()
+        w._pad_turned_off('DualSense')
+        self._pads()
+        w._pad_disconnected('DualSense')
+        self.assertEqual(toasts, [])
+        self.assertFalse(w._pad_leave_timer.isActive())
+        self.assertTrue(w._theatre)
+        self.assertFalse(w._theatre_auto)                   # Theatre is the user's now
+        w.set_theatre(False)
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertFalse(w._theatre)
+        # On the desktop, a mark that never saw its removal goes stale.
+        w._pad_turned_off('DualSense')
+        self._pads()
+        later = win_controller.time.monotonic() + win_controller.PAD_OFF_S + 1
+        with mock.patch.object(win_controller.time, 'monotonic', return_value=later):
+            w._pad_disconnected('DualSense')
+        self.assertEqual(toasts[-1], "DualSense disconnected.")
+        self._pads('DualSense')
+        w._pad_connected('DualSense', 'ps', 'g', True)
+        self.assertTrue(w._theatre)
         w.set_theatre(False)
 
     def _close_game(self, w, g, minutes):

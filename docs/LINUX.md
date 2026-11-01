@@ -349,7 +349,7 @@ Deck/Controller via Steam, most generic pads; no extra Python packages):
 | LB / RB | previous / next tab (Home · Library · Deals · News) |
 | LT / RT, right stick | scroll |
 | View / Share | switch Shelves · Grid · List; in Theatre's Library: **Sort & filter** |
-| Menu / Options, or Guide (Xbox / PS button) | on the desktop: **Theatre mode**; in Theatre: the **quick menu** |
+| Menu / Options, or Guide (Xbox / PS button) | on the desktop: **Theatre mode**; in Theatre: the **quick menu**. Guide acts when you let go of a short press, so holding it to turn the pad off does nothing in Nexus |
 | F11 | **Theatre mode** on / off |
 
 **Theatre mode** is Nexus for the TV: full screen, a big hero, rows of large tiles (plus
@@ -376,7 +376,11 @@ The **quick menu** (Start or Guide on a pad, F10 or a remote's Home key) opens o
 any Theatre screen: the time and date, your controllers and their battery, **Exit Theatre**
 and **Quit Nexus** (which asks first only while a job is running). Below them, when your
 system allows it (logind), **Sleep**, **Restart PC** and **Shut down**: Sleep acts at once, the
-other two ask first. B closes it.
+other two ask first. With one Bluetooth controller connected (and `bluetoothctl` installed),
+**Turn off controller** heads that section: it disconnects the pad, which stays paired, so its
+PS / Guide button turns it on again. A pad turned off this way, or by holding Guide, goes
+without a "disconnected" message, Theatre stays, and switching it back on doesn't bring Theatre
+back by itself. B closes it.
 
 **Theatre settings** (the quick menu's *Settings*, or the gear by the clock) is a sheet of big
 rows you change without leaving the couch: what A does on a game, starting Nexus in Theatre,
