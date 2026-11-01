@@ -188,11 +188,14 @@ class Window(unittest.TestCase):
         st = self.win.settings
         st.load()
         st.repacks.setChecked(False)
-        self.assertFalse(any(r.available for r in st.sections['torrent'].rows))
+        torrent = [st.row_of[st.tor_client], *st.tor_rows]
+        self.assertFalse(any(r.available for r in torrent))
         self.assertFalse(any(r.available for r in st._repack_rows))
-        self.assertFalse(st.sections['torrent'].isVisible())
+        self.assertTrue(st.groups['installing.torrent'].isHidden())
+        self.assertTrue(st.categories['installing'].adv.isHidden())   # all repack rows
         st.repacks.setChecked(True)
         self.assertTrue(all(r.available for r in st._repack_rows))
+        self.assertFalse(st.categories['installing'].adv.isHidden())
 
     def test_setup_without_repacks_and_skip_saves_nothing(self):
         w = self.win

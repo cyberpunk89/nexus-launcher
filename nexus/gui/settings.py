@@ -1,5 +1,7 @@
-"""The Settings page: sections in one scroll with a section list and a
-search beside it. Everything saves itself — a switch or a menu when it
+"""The Settings page: an Overview, then one category at a time (Look and
+feel, Library, Playing, Installing, Alerts, Accounts and keys, System),
+each in groups with an Advanced disclosure at its foot, and a search across
+all of them. Everything saves itself — a switch or a menu when it
 changes, a text field when you leave it — so there is no Save button to
 find and nothing is lost by walking away."""
 
@@ -9,12 +11,13 @@ import re
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF,
+from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QPointF, QPropertyAnimation, QRectF,
     Qt, QTimer, QUrl)
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QLinearGradient,
     QPainter, QPen, QRadialGradient, QShortcut)
-from PyQt6.QtWidgets import (QAbstractButton, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
-    QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QFileDialog, QFrame,
+    QGridLayout, QHBoxLayout, QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
+    QVBoxLayout, QWidget)
 
 from nexus import __version__, gamedb, platform, updates
 from nexus.features import has
@@ -152,12 +155,15 @@ class Switch(QCheckBox):
 class SettingRow(QWidget):
     """One setting: its name and a line about it on the left, the control on
     the right (or underneath, `wide`). Clicking the words flips a switch.
-    Search matches the title, the description and any `keywords`."""
+    Search matches the title, the description and any `keywords`. `key`
+    names it for links ('runner'; the page makes it 'playing.runner')."""
 
     def __init__(self, title: str, desc: str = '', control=None, wide: bool = False,
-                 keywords: str = '', field: bool = False):
+                 keywords: str = '', field: bool = False, key: str = ''):
         super().__init__()
+        self.key = key
         self.available = True             # False: doesn't apply right now (stays hidden)
+        self.gate: SettingRow | None = None     # the row that makes this one apply
         self._match = True
         self._keys = f"{title} {desc} {keywords}".lower()
         outer = QVBoxLayout(self)
@@ -241,23 +247,25 @@ class SettingRow(QWidget):
 
 class SettingsSection(QWidget):
     """A heading (icon, title, optional buttons on the right), a line saying
-    what the section is for, and a card of SettingRows with a hairline
-    between each two that are showing."""
+    what the group is for, and a card of SettingRows with a hairline
+    between each two that are showing. No title: the card alone (Advanced)."""
 
     def __init__(self, key: str, title: str, glyph: str, desc: str = ''):
         super().__init__()
         self.key, self.title, self.glyph = key, title, glyph
-        self._keys = f"{title} {desc}".lower()
+        self.config_backed = True       # greyed while config.toml can't be read
+        self._keys = f"{title} {desc}".lower() if title else ''
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['2'])
         head = QHBoxLayout()
         head.setSpacing(SP['2'])
-        head.addWidget(icon_label(G[glyph], 17, P['accent']))
-        head.addWidget(label(title, "ShelfTitle"))
-        head.addStretch()
+        if title:
+            head.addWidget(icon_label(G[glyph], 17, P['accent']))
+            head.addWidget(label(title, "ShelfTitle"))
+            head.addStretch()
+            lay.addLayout(head)
         self.actions = head
-        lay.addLayout(head)
         self.desc = label(desc, "Muted", wrap=True)
         lay.addWidget(self.desc)
         self.desc.setHidden(not desc)
@@ -268,7 +276,6 @@ class SettingsSection(QWidget):
         self.body.setSpacing(0)
         lay.addWidget(self.card)
         self.rows: list[SettingRow] = []
-        self.gate: SettingRow | None = None     # the row that makes the others apply
 
     def add(self, row: SettingRow) -> SettingRow:
         self.body.addWidget(row)
@@ -283,18 +290,78 @@ class SettingsSection(QWidget):
                 row.rule.setVisible(not first)
                 first = False
 
-    def filter(self, q: str) -> bool:
-        """Show the rows matching `q` (all of them when the section's own
-        name matches); True if anything is left showing."""
-        whole = not q or all(w in self._keys for w in q.split())
+    def match(self, q: str, whole: bool = False):
+        """Mark the rows matching `q` (all of them when the group's own
+        name matches, or `whole`)."""
+        whole = whole or not q or bool(self._keys) and all(w in self._keys for w in q.split())
         for row in self.rows:
             row.set_match(whole or row.matches(q))
-        if self.gate is not None and any(r._match and not r.available for r in self.rows):
-            self.gate.set_match(True)           # found, but off: show what turns it on
-        shown = any(r.available and r._match for r in self.rows)
-        self.setVisible(shown)
+
+    def settle(self) -> int:
+        """Show the group if any row is left showing; how many are."""
+        n = sum(1 for r in self.rows if r.available and r._match)
+        self.setVisible(n > 0)
         self.relayout()
-        return shown
+        return n
+
+
+class SettingsCategory(QWidget):
+    """One place in the Settings list (Playing, Installing…): a heading,
+    its groups, and an Advanced disclosure at the foot for the rarer rows.
+    A group, or Advanced, hides while none of its rows applies."""
+
+    def __init__(self, key: str, title: str, glyph: str, grad: str, desc: str):
+        super().__init__()
+        self.key, self.title, self.glyph, self.grad = key, title, glyph, grad
+        self._own = f"{title} {desc}".lower()   # the category's own words
+        self._keys = self._own                  # and every row's (the Ctrl+K palette)
+        self._searching = False                 # Advanced opened by a search
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(SP['6'])
+        head = QVBoxLayout()
+        head.setSpacing(SP['1'])
+        head.addWidget(label(title, "CategoryTitle"))
+        head.addWidget(label(desc, "Muted", wrap=True))
+        self.lay.addLayout(head)
+        self.groups: list[SettingsSection] = []
+        self.adv_body = SettingsSection(f'{key}.adv', '', 'tune')
+        self.adv = Disclosure(f'settings-{key}-adv', "Advanced", G['tune'], self.adv_body)
+        self.lay.addWidget(self.adv)
+
+    def group(self, sec: SettingsSection) -> SettingsSection:
+        self.lay.insertWidget(self.lay.count() - 1, sec)     # above Advanced
+        self.groups.append(sec)
+        return sec
+
+    @property
+    def rows(self) -> list[SettingRow]:
+        return [r for sec in (*self.groups, self.adv_body) for r in sec.rows]
+
+    def filter(self, q: str) -> int:
+        """Show the rows matching `q` ('' = all that apply), opening Advanced
+        while a search finds something in it; how many rows show."""
+        whole = not q or all(w in self._own for w in q.split())
+        secs = (*self.groups, self.adv_body)
+        for sec in secs:
+            sec.match(q, whole)
+        for row in self.rows:                   # found, but off: show what turns it on
+            if row.gate is not None and row._match and not row.available:
+                row.gate.set_match(True)
+        n = sum(sec.settle() for sec in self.groups)
+        # Advanced's card: the Disclosure shows or hides it (open or not).
+        more = sum(1 for r in self.adv_body.rows if r.available and r._match)
+        self.adv_body.relayout()
+        self.adv.setVisible(more > 0)
+        self.adv.set_summary(f"{more} more")
+        if q and more:
+            if not self.adv.is_open:
+                self.adv.set_open(True, remember=False)
+                self._searching = True
+        elif self._searching:
+            self.adv.set_open(Disclosure.OPEN.get(self.adv.key, False), remember=False)
+            self._searching = False
+        return n + more
 
 
 class AppearanceCard(SettingsSection):
@@ -329,7 +396,7 @@ class AppearanceCard(SettingsSection):
             self.groups.setdefault('preset', []).append(sw)
         self.preset_row = self.add(SettingRow(
             "Looks", "Theme, accent, gradient, glow and corners in one click.", flow,
-            wide=True, keywords="preset style quick neon contrast accessibility"))
+            wide=True, keywords="preset style quick neon contrast accessibility", key='looks'))
         flow = FlowLayout(None, 0, SP['2'])
         for key, (name, _t) in THEMES.items():
             sw = Swatch('theme', key, name, (96, 56))
@@ -337,7 +404,8 @@ class AppearanceCard(SettingsSection):
             flow.addWidget(sw)
             self.groups.setdefault('theme', []).append(sw)
         self.theme_row = self.add(SettingRow("Theme", "", flow, wide=True,
-                                             keywords="dark light colours palette high contrast"))
+                                             keywords="dark light colours palette high contrast",
+                                             key='theme'))
 
         row = FlowLayout(None, 0, SP['1_5'])     # wraps in a narrow window
         for key, hexv in ACCENTS.items():
@@ -353,23 +421,24 @@ class AppearanceCard(SettingsSection):
         self.custom.editingFinished.connect(self._custom)
         row.addWidget(self.custom)
         self.add(SettingRow("Accent colour", "Buttons, highlights and the focus ring.", row,
-                            wide=True, keywords="color hex"))
+                            wide=True, keywords="color hex", key='accent'))
 
         row = FlowLayout(None, 0, SP['1_5'])
         self.partner_row = row
         self.add(SettingRow("Gradient", "A second colour the accent blends into.", row,
-                            wide=True, keywords="color"))
+                            wide=True, keywords="color", key='gradient'))
 
         self.glow = SegmentedControl('pill', 32)
         for k, t in (('off', "Off"), ('subtle', "Subtle"), ('vivid', "Vivid")):
             self.glow.add(k, t)
         self.glow.changed.connect(lambda k: self._set('glow', k))
-        self.add(SettingRow("Background glow", "Soft colour behind the pages.", self.glow))
+        self.add(SettingRow("Background glow", "Soft colour behind the pages.", self.glow,
+                            key='glow'))
         self.art_tint = Switch()
         self.art_tint.toggled.connect(lambda on: self._set('art_tint', on))
         self.add(SettingRow("Tint the glow with game art",
                             "Takes its colour from the featured game. Needs the glow on.",
-                            self.art_tint))
+                            self.art_tint, key='art_tint'))
 
         self.size = SegmentedControl('pill', 32)
         for v in SCALES:
@@ -377,14 +446,14 @@ class AppearanceCard(SettingsSection):
         self.size.changed.connect(lambda k: self._set('scale', float(k)))
         self.add(SettingRow("Size", "Text and spacing everywhere — larger for a TV or a "
                             "high-resolution screen.", self.size,
-                            keywords="scale zoom font bigger smaller dpi"))
+                            keywords="scale zoom font bigger smaller dpi", key='size'))
 
         self.corners = SegmentedControl('pill', 32)
         for k, t in (('sharp', "Sharp"), ('default', "Soft"), ('round', "Round")):
             self.corners.add(k, t)
         self.corners.changed.connect(lambda k: self._set('corners', k))
         self.add(SettingRow("Corners", "How round cards, buttons and fields are.", self.corners,
-                            keywords="radius"))
+                            keywords="radius", key='corners'))
 
     def _partners(self):
         clear_layout(self.partner_row)
@@ -494,6 +563,149 @@ def token_note(scopes) -> str:
             + (f" and {can[-1]}" if can else " only") + ". " + TOKEN_NOTE)
 
 
+def torrent_problem(data: dict | None) -> str | None:
+    """What the last torrent poll said went wrong (None: it answered, or
+    no client is set up)."""
+    data = data or {}
+    if data.get('configured') is False:
+        return None
+    return (data.get('error') or {}).get('message') or None
+
+
+# Old section keys (links, palette history) and where they live now.
+OLD_KEYS = {'appearance': ('look', None), 'controls': ('playing', None),
+            'running': ('playing', 'proton'), 'artwork': ('accounts', 'sgdb_key'),
+            'gamedb': ('accounts', 'deals'), 'torrent': ('installing', 'torrent_client'),
+            'background': ('alerts', 'agent'), 'backup': ('system', 'backup'),
+            'about': ('system', 'version')}
+
+# The six category cards on Overview (System gets quiet links instead).
+OVERVIEW_CATS = ('look', 'library', 'playing', 'installing', 'alerts', 'accounts')
+
+
+class SettingsOverview(QWidget):
+    """Where Settings opens: who this Nexus is (a placeholder until the
+    profile, phase 5), up to three things worth a look, a card per category
+    saying what is set there, and quiet links into System."""
+    wanted = pyqtSignal(str, str)       # (category, row) to open
+    setup_wanted = pyqtSignal()
+
+    def __init__(self, cats: dict[str, 'SettingsCategory']):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['6'])
+        card = QFrame()
+        card.setObjectName("Card")
+        h = QHBoxLayout(card)
+        h.setContentsMargins(SP['5'], SP['5'], SP['5'], SP['5'])
+        h.setSpacing(SP['4'])
+        h.addWidget(GlyphBadge(G['settings'], 'dusk', 56), 0, Qt.AlignmentFlag.AlignVCenter)
+        v = QVBoxLayout()
+        v.setSpacing(SP['1'])
+        v.addWidget(label("Your Nexus", "CategoryTitle"))
+        v.addWidget(label(f"Nexus {__version__} on {platform.OS_NAME.capitalize()}", "Muted",
+                          wrap=True))
+        h.addLayout(v, 1)
+        lay.addWidget(card)
+
+        # Worth a look: three fixed rows, filled (or hidden) by set_worth.
+        self.worth = SettingsSection('worth', "Worth a look", 'sparkles')
+        self._targets: list[tuple[str, str]] = []
+        self.worth_rows: list[SettingRow] = []
+        for i in range(3):
+            b = QPushButton()
+            b.clicked.connect(lambda _=False, i=i: self.wanted.emit(*self._targets[i]))
+            row = self.worth.add(SettingRow("", "", b))
+            row.button = b
+            self.worth_rows.append(row)
+            self._targets.append(('overview', ''))
+        lay.addWidget(self.worth)
+
+        self.grid = QGridLayout()
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(SP['3'])
+        self.grid.setVerticalSpacing(SP['3'])
+        hold = QWidget()
+        hold.setLayout(self.grid)
+        lay.addWidget(hold)
+        self.cards: dict[str, ClickRow] = {}
+        self.lines: dict[str, ElideLabel] = {}
+        for key in OVERVIEW_CATS:
+            cat = cats[key]
+            row = ClickRow()
+            row.setObjectName("OverviewCard")
+            row.setAccessibleName(cat.title)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(SP['4'], SP['3'], SP['3'], SP['3'])
+            rl.setSpacing(SP['3'])
+            rl.addWidget(GlyphBadge(G[cat.glyph], cat.grad, 36), 0,
+                         Qt.AlignmentFlag.AlignVCenter)
+            tv = QVBoxLayout()
+            tv.setSpacing(SP['0_5'])
+            tv.addWidget(label(cat.title, "RowTitle"))
+            line = ElideLabel("", "Muted")
+            tv.addWidget(line)
+            rl.addLayout(tv, 1)
+            rl.addWidget(icon_label(G['chevron_right'], 16, P['muted']))
+            for w in row.findChildren(QWidget):
+                w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            row.clicked.connect(lambda k=key: self.wanted.emit(k, ''))
+            self.cards[key] = row
+            self.lines[key] = line
+        self.set_columns(2)
+
+        # System is a place you go for a task, not to browse: quiet links.
+        links = QHBoxLayout()
+        links.setContentsMargins(0, 0, 0, 0)
+        links.setSpacing(SP['1'])
+        links.addStretch()
+        for text, glyph, target in (("Back up & move", 'save', 'backup'),
+                                    ("Check for updates", 'update', 'check_updates'),
+                                    ("Run setup again", 'refresh', None)):
+            b = QPushButton(amp(text))
+            b.setObjectName("Ghost")
+            set_glyph_icon(b, G[glyph], 14, 'subtext', hover_role='text')
+            if target:
+                b.clicked.connect(lambda _=False, r=target: self.wanted.emit('system', r))
+            else:
+                b.clicked.connect(self.setup_wanted)
+            links.addWidget(b)
+        hold = QWidget()
+        hold.setLayout(links)
+        self.links = hold
+        lay.addWidget(hold)
+
+    def set_columns(self, n: int):
+        """Two columns of cards, one in a narrow window."""
+        for i, key in enumerate(OVERVIEW_CATS):
+            card = self.cards[key]
+            self.grid.removeWidget(card)
+            self.grid.addWidget(card, i // n, i % n)
+        for c in range(2):
+            self.grid.setColumnStretch(c, 1 if c < n else 0)
+
+    def set_states(self, lines: dict[str, str]):
+        for key, text in lines.items():
+            if key in self.lines:
+                self.lines[key].setText(text)
+                self.lines[key].setToolTip(text)
+
+    def set_worth(self, items: list[tuple[str, str, str, str, str]]):
+        """(title, line, button, category, row), at most three; none hides it."""
+        for i, row in enumerate(self.worth_rows):
+            item = items[i] if i < len(items) else None
+            row.set_available(item is not None)
+            if item is None:
+                continue
+            title, desc, button, cat, key = item
+            row.title.setText(title)
+            row.set_description(desc)
+            row.button.setText(amp(button))
+            self._targets[i] = (cat, key)
+        self.worth.settle()
+
+
 class SettingsPage(QWidget):
     """Edits the config.toml keys the GUI owns; everything else in the file
     (comments, unknown keys) is preserved by save_config(). Library
@@ -527,7 +739,7 @@ class SettingsPage(QWidget):
         self.scroll.setWidget(host)
         page.addWidget(self.scroll, 1)
         center = QHBoxLayout(host)
-        center.setContentsMargins(SP['6'], SP['4'], SP['6'], 0)
+        center.setContentsMargins(SP['6'], SP['4'], SP['6'], SP['8'])
         center.addStretch(1)
         col = QWidget()
         col.setMaximumWidth(780)
@@ -546,37 +758,36 @@ class SettingsPage(QWidget):
         self.no_match.setVisible(False)
         self.content.addWidget(self.no_match)
 
-        self.sections: dict[str, SettingsSection] = {}
+        # One category shows at a time (Overview first); a search shows
+        # every category with a match, one under the other.
+        self.categories: dict[str, SettingsCategory] = {}
+        self.groups: dict[str, SettingsSection] = {}    # 'installing.torrent'
         self.row_of: dict[QWidget, SettingRow] = {}
         self.appearance = AppearanceCard()
-        self._add_section(self.appearance)
+        self._build_look()
         self._build_library()
-        self._build_controls()
+        self._build_playing()
         self._build_installing()
-        self._build_running()
-        self._build_artwork()
-        self._build_gamedb()
-        self._build_torrent()
         self._build_alerts()
-        self._build_background()
-        self._build_backup()
-        self._build_about()
+        self._build_accounts()
+        self._build_system()
         for control, feature in ((self.heroic, 'heroic'), (self.runner, 'proton'),
                                  (self.proton, 'proton'), (self.al_proton, 'proton')):
             if not has(feature):                # a Linux-only setting
                 self.row_of[control].set_available(False)
-        for sec in self.sections.values():
-            sec.relayout()
-        self.tail = QWidget()                   # lets the last section scroll to the top
-        self.content.addWidget(self.tail)
+        self._index_rows()
+        self.overview = SettingsOverview(self.categories)
+        self.content.insertWidget(2, self.overview)
+        self.overview.wanted.connect(self.open_at)
+        self.overview.setup_wanted.connect(self.setup_wanted)
+        self.appearance.changed.connect(self._appearance_changed)
+        self._build_nav_items()
         self.content.addStretch()
 
         bar = self.scroll.verticalScrollBar()
-        bar.valueChanged.connect(self._spy)
         self._anim = QPropertyAnimation(bar, b"value", self)
         self._anim.setDuration(240)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.scroll.viewport().installEventFilter(self)
         self._flash = QTimer(self)
         self._flash.setSingleShot(True)
         self._flash.setInterval(2500)
@@ -587,7 +798,9 @@ class SettingsPage(QWidget):
             sc.activated.connect(slot)
 
         self.cfg = {}
-        self._scroll_key = ''
+        self._current = 'overview'
+        self._scroll_row: SettingRow | None = None
+        self._torrent_problem: str | None = None
         self._proton_current = None
         self._loading = False
         self._loaded = False                    # nothing saves before the first load()
@@ -596,7 +809,7 @@ class SettingsPage(QWidget):
         self.gamedb_changed = False
         self._agent_state = None
         self._wire()
-        self._show_nav(next(iter(self.sections)))
+        self._apply_filter()
 
     # ---- building ----
     def _build_nav(self) -> QWidget:
@@ -629,33 +842,53 @@ class SettingsPage(QWidget):
         head.addWidget(self.search)
         self.nav_lay = lay
         self.nav_btns: dict[str, QPushButton] = {}
-        self._nav_end = lay.count()
-        lay.addStretch()
-        cfg = self.cfg_btn = QPushButton("Open config.toml")
-        cfg.setObjectName("Ghost")
-        self._cfg_tip = (f"{CONFIG_PATH}\nPhone pushes ([notify]) and a few rarer options "
-                         "live only here")
-        cfg.setAccessibleName("Open config.toml")
-        cfg.setToolTip(self._cfg_tip)
-        set_glyph_icon(cfg, G['external'], 14)
-        cfg.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_PATH))))
-        lay.addWidget(cfg, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addStretch()                        # the foot: the profile, later (phase 5)
         return nav
 
-    def _add_section(self, sec: SettingsSection) -> SettingsSection:
-        self.sections[sec.key] = sec
-        self.content.addWidget(sec)
-        b = QPushButton(amp(sec.title))
-        b.setObjectName("NavItem")
-        b.setAccessibleName(sec.title)
-        b.setCheckable(True)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        set_glyph_icon(b, G[sec.glyph], 16, 'muted', on_role='accent')
-        b.clicked.connect(lambda _=False, k=sec.key: self.show_section(k))
-        self.nav_lay.insertWidget(self._nav_end, b)
-        self._nav_end += 1
-        self.nav_btns[sec.key] = b
+    def _build_nav_items(self):
+        """Overview, the six categories, then System, each set a little apart."""
+        at = self.nav_lay.indexOf(self.head) + 1
+        items = [('overview', "Overview", 'grid'),
+                 *((k, c.title, c.glyph) for k, c in self.categories.items())]
+        for i, (key, title, glyph) in enumerate(items):
+            if key in ('look', 'system'):
+                self.nav_lay.insertSpacing(at, SP['3'])
+                at += 1
+            b = QPushButton(amp(title))
+            b.setObjectName("NavItem")
+            b.setAccessibleName(title)
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            set_glyph_icon(b, G[glyph], 16, 'muted', on_role='accent')
+            b.clicked.connect(lambda _=False, k=key: self.open_at(k))
+            self.nav_lay.insertWidget(at, b)
+            at += 1
+            self.nav_btns[key] = b
+
+    def _add_category(self, key: str, title: str, glyph: str, grad: str,
+                      desc: str) -> SettingsCategory:
+        cat = SettingsCategory(key, title, glyph, grad, desc)
+        self.content.addWidget(cat)             # parented first, then hidden
+        cat.hide()
+        self.categories[key] = cat
+        return cat
+
+    def _group(self, cat: SettingsCategory, key: str, title: str, glyph: str,
+               desc: str = '', config_backed: bool = True) -> SettingsSection:
+        sec = cat.group(SettingsSection(key, title, glyph, desc))
+        sec.config_backed = config_backed
+        self.groups[f'{cat.key}.{key}'] = sec
         return sec
+
+    def _index_rows(self):
+        """Every row by its full key ('playing.runner'), for links and tests;
+        the palette finds a category by its rows' words too."""
+        self.rows: dict[str, SettingRow] = {}
+        for cat in self.categories.values():
+            for row in cat.rows:
+                row.key = f'{cat.key}.{row.key}'
+                self.rows[row.key] = row
+                cat._keys += ' ' + row._keys
 
     def _row(self, sec, title, desc, control, **kw) -> SettingRow:
         row = sec.add(SettingRow(title, desc, control, **kw))
@@ -699,53 +932,78 @@ class SettingsPage(QWidget):
         eye.triggered.connect(flip)
         return edit
 
+    def _build_look(self):
+        cat = self._add_category('look', "Look and feel", 'palette', 'dusk',
+                                 "Theme, accent, glow, size and corners, for the whole app.")
+        cat.group(self.appearance)
+        self.appearance.config_backed = False   # library.json, not config.toml
+        self.groups['look.appearance'] = self.appearance
+
     def _build_library(self):
-        sec = self._add_section(SettingsSection('library', "Library", 'library'))
+        cat = self._add_category('library', "Library", 'library', 'aurora',
+                                 "Which games the library shows, the News page and artwork.")
+        sec = self._group(cat, 'shows', "What it shows", 'library', config_backed=False)
         self.show_owned = Switch()
         self._row(sec, "Show games you own but haven't installed",
                   "Steam games through Game-db, Epic and GOG through Heroic.", self.show_owned,
-                  keywords="owned uninstalled epic gog")
+                  keywords="owned uninstalled epic gog", key='owned')
         from .dashboard import DUP_ORDER           # the order a duplicate is kept in
         names = {'nexus': "repack", 'steam': "Steam", 'heroic': "Heroic", 'epic': "Epic"}
         order = ", then ".join(names[k] for k in DUP_ORDER if k != 'heroic' or has('heroic'))
         self.ctl_dedupe = _combo(((f"Show it once ({order})", True),
                                   ("Show every copy", False)))
         self._row(sec, "A game in several stores", "Which copies the library shows.",
-                  self.ctl_dedupe, keywords="duplicate dedupe")
+                  self.ctl_dedupe, keywords="duplicate dedupe", key='dedupe')
         self.news = Switch()
         self._row(sec, "News page", "FitGirl's latest posts and news for your games. "
-                  "Experimental.", self.news, keywords="feed")
+                  "Experimental.", self.news, keywords="feed", key='news')
+        sec = self._group(cat, 'artwork', "Artwork", 'image',
+                          "Covers, heroes and logos from SteamGridDB.")
+        fill = QPushButton("Fetch now")
+        set_glyph_icon(fill, G['download'], 14)
+        fill.clicked.connect(lambda: self.request.emit(
+            ['--fill-art'], "Fetching extra artwork from SteamGridDB", False, 'task'))
+        self.fill_art = fill
+        self._row(sec, "Fetch missing artwork", "For every game, Steam and Heroic too. "
+                  "Art you picked yourself is kept.", fill, keywords="images download",
+                  key='fill_art')
 
-    def _build_controls(self):
-        sec = self._add_section(SettingsSection(
-            'controls', "Controls and Theatre", 'gamepad',
-            "What clicks, keys and the controller do on a game, and how Theatre mode behaves. "
-            "A game that's running, busy or not installed always opens its page."))
+    def _build_playing(self):
+        cat = self._add_category('playing', "Playing", 'gamepad', 'tide',
+                                 "How games start from the mouse, the keyboard or the couch, "
+                                 "and how Windows games run.")
+        sec = self._group(cat, 'keys', "Mouse and keys", 'play',
+                          "What clicks, keys and the controller's A do on a game. A game "
+                          "that's running, busy or not installed always opens its page.",
+                          config_backed=False)
         self.ctl_double = _combo((("Play the game", 'play'), ("Open its page", 'details')))
-        self._row(sec, "Double-click a game", "", self.ctl_double, keywords="mouse")
+        self._row(sec, "Double-click a game", "", self.ctl_double, keywords="mouse",
+                  key='double_click')
         self.ctl_a = _combo((("Open its page (press again to play)", 'details'),
                              ("Play the game", 'play')))
         self._row(sec, "Enter or controller A", "", self.ctl_a,
-                  keywords="keyboard gamepad button")
-        self.ctl_attract = _combo([("Never" if not m else f"After {m} minutes idle", m)
-                                   for m in ATTRACT_MINUTES])
-        self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
-                  "untouched.", self.ctl_attract, keywords="attract idle tv")
+                  keywords="keyboard gamepad button", key='pad_a')
         # Theatre's own settings (w-63); its sheet on the couch shows the same.
+        sec = self._group(cat, 'theatre', "Controller and Theatre", 'tv', config_backed=False)
         self.ctl_on_pad = Switch()
         self._row(sec, "Switch to Theatre when a controller connects",
                   "Only when you plug one in or turn it on.", self.ctl_on_pad,
-                  keywords="gamepad tv auto")
+                  keywords="gamepad tv auto", key='theatre_on_pad')
         self.ctl_start = _combo((("Never", 'never'), ("On a TV", 'tv'), ("Always", 'always')))
         self._row(sec, "Start Nexus in Theatre", "On a TV: when the screen is 32\" or bigger.",
-                  self.ctl_start, keywords="tv couch startup launch")
+                  self.ctl_start, keywords="tv couch startup launch", key='theatre_start')
+        self.ctl_attract = _combo([("Never" if not m else f"After {m} minutes idle", m)
+                                   for m in ATTRACT_MINUTES])
+        self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
+                  "untouched.", self.ctl_attract, keywords="attract idle tv", key='attract')
         self.ctl_week = Switch()
         self._row(sec, "Your week on Theatre's Home", "Your play time this week, under "
-                  "Jump back in.", self.ctl_week, keywords="playtime stats streak")
+                  "Jump back in.", self.ctl_week, keywords="playtime stats streak",
+                  key='week_home')
         self.ctl_sounds = Switch()
         self.sounds_row = self._row(sec, "Menu sounds in Theatre", "Soft clicks as you move "
                                     "and select. They play in Theatre mode only.",
-                                    self.ctl_sounds, keywords="audio sfx")
+                                    self.ctl_sounds, keywords="audio sfx", key='sounds')
         self.ctl_volume = _combo([(f"{v}%", v) for v in VOLUME_STEPS])
         # Test sound plays here, outside Theatre and with sounds off (w-73).
         self.sound_test = QPushButton("Test sound")
@@ -756,201 +1014,159 @@ class SettingsPage(QWidget):
         vol.addWidget(self.sound_test)
         vol.addWidget(self.ctl_volume)
         self.volume_row = self._row(sec, "Menu sound volume", "", vol,
-                                    keywords="audio loud test")
+                                    keywords="audio loud test", key='volume')
         self.row_of[self.ctl_volume] = self.volume_row
         self.ctl_sounds.toggled.connect(self.ctl_volume.setEnabled)
+        sec = self._group(cat, 'windows', "Windows games", 'proton')
+        self.proton = _combo(())
+        self.proton.setToolTip("A game can override it on its page, under Launch")
+        self._row(sec, "Proton version", "Used in launch.sh, Steam and Heroic. A game can "
+                  "override it on its page.", self.proton, keywords="ge-proton compatibility",
+                  key='proton')
+        self.runner = _combo((("Automatic", 'auto'), ("umu-run + Proton", 'umu'),
+                              ("Proton (direct)", 'proton'), ("System Wine", 'wine')))
+        self._row(cat.adv_body, "Runner", "How Windows games start. Automatic uses umu-run "
+                  "with Proton when it's installed, then Proton, then Wine.", self.runner,
+                  keywords="umu wine backend", key='runner')
 
     def set_sound_problem(self, text: str):
         """Why menu sounds can't play ('' when they can), under the switch."""
         self.sounds_row.set_note(text)
 
     def _build_installing(self):
-        sec = self._add_section(SettingsSection('installing', "Installing games", 'download'))
+        cat = self._add_category('installing', "Installing", 'download', 'ember',
+                                 "Where games go, repacks, the torrent client and the "
+                                 "shortcuts each new game gets.")
+        adv = cat.adv_body
+        sec = self._group(cat, 'where', "Where games go", 'folder')
+        self.base = QLineEdit()
+        self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
+        self._field_row(sec, "Install games to", "Each game gets its own folder here.",
+                        self.base, browse=True, keywords="folder path location", key='base')
+        self.base.textChanged.connect(self._check_base)    # typed or picked
+        self._check_base()
+        sec = self._group(cat, 'repacks', "Repacks", 'download')
         self.repacks = Switch()
         self._row(sec, "Repack features", "Installing repacks, watching download folders, "
                   "FitGirl matches on Deals, repack update alerts and the torrent client. Off: "
                   "Nexus is a launcher for your other games.", self.repacks,
-                  keywords="fitgirl repack torrent downloads")
+                  keywords="fitgirl repack torrent downloads", key='repacks')
         self._repack_rows = []
-        self.base = QLineEdit()
-        self.base.setPlaceholderText(INSTALL_BASE_DEFAULT)
-        self._field_row(sec, "Install games to", "Each game gets its own folder here.",
-                        self.base, browse=True, keywords="folder path location")
-        self.base.textChanged.connect(self._check_base)    # typed or picked
-        self._check_base()
         self.scan_dir = QLineEdit()
         self.scan_dir.setPlaceholderText(str(HOME / 'Downloads'))
         self._repack_rows.append(self._field_row(
             sec, "Look for repacks in", "Nexus says when a download here is ready to install.",
-            self.scan_dir, browse=True, keywords="downloads folder scan"))
+            self.scan_dir, browse=True, keywords="downloads folder scan", key='scan_dir'))
         self.scan_more = QLineEdit()
         self.scan_more.setPlaceholderText(f"e.g. {os.path.join('~', 'Games', 'Install')}")
         self._repack_rows.append(self._field_row(
-            sec, "Also look in", "More folders to watch, separated by ;", self.scan_more,
-            keywords="folders scan"))
+            adv, "Also look in", "More folders to watch, separated by ;", self.scan_more,
+            keywords="folders scan", key='scan_more'))
         self.unattended = Switch()
         self._repack_rows.append(self._row(
             sec, "Install without the setup window", "Runs FitGirl's installer silently; "
-            "follow it in Activity.", self.unattended, keywords="silent unattended"))
+            "follow it in Activity.", self.unattended, keywords="silent unattended",
+            key='unattended'))
         self.trash_repack = Switch()
         self._repack_rows.append(self._row(
             sec, "Move the repack to the Trash afterwards", "Frees the space once the game is "
             "installed. You can still restore it from the Trash.", self.trash_repack,
-            keywords="delete cleanup"))
+            keywords="delete cleanup", key='trash_repack'))
+        self._build_torrent(cat)
+        sec = self._group(cat, 'shortcuts', "Shortcuts for new games", 'link')
         self.steam = Switch()
         self._row(sec, "Add new games to Steam", "As a non-Steam game, with its artwork.",
-                  self.steam, keywords="shortcut")
+                  self.steam, keywords="shortcut", key='steam')
         self.heroic = Switch()
-        self._row(sec, "Add new games to Heroic", "", self.heroic)
+        self._row(sec, "Add new games to Heroic", "", self.heroic, key='heroic')
         self.desktop = Switch()
         if has('desktop_entry'):
             self._row(sec, "Add new games to the app menu", "A launcher entry for each game.",
-                      self.desktop, keywords="desktop entry")
+                      self.desktop, keywords="desktop entry", key='desktop')
         else:                                   # Windows: the same key, as .lnk shortcuts
             self._row(sec, "Start Menu shortcuts", "A shortcut for each new game, in the "
                       "Start Menu's Nexus folder.", self.desktop,
-                      keywords="start menu shortcut lnk desktop app menu")
+                      keywords="start menu shortcut lnk desktop app menu", key='desktop')
 
-    def _build_running(self):
-        sec = self._add_section(SettingsSection('running', "Running games", 'proton'))
-        self.runner = _combo((("Automatic", 'auto'), ("umu-run + Proton", 'umu'),
-                              ("Proton (direct)", 'proton'), ("System Wine", 'wine')))
-        self._row(sec, "Runner", "How Windows games start. Automatic uses umu-run with "
-                  "Proton when it's installed, then Proton, then Wine.", self.runner,
-                  keywords="umu wine backend")
-        self.proton = _combo(())
-        self.proton.setToolTip("A game can override it on its page, under Launch")
-        self._row(sec, "Proton version", "Used in launch.sh, Steam and Heroic. A game can "
-                  "override it on its page.", self.proton, keywords="ge-proton compatibility")
-        self.account = QLineEdit()
-        self.account.setPlaceholderText("last signed in")
-        self._field_row(sec, "Steam account", "Whose Steam gets the shortcuts. Leave empty for "
-                        "the last one signed in.", self.account, keywords="profile user")
-
-    def _build_artwork(self):
-        sec = self._add_section(SettingsSection('artwork', "Artwork", 'image',
-                                                "Covers, heroes and logos from SteamGridDB."))
-        self.key = self._secret(QLineEdit())
-        self.key.setPlaceholderText("not set")
-        get = QPushButton("Get a key")
-        get.setToolTip("Opens SteamGridDB's API page (free, needs an account)")
-        get.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SGDB_KEY_URL)))
-        self._field_row(sec, "SteamGridDB API key", "Free from your SteamGridDB preferences.",
-                        self.key, extra=(get,), keywords="sgdb token")
-        fill = QPushButton("Fetch now")
-        set_glyph_icon(fill, G['download'], 14)
-        fill.clicked.connect(lambda: self.request.emit(
-            ['--fill-art'], "Fetching extra artwork from SteamGridDB", False, 'task'))
-        self.fill_art = fill
-        self._row(sec, "Fetch missing artwork", "For every game, Steam and Heroic too. "
-                  "Art you picked yourself is kept.", fill, keywords="images download")
-
-    def _build_gamedb(self):
-        sec = self._add_section(SettingsSection(
-            'gamedb', "Game-db", 'deals',
-            "Wishlist deals, upcoming releases and your backlog, from your Game-db account."))
-        self.gdb_enabled = Switch()
-        self._row(sec, "Deals page", "Show it in the top bar.", self.gdb_enabled,
-                  keywords="wishlist releases backlog")
-        self.gdb_url = QLineEdit()
-        self.gdb_url.setPlaceholderText(gamedb.EXAMPLE_URL)
-        self._field_row(sec, "Address", "", self.gdb_url, keywords="url server")
-        self.gdb_token = self._secret(QLineEdit())
-        self.gdb_token.setPlaceholderText("gdb_…")
-        get = QPushButton("Create one")
-        get.setToolTip("Opens your Game-db account page in the browser")
-        get.clicked.connect(self._open_gamedb_account)
-        self.gdb_token_row = self._field_row(
-            sec, "Desktop app token", TOKEN_NOTE, self.gdb_token, extra=(get,),
-            keywords="key scope")
-        self.gdb_games = Switch()
-        self.gdb_games_row = self._row(
-            sec, "Game details from Game-db", "", self.gdb_games,
-            keywords="protondb howlongtobeat hltb igdb reviews early access")
-        self.gdb_sessions = Switch()
-        self.gdb_sessions_row = self._row(
-            sec, "Upload play sessions", SESSIONS_NOTE, self.gdb_sessions,
-            keywords="play time history upload share group")
-        self.gdb_other = Switch()
-        self.gdb_other_row = self._row(
-            sec, "Include games not from a store", "Repacks and other games too, as their "
-            "title only: never a folder or a repack name.", self.gdb_other,
-            keywords="repack play sessions upload")
-        self.gdb_sessions.toggled.connect(self.gdb_other.setEnabled)
-        self.gdb_library = Switch()
-        self.gdb_library_row = self._row(
-            sec, "Send my Heroic library", LIBRARY_NOTE, self.gdb_library,
-            keywords="epic gog amazon heroic library igdb upload")
-        self.gdb_device = QLineEdit()
-        self.gdb_device.setMaxLength(64)
-        self.gdb_device.setPlaceholderText(gamedb.device_label())
-        self._field_row(sec, "This PC's name", "How Game-db lists this Nexus on its account "
-                        "page.", self.gdb_device, keywords="device hostname")
-
-    def _build_torrent(self):
-        sec = self._add_section(SettingsSection(
-            'torrent', "Torrent client", 'magnet',
-            "For the Downloads page and Grab on Deals. The client must run on this machine "
-            "with remote control on: Transmission, Edit → Preferences → Remote; qBittorrent, "
-            "Tools → Options → Web UI."))
+    def _build_torrent(self, cat: SettingsCategory):
+        """Installing's Torrent client group; its login and seed ratio go
+        under Advanced. Every row but Client needs a client chosen."""
+        sec = self._group(cat, 'torrent', "Torrent client", 'magnet',
+                          "For the Downloads page and Grab on Deals. The client must run on "
+                          "this machine with remote control on: Transmission, Edit → "
+                          "Preferences → Remote; qBittorrent, Tools → Options → Web UI.")
+        adv = cat.adv_body
         self.tor_client = _combo((("Off", None), ("Transmission", 'transmission'),
                                   ("qBittorrent", 'qbittorrent')))
-        sec.gate = self._row(sec, "Client", "", self.tor_client,
-                             keywords="transmission qbittorrent")
+        gate = self._row(sec, "Client", "", self.tor_client,
+                         keywords="transmission qbittorrent", key='torrent_client')
         self.tor_url = QLineEdit()
         self.tor_url.setPlaceholderText("http://127.0.0.1:9091")
         self.tor_rows = [self._field_row(sec, "Remote address", "", self.tor_url,
-                                         keywords="url port rpc")]
-        self.tor_user = QLineEdit()
-        self.tor_user.setPlaceholderText("only if the client asks for one")
-        self.tor_rows.append(self._field_row(sec, "Username", "", self.tor_user))
-        self.tor_pass = self._secret(QLineEdit())
-        self.tor_rows.append(self._field_row(sec, "Password", "", self.tor_pass))
+                                         keywords="url port rpc", key='torrent_url')]
         self.tor_dir = QLineEdit()
         self.tor_dir.setPlaceholderText("the client's own folder")
         self.tor_rows.append(self._field_row(sec, "Download to", "", self.tor_dir, browse=True,
-                                             keywords="folder"))
-        self.tor_ratio = QLineEdit()
-        self.tor_ratio.setPlaceholderText("the client's setting")
-        self.tor_rows.append(self._field_row(sec, "Stop seeding at ratio",
-                                             "A number like 1.5. Empty keeps seeding as the "
-                                             "client says.", self.tor_ratio,
-                                             keywords="seed share"))
+                                             keywords="folder", key='torrent_dir'))
         self.tor_test = QPushButton("Test connection")
         self.tor_test.setToolTip("Asks the client for its version")
         self.tor_test.clicked.connect(self._test_torrent)
-        self.tor_test_row = self._row(sec, "Check it works", "", self.tor_test)
+        self.tor_test_row = self._row(sec, "Check it works", "", self.tor_test,
+                                      key='torrent_test')
         self.tor_result = self.tor_test_row.desc
         self.tor_rows.append(self.tor_test_row)
+        self.tor_user = QLineEdit()
+        self.tor_user.setPlaceholderText("only if the client asks for one")
+        self.tor_rows.append(self._field_row(adv, "Torrent username", "", self.tor_user,
+                                             keywords="torrent client login",
+                                             key='torrent_user'))
+        self.tor_pass = self._secret(QLineEdit())
+        self.tor_rows.append(self._field_row(adv, "Torrent password", "", self.tor_pass,
+                                             keywords="torrent client login",
+                                             key='torrent_password'))
+        self.tor_ratio = QLineEdit()
+        self.tor_ratio.setPlaceholderText("the client's setting")
+        self.tor_rows.append(self._field_row(adv, "Stop seeding at ratio",
+                                             "A number like 1.5. Empty keeps seeding as the "
+                                             "client says.", self.tor_ratio,
+                                             keywords="seed share torrent", key='seed_ratio'))
+        for row in self.tor_rows:
+            row.gate = gate                     # a search finds them with the client to set
 
     def _build_alerts(self):
-        sec = self._add_section(SettingsSection(
-            'alerts', "Alerts", 'bell',
-            "Each alert comes once, on the desktop and to your phone (the ntfy topic or KDE "
-            "Connect devices in config.toml [notify])."))
+        cat = self._add_category('alerts', "Alerts", 'bell', 'dawn',
+                                 "What Nexus tells you about, where, and whether it keeps "
+                                 "watching while it's closed.")
+        sec = self._group(cat, 'what', "What to tell you", 'bell',
+                          "Each alert comes once, on the desktop and to your phone.")
         self.al_atl = Switch()
         self._row(sec, "A wishlist game hits its all-time low", "", self.al_atl,
-                  keywords="price deal atl")
+                  keywords="price deal atl", key='atl')
         self.al_sale = _combo((("Off", 0), ("25% off or more", 25), ("50% off or more", 50),
                                ("75% off or more", 75)), 180)
-        self._row(sec, "Any wishlist sale", "", self.al_sale, keywords="discount price deal")
+        self._row(sec, "Any wishlist sale", "", self.al_sale, keywords="discount price deal",
+                  key='sale')
         self.al_fitgirl = Switch()
         self._repack_rows.append(self._row(sec, "A wishlist game appears on FitGirl", "",
-                                           self.al_fitgirl, keywords="repack"))
+                                           self.al_fitgirl, keywords="repack", key='fitgirl'))
         self.al_updates = Switch()
         self._repack_rows.append(self._row(sec, "An installed game gets a repack update", "",
-                                           self.al_updates, keywords="fitgirl"))
+                                           self.al_updates, keywords="fitgirl",
+                                           key='repack_updates'))
         self.al_proton = Switch()
-        self._row(sec, "A new GE-Proton is out", "", self.al_proton)
+        self._row(sec, "A new GE-Proton is out", "", self.al_proton, key='proton')
+        sec = self._group(cat, 'phone', "Send to your phone", 'cast',
+                          "The ntfy topic or KDE Connect devices in config.toml [notify].")
         test = QPushButton("Send a test")
         set_glyph_icon(test, G['bell'], 14)
         test.clicked.connect(lambda: self.request.emit(
             ['--notify-test'], "Sending a test notification", False, 'task'))
         self._row(sec, "Try it", "Pushes a test message to your phone.", test,
-                  keywords="notify ntfy kde connect")
+                  keywords="notify ntfy kde connect", key='test')
+        self._build_background(cat)
 
-    def _build_background(self):
-        sec = self._add_section(SettingsSection('background', "Background", 'power'))
+    def _build_background(self, cat: SettingsCategory):
+        sec = self._group(cat, 'closed', "While Nexus is closed", 'power', config_backed=False)
         self.agent = Switch()
         self.agent.toggled.connect(self._agent_toggled)
         if has('systemd_agent'):
@@ -959,7 +1175,8 @@ class SettingsPage(QWidget):
                                   "announced, the FitGirl feed stays fresh")
             self.agent_row = self._row(sec, "Keep working while Nexus is closed", "",
                                        self.agent,
-                                       keywords="agent systemd service alerts downloads")
+                                       keywords="agent systemd service alerts downloads",
+                                       key='agent')
         else:
             # Windows: a Startup-folder shortcut to `nexus --hidden`; the
             # window then does the agent's work from the tray.
@@ -967,19 +1184,82 @@ class SettingsPage(QWidget):
                                   "starts Nexus in the tray")
             self.agent_row = self._row(sec, "Start with Windows", "", self.agent,
                                        keywords="startup sign in login boot agent background "
-                                       "alerts downloads tray")
+                                       "alerts downloads tray", key='agent')
         self.agent_note = self.agent_row.desc
         self.tray = Switch()
         self.tray.toggled.connect(lambda on: self.controls_changed.emit({'close_to_tray': on}))
         self.tray_row = self._row(sec, "Close to the tray", "", self.tray,
-                                  keywords="system tray minimise hidden")
+                                  keywords="system tray minimise hidden", key='tray')
         self.tray_note = self.tray_row.desc
 
-    def _build_backup(self):
-        sec = self._add_section(SettingsSection(
-            'backup', "Back up & move", 'save',
-            "Your settings in one file, for a new PC or a reinstall. Saves aren't in it — "
-            "each game has its own save backups."))
+    def _build_accounts(self):
+        cat = self._add_category('accounts', "Accounts and keys", 'link', 'aurora',
+                                 "Game-db, SteamGridDB and the Steam account Nexus uses.")
+        sec = self._group(cat, 'gamedb', "Game-db", 'deals',
+                          "Wishlist deals, upcoming releases and your backlog, from your "
+                          "Game-db account.")
+        adv = cat.adv_body
+        self.gdb_enabled = Switch()
+        self._row(sec, "Deals page", "Show it in the top bar.", self.gdb_enabled,
+                  keywords="wishlist releases backlog", key='deals')
+        self.gdb_url = QLineEdit()
+        self.gdb_url.setPlaceholderText(gamedb.EXAMPLE_URL)
+        self._field_row(sec, "Address", "", self.gdb_url, keywords="url server game-db",
+                        key='gamedb_url')
+        self.gdb_token = self._secret(QLineEdit())
+        self.gdb_token.setPlaceholderText("gdb_…")
+        get = QPushButton("Create one")
+        get.setToolTip("Opens your Game-db account page in the browser")
+        get.clicked.connect(self._open_gamedb_account)
+        self.gdb_token_row = self._field_row(
+            sec, "Desktop app token", TOKEN_NOTE, self.gdb_token, extra=(get,),
+            keywords="key scope game-db", key='gamedb_token')
+        self.gdb_games = Switch()
+        self.gdb_games_row = self._row(
+            sec, "Game details from Game-db", "", self.gdb_games,
+            keywords="protondb howlongtobeat hltb igdb reviews early access", key='gamedb_games')
+        self.gdb_sessions = Switch()
+        self.gdb_sessions_row = self._row(
+            sec, "Upload play sessions", SESSIONS_NOTE, self.gdb_sessions,
+            keywords="play time history upload share group", key='sessions')
+        self.gdb_library = Switch()
+        self.gdb_library_row = self._row(
+            sec, "Send my Heroic library", LIBRARY_NOTE, self.gdb_library,
+            keywords="epic gog amazon heroic library igdb upload", key='heroic_library')
+        self.gdb_other = Switch()
+        self.gdb_other_row = self._row(
+            adv, "Include games not from a store", "Repacks and other games too, as their "
+            "title only: never a folder or a repack name.", self.gdb_other,
+            keywords="repack play sessions upload game-db", key='sessions_other')
+        self.gdb_sessions.toggled.connect(self.gdb_other.setEnabled)
+        self.gdb_device = QLineEdit()
+        self.gdb_device.setMaxLength(64)
+        self.gdb_device.setPlaceholderText(gamedb.device_label())
+        self._field_row(adv, "This PC's name", "How Game-db lists this Nexus on its account "
+                        "page.", self.gdb_device, keywords="device hostname game-db",
+                        key='device')
+        sec = self._group(cat, 'sgdb', "SteamGridDB", 'image',
+                          "Covers, heroes and logos for every game.")
+        self.key = self._secret(QLineEdit())
+        self.key.setPlaceholderText("not set")
+        get = QPushButton("Get a key")
+        get.setToolTip("Opens SteamGridDB's API page (free, needs an account)")
+        get.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(SGDB_KEY_URL)))
+        self._field_row(sec, "SteamGridDB API key", "Free from your SteamGridDB preferences.",
+                        self.key, extra=(get,), keywords="sgdb token artwork", key='sgdb_key')
+        sec = self._group(cat, 'steam', "Steam", 'steam')
+        self.account = QLineEdit()
+        self.account.setPlaceholderText("last signed in")
+        self._field_row(sec, "Steam account", "Whose Steam gets the shortcuts. Leave empty for "
+                        "the last one signed in.", self.account, keywords="profile user",
+                        key='steam_account')
+
+    def _build_system(self):
+        cat = self._add_category('system', "System", 'system', 'tide',
+                                 "Back up and move, setup again, the version and updates.")
+        sec = self._group(cat, 'backup', "Back up & move", 'save',
+                          "Your settings in one file, for a new PC or a reinstall. Saves "
+                          "aren't in it — each game has its own save backups.")
         row = QHBoxLayout()
         exp = QPushButton("Export…")
         set_glyph_icon(exp, G['download'], 14)
@@ -991,15 +1271,30 @@ class SettingsPage(QWidget):
         row.addWidget(imp)
         self._row(sec, "Settings file", "Settings, favourites, collections, notes, the "
                   "dashboard, the look, your game list and play history.", row,
-                  keywords="backup export import move new pc restore artwork secrets token")
+                  keywords="backup export import move new pc restore artwork secrets token",
+                  key='backup')
+        sec = self._group(cat, 'setup', "Setup", 'wrench')
         again = QPushButton("Run setup again")
         again.clicked.connect(self.setup_wanted)
         self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
-                  again, keywords="welcome wizard onboarding first run")
+                  again, keywords="welcome wizard onboarding first run", key='setup')
+        self._build_about(cat)
+        # config.toml: what Settings doesn't show yet. Usable with a broken
+        # file too: that is how it gets fixed.
+        cat.adv_body.config_backed = False
+        cfg = self.cfg_btn = QPushButton("Open")
+        cfg.setAccessibleName("Open config.toml")
+        cfg.setToolTip(str(CONFIG_PATH))
+        set_glyph_icon(cfg, G['external'], 14)
+        cfg.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_PATH))))
+        self._row(cat.adv_body, "Open config.toml", f"{CONFIG_PATH}. Phone pushes ([notify]) "
+                  "and a few rarer options live only here.", cfg,
+                  keywords="config file toml edit notify ntfy", key='config_file')
 
-    def _build_about(self):
-        sec = self._add_section(SettingsSection('about', "About", 'info'))
-        self.version_row = self._row(sec, "Nexus version", "", None, keywords="about release")
+    def _build_about(self, cat: SettingsCategory):
+        sec = self._group(cat, 'about', "About", 'info')
+        self.version_row = self._row(sec, "Nexus version", "", None, keywords="about release",
+                                     key='version')
         # Only while a newer Nexus is out (MainWindow.updater): the start-up
         # toast goes, this and Health's row stay until it's installed.
         self.update_btn = QPushButton("Update")
@@ -1007,13 +1302,14 @@ class SettingsPage(QWidget):
         set_glyph_icon(self.update_btn, G['update'], 14)
         self.update_btn.clicked.connect(self.update_wanted)
         self.update_row = self._row(sec, "Update available", "", self.update_btn,
-                                    keywords="new release upgrade version install")
+                                    keywords="new release upgrade version install",
+                                    key='update')
         self.update_row.set_available(False)
         self.upd_btn = QPushButton("Check for updates")
         set_glyph_icon(self.upd_btn, G['refresh'], 14)
         self.upd_btn.clicked.connect(self._check_updates)
         self.upd_row = self._row(sec, "Check for updates", "", self.upd_btn,
-                                 keywords="new release upgrade version")
+                                 keywords="new release upgrade version", key='check_updates')
         self.upd_result = self.upd_row.desc
         self.upd_result.setTextFormat(Qt.TextFormat.RichText)
         self.upd_result.setOpenExternalLinks(True)
@@ -1021,7 +1317,7 @@ class SettingsPage(QWidget):
         set_glyph_icon(news, G['news'], 14)
         news.clicked.connect(self.whats_new_wanted)
         self._row(sec, "What's new", "The short notes for this version.", news,
-                  keywords="release notes changelog changes")
+                  keywords="release notes changelog changes", key='whats_new')
         self._show_version()
 
     def _show_version(self):
@@ -1038,6 +1334,7 @@ class SettingsPage(QWidget):
             self.update_row.set_description(view['detail'])
             self.update_btn.setText(view['button'])
             self.update_btn.setEnabled(view['enabled'])
+        self._refresh_overview()
 
     def _check_updates(self):
         """Ask GitHub (skipping the daily cache) off the GUI thread, then say what it found."""
@@ -1156,72 +1453,116 @@ class SettingsPage(QWidget):
     # ---- navigation and search ----
     def _show_repacks(self, on: bool):
         """Repack features off: their rows and the torrent client go away."""
-        for row in (*self._repack_rows, *self.sections['torrent'].rows):
+        for row in (*self._repack_rows, self.row_of[self.tor_client], *self.tor_rows):
             row.set_available(on)
         if on:
             self._sync_torrent_rows()           # its address rows only with a client
-        self._filter(self.search.text())
+        self._apply_filter()
 
-    def show_section(self, key: str):
-        """Scroll to a section (Deals, Downloads and the art picker link here)."""
-        sec = self.sections.get(key)
-        if sec is None:
+    def open_at(self, cat: str = 'overview', row: str | None = None):
+        """Show a category (old section keys work too: 'gamedb', 'torrent');
+        with `row`, scroll it into view, opening Advanced if it lives there.
+        Deals, Downloads, the art picker and Theatre link here."""
+        cat, alias = OLD_KEYS.get(cat, (cat, None))
+        row = row or alias
+        if cat != 'overview' and cat not in self.categories:
             return
-        if self.search.text() and not sec.isVisible():
+        self._current = cat
+        if self.search.text():
+            self.search.blockSignals(True)
             self.search.clear()
-        self._show_nav(key)
-        self._scroll_key = key
-        if self.isVisible():
-            self._scroll_to_section()
-        # Again once the layout has settled: a page just shown may not have
-        # its final geometry yet.
-        QTimer.singleShot(0, self._scroll_to_section)
-
-    def _scroll_to_section(self, animate: bool = True):
-        sec = self.sections.get(self._scroll_key)
-        if sec is None:
-            return
-        self._update_tail()
-        bar = self.scroll.verticalScrollBar()
-        target = min(bar.maximum(), max(0, self._top_of(sec) - SP['4']))
+            self.search.blockSignals(False)
+        self._apply_filter()
         self._anim.stop()
-        if MOTION and animate and self.isVisible() and abs(bar.value() - target) > 2:
+        self.scroll.verticalScrollBar().setValue(0)
+        if cat == 'overview':
+            self._refresh_overview()
+        target = self.rows.get(f'{cat}.{row}') if row else None
+        if target is None or not target.available:
+            return                              # the category still opens
+        c = self.categories[cat]
+        if target in c.adv_body.rows and not c.adv.is_open:
+            c.adv.set_open(True, remember=False)
+        self._scroll_row = target
+        # Once the layout has settled: a page just shown may not have its
+        # final geometry yet.
+        QTimer.singleShot(0, self._scroll_to_row)
+
+    def _scroll_to_row(self):
+        """The linked row a third of the way down the view."""
+        row = self._scroll_row
+        self._scroll_row = None
+        if row is None or row.isHidden():
+            return
+        bar = self.scroll.verticalScrollBar()
+        third = self.scroll.viewport().height() // 3
+        target = min(bar.maximum(), max(0, self._top_of(row) - third))
+        self._anim.stop()
+        if MOTION and self.isVisible() and abs(bar.value() - target) > 2:
             self._anim.setStartValue(bar.value())
             self._anim.setEndValue(target)
             self._anim.start()
         else:
             bar.setValue(target)
-        self._show_nav(sec.key)
 
-    def current_section(self) -> str:
-        return next((k for k, b in self.nav_btns.items() if b.isChecked()), '')
+    def current_category(self) -> str:
+        return self._current
+
+    def unsaved_at(self) -> tuple[str, str | None]:
+        """Where the first edit that can't be saved is: (category, row)."""
+        for w in self._invalid:
+            row = self.row_of.get(w)
+            if row is not None:
+                cat, _, key = row.key.partition('.')
+                return cat, key
+        return self._current, None
 
     def _top_of(self, w: QWidget) -> int:
         return w.mapTo(self.scroll.widget(), w.rect().topLeft()).y()
 
-    def _show_nav(self, key: str):
+    def _show(self, keys: list[str]):
+        """Show these pages (Overview, categories) and hide the rest: the
+        new ones first, and focus out of one going away (else Qt throws it
+        to the next focusable widget, wherever that is)."""
+        pages = {'overview': self.overview, **self.categories}
+        for k in keys:
+            pages[k].show()
+        fw = QApplication.focusWidget()
+        for k, w in pages.items():
+            if k in keys or w.isHidden():
+                continue
+            if fw is not None and w.isAncestorOf(fw):
+                b = self.nav_btns.get(keys[0]) if keys else None
+                (b if b is not None and not b.isHidden() else self.search).setFocus()
+            w.hide()
+
+    def _apply_filter(self):
+        """Rows, groups, Advanced, pages and the list for the search now
+        (or for the current category without one). Scroll stays put."""
+        q = self.search.text().strip().lower()
+        counts = {k: cat.filter(q) for k, cat in self.categories.items()}
+        if not q:
+            for b in self.nav_btns.values():
+                b.show()
+            self.no_match.hide()
+            self._show([self._current])
+            for k, b in self.nav_btns.items():
+                b.setChecked(k == self._current)
+            return
+        found = [k for k, n in counts.items() if n]
+        # Every match, each under its category's heading; the list keeps
+        # only those categories, and clicking one opens it.
         for k, b in self.nav_btns.items():
-            b.setChecked(k == key)
-
-    def _spy(self, value: int):
-        """The section at the top of the view is the one lit in the list."""
-        if self._anim.state() == QPropertyAnimation.State.Running:
-            return
-        shown = [s for s in self.sections.values() if s.isVisible()]
-        if not shown:
-            return
-        cur = shown[0]
-        for sec in shown:
-            if self._top_of(sec) - SP['6'] <= value:
-                cur = sec
-        self._show_nav(cur.key)
-
-    def _update_tail(self):
-        """Room under the last section, so that one too can reach the top."""
-        shown = [s for s in self.sections.values() if s.isVisible()]
-        h = self.scroll.viewport().height()
-        last = shown[-1].height() if shown else 0
-        self.tail.setFixedHeight(max(SP['6'], h - last - SP['8']))
+            b.setChecked(False)
+            if k in found:
+                b.show()
+        self._show(found)
+        for k, b in self.nav_btns.items():
+            if k not in found:
+                b.hide()
+        self.no_match.setText(f"No settings match “{self.search.text().strip()}”."
+                              if not found else "")
+        self.no_match.setVisible(not found)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1234,35 +1575,96 @@ class SettingsPage(QWidget):
         self.nav.setFixedWidth(self.RAIL_W if on else self.NAV_W)
         m = (SP['2'], SP['4'], SP['2'], SP['4']) if on else (SP['5'], SP['4'], SP['3'], SP['4'])
         self.nav_lay.setContentsMargins(*m)
-        for b in [*self.nav_btns.values(), self.cfg_btn]:
-            name = b.accessibleName() or "Open config.toml"
+        for b in self.nav_btns.values():
+            name = b.accessibleName()
             b.setText("" if on else amp(name))
-            b.setToolTip(name if on else ("" if b is not self.cfg_btn else self._cfg_tip))
+            b.setToolTip(name if on else "")
         if on:
             self.content.insertWidget(0, self.head)
         else:
             self.nav_lay.insertWidget(0, self.head)
-
-    def eventFilter(self, obj, ev):
-        if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Resize:
-            self._update_tail()
-        return super().eventFilter(obj, ev)
+        self.overview.set_columns(1 if on else 2)
 
     def _focus_search(self):
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.selectAll()
 
-    def _filter(self, text: str):
-        q = text.strip().lower()
-        found = [k for k, sec in self.sections.items() if sec.filter(q)]
-        for k, b in self.nav_btns.items():
-            b.setVisible(k in found)
-        self.no_match.setText(f"No settings match “{text.strip()}”." if not found else "")
-        self.no_match.setVisible(not found)
-        self._update_tail()
+    def _filter(self, _text: str):
+        self._apply_filter()
+        self._anim.stop()
         self.scroll.verticalScrollBar().setValue(0)
-        if found:
-            self._show_nav(found[0])
+
+    # ---- Overview ----
+    def _appearance_changed(self, _ap: dict):
+        self._refresh_overview()
+
+    def set_torrent_problem(self, text: str | None):
+        """The last torrent poll's error (None: it answered), for Worth a look.
+        Pushed by the window; Overview never asks the client itself."""
+        self._torrent_problem = text or None
+        self._refresh_overview()
+
+    def _state_lines(self) -> dict[str, str]:
+        """One line per category card: what is set there now."""
+        ap = self.appearance.ap
+        theme = THEMES[ap['theme']][0]
+        accent = ap['accent'] if _hex_ok(ap['accent']) else ap['accent'].capitalize()
+        lines = {'look': f"{theme} · {accent} · {int(round(ap['scale'] * 100))} %"}
+        lines['library'] = " · ".join((
+            "Owned games shown" if self.show_owned.isChecked() else "Installed games only",
+            "News on" if self.news.isChecked() else "News off"))
+        play = ("Double-click plays" if self.ctl_double.currentData() == 'play' else
+                "Double-click opens the page")
+        lines['playing'] = play + " · " + (f"Proton: {self.proton.currentText()}"
+                                           if has('proton') else
+                                           f"Theatre: {self.ctl_start.currentText()}")
+        base = self.base.text().strip() or INSTALL_BASE_DEFAULT
+        home = str(HOME)
+        if base == home or base.startswith(home + os.sep):
+            base = '~' + base[len(home):]
+        lines['installing'] = base + " · " + ("repacks on" if self.repacks.isChecked() else
+                                               "repacks off")
+        switches = [sw for sw in (self.al_atl, self.al_fitgirl, self.al_updates, self.al_proton)
+                    if self.row_of[sw].available]
+        on = sum(sw.isChecked() for sw in switches) + bool(self.al_sale.currentData())
+        lines['alerts'] = (f"{on} of {len(switches) + 1} on · " +
+                           ("works while closed" if self.agent.isChecked() else
+                            "only while Nexus is open"))
+        lines['accounts'] = " · ".join((
+            "Game-db connected" if self._gamedb_ready() else "Game-db off",
+            "SteamGridDB key set" if self.key.text().strip() else "No SteamGridDB key"))
+        return lines
+
+    def _gamedb_ready(self) -> bool:
+        return (self.gdb_enabled.isChecked() and bool(self.gdb_url.text().strip())
+                and bool(self.gdb_token.text().strip() or os.environ.get('NEXUS_GAMEDB_TOKEN')))
+
+    def _worth_a_look(self) -> list[tuple[str, str, str, str, str]]:
+        """At most three things to see to, from what Nexus already knows
+        (no check runs for this): (title, line, button, category, row)."""
+        out = []
+        if self.update_row.available:
+            out.append((self.update_row.title.text(), self.update_row.desc.text(),
+                        "Update", 'system', 'update'))
+        if self.repacks.isChecked() and self.tor_client.currentData() is not None \
+                and self._torrent_problem:
+            out.append(("The torrent client didn't answer", self._torrent_problem,
+                        "Check it", 'installing', 'torrent_test'))
+        if not self.key.text().strip():
+            out.append(("No SteamGridDB key", "Covers and heroes come from Steam only until "
+                        "there is one.", "Add a key", 'accounts', 'sgdb_key'))
+        if self.gdb_enabled.isChecked() and not (self.gdb_token.text().strip()
+                                                 or os.environ.get('NEXUS_GAMEDB_TOKEN')):
+            out.append(("Deals is on without a Game-db token", "Wishlist deals need one from "
+                        "your Game-db account.", "Add a token", 'accounts', 'gamedb_token'))
+        return out[:3]
+
+    def _refresh_overview(self):
+        ov = getattr(self, 'overview', None)
+        if ov is None:                          # still building
+            return
+        ov.set_states(self._state_lines())
+        ov.set_worth(self._worth_a_look())
 
     # ---- the background agent and the tray ----
     def _agent_toggled(self, on: bool):
@@ -1284,6 +1686,7 @@ class SettingsPage(QWidget):
         self.agent.setChecked(bool(s.get('enabled')))
         self.agent.blockSignals(False)
         self.agent.update()
+        self._refresh_overview()
         if s.get('startup') or not has('systemd_agent'):    # Windows: Start with Windows
             self.agent.setEnabled(True)
             self.agent_row.set_description(
@@ -1318,6 +1721,7 @@ class SettingsPage(QWidget):
             sw.setChecked(bool(controls.get(key)))
             sw.blockSignals(False)
         self.ctl_volume.setEnabled(bool(controls.get('sounds')))   # greyed while sounds are off
+        self._refresh_overview()
         has_tray = tray_available()
         self.tray.blockSignals(True)
         self.tray.setChecked(bool(controls.get('close_to_tray')) and has_tray)
@@ -1360,8 +1764,7 @@ class SettingsPage(QWidget):
         on = self.tor_client.currentData() is not None and self.repacks.isChecked()
         for row in self.tor_rows:
             row.set_available(on)
-        self.sections['torrent'].relayout()
-        self._update_tail()
+        self._apply_filter()
 
     def _saved_note_idle(self):
         self.saved_note.setProperty('ok', False)
@@ -1437,6 +1840,7 @@ class SettingsPage(QWidget):
         self._invalid.clear()
         for row in self.row_of.values():
             row.set_error(None)
+        self._refresh_overview()
 
     def _load(self):
         c = self.cfg = load_config()
@@ -1444,10 +1848,12 @@ class SettingsPage(QWidget):
         self.error.setText(f"config.toml can't be read, so nothing here can be saved until "
                            f"it's fixed: {c['error']}" if broken else "")
         self.error.setVisible(broken)
-        for sec in self.sections.values():
-            if sec is not self.appearance and sec.key not in ('library', 'controls',
-                                                              'background'):
+        for sec in self.groups.values():
+            if sec.config_backed:
                 sec.card.setEnabled(not broken)
+        for cat in self.categories.values():
+            if cat.adv_body.config_backed:
+                cat.adv_body.card.setEnabled(not broken)
         self.news.setEnabled(not broken)
         self.key.setText(c.get('api_key') or "")
         self.base.setText(c.get('install_base') or "")
@@ -1488,7 +1894,7 @@ class SettingsPage(QWidget):
         self.gdb_library_row.set_available(ready != 'unavailable' and has('heroic'))
         self.gdb_library_row.set_description(
             gamedb.SCOPE_HINT[gamedb.SCOPE_LIBRARY] if ready == 'read_only' else LIBRARY_NOTE)
-        self.sections['gamedb'].relayout()
+        self._apply_filter()
         offered = gamedb.games_available()          # meta.json only; the GUI never asks Game-db
         self.gdb_games.setEnabled(offered is not False)
         self.gdb_games_row.set_description(
@@ -1654,6 +2060,8 @@ class SettingsPage(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .config import ConfigError, load_config, save_config  # noqa: E402
+from .dashboard import ClickRow, GlyphBadge  # noqa: E402
+from .details import Disclosure, ElideLabel  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402

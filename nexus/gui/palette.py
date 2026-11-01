@@ -312,10 +312,10 @@ def page_entries(win) -> list[Entry]:
              lambda: (win.go('activity'), win.activity.show_debug(True)), "console")):
         out.append(E('command', title, "", glyph, fn, key=f"cmd:{key}", keywords=kw))
     st = getattr(win, 'settings', None)
-    for key, sec in (getattr(st, 'sections', None) or {}).items():
-        out.append(E('setting', sec.title, "Settings", G.get(sec.glyph, G['settings']),
+    for key, cat in (getattr(st, 'categories', None) or {}).items():
+        out.append(E('setting', cat.title, "Settings", G.get(cat.glyph, G['settings']),
                      lambda k=key: win._open_settings(k), key=f"set:{key}",
-                     keywords="settings " + getattr(sec, '_keys', '')))
+                     keywords="settings " + getattr(cat, '_keys', '')))
     return out
 
 

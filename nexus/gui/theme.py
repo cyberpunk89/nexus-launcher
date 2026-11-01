@@ -907,6 +907,10 @@ def build_stylesheet(scale: float = 1.0) -> str:
                           padding: ${sp_2}px ${sp_3}px; font-size: ${fs_sm}px; font-weight: 500; }
     QPushButton#NavItem:hover { background: $surface_2; color: $text; }
     QPushButton#NavItem:checked { background: $accent_16; color: $accent; }
+    QLabel#CategoryTitle { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
+    #OverviewCard { background: $surface; border: 1px solid $border_card;
+                    border-radius: ${r_card}px; }
+    #OverviewCard:hover, #OverviewCard:focus { background: $surface_2; border-color: $accent_35; }
     QLineEdit#SettingsSearch { background: $surface_1; border: 1px solid $border;
                                border-radius: ${r_search}px; padding: 0 ${sp_2}px; }
     QLineEdit#SettingsSearch:focus { border: 1px solid $accent; background: $surface_2; }

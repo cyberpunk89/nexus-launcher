@@ -1587,13 +1587,35 @@ class Window(unittest.TestCase):
         buttons = [b.text() for b in toasts[1].findChildren(QPushButton)]
         self.assertIn("Verify && retry", buttons)       # "&&" draws one "&"
 
+    def test_gear_opens_the_overview_and_go_keeps_the_category(self):
+        """w-76: the gear and Ctrl+, open Overview; Back, Forward and Fix it
+        (a plain go) find Settings where it was; links land on their row."""
+        w = self.win
+        st = w.settings
+        w._open_settings('alerts')
+        w.go(w.HOME)
+        w.go(w.SETTINGS)
+        self.assertEqual(st.current_category(), 'alerts')
+        w.icons[w.SETTINGS].click()
+        self.assertEqual(st.current_category(), 'overview')
+        self.assertFalse(st.overview.isHidden())
+        self.assertTrue(st.nav_btns['overview'].isChecked())
+        w.downloads.open_settings.emit()                # Downloads' "set up a client"
+        self.assertEqual(st.current_category(), 'installing')
+        w.artpage.open_settings.emit()                  # the art picker's "set a key"
+        self.assertEqual(st.current_category(), 'accounts')
+        w.go(w.HOME)
+
     def test_ampersands_show_as_ampersands(self):
         w = self.win
-        nav = w.settings.nav_btns['backup']
-        self.assertEqual(nav.text(), "Back up && move")
+        link = next(b for b in w.settings.overview.findChildren(QPushButton)
+                    if b.text().startswith("Back up"))
+        self.assertEqual(link.text(), "Back up && move")
+        nav = w.settings.nav_btns['accounts']
         w.settings._set_compact(True)
+        self.assertEqual(nav.text(), "")
         w.settings._set_compact(False)              # the rail gives the names back
-        self.assertEqual(nav.text(), "Back up && move")
+        self.assertEqual(nav.text(), "Accounts and keys")
         w._create_collection('Fast & Loud', 'alpha')
         self.assertEqual(w.chips['col:Fast & Loud'].text(), "Fast && Loud")
         w.prefs.collections = {}
@@ -2756,13 +2778,15 @@ class Window(unittest.TestCase):
         st.btn_all.click()
         self.assertFalse(w._theatre)
         self.assertEqual(w.current(), w.SETTINGS)
+        self.assertEqual(w.settings.current_category(), 'playing')
 
     def test_theatre_settings_sync_desktop(self):
         """w-63: a change on the couch shows in desktop Settings, and one made
         on the desktop shows in the sheet next time it opens."""
         w = self.win
         s = w.settings                                          # built
-        self.assertEqual(s.sections['controls'].title, "Controls and Theatre")
+        self.assertEqual(s.categories['playing'].title, "Playing")
+        self.assertEqual(s.row_of[s.ctl_on_pad].key, 'playing.theatre_on_pad')
         w.set_theatre(True)
         w.open_theatre_settings()
         rows = w.theatre_settings.rows_by_key

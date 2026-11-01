@@ -217,7 +217,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre.discover_shown.connect(self._discover_shown)
         self.theatre.deal_asked.connect(self._theatre_deal)
         self.theatre.reader_options.connect(self._reader_options)
-        self.theatre.open_settings.connect(lambda: self._open_settings('gamedb'))
+        self.theatre.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
         self.theatre.hide_gamedb.connect(self._hide_theatre_gamedb)
         self.theatre.download_action.connect(self._theatre_download)
         self.theatre.moment_changed.connect(self._update_hints)
@@ -353,7 +353,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage.loaded.connect(lambda: self.dash_update('deals', 'upcoming'))
         self.newspage.loaded.connect(self._feed_theatre_discover)
         self.dealspage.loaded.connect(self._feed_theatre_discover)
-        self.dealspage.open_settings.connect(lambda: self._open_settings('gamedb'))
+        self.dealspage.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
         self.dealspage.repack.connect(self._deal_repack)
         self._add_page(self.DEALS, self.dealspage)
         self.downloads = DownloadsPage()
@@ -361,13 +361,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.downloads.control.connect(self._torrent_control)
         self.downloads.add.connect(self._add_torrent)
         self.downloads.row_action.connect(self._download_action)
-        self.downloads.open_settings.connect(lambda: self._open_settings('torrent'))
+        self.downloads.open_settings.connect(
+            lambda: self._open_settings('installing', 'torrent_client'))
         self.downloads.use_client.connect(self._use_torrent_client)
         self._add_page(self.DOWNLOADS, self.downloads)
         self.artpage = ArtPickerPage()
         self.artpage.request.connect(self._on_request)
         self.artpage.back.connect(self._art_back)
-        self.artpage.open_settings.connect(lambda: self._open_settings('artwork'))
+        self.artpage.open_settings.connect(lambda: self._open_settings('accounts', 'sgdb_key'))
         self._add_page(self.ARTWORK, self.artpage)
         self.setup = SetupPage()
         self.setup.request.connect(self._on_request)
@@ -506,6 +507,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         st.sound_test_wanted.connect(self.sounds.test)
         # Sounds on: look now (QtMultimedia, outputs), so the note is there before a test.
         st.set_sound_problem(self.sounds.problem() if self.sounds.on else self.sounds.reason)
+        st.set_torrent_problem(torrent_problem(self.downloads.data))   # Worth a look
         return st
 
     def current(self) -> str | None:
@@ -530,7 +532,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                                  (self.PROTON, G['proton'], "Proton"),
                                  (self.SETTINGS, G['settings'], "Settings (Ctrl+,)")):
             b = bar.add_icon(glyph, tip)
-            b.clicked.connect(lambda _=False, p=page: self.go(p))
+            if page == self.SETTINGS:               # the gear: Overview, every time
+                b.clicked.connect(lambda: self._open_settings())
+            else:
+                b.clicked.connect(lambda _=False, p=page: self.go(p))
             self.icons[page] = b
             self.nav[page] = b
         # Settings is built on first use: a pointer on its way to the icon
@@ -723,10 +728,11 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.nav[self.DEALS].set_badge(n or '', 'accent')
         self.dash_update('deals', 'upcoming')
 
-    def _open_settings(self, section: str | None = None):
+    def _open_settings(self, cat: str | None = None, row: str | None = None):
+        """Settings at a category (Overview without one), scrolled to `row`.
+        `go(SETTINGS)` alone keeps the category it was on."""
         self.go(self.SETTINGS)
-        if section:
-            self.settings.show_section(section)
+        self.settings.open_at(cat or 'overview', row)
 
     def _settings_saved(self, proton_changed):
         self.config = load_config()
@@ -903,7 +909,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def _theatre_all_settings(self):
         """The sheet's foot: the desktop's Settings, at Controls and Theatre."""
         self.set_theatre(False)
-        self._open_settings('controls')
+        self._open_settings('playing', 'theatre_on_pad')
 
     def _feed_theatre_week(self, ttl: float = 60):
         """Your week on Theatre's Home, from `--history` (as the Play time
@@ -1172,7 +1178,7 @@ from .newspage import NewsPage  # noqa: E402
 from .prefs import LibraryPrefs  # noqa: E402
 from .protonpage import ProtonPage  # noqa: E402
 from .quickmenu import QuickMenu  # noqa: E402
-from .settings import SettingsPage  # noqa: E402
+from .settings import SettingsPage, torrent_problem  # noqa: E402
 from .storage import StoragePage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
 from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402

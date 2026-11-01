@@ -42,7 +42,7 @@ class NavigationMixin:
         for i, page in enumerate(self.TABS, start=1):
             sc([f"Ctrl+{i}"], lambda p=page: not self.nav[p].isHidden() and self.go(p))
         sc(["Ctrl+5"], lambda: self.go(self.ACTIVITY))
-        sc(["Ctrl+,"], lambda: self.go(self.SETTINGS))
+        sc(["Ctrl+,"], lambda: self._open_settings())
         sc(["Ctrl+K"], self.open_palette)
 
     def open_palette(self, game=None):
@@ -75,7 +75,7 @@ class NavigationMixin:
             self.settings.commit()               # a field still being typed in
             if self.settings.dirty:
                 self.toast(f"Not saved — {self.settings.unsaved_reason()}", 'warn',
-                           [("Fix it", lambda: self.go(self.SETTINGS)),
+                           [("Fix it", lambda: self._open_settings(*self.settings.unsaved_at())),
                             ("Discard", self.settings.load)], 10000)
         self.stack.setCurrentWidget(self.page_widget(page))
         self.tabs.set_current(page if page in self.TABS else None)

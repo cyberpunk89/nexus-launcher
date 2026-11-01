@@ -155,9 +155,10 @@ class Pages(unittest.TestCase):
         self.assertEqual(page.row_of[page.desktop].title.text(), "Start Menu shortcuts")
         self.assertEqual(page.row_of[page.agent].title.text(), "Start with Windows")
         self.assertTrue(page.row_of[page.agent].matches("startup"))
-        for key in ('appearance', 'controls', 'installing', 'artwork', 'gamedb', 'torrent',
-                    'alerts', 'background'):
-            self.assertIn(key, page.sections)
+        self.assertEqual(list(page.categories), ['look', 'library', 'playing', 'installing',
+                                                 'alerts', 'accounts', 'system'])
+        self.assertTrue(page.categories['playing'].adv.isHidden())   # Runner only
+        self.assertTrue(page.groups['playing.windows'].isHidden())
 
     def test_settings_rows_on_linux_are_unchanged(self):
         with linux():
@@ -520,3 +521,207 @@ class StartupAndSettings(unittest.TestCase):
             self.assertIn("it's in Program Files", row.note.text())
             page.base.setText(r'D:\Games')
             self.assertTrue(row.note.isHidden())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class SettingsCategories(unittest.TestCase):
+    """w-76: Overview, seven categories with Advanced at the foot, a key on
+    every row, and every control still reaching config.toml or a signal."""
+    # A value each text field accepts, by the page's (or the Appearance
+    # card's) attribute name: a new field fails the walk until it's here.
+    VALID = {'base': '/tmp/nexus-games', 'scan_dir': '/tmp/nexus-dl',
+             'scan_more': '/tmp/a; /tmp/b', 'account': 'someone', 'key': 'abc123',
+             'gdb_url': 'https://gamedb.example.com', 'gdb_token': 'gdb_' + 'a' * 43,
+             'gdb_device': 'Test PC', 'tor_url': 'http://127.0.0.1:9091', 'tor_user': 'me',
+             'tor_pass': 'secret', 'tor_dir': '/tmp/nexus-torrents', 'tor_ratio': '1.5',
+             'custom': '#123456'}
+    # Rows whose only control is a button (they run something, not save).
+    ACTION_ROWS = {'library.fill_art', 'installing.torrent_test', 'alerts.test',
+                   'system.backup', 'system.setup', 'system.version', 'system.update',
+                   'system.check_updates', 'system.whats_new', 'system.config_file'}
+
+    def page(self):
+        page = nx.SettingsPage()
+        self.addCleanup(page.deleteLater)
+        return page
+
+    def test_every_row_has_one_unique_key(self):
+        page = self.page()
+        rows = [r for cat in page.categories.values() for r in cat.rows]
+        self.assertEqual(len(rows), len(set(map(id, rows))))
+        self.assertEqual(len(page.rows), 63)
+        self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
+        for key, row in page.rows.items():
+            cat, _, short = key.partition('.')
+            self.assertIn(cat, page.categories)
+            self.assertTrue(short, key)
+            self.assertEqual(row.key, key)
+        self.assertIs(page.rows['playing.runner'], page.row_of[page.runner])
+        self.assertIn(page.rows['playing.runner'], page.categories['playing'].adv_body.rows)
+
+    def _walk(self):
+        from PyQt6.QtWidgets import QLineEdit
+        from nexus.gui.config import load_config
+        from nexus.gui.widgets import NoWheelCombo, SegmentedControl
+        from nexus.gui.settings import Swatch, Switch
+        from tests.patching import patch_gui
+        base = load_config()
+        saved, signals = [], []
+        with patch_gui('save_config', saved.append), \
+                patch_gui('load_config', lambda: dict(base)), \
+                patch_gui('cli_json', lambda *a, **k: None):
+            page = self.page()
+            page.controls_changed.connect(lambda d: signals.append(('controls', d)))
+            page.appearance.changed.connect(lambda d: signals.append(('look', d)))
+            page.background_changed.connect(lambda k, on: signals.append((k, on)))
+            page.load()
+            page.set_agent_status({'enabled': False, 'systemd': True})
+            names = {id(v): k for obj in (page, page.appearance) for k, v in vars(obj).items()
+                     if isinstance(v, QLineEdit)}
+            walked = 0
+            for key, row in page.rows.items():
+                if row.switch is page.show_owned:
+                    continue                    # the window wires it (library.json)
+                before = (len(saved), len(signals))
+                sw = row.findChildren(Switch)
+                combos = row.findChildren(NoWheelCombo)
+                fields = row.findChildren(QLineEdit)
+                segs = row.findChildren(SegmentedControl)
+                swatches = [s for s in row.findChildren(Swatch) if not s.isChecked()]
+                if sw:
+                    sw[0].setEnabled(True)
+                    sw[0].toggle()
+                elif combos:
+                    box = combos[0]
+                    box.setEnabled(True)
+                    if box.count() < 2:
+                        box.addItem("GE-Proton-test", "GE-Proton-test")
+                    i = (box.currentIndex() + 1) % box.count()
+                    box.setCurrentIndex(i)
+                    box.activated.emit(i)
+                elif segs:
+                    seg = segs[0]
+                    other = next(k for k in seg.keys() if k != seg.current())
+                    seg.set_current(other, animate=False, emit=True)
+                elif fields and id(fields[0]) in names:
+                    edit = fields[0]
+                    self.assertIn(names[id(edit)], self.VALID, f"{key}: add a valid value")
+                    edit.setEnabled(True)
+                    edit.setText(self.VALID[names[id(edit)]])
+                    edit.editingFinished.emit()
+                elif swatches:
+                    swatches[0].click()
+                else:
+                    self.assertIn(key, self.ACTION_ROWS, f"{key} has no control")
+                    continue
+                self.assertNotIn(key, self.ACTION_ROWS)
+                walked += 1
+                self.assertTrue(len(saved) > before[0] or len(signals) > before[1],
+                                f"{key}: its control reaches neither save_config nor a signal")
+                if len(saved) > before[0] and before[0]:
+                    self.assertNotEqual(saved[-1], saved[before[0] - 1], key)
+        self.assertEqual(walked, len(page.rows) - len(self.ACTION_ROWS) - 1)
+        return page
+
+    def test_every_control_reaches_save_or_a_signal(self):
+        with linux():
+            self._walk()
+
+    def test_wiring_walk_on_windows(self):
+        with windows():                         # hidden rows still save
+            page = self._walk()
+            self.assertFalse(page.row_of[page.runner].available)
+
+    def test_windows_hides_linux_groups_and_empty_advanced(self):
+        with windows():
+            page = self.page()
+            page.load()
+            self.assertIn("Theatre:", page._state_lines()['playing'])
+        self.assertTrue(page.groups['playing.windows'].isHidden())
+        self.assertTrue(page.categories['playing'].adv.isHidden())
+        self.assertFalse(page.categories['installing'].adv.isHidden())
+        with linux():
+            page = self.page()
+            page.load()
+        self.assertFalse(page.groups['playing.windows'].isHidden())
+        self.assertFalse(page.categories['playing'].adv.isHidden())
+
+    def test_opens_on_overview_and_old_keys_alias(self):
+        page = self.page()
+        self.assertEqual(page.current_category(), 'overview')
+        self.assertFalse(page.overview.isHidden())
+        self.assertTrue(all(c.isHidden() for c in page.categories.values()))
+        for old, (cat, row) in {'gamedb': ('accounts', 'deals'),
+                                'controls': ('playing', None),
+                                'artwork': ('accounts', 'sgdb_key'),
+                                'background': ('alerts', 'agent'),
+                                'about': ('system', 'version'),
+                                'library': ('library', None)}.items():
+            page.open_at(old)
+            self.assertEqual(page.current_category(), cat, old)
+            self.assertEqual([k for k, c in page.categories.items() if not c.isHidden()], [cat])
+            self.assertTrue(page.overview.isHidden())
+            self.assertTrue(page.nav_btns[cat].isChecked())
+        page.open_at('installing', 'scan_more')         # a row under Advanced opens it
+        self.assertTrue(page.categories['installing'].adv.is_open)
+        page.open_at('no such place')                   # ignored
+        self.assertEqual(page.current_category(), 'installing')
+        page.open_at('installing', 'no_such_row')       # the category still opens
+        self.assertEqual(page.current_category(), 'installing')
+        page.open_at()
+        self.assertFalse(page.overview.isHidden())
+
+    @mock.patch.object(features, 'FEATURES', features.ALL)     # the Proton alert counts
+    def test_overview_state_lines_and_worth_a_look(self):
+        from nexus.gui.config import load_config
+        from tests.patching import patch_gui
+        cfg = {**load_config(), 'repacks': False, 'api_key': None}
+        with patch_gui('load_config', lambda: dict(cfg)), \
+                patch_gui('cli_json', lambda *a, **k: None):
+            page = self.page()
+            page.load()
+        lines = page._state_lines()
+        self.assertEqual(set(lines), {'look', 'library', 'playing', 'installing', 'alerts',
+                                      'accounts'})
+        self.assertIn("repacks off", lines['installing'])
+        self.assertIn("No SteamGridDB key", lines['accounts'])
+        self.assertIn(" of 3 on", lines['alerts'])          # the repack alerts are gone
+        self.assertEqual(page.overview.lines['installing'].text(), lines['installing'])
+        worth = page.overview.worth
+        self.assertFalse(worth.isHidden())
+        self.assertEqual([r.title.text() for r in page.overview.worth_rows if r.available],
+                         ["No SteamGridDB key"])
+        page.key.setText("abc")
+        page.gdb_enabled.setChecked(True)               # Deals on, no token
+        page.repacks.setChecked(True)
+        page.tor_client.setCurrentIndex(page.tor_client.findData('transmission'))
+        page.set_torrent_problem("connection refused")
+        page.show_update({'title': "Nexus 9.9 is out", 'detail': "Notes", 'button': "Update",
+                          'enabled': True})
+        shown = [r for r in page.overview.worth_rows if r.available]
+        self.assertEqual([r.title.text() for r in shown],
+                         ["Nexus 9.9 is out", "The torrent client didn't answer",
+                          "Deals is on without a Game-db token"])     # three at most
+        opened = []
+        page.overview.wanted.connect(lambda c, r: opened.append((c, r)))
+        shown[1].button.click()
+        self.assertEqual(opened, [('installing', 'torrent_test')])
+        page.gdb_enabled.setChecked(False)
+        page.set_torrent_problem(None)
+        page.show_update(None)
+        self.assertTrue(worth.isHidden())               # nothing to see to
+
+    def test_narrow_settings_folds_to_a_rail_and_one_column(self):
+        page = self.page()
+        page.resize(1200, 700)
+        page._set_compact(False)
+        grid = page.overview.grid
+        self.assertEqual(grid.getItemPosition(grid.indexOf(page.overview.cards['library']))[:2],
+                         (0, 1))
+        page.resize(900, 700)
+        page._set_compact(page.width() < page.COMPACT_BELOW)
+        self.assertEqual(page.nav.width(), page.RAIL_W)
+        self.assertEqual(page.nav_btns['installing'].text(), "")
+        self.assertEqual(page.nav_btns['installing'].toolTip(), "Installing")
+        self.assertEqual(grid.getItemPosition(grid.indexOf(page.overview.cards['library']))[:2],
+                         (1, 0))

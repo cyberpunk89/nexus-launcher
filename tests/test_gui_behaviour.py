@@ -558,6 +558,8 @@ class Behaviour(unittest.TestCase):
         self.assertFalse(st.dirty)
         self.assertEqual(nx.load_config()['scan_dirs'], ['~/Elsewhere'])
         w.go(w.SETTINGS)
+        st.tor_client.setCurrentIndex(st.tor_client.findData('transmission'))
+        st._sync_torrent_rows()                           # its rows show with a client
         st.tor_ratio.setText("lots")                      # can't be saved
         st.tor_ratio.editingFinished.emit()
         self.assertIn("A number", st.row_of[st.tor_ratio].error.text())
@@ -566,7 +568,11 @@ class Behaviour(unittest.TestCase):
         w.go(w.HOME)
         self.assertIn("Not saved", self.toasts[-1][0])
         self.assertIsNone(nx.load_config().get('torrent_seed_ratio'))
-        w.go(w.SETTINGS)
+        fix = dict(self.toasts[-1][2])["Fix it"]
+        fix()                                             # lands on the row, Advanced open
+        self.assertEqual(w.current(), w.SETTINGS)
+        self.assertEqual(st.current_category(), 'installing')
+        self.assertTrue(st.categories['installing'].adv.is_open)
         self.assertEqual(st.tor_ratio.text(), "lots")     # still there to fix
         st.load()                                         # Discard
         self.assertFalse(st.dirty)
@@ -576,18 +582,29 @@ class Behaviour(unittest.TestCase):
     def test_settings_search_and_sections(self):
         w = self.win
         st = w.settings
-        w.go(w.SETTINGS)
+        w._open_settings('library')
+        st.categories['installing'].adv.set_open(False)
         st.search.setText("seeding")
-        shown = [k for k, sec in st.sections.items() if sec.isVisibleTo(st)]
-        self.assertEqual(shown, ['torrent'])
-        self.assertTrue(st.nav_btns['torrent'].isVisibleTo(st))
-        self.assertFalse(st.nav_btns['appearance'].isVisibleTo(st))
+        shown = [k for k, cat in st.categories.items() if not cat.isHidden()]
+        self.assertEqual(shown, ['installing'])
+        self.assertFalse(st.row_of[st.tor_client].isHidden())   # what turns it on
+        self.assertFalse(st.nav_btns['installing'].isHidden())
+        self.assertTrue(st.nav_btns['look'].isHidden())
+        self.assertTrue(st.nav_btns['overview'].isHidden())
+        self.assertTrue(st.overview.isHidden())
+        st.search.setText("also look")                    # a match in Advanced opens it
+        self.assertTrue(st.categories['installing'].adv.is_open)
         st.search.setText("zzz no such setting")
-        self.assertTrue(st.no_match.isVisibleTo(st))
+        self.assertFalse(st.no_match.isHidden())
         st.search.clear()
-        self.assertTrue(all(sec.isVisibleTo(st) for sec in st.sections.values()))
+        self.assertFalse(st.categories['installing'].adv.is_open)   # as it was
+        self.assertEqual([k for k, cat in st.categories.items() if not cat.isHidden()],
+                         ['library'])
+        self.assertTrue(st.nav_btns['library'].isChecked())
         w._open_settings('alerts')                        # Deals / Downloads link in
-        self.assertEqual(st.current_section(), 'alerts')
+        self.assertEqual(st.current_category(), 'alerts')
+        w._open_settings('torrent')                       # an old section key
+        self.assertEqual(st.current_category(), 'installing')
         w.go(w.HOME)
 
     def test_torrent_fields_only_with_a_client(self):

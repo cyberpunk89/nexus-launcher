@@ -104,6 +104,9 @@ class DownloadsMixin:
                 self._feed_theatre_downloads()
             except RuntimeError:
                 return
+            st = self.pages.get(self.SETTINGS)
+            if isinstance(st, SettingsPage):        # not the lazy spot, nor while it's built
+                st.set_torrent_problem(torrent_problem(data))
             if data.get('configured') is False and self.downloads._detected is None \
                     and not self._torrent_detecting:
                 self._torrent_detecting = True
@@ -750,4 +753,5 @@ from .config import ConfigError, load_config, save_config  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
 from .install import protongen_has_default  # noqa: E402
 from .jobs import cli_json, in_thread, Job  # noqa: E402
+from .settings import SettingsPage, torrent_problem  # noqa: E402
 from .widgets import notify_desktop, start_steam  # noqa: E402

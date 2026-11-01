@@ -832,7 +832,7 @@ class DealsWidget(DashWidget):
             self.body.addWidget(label("Connect Game-db in Settings to see deals on your "
                                       "Steam wishlist.", "Muted", wrap=True))
             b = QPushButton("Open Settings")
-            b.clicked.connect(lambda: hub.go(hub.SETTINGS))
+            b.clicked.connect(lambda: hub._open_settings('accounts', 'deals'))
             self.body.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
             return
         d = hub.dealspage._data()
