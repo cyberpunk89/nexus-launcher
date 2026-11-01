@@ -60,6 +60,13 @@ def torrent_client_settings() -> list:
     return []
 
 
+def transmission_config_dir(kind: str) -> Path | None:
+    """Where a Transmission started without -g keeps its settings: the
+    daemon in its own folder, the Qt and GTK apps in ~/.config/transmission."""
+    base = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+    return base / ('transmission-daemon' if kind == 'daemon' else 'transmission')
+
+
 def appx_registered(family: str) -> bool:
     return False
 

@@ -133,6 +133,13 @@ def torrent_client_settings() -> list[tuple[str, Path]]:
     return out
 
 
+def transmission_config_dir(kind: str) -> Path | None:
+    """Not known here: the app moved from %APPDATA% to %LOCALAPPDATA% in
+    Transmission 4 and the daemon runs as a service under another account,
+    so a guess could flag the very client Nexus talks to."""
+    return None
+
+
 def appx_registered(family: str) -> bool:
     """Whether a packaged (Store) app with this family name is registered
     for this user, so shell:AppsFolder can start it."""

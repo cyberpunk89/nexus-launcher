@@ -38,6 +38,36 @@ def torrent_state(r: dict) -> str:
     return " · ".join(bits)
 
 
+def _home(path: str) -> str:
+    home = str(Path.home())
+    return '~' + path[len(home):] if path == home or path.startswith(home + '/') else path
+
+
+def others_note(info: dict) -> str:
+    """Why a download can look stuck here: another Transmission runs with its
+    own torrents (torrent.other_transmissions), and Nexus follows only the
+    one answering its RPC port."""
+    others = info.get('others') or []
+    if not others:
+        return ''
+    names = ", ".join(f"{o['name']} ({_home(o['config_dir'])})" for o in others)
+    one = len(others) == 1
+    return (f"Another Transmission is running: {names}. Nexus follows the one in "
+            f"{_home(info.get('config_dir') or '')}, so {'its' if one else 'their'} torrents "
+            f"and progress don't show here. Quit the one you don't use.")
+
+
+FINISH_SOON = 15            # s: a download this close to done is polled every 2 s
+
+
+def finishing(rows: list) -> bool:
+    """Whether a download is about to finish (Transmission's ETA, seconds),
+    so the poll speeds up and the Install page, Theatre and auto-install
+    see the finish within 2 s instead of 10."""
+    return any(not r.get('done') and not r.get('gone') and r.get('state') == 'downloading'
+               and r.get('eta') is not None and r['eta'] <= FINISH_SOON for r in rows)
+
+
 READY_HOURS = 24            # a finished download or install stays a row this long
 PRIMARY_LABELS = {'install': "Install", 'play': "Play", 'pause': "Pause", 'resume': "Resume",
                   'retry': "Retry", 'show': "Show game"}
@@ -257,6 +287,10 @@ class DownloadsPage(QWidget):
         self.btn_resume_all.clicked.connect(lambda: self._all('resume'))
         head.addWidget(self.btn_resume_all)
         outer.addLayout(head)
+        self.others = label("", None, wrap=True)        # a second Transmission is running
+        self.others.setStyleSheet(f"color: {P['warning']};")
+        self.others.setVisible(False)
+        outer.addWidget(self.others)
         self.addbox = QWidget()
         arow = QHBoxLayout(self.addbox)
         arow.setContentsMargins(0, 0, 0, 0)
@@ -391,6 +425,9 @@ class DownloadsPage(QWidget):
                                 + f" · ↑ {fmt_bytes(info.get('up') or 0)}/s")
         else:
             self.status.setText("")
+        text = others_note(info) if ok else ''
+        self.others.setText(text)
+        self.others.setVisible(bool(text))
         self.empty2.setVisible(False)
         if not d:
             self.empty.set("Loading…", "", G['download'])

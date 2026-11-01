@@ -16,6 +16,9 @@ paths (each takes the home directory, so tests can point it elsewhere)
     torrent_client_settings()               [(client, settings file)] to read
                                             for ports and remote access
                                             (Windows); [] on Linux
+    transmission_config_dir(kind)           a Transmission's default settings
+                                            folder ('daemon', 'qt', 'gtk');
+                                            None when unknown
     app_menu_dir(home)                      where game launchers go: the
                                             freedesktop applications folder;
                                             Start Menu\\Programs\\<APP_NAME>
@@ -202,6 +205,7 @@ cache_dir = _impl.cache_dir
 steam_root = _impl.steam_root
 app_menu_dir = _impl.app_menu_dir
 torrent_client_settings = _impl.torrent_client_settings
+transmission_config_dir = _impl.transmission_config_dir
 steam_running_appid = _impl.steam_running_appid
 default_install_base = _impl.default_install_base
 install_base_warnings = _impl.install_base_warnings

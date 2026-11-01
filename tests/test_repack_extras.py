@@ -180,12 +180,14 @@ class Achievements(unittest.TestCase):
 class FakeTransmission(BaseHTTPRequestHandler):
     torrents = {}
     removed = []
+    posts = 0
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers['Content-Length']))
+        type(self).posts += 1
         # (read before any answer, as Transmission does: Windows resets a
         # connection closed with unread data, and the client sees WinError 10053)
         if self.headers.get('X-Transmission-Session-Id') != 'sid':
@@ -214,7 +216,7 @@ class FakeTransmission(BaseHTTPRequestHandler):
                 self.torrents.pop(i, None)
             out = {}
         elif req['method'] == 'session-get':
-            out = {'version': '4.1.3', 'download-dir': '/dl'}
+            out = {'version': '4.1.3', 'download-dir': '/dl', 'config-dir': '/cfg/daemon'}
         elif req['method'] == 'session-stats':
             out = {'downloadSpeed': 10, 'uploadSpeed': 2}
         else:
@@ -403,6 +405,47 @@ class Torrents(unittest.TestCase):
                 torrent.control('pause', ['nothex'], s=s)
             info = torrent.client(s).info()
             self.assertEqual((info['version'], info['down']), ('4.1.3', 10))
+            self.assertEqual(info['config_dir'], '/cfg/daemon')
+            # A poll (--torrents --all) shares one client: one session-id
+            # handshake, not one per call.
+            FakeTransmission.posts = 0
+            c = torrent.client(s)
+            torrent.all_status(s, c), c.info()
+            self.assertEqual(FakeTransmission.posts, 4)       # 409, torrent-get, session-get, stats
+
+    def test_other_transmissions_are_found(self):
+        from types import SimpleNamespace as P
+        with tempfile.TemporaryDirectory() as d:
+            daemon, qt, remote, custom = (Path(d, n) for n in ('daemon', 'qt', 'remote', 'cfg'))
+            for f in (daemon, qt, remote, custom):
+                f.mkdir()
+            Path(remote, 'settings.json').write_text('{"remote-session-enabled": true}')
+            procs = [P(pid=1, name='transmission-da', cmdline=['/usr/bin/transmission-daemon']),
+                     P(pid=2, name='transmission-qt', cmdline=['transmission-qt']),
+                     P(pid=3, name='transmission-gt', cmdline=['/usr/bin/transmission-gtk',
+                                                              '-g', str(remote)]),
+                     P(pid=4, name='transmission-da',
+                       cmdline=['transmission-daemon', f'--config-dir={custom}/']),
+                     P(pid=5, name='bash', cmdline=['bash', 'transmission-qt']),
+                     P(pid=6, name='Transmission-Qt', cmdline=[])]
+            dirs = {'daemon': daemon, 'qt': qt, 'gtk': qt}
+            with mock.patch.object(torrent.platform, 'processes', lambda: iter(procs)), \
+                    mock.patch.object(torrent.platform, 'transmission_config_dir', dirs.get):
+                found = torrent.other_transmissions(str(daemon) + '/')
+                # qt (its own session) and the -g daemon; not the served one, not
+                # the GTK app driving a remote session, not bash's argument.
+                self.assertEqual([(o['name'], o['pid']) for o in found],
+                                 [('transmission-qt', 2), ('transmission-daemon', 4),
+                                  ('transmission-qt', 6)])
+                self.assertEqual(found[1]['config_dir'], str(custom))
+                self.assertEqual([o['pid'] for o in torrent.other_transmissions(str(qt))],
+                                 [1, 4])
+                self.assertEqual(torrent.other_transmissions(None), [])
+            # A folder this platform can't name is left out, not guessed.
+            with mock.patch.object(torrent.platform, 'processes', lambda: iter(procs[:2])), \
+                    mock.patch.object(torrent.platform, 'transmission_config_dir',
+                                      lambda kind: None):
+                self.assertEqual(torrent.other_transmissions(str(daemon)), [])
 
 
 try:

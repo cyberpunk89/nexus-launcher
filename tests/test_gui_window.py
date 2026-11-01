@@ -48,6 +48,22 @@ class Pure(unittest.TestCase):
         self.assertEqual(f(0, 1000, 100, 162, 1), 162)         # at least one tile
         self.assertEqual(f(10, 1000, 300, 0, 1), 310)          # no pitch: a viewport
 
+    def test_downloads_notes_and_finishing(self):
+        from nexus.gui.downloads import finishing, others_note
+        from pathlib import Path
+        home = str(Path.home())
+        self.assertEqual(others_note({'config_dir': '/x'}), '')
+        note = others_note({'config_dir': home + '/.config/transmission-daemon', 'others': [
+            {'name': 'transmission-qt', 'pid': 2, 'config_dir': home + '/.config/transmission'}]})
+        self.assertIn("transmission-qt (~/.config/transmission)", note)
+        self.assertIn("follows the one in ~/.config/transmission-daemon, so its", note)
+        row = {'state': 'downloading', 'eta': 12, 'done': False}
+        self.assertTrue(finishing([row]))
+        self.assertFalse(finishing([dict(row, eta=60)]))
+        self.assertFalse(finishing([dict(row, eta=None)]))
+        self.assertFalse(finishing([dict(row, state='paused')]))
+        self.assertFalse(finishing([dict(row, done=True)]))
+
     def test_theatre_rows_per_source(self):
         import time as _t
         now = _t.time()
@@ -735,6 +751,27 @@ class Window(unittest.TestCase):
         same = dl.rows['b' * 40]
         dl.set_data({'torrents': rows, 'client': {}})              # rows are reused
         self.assertIs(dl.rows['b' * 40], same)
+
+    def test_torrent_poll_speeds_up_near_the_finish(self):
+        w = self.win
+        row = {'hash': 'a' * 40, 'name': 'G', 'done': False, 'state': 'downloading',
+               'eta': 600, 'percent': 99.0}
+        others = [{'name': 'transmission-qt', 'pid': 2, 'config_dir': '/q'}]
+        data = {'torrents': [row], 'client': {'client': 'Transmission', 'config_dir': '/d',
+                                              'others': others}}
+        with patch_gui('cli_json', lambda a, cb, *_x: cb(data, None)), \
+                mock.patch.object(w, '_showing', lambda page: False):
+            w._torrent_polling = False
+            w._poll_torrents()
+            self.assertEqual(w._torrent_timer.interval(), 10_000)
+            row['eta'] = 8
+            w._poll_torrents()
+            self.assertEqual(w._torrent_timer.interval(), 2000)
+            row.update(done=True, eta=None, state='seeding', percent=100.0)
+            w._poll_torrents()
+            self.assertEqual(w._torrent_timer.interval(), 60_000)
+        self.assertIn("transmission-qt", w.downloads.others.text())
+        self.assertFalse(w.downloads.others.isHidden())
 
     def test_finished_download_installs_once_and_says_which_torrent(self):
         import tempfile

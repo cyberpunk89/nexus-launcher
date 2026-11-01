@@ -246,10 +246,16 @@ def cmd_torrent(args) -> None:
         if args.all:
             s = T.settings()
             c = T.client(s)
-            rows, info = T.all_status(s), c.info()
+            rows, info = T.all_status(s, c), c.info()     # one client: one session-id handshake
+            if info.get('config_dir'):
+                info['others'] = T.other_transmissions(info['config_dir'])
             if args.json:
                 print(json.dumps({'torrents': rows, 'client': info}))
                 return
+            for o in info.get('others') or []:
+                print(f"  [!] {o['name']} (pid {o['pid']}, {o['config_dir']}) is another "
+                      f"Transmission with its own torrents; Nexus follows the one in "
+                      f"{info['config_dir']}.", file=sys.stderr)
         else:
             rows = T.status()
     except T.TorrentError as e:

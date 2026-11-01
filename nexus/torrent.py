@@ -24,6 +24,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 import re
 import time
 import tomllib
@@ -232,11 +233,11 @@ class Transmission:
         self.call('torrent-remove', {'ids': hashes, 'delete-local-data': bool(delete_data)})
 
     def info(self) -> dict:
-        got = self.call('session-get', {'fields': ['version', 'download-dir']})
+        got = self.call('session-get', {'fields': ['version', 'download-dir', 'config-dir']})
         st = self.call('session-stats', {})
         return {'client': 'Transmission', 'version': got.get('version') or '',
                 'download_dir': got.get('download-dir'), 'down': st.get('downloadSpeed') or 0,
-                'up': st.get('uploadSpeed') or 0}
+                'up': st.get('uploadSpeed') or 0, 'config_dir': got.get('config-dir')}
 
 
 class QBittorrent:
@@ -477,11 +478,12 @@ def status(s: dict | None = None) -> list[dict]:
     return out
 
 
-def all_status(s: dict | None = None) -> list[dict]:
+def all_status(s: dict | None = None, c=None) -> list[dict]:
     """Every torrent in the client, newest first, with Nexus's tracking
-    flags on the ones it added (and those it added that are gone)."""
+    flags on the ones it added (and those it added that are gone). Pass the
+    caller's client `c` to reuse its Transmission session id."""
     tracked = load_tracked()
-    rows = client(s).list_all()
+    rows = (c or client(s)).list_all()
     seen = {t['hash'] for t in rows}
     out = [_merge(t, tracked.get(t['hash'])) for t in rows]
     out.sort(key=lambda r: -(r.get('added') or 0))
@@ -507,6 +509,64 @@ def control(action: str, hashes: list[str], delete_data: bool = False,
                 tracked.pop(h, None)
     else:
         raise TorrentError(f"unknown action {action!r}")
+
+
+TRANSMISSIONS = {'transmission-daemon': 'daemon', 'transmission-qt': 'qt',
+                 'transmission-gtk': 'gtk'}
+
+
+def _config_arg(args: list[str]) -> str | None:
+    """The settings folder a Transmission was started with (-g / --config-dir)."""
+    for i, a in enumerate(args):
+        if a in ('-g', '--config-dir') and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith('--config-dir='):
+            return a.partition('=')[2]
+    return None
+
+
+def _same_dir(a, b) -> bool:
+    def norm(p):
+        try:
+            return os.path.normcase(str(Path(p).expanduser().resolve()))
+        except (OSError, RuntimeError, ValueError):
+            return os.path.normcase(str(p).rstrip('/\\'))
+    return norm(a) == norm(b)
+
+
+def _remote_ui(config_dir: Path) -> bool:
+    """A Qt/GTK Transmission set to drive another session (its "Connect to
+    remote session" switch) runs no torrents of its own."""
+    try:
+        cfg = json.loads((config_dir / 'settings.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    return isinstance(cfg, dict) and cfg.get('remote-session-enabled') is True
+
+
+def other_transmissions(served: str | None) -> list[dict]:
+    """Transmission sessions running here besides the one that answers Nexus
+    (whose settings folder is `served`, session-get's config-dir):
+    [{'name', 'pid', 'config_dir'}]. Each keeps its own torrents, so a
+    download the user follows in the other one never moves here (2026-11-02:
+    transmission-qt finished a repack while the transmission-daemon Nexus
+    talked to was at 85% of the same torrent). A session whose folder isn't
+    known is left out rather than guessed."""
+    if not served:
+        return []
+    out = []
+    for p in platform.processes():
+        args = p.cmdline
+        prog = re.sub(r'\.exe$', '', (PureWindowsPath(args[0]).name if args else p.name).lower())
+        kind = TRANSMISSIONS.get(prog)
+        if not kind:
+            continue
+        cfg = _config_arg(args[1:])
+        cfg = Path(cfg).expanduser() if cfg else platform.transmission_config_dir(kind)
+        if cfg is None or _same_dir(cfg, served) or (kind != 'daemon' and _remote_ui(cfg)):
+            continue
+        out.append({'name': prog, 'pid': p.pid, 'config_dir': str(cfg)})
+    return out
 
 
 def installed_clients() -> list[dict]:

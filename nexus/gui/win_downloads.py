@@ -14,7 +14,7 @@ from nexus.features import has
 
 from .common import alive, CLI, cli_args, DATA_DIR
 from .fmt import fmt_bytes
-from .downloads import theatre_rows
+from .downloads import finishing, theatre_rows
 from .theme import G
 
 UAC_TITLE = "Windows will ask for permission"
@@ -81,8 +81,8 @@ class DownloadsMixin:
         """Follow the torrent client: every torrent for the Downloads page,
         Nexus's own on the Install page and Deals cards, and install a
         finished one that asked for it. Every 2 s while Downloads is on
-        screen, 10 s while something downloads, a minute otherwise; stops
-        when no client is set up."""
+        screen or a download is seconds from done, 10 s while something
+        downloads, a minute otherwise; stops when no client is set up."""
         if self._torrent_polling or not self.repacks_on():
             return
         self._torrent_polling = True
@@ -129,6 +129,8 @@ class DownloadsMixin:
                     self._theatre and self.theatre.tabs.current() == 'downloads'
                     and any(r['group'] != 'ready' for r in self._theatre_rows)):
                 self._torrent_timer.start(2000)       # Theatre idles at 60 s on a finished list
+            elif finishing(rows):
+                self._torrent_timer.start(2000)       # see the finish (and install) at once
             elif active or any(not r.get('done') and r.get('auto_install') for r in mine):
                 self._torrent_timer.start(10_000)
             else:
