@@ -182,6 +182,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._idle_timer.timeout.connect(self._maybe_attract)
         # Theatre's menu sounds (w-65): off unless controls.sounds.
         self.sounds = UiSounds(self, lambda: self._theatre)
+        self.sounds.problem_found.connect(self._sound_problem)
         self._apply_controls()
         self.setAcceptDrops(True)
         self.theatre.play.connect(lambda g: self.on_game_action('launch', g))
@@ -481,6 +482,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         st.appearance.changed.connect(self._queue_appearance)
         st.setup_wanted.connect(self.open_setup)
         st.whats_new_wanted.connect(self.show_whats_new)
+        st.sound_test_wanted.connect(self.sounds.test)
+        # Sounds on: look now (QtMultimedia, outputs), so the note is there before a test.
+        st.set_sound_problem(self.sounds.problem() if self.sounds.on else self.sounds.reason)
         return st
 
     def current(self) -> str | None:
@@ -832,6 +836,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.sounds.play('move')            # a step (A's select already sounded)
 
     # ---- Theatre's sounds and tint (w-65) ----
+    def _sound_problem(self, text: str):
+        """Sounds can't play (or can again): Settings says so under the switch."""
+        self.theatre_settings.sound_problem = text
+        st = self.pages.get(self.SETTINGS)
+        if isinstance(st, SettingsPage):        # not the lazy spot, nor while it's built
+            st.set_sound_problem(text)
+
     def _sound_move(self):
         self.sounds.play('move')
 

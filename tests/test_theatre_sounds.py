@@ -4,6 +4,7 @@ Never opens real audio: tests/sandbox.py sets NEXUS_NO_SOUND=1, and the
 tests that check what would play hand UiSounds a fake QSoundEffect class
 (`factory`), so QtMultimedia is never asked for a device."""
 
+import io
 import os
 import tempfile
 import unittest
@@ -55,6 +56,31 @@ class FakeEffect:
         self.deleted = True
 
 
+class FailingEffect(FakeEffect):
+    """A QSoundEffect that ends in Status.Error (no device, a failed decode)."""
+    class Status:
+        Ready, Error = 1, 3
+
+    class _Signal:
+        def __init__(self):
+            self.slots = []
+
+        def connect(self, f):
+            self.slots.append(f)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.statusChanged = self._Signal()
+
+    def status(self):
+        return self.Status.Error
+
+    def play(self):
+        super().play()
+        for f in self.statusChanged.slots:        # Qt says so later; here at once
+            f()
+
+
 def fake_sounds(parent, theatre=True):
     """A UiSounds that would play: not disabled, app active, fake effects."""
     flag = {'on': theatre}
@@ -62,6 +88,7 @@ def fake_sounds(parent, theatre=True):
     s.disabled = False
     s.app_active = True
     s.factory = lambda: FakeEffect
+    s.outputs = lambda: ['speakers']                # never ask QMediaDevices
     s.flag = flag
     return s
 
@@ -170,6 +197,92 @@ class Sounds(unittest.TestCase):
         with mock.patch.dict('sys.modules', {'PyQt6.QtMultimedia': None}):
             self.assertIsNone(sounds._sound_effect_class())
 
+    def _problems(self, s):
+        """Reasons `s` reported, and what went to stderr (a fresh session)."""
+        sounds._logged.clear()
+        self.addCleanup(sounds._logged.clear)
+        found = []
+        s.problem_found.connect(found.append)
+        err = mock.patch('sys.stderr', new_callable=io.StringIO)
+        self.addCleanup(err.stop)
+        return found, err.start()
+
+    def test_problem_no_qtmultimedia(self):
+        s = fake_sounds(self.host)
+        s.factory = lambda: None
+        found, err = self._problems(s)
+        self.assertEqual(s.problem(), sounds.NO_MULTIMEDIA)
+        self.assertEqual(s.problem(), sounds.NO_MULTIMEDIA)
+        self.assertEqual(found, [sounds.NO_MULTIMEDIA])            # said once
+        self.assertEqual(err.getvalue().count("no QtMultimedia"), 1)
+        self.assertTrue(err.getvalue().startswith("nexus: menu sounds: "))
+        with mock.patch.dict('sys.modules', {'PyQt6.QtMultimedia': None}):
+            self.assertIsNone(sounds._audio_outputs())
+
+    def test_problem_no_output_logged_once_a_session(self):
+        s = fake_sounds(self.host)
+        s.outputs = lambda: []
+        found, err = self._problems(s)
+        s.configure(True, 50)
+        self.assertTrue(s.play('select'))                          # tries; logs why it can't
+        self.assertEqual(s.reason, sounds.NO_OUTPUT)
+        s.release()
+        s._last_any = ('', 0.0)
+        s.play('select')
+        other = fake_sounds(self.host)                             # a second one: same session
+        other.outputs = lambda: []
+        other.problem()
+        self.assertEqual(err.getvalue().count("no audio output"), 1)
+        s.outputs = lambda: ['speakers']                           # plugged in
+        self.assertEqual(s.problem(), '')
+        self.assertEqual(found, [sounds.NO_OUTPUT, ''])
+
+    def test_problem_status_error(self):
+        s = fake_sounds(self.host)
+        s.factory = lambda: FailingEffect
+        found, err = self._problems(s)
+        s.configure(True, 50)
+        self.assertTrue(s.play('select'))
+        self.assertEqual(s.reason, sounds.FAILED)
+        self.assertEqual(found, [sounds.FAILED])
+        self.assertIn("refused", err.getvalue())
+        self.assertEqual(s.problem(), sounds.FAILED)               # sticks while held
+        s.release()
+        s.factory = lambda: FakeEffect
+        self.assertEqual(s.problem(), '')                          # new effects, new chance
+
+    def test_status_ready_is_no_problem(self):
+        """`_status` compares with the class's own Status.Error, as QSoundEffect has it."""
+        s = fake_sounds(self.host)
+        e = FailingEffect()
+        e.status = lambda: FailingEffect.Status.Ready
+        s._status(e)
+        self.assertFalse(s._failed)
+
+    def test_test_sound_outside_theatre_and_off(self):
+        s = fake_sounds(self.host, theatre=False)
+        self.assertFalse(s.on)
+        self.assertFalse(s.play('select'))
+        s.volume = 40
+        self.assertTrue(s.test())                                  # sounds off, desktop: plays
+        self.assertEqual(played(s), {'select': 1})
+        self.assertAlmostEqual(s.effects['select'].volume, gain(40))
+        held = s.effects['select']
+        s._after_test()                                            # 3 s later: let go
+        self.assertTrue(held.deleted)
+        self.assertEqual(s.effects, {})
+        s.volume = 0
+        self.assertFalse(s.test())                                 # volume 0: silent
+        s.volume = 50
+        s.disabled = True
+        self.assertFalse(s.test())                                 # NEXUS_NO_SOUND: silent
+        self.assertEqual(s.effects, {})
+        s.disabled = False
+        s.outputs = lambda: []
+        found, _err = self._problems(s)
+        self.assertFalse(s.test())                                 # no output: says so
+        self.assertEqual(found, [sounds.NO_OUTPUT])
+
     def test_accept_key_selects(self):
         s = fake_sounds(self.host)
         s.configure(True, 50)
@@ -275,6 +388,7 @@ class TheatreWindow(unittest.TestCase):
         s.disabled = False
         s.app_active = True
         s.factory = lambda: FakeEffect
+        s.outputs = lambda: ['speakers']
         return s
 
     def test_sounds_off_by_default_and_follow_prefs(self):
@@ -287,6 +401,43 @@ class TheatreWindow(unittest.TestCase):
         w.set_theatre(True)
         self.assertFalse(w.sounds.play('select'))
         self.assertEqual(FakeEffect.made, [])
+
+    def test_settings_sound_row(self):
+        """Settings: the switch says Theatre only, Test sound plays outside
+        Theatre, and a problem shows as the switch row's note (w-73)."""
+        w = self.win
+        s = self._fake()
+        sounds._logged.clear()
+        self.addCleanup(sounds._logged.clear)
+        st = w.settings
+        self.assertIn("Theatre mode only", st.sounds_row.desc.text())
+        self.assertTrue(st.sounds_row.note.isHidden())
+        self.assertTrue(st.sound_test.isEnabled())                 # sounds are off
+        st.sound_test.click()
+        self.assertEqual(played(s), {'select': 1})
+        s.outputs = lambda: []
+        with mock.patch('sys.stderr', new_callable=io.StringIO):
+            st.sound_test.click()
+        self.assertFalse(st.sounds_row.note.isHidden())
+        self.assertEqual(st.sounds_row.note.text(), sounds.NO_OUTPUT)
+        self.assertEqual(w.theatre_settings.sound_problem, sounds.NO_OUTPUT)
+        s.outputs = lambda: ['speakers']
+        st.sound_test.click()
+        self.assertTrue(st.sounds_row.note.isHidden())             # fixed: the note goes
+
+    def test_theatre_help_says_why_sounds_are_silent(self):
+        w = self.win
+        w.set_theatre(True)
+        QApplication.processEvents()
+        w.open_theatre_settings()
+        ts = w.theatre_settings
+        ts._row_focused(ts.rows_by_key['sounds'])
+        self.assertIn("Theatre only", ts.help.text())
+        w._sound_problem(sounds.NO_OUTPUT)
+        ts._row_focused(ts.rows_by_key['volume'])
+        self.assertEqual(ts.help.text(), sounds.NO_OUTPUT)
+        ts._row_focused(ts.rows_by_key['theme'])
+        self.assertNotEqual(ts.help.text(), sounds.NO_OUTPUT)
 
     def test_theatre_hooks(self):
         w = self.win
