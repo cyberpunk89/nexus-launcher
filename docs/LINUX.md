@@ -147,7 +147,7 @@ reach every name: each package's `__init__` re-exports them.
 flowchart TB
   subgraph g["nexus/gui · the app"]
     direction TB
-    g1["Base: common, theme, fmt"] --> g2["Building blocks: widgets, jobs, art, tiles, prefs, gameinfo, actions"]
+    g1["Base: common, theme, fmt"] --> g2["Building blocks: widgets, jobs, art, tiles, prefs, gameinfo, overlay, actions, modal"]
     g2 --> g3["Pages: library, dashboard, details, storage, protonpage, newspage, deals, downloads, artpicker, system, settings, install, theatre, input"]
     g3 --> g4["window: MainWindow + mixins win_library, win_nav, win_controller, win_play, win_downloads, win_actions; topbar, tray"]
     g4 --> g5["app: icon, desktop entry, single instance, main()"]
@@ -183,8 +183,8 @@ portrait tiles with a caption gradient and pill badges, one accent colour.
 
 One window with a top bar — **Home · Library · Deals · News** as tabs, then search, round
 icons for **System · Proton · Settings** (with badges — System shows running jobs, else
-health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dialogs beyond file pickers and "quit while
-jobs run?". Under 1000 px wide the tabs fold to icons.
+health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dialogs beyond file pickers: a question
+("quit while jobs run?", "delete this?") or a name is a card inside the window. Under 1000 px wide the tabs fold to icons.
 
 - **Home** — a cinematic hero (up to five featured games: playing now, recently played, a
   favourite, an update, something new) with the game's logo, a few facts and Play; it

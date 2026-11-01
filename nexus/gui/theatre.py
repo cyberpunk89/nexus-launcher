@@ -63,6 +63,7 @@ class TheatreSearch(QWidget):
         self.games: list[dict] = []
         self.query = ''
         self._entry = None                 # set: naming something, not searching
+        self._max = MAX_COLLECTION_NAME    # the name's length limit while naming
         lay = QVBoxLayout(self)
         m = int(SP['8'] * 2)
         lay.setContentsMargins(m, SP['6'], m, SP['4'])
@@ -138,15 +139,18 @@ class TheatreSearch(QWidget):
         QTimer.singleShot(0, lambda: alive(self.keys['q'])
                           and self.keys['q'].setFocus(Qt.FocusReason.TabFocusReason))
 
-    def open_entry(self, title: str, initial: str, on_done):
-        """The keyboard for typing a name with a controller (a collection):
-        Done hands the text to on_done, B drops it. No search results."""
+    def open_entry(self, title: str, initial: str, on_done,
+                   max_len: int = MAX_COLLECTION_NAME):
+        """The keyboard for typing a name with a controller (for a modal's
+        field): Done hands the text to on_done, B drops it. No search
+        results. At most `max_len` characters."""
         self._entry = on_done
+        self._max = max_len
         self.games = []
-        self.query = initial
+        self.query = initial[:max_len]
         self.results.setVisible(False)
         self.open([])
-        self.hint.setText(f"{title} — Done saves, B cancels")
+        self.hint.setText(f"{title} — Done to finish, B to cancel")
 
     def _done(self):
         fn, name = self._entry, self.query.strip()
@@ -166,7 +170,7 @@ class TheatreSearch(QWidget):
 
     # ---- typing ----
     def type(self, ch: str):
-        if len(self.query) < (MAX_COLLECTION_NAME if self._entry else 60):
+        if len(self.query) < (self._max if self._entry else 60):
             self.query += ch
             self._refresh()
 

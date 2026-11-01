@@ -40,7 +40,7 @@ class ControllerMixin:
                 or not self.isActiveWindow() or self.trailer_view.isVisible() \
                 or self.theatre.trailer.isVisible() or self.theatre_sheet.isVisible() \
                 or self.theatre_settings.isVisible() or self.quick.isVisible() \
-                or self.attract.running:
+                or self.theatre_modal.isVisible() or self.attract.running:
             self._on_activity()                         # look again later
             return
         self.attract.start(self._games)
@@ -114,7 +114,7 @@ class ControllerMixin:
         return bool(self.prefs.controls.get('theatre_on_pad')) and not self._theatre \
             and not self._pad_suppressed and self.isActiveWindow() \
             and not (self._playing or self._launching) and self._open_sheet() is None \
-            and not self.palette.isVisible() and not self.desk_search.isVisible() \
+            and self._open_modal() is None and not self.palette.isVisible() and not self.desk_search.isVisible() \
             and self.current() != self.SETUP and QApplication.activeModalWidget() is None
 
     def _pad_disconnected(self, name):
@@ -234,6 +234,22 @@ class ControllerMixin:
         return [p for p in self.TABS if not self.nav[p].isHidden()]
 
     def _pad_action(self, act):
+        modal = self._open_modal()
+        if modal is not None:
+            # A question is up (w-66): the pad answers it and does nothing
+            # else. A on its text field types with a keyboard over it (Steam's
+            # when it runs); Y on that keyboard is a space.
+            kb = modal.scope()
+            if act == 'keyboard' and modal.field is not None \
+                    and QApplication.focusWidget() is modal.field:
+                if self._steam_up():
+                    QProcess.startDetached('steam', ['steam://open/keyboard'])
+                else:
+                    modal.type_with(self.theatre.search if self._theatre else self.desk_search)
+            elif act == 'search' and kb is not modal:
+                kb.type(' ')
+            self._update_hints()
+            return
         if act in ('start', 'quick'):
             # Start and Guide: Theatre's quick menu, from any screen; on the
             # desktop, into Theatre (F11 is the way straight out).
@@ -329,6 +345,8 @@ class ControllerMixin:
         if self.quick.isVisible():
             self.quick.close_menu()
             return
+        if self.theatre_modal.isVisible():
+            return                                      # answer the question first
         self.theatre_sheet.close_sheet()
         self.theatre_settings.close_sheet()
         game = now_playing(self._games)
@@ -475,6 +493,8 @@ class ControllerMixin:
         self._pad_leave_timer.stop()
         if on == self._theatre:
             return
+        for m in (self.modal, self.theatre_modal):      # a question stays with its shell
+            m.cancel(restore=False)
         self._theatre = on
         if not on:
             ctrl = getattr(self, 'ctrl', None)
@@ -541,15 +561,15 @@ class ControllerMixin:
         self.on_game_action(act, game)
 
     def _ask_quit_game(self, g: dict, where):
-        """Quit game asks first, in the panel it came from (the quick menu or
-        Theatre's sheet), with Cancel focused and the game named."""
+        """Quit game asks first, with Cancel focused and the game named: in
+        the quick menu when it came from there, else in Theatre's modal."""
         name = g.get('display_name', g['slug'])
         title, text = f"Quit {name}?", "Anything you haven't saved will be lost."
         if where is self.quick:
             where.ask(title, text, "Quit game", G['stop'], lambda: self.stop_game(g))
+            self._update_hints()
         else:
-            where.ask(title, text, "Quit game", lambda: self.stop_game(g))
-        self._update_hints()
+            self.confirm(title, text, "Quit game", lambda: self.stop_game(g))
 
     def _a_label(self, f) -> str:
         game = f.game if isinstance(f, GameTile) else {}
@@ -572,6 +592,15 @@ class ControllerMixin:
             self.hints.show_hints([('a', 'Select'), ('b', 'Cancel')]
                                   if self.quick.state == 'confirm' else
                                   [('a', 'Select'), ('b', 'Close'), ('Menu', 'Close')])
+            return
+        modal = self._open_modal()
+        if modal is not None:
+            if modal.scope() is not modal:             # the keyboard, typing for its field
+                self.hints.show_hints([('a', 'Type'), ('x', 'Delete'), ('y', 'Space'),
+                                       ('b', 'Close')])
+            else:
+                self.hints.show_hints([('a', 'Type' if f is not None and f is modal.field
+                                        else 'Select'), ('b', 'Cancel')])
             return
         if self._theatre and self.theatre_settings.isVisible():
             self.hints.show_hints([('a', 'Change'), ('← →', 'Adjust'), ('b', 'Done')]

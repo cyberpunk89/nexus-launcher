@@ -12,7 +12,7 @@ from datetime import date
 
 from PyQt6.QtCore import pyqtSignal, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from .actions import ActionSheet
 from .common import ATTRACT_MINUTES, THEATRE_STARTS, VOLUME_STEPS
@@ -216,12 +216,9 @@ class TheatreSettings(ActionSheet):
 
     def open(self, controls: dict, appearance: dict):
         """Show the sheet with these values; focus the row used last."""
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
+        self._remember_focus()
         self.sync(controls, appearance)
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
+        self._cover()
         t = self.default_focus()
         if t is not None:
             focus_and_reveal(t)

@@ -619,9 +619,9 @@ class DownloadsMixin:
         True when this one waits."""
         if has('proton'):
             return False
-        sheet = self.theatre_sheet if self._theatre else self.sheet
+        modal = self._open_modal()
         waiting = getattr(self, '_uac_waiting', None)
-        if waiting and sheet.isVisible() and sheet.title.text() == UAC_TITLE:
+        if waiting and modal is not None and modal.title.text() == UAC_TITLE:
             waiting.append((cmd, name, slug))
             return True
         args = cli_args(cmd)

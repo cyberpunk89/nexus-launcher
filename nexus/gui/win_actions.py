@@ -166,13 +166,9 @@ class ActionsMixin:
                     self.prefs.overrides[slug] = {'name': new}
                     self.prefs.save()
                     self.reload_library()
-            if self._theatre:
-                self.theatre.search.open_entry("Name in your library", name, done)
-            elif self.input.mode == 'pad':
-                self.desk_search.open_entry("Name in your library", name, done)
-            else:
-                self.sheet.prompt("Name in your library", name, "Save", done,
-                                  "Only Nexus shows this name.", max_len=MAX_TITLE)
+            self._clear_for_modal()
+            self._modal().prompt("Name in your library", name, "Save", done,
+                                 "Only Nexus shows this name.", max_len=MAX_TITLE)
             self._update_hints()
         elif action == 'rename-reset':
             if self.prefs.overrides.pop(slug, None) is not None:
@@ -467,11 +463,24 @@ class ActionsMixin:
 
     def confirm(self, title, text, yes, on_yes, danger=True):
         """Ask before something that can't simply be clicked back: the
-        action sheet as a two-row question, for mouse, keyboard and pad
-        alike (and in Theatre)."""
-        sheet = self.theatre_sheet if self._theatre else self.sheet
-        sheet.ask(title, text, yes, on_yes, danger)
+        in-window modal (w-66) with Cancel and `yes`, for mouse, keyboard
+        and pad alike (Theatre's at its scale). A danger question starts on
+        Cancel."""
+        self._clear_for_modal()
+        self._modal().ask(title, text, yes, on_yes, danger)
         self._update_hints()
+
+    def _clear_for_modal(self):
+        """One thing at a time: a modal closes the palette, an open sheet
+        and Theatre's quick menu (focus goes back first, so the modal
+        returns it there)."""
+        if self.palette.isVisible():
+            self.palette.close_palette()
+        sheet = self._open_sheet()
+        if sheet is not None:
+            sheet.close_sheet()
+        if self._theatre and self.quick.isVisible():
+            self.quick.close_menu()
 
     def show_antivirus(self, job):
         """The sheet for an install the antivirus broke (the CLI's `antivirus`

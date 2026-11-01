@@ -413,8 +413,8 @@ class Window(unittest.TestCase):
         ev = QCloseEvent()
         self.win.closeEvent(ev)
         self.assertFalse(ev.isAccepted())                      # asks first
-        self.assertTrue(self.win.sheet.isVisible())
-        self.win.sheet.close_sheet()
+        self.assertTrue(self.win.modal.isVisible())
+        self.win.modal.cancel()
         self.win.quit_after_jobs()
         self.assertEqual(job.state, 'cancelling')
         self.assertTrue(self.win.isVisible())                  # still there meanwhile
@@ -831,10 +831,9 @@ class Window(unittest.TestCase):
             st.agent.setChecked(True)
             self.assertEqual(calls, [])                              # a question first
             self.assertFalse(st.agent.isChecked())
-            self.assertTrue(self.win.sheet.isVisible())
-            yes = next(b for b in self.win.sheet.findChildren(QPushButton)
-                       if b.text() == "Turn it on")
-            yes.click()
+            self.assertTrue(self.win.modal.isVisible())
+            self.assertEqual(self.win.modal.primary.text(), "Turn it on")
+            self.win.modal.primary.click()
             self.assertEqual(calls, [['--agent-enable', '--json']])
             st.set_agent_status({'enabled': True, 'systemd': True, 'running': True})
             st.agent.setChecked(False)
@@ -950,7 +949,7 @@ class Window(unittest.TestCase):
             w._apply_controls({'close_to_tray': False})
             w._background_changed('agent', True)
             self.assertEqual(calls, [['--agent-enable', '--json']])
-            self.assertFalse(w.sheet.isVisible())                # no question first
+            self.assertFalse(w.modal.isVisible())                # no question first
             self.assertTrue(w.prefs.controls['close_to_tray'])   # where Nexus starts
             self.assertIsNotNone(w.tray)
             self.assertTrue(w.settings.tray.isChecked())
@@ -1052,10 +1051,9 @@ class Window(unittest.TestCase):
         ran.clear()
         with mock.patch.object(w, 'run', lambda args, *a, **k: ran.append(args)):
             w._batch_action('uninstall', repacks)
-            self.assertTrue(w.sheet.isVisible())                # asks first
-            yes = next(b for b in w.sheet.findChildren(QPushButton)
-                       if b.text().startswith("Uninstall"))
-            yes.click()
+            self.assertTrue(w.modal.isVisible())                # asks first
+            self.assertTrue(w.modal.primary.text().startswith("Uninstall"))
+            w.modal.primary.click()
         self.assertEqual(ran, [['--uninstall', g['slug'], '--yes', '--save-backup']
                                for g in repacks[1:]])           # the running one is skipped
         w._playing = set()
@@ -1125,12 +1123,11 @@ class Window(unittest.TestCase):
         with patch_gui('cli_json', fake), mock.patch.object(w, 'restart') as restart:
             w._import_settings('/t/s.tar.gz')
             self.assertEqual(calls, [['--import-settings', '/t/s.tar.gz', '--dry-run', '--json']])
-            self.assertTrue(w.sheet.isVisible())
-            texts = " ".join(l.text() for l in w.sheet.findChildren(QLabel))
+            self.assertTrue(w.modal.isVisible())
+            texts = " ".join(l.text() for l in w.modal.findChildren(QLabel))
             self.assertIn("Gone", texts)
-            yes = next(b for b in w.sheet.findChildren(QPushButton)
-                       if b.text() == "Import and restart")
-            yes.click()
+            self.assertEqual(w.modal.primary.text(), "Import and restart")
+            w.modal.primary.click()
             self.assertEqual(calls[-1], ['--import-settings', '/t/s.tar.gz', '--json'])
             restart.assert_called_once()
 
@@ -1210,11 +1207,11 @@ class Window(unittest.TestCase):
         w = self.win
         with patch_gui('cli_json', lambda *a, **k: None):
             w._torrent_control('remove', ['a' * 40], True)
-        self.assertTrue(w.sheet.isVisible())
-        rows = [b.text() for b in w.sheet.findChildren(QPushButton)
-                if b.objectName() == 'SheetRow']
-        self.assertEqual(rows, ["Remove and delete files", "Cancel"])
-        w.sheet.close_sheet()
+        self.assertTrue(w.modal.isVisible())
+        rows = [b.text() for b in w.modal.findChildren(QPushButton)]
+        self.assertEqual(rows, ["Cancel", "Remove and delete files"])
+        self.assertIs(QApplication.focusWidget(), w.modal.btn_cancel)    # danger: Cancel first
+        w.modal.cancel()
 
     def test_starts_on_home(self):
         self.assertEqual(self.win.current(), self.win.HOME)
@@ -1381,10 +1378,10 @@ class Window(unittest.TestCase):
         w._pad_connected('DualSense', 'ps', 'g', True)
         self.assertFalse(w._theatre)
         w._playing.clear()
-        w.sheet.ask("Remove?", "Sure?", "Remove", lambda: None)   # a sheet is open
+        w.confirm("Remove?", "Sure?", "Remove", lambda: None)     # a question is open
         w._pad_connected('DualSense', 'ps', 'g', True)
         self.assertFalse(w._theatre)
-        w.sheet.close_sheet(restore=False)
+        w.modal.cancel(restore=False)
         toasts.clear()
         w._pad_connected('DualSense', 'ps', 'g', True)
         self.assertTrue(w._theatre and w._theatre_auto)
@@ -1844,9 +1841,15 @@ class Window(unittest.TestCase):
             w._tile_activated(w._games[0])
             w.details._fill_tips({'recipes': [
                 {'name': f'r{i}', 'launch_options': 'X=1 %command%'} for i in range(7)]})
+            w.confirm("Delete it?", "It can't be undone.", "Delete", lambda: None)   # w-66
+            w.ask_collection_name("New collection", "x", lambda n: None)     # replaces it
+            w.modal.cancel()
             w.set_theatre(True)
             w.theatre.open_game(w._games[0])
             w.toggle_quick()
+            w.confirm("Quit it?", "Unsaved work is lost.", "Quit", lambda: None)
+            w.ask_collection_name("New collection", "x", lambda n: None)
+            w.theatre_modal.cancel()
             w.set_theatre(False)
             QApplication.processEvents()
             w.jobs.jobs.clear()
@@ -1863,6 +1866,243 @@ class Window(unittest.TestCase):
         QApplication.sendEvent(w, QKeyEvent(QEvent.Type.KeyPress, key,
                                             Qt.KeyboardModifier.NoModifier))
         QApplication.processEvents()
+
+    # ---- the in-window modal (w-66) ----
+    def test_confirm_is_an_in_window_modal(self):
+        """confirm() is a child overlay of the desk, never a window: a danger
+        question starts on Cancel, the primary runs once it has closed, and a
+        second question replaces the first. The palette closes for it and
+        can't open over it."""
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m, ran = w.modal, []
+        w.search.setFocus()
+        w.confirm("Delete this?", "It can't be undone.", "Delete", lambda: ran.append(1))
+        self.assertTrue(m.isVisible())
+        self.assertFalse(m.isWindow())
+        self.assertIs(m.parentWidget(), w.desk)
+        self.assertIs(w.nav_scope(), m)
+        self.assertEqual(m.title.text(), "Delete this?")
+        self.assertEqual(m.primary.objectName(), "DangerSolid")
+        self.assertIs(QApplication.focusWidget(), m.btn_cancel)
+        self.assertIs(w.default_focus(), m.btn_cancel)
+        self.assertTrue(m.card.geometry().width() <= 440)
+        w.open_palette()
+        self.assertFalse(w.palette.isVisible())               # the question first
+        keys = {k.key().toString(): k for k in w.findChildren(QShortcut)}
+        page = w.current()
+        keys['Ctrl+,'].activated.emit()                       # no shortcut behind it
+        self.assertEqual(w.current(), page)
+        self.assertTrue(m.isVisible())
+        w.confirm("Second?", "Another one.", "Yes", lambda: ran.append(2), danger=False)
+        self.assertEqual(m.title.text(), "Second?")           # replaced: the first is dropped
+        self.assertEqual(m.primary.objectName(), "Primary")
+        self.assertIs(QApplication.focusWidget(), m.primary)
+        m.primary.click()
+        self.assertEqual(ran, [2])
+        self.assertFalse(m.isVisible())
+        self.assertIs(QApplication.focusWidget(), w.search)   # back where it was
+        w.open_palette()
+        self.assertTrue(w.palette.isVisible())
+        w.confirm("Delete this?", "It can't be undone.", "Delete", lambda: ran.append(1))
+        self.assertFalse(w.palette.isVisible())               # one thing at a time
+        self.assertTrue(m.isVisible())
+        m.cancel()
+        self.assertEqual(ran, [2])
+
+    def test_modal_escape_b_and_close_cancel(self):
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m, ran = w.modal, []
+        for how in ('esc', 'b', 'close', 'cancel'):
+            w.search.setFocus()
+            w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(how))
+            if how == 'esc':
+                self._key(QApplication.focusWidget(), Qt.Key.Key_Escape)
+            elif how == 'b':
+                w._escape()                                   # Esc's shortcut and a pad's B
+            elif how == 'close':
+                m.btn_close.click()
+            else:
+                m.btn_cancel.click()
+            self.assertFalse(m.isVisible(), how)
+            self.assertIs(QApplication.focusWidget(), w.search, how)
+        self.assertEqual(ran, [])
+
+    def test_modal_enter_follows_focus_and_can_submit(self):
+        """Enter runs the focused button (Cancel, on a danger question) and,
+        from the name field, saves when there is a name."""
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m, ran, names = w.modal, [], []
+        w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(1))
+        self._key(QApplication.focusWidget(), Qt.Key.Key_Return)      # on Cancel
+        self.assertFalse(m.isVisible())
+        self.assertEqual(ran, [])
+        w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(1), danger=False)
+        self._key(QApplication.focusWidget(), Qt.Key.Key_Return)      # on the primary
+        self.assertEqual(ran, [1])
+        w.ask_collection_name("New collection", "", names.append)
+        self.assertIs(QApplication.focusWidget(), m.field)
+        self.assertIs(w.default_focus(), m.field)
+        self.assertFalse(m.primary.isEnabled())                       # no name yet
+        self._key(m.field, Qt.Key.Key_Return)
+        self.assertTrue(m.isVisible())
+        m.field.setText("   ")
+        self.assertFalse(m.primary.isEnabled())
+        m.field.setText("  Couch  ")
+        self.assertTrue(m.primary.isEnabled())
+        self._key(m.field, Qt.Key.Key_Return)
+        self.assertFalse(m.isVisible())
+        self.assertEqual(names, ["Couch"])
+
+    def test_modal_tab_and_arrows_stay_inside(self):
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m = w.modal
+        w.ask_collection_name("New collection", "x", lambda n: None)
+        chain = [m.field, m.btn_cancel, m.primary, m.btn_close]
+        for want in chain[1:] + chain[:1]:
+            self._key(QApplication.focusWidget(), Qt.Key.Key_Tab)
+            self.assertIs(QApplication.focusWidget(), want)
+        self._key(QApplication.focusWidget(), Qt.Key.Key_Backtab)
+        self.assertIs(QApplication.focusWidget(), m.btn_close)
+        m.primary.setFocus()
+        for key in (Qt.Key.Key_Down, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Up,
+                    Qt.Key.Key_Left, Qt.Key.Key_Left, Qt.Key.Key_Down, Qt.Key.Key_Down):
+            self._key(QApplication.focusWidget(), key)
+            self.assertTrue(m.isAncestorOf(QApplication.focusWidget()), key)
+        m.cancel()
+
+    def test_modal_scrim_click_keeps_typed_text(self):
+        from PyQt6.QtTest import QTest
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m = w.modal
+        w.ask_collection_name("New collection", "", lambda n: None)
+        QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+        self.assertFalse(m.isVisible())                       # nothing typed: it goes
+        w.ask_collection_name("New collection", "", lambda n: None)
+        QTest.keyClicks(m.field, "Co-op")
+        QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+        self.assertTrue(m.isVisible())                        # typed: a stray click keeps it
+        QTest.mouseClick(m, Qt.MouseButton.LeftButton, pos=m.card.geometry().center())
+        self.assertTrue(m.isVisible())
+        self.assertEqual(m.field.text(), "Co-op")
+        m.cancel()
+
+    def test_theatre_confirm_uses_the_theatre_modal_at_scale(self):
+        from nexus.gui.theatre import THEATRE_SCALE
+        from nexus.gui.theme import SP
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        m = w.theatre_modal
+        w.confirm("Quit it?", "Unsaved work is lost.", "Quit", lambda: None)
+        self.assertTrue(m.isVisible())
+        self.assertFalse(w.modal.isVisible())
+        self.assertIs(m.parentWidget(), w.theatre)
+        self.assertEqual(m.scale, THEATRE_SCALE)
+        self.assertEqual(m.card.width(), max(min(int(440 * THEATRE_SCALE),
+                                                 m.width() - 2 * int(SP['6'] * THEATRE_SCALE)),
+                                             int(240 * THEATRE_SCALE)))
+        self.assertLessEqual(m.card.height(), int(m.height() * 0.85))
+        self.assertIs(w.nav_scope(), m)
+        w._update_hints()
+        self.assertEqual(w.hints._shown[1], (('a', 'Select'), ('b', 'Cancel')))
+        w.toggle_quick()                                      # Guide: not over the question
+        self.assertFalse(w.quick.isVisible())
+        for act in ('start', 'page-next', 'view', 'search'):
+            w._pad_action(act)                                # the pad answers it, nothing else
+        self.assertTrue(w._theatre)
+        self.assertTrue(m.isVisible())
+        self.assertFalse(w.theatre.search.isVisible())
+        w._escape()
+        self.assertFalse(m.isVisible())
+        w.set_theatre(False)
+
+    def test_pad_types_a_name_with_the_keyboard_over_the_modal(self):
+        """In Theatre the name modal opens first; A on its field brings the
+        on-screen keyboard over it. B closes only the keyboard; Done puts the
+        name in the field and moves to Save."""
+        from nexus.gui.common import MAX_COLLECTION_NAME
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        m, kb, names = w.theatre_modal, w.theatre.search, []
+        with mock.patch.object(w, '_steam_up', lambda: False):
+            w.ask_collection_name("New collection", "", names.append)
+            self.assertTrue(m.isVisible())
+            self.assertFalse(kb.isVisible())
+            self.assertIs(QApplication.focusWidget(), m.field)
+            w._update_hints()
+            self.assertEqual(w.hints._shown[1][0], ('a', 'Type'))
+            w._pad_action('keyboard')                         # A on the field
+            self.assertTrue(kb.isVisible())
+            self.assertIs(w.nav_scope(), kb)
+            for ch in 'abc':
+                kb.type(ch)
+            w._escape()                                       # B: the keyboard only
+            self.assertFalse(kb.isVisible())
+            self.assertTrue(m.isVisible())
+            self.assertEqual(m.field.text(), "")
+            self.assertIs(QApplication.focusWidget(), m.field)
+            w._pad_action('keyboard')
+            for ch in 'couch':
+                kb.type(ch)
+            w._pad_action('search')                           # Y: a space
+            kb.type('x')
+            kb.keys['done'].click()
+            self.assertFalse(kb.isVisible())
+            self.assertTrue(m.isVisible())
+            self.assertEqual(m.field.text(), "Couch x")
+            self.assertIs(QApplication.focusWidget(), m.primary)
+            m.primary.click()
+            self.assertEqual(names, ["Couch x"])
+            w.ask_collection_name("New collection", "", names.append)
+            w._pad_action('keyboard')
+            for _ in range(MAX_COLLECTION_NAME + 5):
+                kb.type('a')
+            self.assertEqual(len(kb.query), MAX_COLLECTION_NAME)
+            w._escape()
+            w._escape()
+            self.assertFalse(m.isVisible())
+        w.set_theatre(False)
+
+    def test_rename_in_library_is_a_modal(self):
+        from nexus.gui.common import MAX_TITLE
+        w = self.win
+        g = w._games[0]
+        self.addCleanup(w.prefs.overrides.pop, g['slug'], None)
+        with mock.patch.object(w, 'reload_library'):
+            w.on_game_action('rename-local', g)
+            m = w.modal
+            self.assertTrue(m.isVisible())
+            self.assertEqual(m.title.text(), "Name in your library")
+            self.assertEqual(m.field.text(), g['display_name'])
+            self.assertEqual(m.field.maxLength(), MAX_TITLE)
+            m.field.setText("My   own  name")
+            m.primary.click()
+        self.assertEqual(w.prefs.overrides[g['slug']], {'name': "My own name"})
+
+    def test_switching_theatre_cancels_a_modal(self):
+        w = self.win
+        ran = []
+        w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(1))
+        w.set_theatre(True)
+        self.assertFalse(w.modal.isVisible())
+        w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(2))
+        self.assertTrue(w.theatre_modal.isVisible())
+        w.set_theatre(False)
+        self.assertFalse(w.theatre_modal.isVisible())
+        self.assertEqual(ran, [])
 
     def test_theatre_never_opens_a_desktop_menu(self):
         """X, right-click and the hero's ⋮ all lead to the controller sheet in
@@ -3035,12 +3275,12 @@ class Window(unittest.TestCase):
             with mock.patch.object(w, 'resume_game') as resume:
                 hero.btn.click()
             self.assertEqual(resume.call_args[0][0]['slug'], g['slug'])
-            hero.btn_details.click()                        # Quit game: asks in the sheet
-            self.assertTrue(w.theatre_sheet.isVisible())
+            hero.btn_details.click()                        # Quit game: asks in the modal
+            self.assertTrue(w.theatre_modal.isVisible())
             self.assertEqual(QApplication.focusWidget().text(), "Cancel")
-            self.assertEqual(w.theatre_sheet.title.text(), f"Quit {g['display_name']}?")
+            self.assertEqual(w.theatre_modal.title.text(), f"Quit {g['display_name']}?")
             w._escape()
-            self.assertFalse(w.theatre_sheet.isVisible())
+            self.assertFalse(w.theatre_modal.isVisible())
             w._apply_running(set())                         # closed: the pin lets go
             # A 42 min session opens its band once the game closes, which
             # disables the stage; the test_session_band_* tests cover that.

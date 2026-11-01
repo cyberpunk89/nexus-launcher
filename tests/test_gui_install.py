@@ -548,7 +548,7 @@ class Followups(unittest.TestCase):
     def test_uac_note_before_the_first_install_only(self):
         prefs = self.win.prefs
         self.addCleanup(setattr, prefs, 'uac_note_shown', prefs.uac_note_shown)
-        self.addCleanup(self.win.sheet.close_sheet)
+        self.addCleanup(self.win.modal.cancel)
         prefs.uac_note_shown = False
         sent = []
         with mock.patch.object(features, 'FEATURES', frozenset()), \
@@ -556,12 +556,12 @@ class Followups(unittest.TestCase):
             self.win._start_install([*nx.CLI, '/r/A'], 'A', 'a')
             self.win._start_install([*nx.CLI, '/r/B'], 'B', 'b')     # "Install all"
             self.assertEqual(sent, [])
-            self.assertTrue(self.win.sheet.isVisible())
+            self.assertTrue(self.win.modal.isVisible())
             self.assertIn("as administrator", " ".join(
-                lab.text() for lab in self.win.sheet.findChildren(QLabel)))
+                lab.text() for lab in self.win.modal.findChildren(QLabel)))
             self.assertTrue(prefs.uac_note_shown)
-            next(b for b in self.win.sheet.findChildren(QPushButton, "SheetRow")
-                 if b.text() == "Install").click()
+            self.assertEqual(self.win.modal.primary.text(), "Install")
+            self.win.modal.primary.click()
             self.assertEqual([j.slug for j in sent], ['a', 'b'])
             self.win._start_install([*nx.CLI, '/r/C'], 'C', 'c')     # shown once
             self.assertEqual([j.slug for j in sent], ['a', 'b', 'c'])

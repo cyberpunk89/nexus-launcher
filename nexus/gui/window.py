@@ -234,6 +234,16 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.desk_search = TheatreSearch(self.desk)
         self.desk_search.picked.connect(self._desk_search_picked)
         self.desk_search.closed.connect(self._desk_search_closed)
+        # Every confirm and name prompt (w-66): an in-window modal, one per
+        # shell like the sheets. The on-screen keyboard can type for its field;
+        # keyboard_closed runs after the keyboard's own closed handlers.
+        self.modal = Modal(self.desk)
+        self.theatre_modal = Modal(self.theatre, THEATRE_SCALE)
+        for m in (self.modal, self.theatre_modal):
+            m.closed.connect(self._update_hints)
+        self.theatre_modal.closed.connect(self._show_session)
+        self.desk_search.closed.connect(self.modal.keyboard_closed)
+        self.theatre.search.closed.connect(self.theatre_modal.keyboard_closed)
         self._theatre = False
         self._was_state = Qt.WindowState.WindowNoState
         self.cursor_hider = CursorHider(self)
@@ -1152,6 +1162,7 @@ from .input import (ControllerInput, focus_and_reveal, FocusRing, HintBar,  # no
     install_input_mode, SpatialNav)
 from .install import InstallPage, RepackWatcher  # noqa: E402
 from .jobs import cli_json, in_thread, JobManager  # noqa: E402
+from .modal import Modal  # noqa: E402
 from .setup import SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402
 from .tray import Tray, tray_available  # noqa: E402

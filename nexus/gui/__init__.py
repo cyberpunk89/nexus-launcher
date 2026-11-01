@@ -70,6 +70,8 @@ from .actions import (
     _gate_actions, about_html, action_glyph, ACTION_GLYPHS, ActionSheet, build_game_menu,
     COUCH_SKIP, game_actions, GameAction, NOT_WHILE_BUSY, NOT_WHILE_PLAYING,
     TrailerOverlay)  # noqa: F401
+from .overlay import Overlay  # noqa: F401
+from .modal import Modal  # noqa: F401
 from .library import (
     _EdgeFade, _ShelfScroll, _TileSignals, featured_games, HeroCarousel, HomeView, KeepPlace,
     LibraryView, ListView, shelf_page_target, ShelfRow, surprise_pick)  # noqa: F401

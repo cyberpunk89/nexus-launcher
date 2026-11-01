@@ -860,6 +860,12 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#SheetRow:disabled { color: $muted; }
     QPushButton#SheetRow[danger="true"] { color: $danger; }
     #SheetFoot { border-top: 1px solid $border; }
+
+    /* ---- Modal (w-66): a centred card over the scrim, never a dialog ----- */
+    #Modal { background: $surface_solid; border: 1px solid $border;
+             border-radius: ${r_panel}px; }
+    QLabel#ModalSub { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#ModalText { color: $subtext; font-size: ${fs_sm}px; }
     #NoteCard { background: $surface_1; border: 1px solid $border; border-radius: ${r_xl}px; }
     #NoteIcon { background: $accent_16; border-radius: ${r_control}px; }
     QLabel#NoteTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }

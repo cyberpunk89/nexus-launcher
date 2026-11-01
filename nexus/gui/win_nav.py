@@ -14,10 +14,13 @@ class NavigationMixin:
     def _shortcuts(self):
         def sc(keys, fn, theatre=False):
             # Desktop shortcuts would act on the hidden desk behind Theatre.
+            # While a modal asks (w-66) only Escape acts: it answers first.
+            run = fn if theatre else (lambda fn=fn: None if self._theatre else fn())
+            if fn != self._escape:
+                run = (lambda run=run: None if self._open_modal() is not None else run())
             for k in keys:
                 s = QShortcut(QKeySequence(k), self)
-                s.activated.connect(fn if theatre else
-                                    (lambda fn=fn: None if self._theatre else fn()))
+                s.activated.connect(run)
         sc(["/", "Ctrl+F"], lambda: self.theatre.open_search() if self._theatre
            and not self.theatre.details.isVisible() else
            None if self._theatre else self._focus_search(), theatre=True)
@@ -44,8 +47,8 @@ class NavigationMixin:
 
     def open_palette(self, game=None):
         """Ctrl+K: search everything (gui/palette.py); with a game, its actions."""
-        if self._theatre:
-            return
+        if self._theatre or self._open_modal() is not None:
+            return                                  # a question is waiting for its answer
         sheet = self._open_sheet()
         if sheet is not None:
             sheet.close_sheet()
@@ -171,13 +174,19 @@ class NavigationMixin:
         """Back, one step at a time: leave the details panel (focus returns
         to the game), then close it; leave the search; leave full screen;
         from other pages, go back to the library. In Theatre the quick menu
-        comes first: its question, then the menu."""
+        comes first: its question, then the menu. A modal goes before any
+        sheet."""
         if self._theatre and self.quick.back():
             self.sounds.play('back')
             self._update_hints()
             return
         if self.palette.isVisible():
             self.palette.escape()
+            return
+        modal = self._open_modal()
+        if modal is not None:
+            modal.back()                      # its keyboard first, then the question
+            self.sounds.play('back')
             return
         sheet = self._open_sheet()
         if sheet is not None:
@@ -241,6 +250,9 @@ class NavigationMixin:
         (Theatre's game page covers tiles that are still "visible")."""
         if self._theatre and self.quick.isVisible():
             return self.quick
+        modal = self._open_modal()
+        if modal is not None:
+            return modal.scope()
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet
@@ -262,10 +274,21 @@ class NavigationMixin:
         sheet = self.theatre_sheet if self._theatre else self.sheet
         return sheet if sheet.isVisible() else None
 
+    def _modal(self) -> 'Modal':
+        """The modal for this shell: Theatre's (TV-sized) or the desk's."""
+        return self.theatre_modal if self._theatre else self.modal
+
+    def _open_modal(self) -> 'Modal | None':
+        m = self._modal()
+        return m if m.isVisible() else None
+
     def default_focus(self) -> QWidget | None:
         """Where focus lands when nothing in the window has it."""
         if self._theatre and self.quick.isVisible():
             return self.quick.default_focus()
+        modal = self._open_modal()
+        if modal is not None:
+            return modal.default_focus()
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet.default_focus()

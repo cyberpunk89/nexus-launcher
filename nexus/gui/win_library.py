@@ -486,14 +486,10 @@ class LibraryMixin:
         self._set_chip(f'col:{cname}')
 
     def ask_collection_name(self, title: str, initial: str, on_done):
-        """A name: the on-screen keyboard for a controller (and in Theatre),
-        else a text field in the sheet."""
-        if self._theatre:
-            self.theatre.search.open_entry(title, initial, on_done)
-        elif self.input.mode == 'pad':
-            self.desk_search.open_entry(title, initial, on_done)
-        else:
-            self.sheet.prompt(title, initial, "Save", on_done)
+        """A name, in the modal's text field (w-66); with a pad, A on the
+        field brings the on-screen keyboard over it."""
+        self._clear_for_modal()
+        self._modal().prompt(title, initial, "Save", on_done)
         self._update_hints()
 
     def _create_collection(self, cname, slug=None):

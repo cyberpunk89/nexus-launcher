@@ -428,14 +428,12 @@ class Behaviour(unittest.TestCase):
         with mock.patch.object(self.win, 'run', lambda *a, **k: ran.append(a)):
             self.win.on_game_action('restore-saves', self.win.game('alpha'))
             self.assertEqual(ran, [])
-            sheet = self.win.sheet
-            self.assertTrue(sheet.isVisible())
-            yes = next(b for b in sheet.findChildren(QPushButton)
-                       if b.text() == "Restore saves")
-            self.assertTrue(any(b.text() == "Cancel"
-                                for b in sheet.findChildren(QPushButton)))
-            yes.click()
-        self.assertFalse(self.win.sheet.isVisible())
+            modal = self.win.modal
+            self.assertTrue(modal.isVisible())
+            self.assertEqual(modal.primary.text(), "Restore saves")
+            self.assertEqual(modal.btn_cancel.text(), "Cancel")
+            modal.primary.click()
+        self.assertFalse(self.win.modal.isVisible())
         self.assertEqual(ran[0][0], ['--restore-saves', 'alpha'])
 
     def test_changed_files_offer_a_new_integrity_baseline(self):
@@ -741,9 +739,9 @@ class Behaviour(unittest.TestCase):
         with mock.patch.object(job, 'cancel', lambda: cancelled.append(1)):
             card.btn_cancel.click()
             self.assertEqual(cancelled, [])
-            self.assertTrue(self.win.sheet.isVisible())
-            next(b for b in self.win.sheet.findChildren(QPushButton)
-                 if b.text() == "Stop install").click()
+            self.assertTrue(self.win.modal.isVisible())
+            self.assertEqual(self.win.modal.primary.text(), "Stop install")
+            self.win.modal.primary.click()
         self.assertEqual(cancelled, [1])
         card.deleteLater()
 

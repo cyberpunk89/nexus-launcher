@@ -108,8 +108,8 @@ class PlayMixin:
 
     def _show_session(self) -> bool:
         """Open the pending session's page. It waits (stays pending) while
-        Nexus is minimised or hidden or the quick menu or an options sheet is
-        open, and is dropped when Theatre has been left."""
+        Nexus is minimised or hidden or the quick menu, an options sheet or
+        a modal is open, and is dropped when Theatre has been left."""
         pend = self._session_pending
         if pend is None:
             return False
@@ -117,7 +117,8 @@ class PlayMixin:
             self._session_pending = None
             return False
         if self.isMinimized() or not self.isVisible() or self.quick.isVisible() \
-                or self.theatre_sheet.isVisible() or self.theatre_settings.isVisible():
+                or self.theatre_sheet.isVisible() or self.theatre_settings.isVisible() \
+                or self.theatre_modal.isVisible():
             return False
         self._session_pending = None
         g = self.game(pend['slug'])

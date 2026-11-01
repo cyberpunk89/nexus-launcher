@@ -5,11 +5,12 @@ from typing import NamedTuple
 
 from PyQt6.QtCore import pyqtSignal, QEvent, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter
-from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLineEdit, QMenu, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QMenu, QPushButton, QScrollArea, QVBoxLayout,
+    QWidget)
 
 from ..features import has
-from .common import COLLECTION_NAMES, MAX_COLLECTION_NAME
+from .common import COLLECTION_NAMES
+from .overlay import Overlay
 from .theme import collection_look, G, P, SP
 
 
@@ -235,7 +236,7 @@ def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:
     return m
 
 
-class ActionSheet(QFrame):
+class ActionSheet(Overlay):
     """The game menu for a controller: a panel of big rows sliding over a
     dimmed page. D-pad moves, A runs, B or X closes. Used wherever a pad is
     driving, and always in Theatre — never the desktop right-click menu."""
@@ -247,7 +248,6 @@ class ActionSheet(QFrame):
         self.setObjectName("SheetScrim")
         self.scale = scale
         self.game: dict = {}
-        self._back_to = None
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addStretch()
@@ -281,13 +281,10 @@ class ActionSheet(QFrame):
         self.foot_rows.setSpacing(int(SP['0_5'] * scale))
         self.foot.hide()
         lay.addWidget(self.foot)
-        parent.installEventFilter(self)          # follow the parent's size
-        self.hide()
 
     def open(self, game: dict, actions: list[GameAction], theatre: bool = False):
         self.game = game
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
+        self._remember_focus()
         self._reset()
         self.title.setText(game.get('display_name', ''))
         self.sub.setText(SOURCE_LABEL.get(game.get('source', 'nexus'), ''))
@@ -320,42 +317,9 @@ class ActionSheet(QFrame):
             if first is None and a.enabled:
                 first = b
         self.rows.addStretch()
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
+        self._cover()
         if first is not None:
             first.setFocus(Qt.FocusReason.TabFocusReason)
-
-    def ask(self, title: str, text: str, yes: str, on_yes, danger: bool = True):
-        """The sheet as a yes/no question. Cancel has the focus: A pressed
-        out of habit never confirms anything."""
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
-        self.game = {}
-        self._reset()
-        self.title.setText(title)
-        self.sub.setText("")
-        self.rows.addWidget(label(text, "Muted", wrap=True))
-        self.rows.addSpacing(int(SP['3'] * self.scale))
-        px = int(18 * self.scale)
-        ok = QPushButton(amp(yes))
-        ok.setObjectName("SheetRow")
-        ok.setProperty('danger', danger)
-        set_glyph_icon(ok, G['check'], px, 'danger' if danger else 'accent', hover_role=None)
-        ok.setMinimumHeight(int(44 * self.scale))
-        ok.clicked.connect(lambda: (self.close_sheet(), on_yes()))
-        no = QPushButton("Cancel")
-        no.setObjectName("SheetRow")
-        set_glyph_icon(no, G['close'], px, 'subtext', hover_role=None)
-        no.setMinimumHeight(int(44 * self.scale))
-        no.clicked.connect(lambda: self.close_sheet())
-        self.rows.addWidget(ok)
-        self.rows.addWidget(no)
-        self.rows.addStretch()
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
-        no.setFocus(Qt.FocusReason.TabFocusReason)
 
     def choose(self, title: str, items: list, sub: str = '', text: str = '', focus: int = 0,
                keep_open: bool = False):
@@ -369,8 +333,7 @@ class ActionSheet(QFrame):
         `focus`: which row (of the rows that are choices) starts focused.
         `keep_open`: a pick runs its fn and leaves the sheet up; fn calls
         choose() again with the new ticks (Theatre's Sort & filter)."""
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
+        self._remember_focus()
         self.game = {}
         self._reset()
         self.title.setText(title)
@@ -406,63 +369,16 @@ class ActionSheet(QFrame):
         if rows:
             first = rows[max(0, min(focus, len(rows) - 1))]
         self.rows.addStretch()
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
+        self._cover()
         if first is not None:
             first.setFocus(Qt.FocusReason.TabFocusReason)
-
-    def prompt(self, title: str, initial: str, ok: str, on_ok, text: str = '',
-               max_len: int = MAX_COLLECTION_NAME):
-        """The sheet asking for a name (keyboard): Return or `ok` saves,
-        Cancel / Escape drops it. An empty name saves nothing."""
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
-        self.game = {}
-        self._reset()
-        self.title.setText(title)
-        self.sub.setText("")
-        if text:
-            self.rows.addWidget(label(text, "Muted", wrap=True))
-        ed = QLineEdit(initial)
-        ed.setMaxLength(max_len)
-        ed.setMinimumHeight(int(40 * self.scale))
-        self.rows.addWidget(ed)
-        self.rows.addSpacing(int(SP['2'] * self.scale))
-        px = int(18 * self.scale)
-        save = QPushButton(ok)
-        save.setObjectName("SheetRow")
-        set_glyph_icon(save, G['check'], px, 'accent', hover_role=None)
-        save.setMinimumHeight(int(44 * self.scale))
-        no = QPushButton("Cancel")
-        no.setObjectName("SheetRow")
-        set_glyph_icon(no, G['close'], px, 'subtext', hover_role=None)
-        no.setMinimumHeight(int(44 * self.scale))
-
-        def done():
-            name = ed.text().strip()
-            if name:
-                self.close_sheet()
-                on_ok(name)
-        save.clicked.connect(done)
-        ed.returnPressed.connect(done)
-        no.clicked.connect(lambda: self.close_sheet())
-        self.rows.addWidget(save)
-        self.rows.addWidget(no)
-        self.rows.addStretch()
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
-        ed.selectAll()
-        ed.setFocus(Qt.FocusReason.TabFocusReason)
 
     def notes(self, title: str, entries: list[dict], items: list, empty: str = ''):
         """The sheet as release notes (What's new): cards from
         updates.whats_new() grouped New / Improved / Fixed, untyped ones last,
         and `items` ((text, glyph, fn)) pinned below them so the first, which
         has the focus, never scrolls away. `empty` stands in for no entries."""
-        f = QApplication.focusWidget()
-        self._back_to = f if f is not None and not self.isAncestorOf(f) else self._back_to
+        self._remember_focus()
         self.game = {}
         self._reset()
         self.title.setText(title)
@@ -493,9 +409,7 @@ class ActionSheet(QFrame):
             self.foot_rows.addWidget(b)
             first = first or b
         self.foot.setVisible(first is not None)
-        self.setGeometry(self.parentWidget().rect())
-        self.raise_()
-        self.show()
+        self._cover()
         if first is not None:
             first.setFocus(Qt.FocusReason.TabFocusReason)
 
@@ -550,12 +464,7 @@ class ActionSheet(QFrame):
         if self.isHidden():
             return
         self.hide()
-        back, self._back_to = self._back_to, None
-        try:
-            if restore and back is not None and back.isVisible():
-                focus_and_reveal(back)
-        except RuntimeError:                     # rebuilt while the sheet was open
-            pass
+        self._restore_focus(restore)
         self.closed.emit()
 
     def keyPressEvent(self, ev):
@@ -572,16 +481,6 @@ class ActionSheet(QFrame):
         if not self.panel.geometry().contains(ev.position().toPoint()):
             self.close_sheet()
         super().mousePressEvent(ev)
-
-    def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Type.Resize and obj is self.parentWidget() and self.isVisible():
-            self.setGeometry(obj.rect())
-        return False
-
-    def paintEvent(self, ev):
-        pt = QPainter(self)
-        pt.fillRect(self.rect(), QColor(0, 0, 0, 115))
-        pt.end()
 
 
 class TrailerOverlay(QFrame):
@@ -828,6 +727,5 @@ def glance_rows(info: dict | None, tips: dict | None, length: dict | None,
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .gameinfo import is_installed, play_enabled, play_label, SOURCE_LABEL  # noqa: E402
-from .input import focus_and_reveal  # noqa: E402
 from .widgets import (amp, clear_layout, glyph_pixmap, icon_button, icon_label,  # noqa: E402
     label, plain_label, set_glyph_icon)
