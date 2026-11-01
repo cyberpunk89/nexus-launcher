@@ -323,11 +323,18 @@ def scan(steam_root: Path, compat_map: dict[str, str] | None = None,
     return games
 
 
-def steam_owned_entry(steam_root: Path, item: dict) -> dict:
+def steam_owned_entry(steam_root: Path, item: dict, stats: dict | None = None) -> dict:
     """An owned Steam game that isn't installed, from Game-db's library
     (appid, title, playtimeMinutes, lastPlayedAt). Play opens Steam's install
-    dialog."""
+    dialog. `stats` (play_stats) adds the hours Steam still keeps locally after
+    an uninstall: Game-db reports none when the profile's game details are
+    private, so the larger of the two wins."""
     appid = int(item['appid'])
+    ps = (stats or {}).get(appid) or {}
+    last = _iso_local(item.get('lastPlayedAt'))
+    if ps.get('last'):
+        local = datetime.fromtimestamp(ps['last']).isoformat(timespec='seconds')
+        last = max(last or '', local)
     return {
         'slug': f'steam-{appid}',
         'source': 'steam',
@@ -336,8 +343,8 @@ def steam_owned_entry(steam_root: Path, item: dict) -> dict:
         'display_name': item.get('title') or str(appid),
         'install_dir': None,
         'disk_bytes': None,
-        'last_played': _iso_local(item.get('lastPlayedAt')),
-        'playtime_minutes': _int(item.get('playtimeMinutes')),
+        'last_played': last,
+        'playtime_minutes': max(_int(item.get('playtimeMinutes')), ps.get('minutes', 0)),
         'launcher': f'steam://rungameid/{appid}',
         'install_url': f'steam://install/{appid}',
         'steam': True,

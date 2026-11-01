@@ -52,6 +52,21 @@ class PlayStatsCache(unittest.TestCase):
                 self.assertEqual(len(calls), 2)
 
 
+class OwnedEntry(unittest.TestCase):
+    def test_local_play_time_fills_what_game_db_lacks(self):
+        root = Path('/nonexistent-steam')
+        stats = {20: {'last': 1_700_000_000, 'minutes': 7200}}
+        # Private game details: Game-db says nothing, Steam still has the hours.
+        g = steamlib.steam_owned_entry(root, {'appid': 20, 'title': 'PoE 2'}, stats)
+        self.assertEqual(g['playtime_minutes'], 7200)
+        self.assertTrue(g['last_played'])
+        # The larger of the two wins either way; no stats keeps Game-db's.
+        item = {'appid': 20, 'title': 'PoE 2', 'playtimeMinutes': 9000}
+        self.assertEqual(steamlib.steam_owned_entry(root, item, stats)['playtime_minutes'], 9000)
+        self.assertEqual(steamlib.steam_owned_entry(root, item)['playtime_minutes'], 9000)
+        self.assertEqual(steamlib.steam_owned_entry(root, {'appid': 30})['playtime_minutes'], 0)
+
+
 @unittest.skipIf(vdf is None, "python-vdf not installed")
 class SteamScan(unittest.TestCase):
     def setUp(self):

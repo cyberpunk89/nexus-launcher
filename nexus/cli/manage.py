@@ -274,7 +274,8 @@ def owned_games(steam: list[dict], heroic_cfg) -> list[dict]:
     from Heroic's store caches. Never touches the network."""
     from nexus import steamlib, gamedb
     have = {g['appid'] for g in steam}
-    out = [steamlib.steam_owned_entry(STEAM_ROOT, item) for item in gamedb.owned_library()
+    stats = steamlib.play_stats(STEAM_ROOT)
+    out = [steamlib.steam_owned_entry(STEAM_ROOT, item, stats) for item in gamedb.owned_library()
            if item['appid'] not in have and not steamlib.is_tool(item['appid'],
                                                                  item.get('title') or '')]
     out += [h for h in steamlib.heroic_store_games(heroic_cfg, owned=True) if not h['installed']]
@@ -442,7 +443,8 @@ def _game_by_id(ident: str, light: bool = False) -> dict | None:
                 return g
         for item in gamedb.owned_library():        # owned, not installed
             if item['appid'] == int(appid):
-                return steamlib.steam_owned_entry(STEAM_ROOT, item)
+                return steamlib.steam_owned_entry(STEAM_ROOT, item,
+                                                  steamlib.play_stats(STEAM_ROOT))
     for g in steamlib.heroic_store_games(find_heroic_config(), owned=True):
         if g['slug'] == ident or g['app_name'] == ident:
             return g
