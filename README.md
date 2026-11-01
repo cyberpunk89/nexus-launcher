@@ -89,7 +89,7 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
 Dark and light themes, accent and gradient colours, background glow, corner style and a
 90 to 150 % size for big screens. Changes save as you make them.
 
-![Settings, Appearance: themes, accent colours, glow and size](docs/screenshots/settings.jpg)
+![Settings, Look and feel: looks, themes, accent colours and glow](docs/screenshots/settings.jpg)
 
 ## Linux vs Windows
 

@@ -1,4 +1,43 @@
 {
+  "0.5.3": [
+    {
+      "kind": "new",
+      "icon": "settings",
+      "title": "Settings, reorganised",
+      "text": "An overview, seven categories and Advanced sections. Check for updates shows its answer, and an available update stays in reach."
+    },
+    {
+      "kind": "improved",
+      "icon": "check_circle",
+      "title": "Confirmations inside the window",
+      "text": "Every confirm, name prompt and shelf or collection editor is now a card in Nexus instead of a separate pop-up."
+    },
+    {
+      "kind": "new",
+      "icon": "gamepad",
+      "title": "Turn off your controller",
+      "text": "Holding Guide to switch a pad off no longer reopens Theatre. On Linux the quick menu can turn a Bluetooth pad off."
+    },
+    {
+      "kind": "fixed",
+      "icon": "bell",
+      "title": "Menu sounds you can hear",
+      "text": "Sounds play even when your system sounds are muted, Settings has a Test sound button and says why sounds can't play."
+    },
+    {
+      "kind": "improved",
+      "icon": "clock",
+      "title": "Play time for uninstalled games",
+      "text": "Steam games you own but removed keep the play time Steam still has, even when your profile's game details are private."
+    },
+    {
+      "kind": "fixed",
+      "icon": "shield",
+      "title": "Games that need admin start",
+      "text": "Games that ask for administrator rights now start through the Windows prompt instead of closing at once.",
+      "platform": "windows"
+    }
+  ],
   "0.5.2": [
     {
       "kind": "new",
