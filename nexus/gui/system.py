@@ -415,11 +415,13 @@ class PlayHistoryPage(QWidget):
 
 
 class SystemPage(QWidget):
-    """Activity, Storage and Health under one top-bar icon: a switcher over
-    the three existing pages (their own titles hidden; their toolbars stay)."""
+    """Activity, Play history, Storage, Health and Report under one top-bar
+    icon: a switcher over those pages (their own titles hidden; their
+    toolbars stay)."""
     section_changed = pyqtSignal(str)
     SECTIONS = (('activity', "Activity", 'activity'), ('play', "Play history", 'history'),
-                ('storage', "Storage", 'storage'), ('health', "Health", 'health'))
+                ('storage', "Storage", 'storage'), ('health', "Health", 'health'),
+                ('report', "Report", 'shield_alert'))
 
     def __init__(self, pages: dict):
         super().__init__()

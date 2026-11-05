@@ -152,6 +152,8 @@ class NavigationMixin:
         elif key == 'health' and self._health_stale:
             self._health_stale = False
             self.health.refresh()
+        elif key == 'report':
+            self.report.shown()
         elif key == 'storage':
             self.storage.set_library([g for g in self._games if is_installed(g)], self._disks)
             self.storage.load_orphans()

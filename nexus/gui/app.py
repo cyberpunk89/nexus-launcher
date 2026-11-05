@@ -7,7 +7,8 @@ import subprocess
 import sys
 import time
 
-from PyQt6.QtCore import pyqtSignal, QObject, QRectF, Qt, QTimer
+from PyQt6.QtCore import (pyqtSignal, qInstallMessageHandler, QObject, QRectF, Qt, QtMsgType,
+    QTimer)
 from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import QApplication
 from nexus import instance as instance_mod, paths as NX
 from nexus.features import has
 from nexus.instance import INSTANCE, INSTANCE_MAX
+from nexus.report import crash
 
 from .common import (_REPO, APPLICATIONS_DIR, DATA_DIR, DESKTOP_PATH, ICON_PATH,
     LEGACY_DESKTOP, LOGO_SVG)
@@ -192,10 +194,36 @@ def install_desktop_entry(icon: str):
             pass
 
 
+def _err(text: str) -> None:
+    """Write to stderr when there is one: the frozen Windows GUI has none
+    (sys.stderr is None), and a closed pipe must not raise either."""
+    err = sys.stderr
+    if err is None:
+        return
+    try:
+        err.write(text if text.endswith('\n') else text + '\n')
+        err.flush()
+    except Exception:                        # noqa: BLE001
+        pass
+
+
+def current_page(win) -> str | None:
+    """The page on screen as a name for a crash report ('system/health')."""
+    try:
+        page = win.current()
+        if page == win.SYSTEM:
+            return f"{page}/{win.system.section()}"
+        if page is None and getattr(win, '_theatre', False):
+            return 'theatre'
+        return str(page) if page else None
+    except Exception:                        # noqa: BLE001
+        return None
+
+
 def install_excepthook(win: 'MainWindow'):
     """An exception escaping a Qt slot aborts PyQt6 (qFatal) unless an
-    excepthook is set. Log it (stderr, the Activity debug log) and say so in
-    a toast; the app keeps running."""
+    excepthook is set. Log it (stderr, the Activity debug log), keep a crash
+    file for a report, and say so in a toast; the app keeps running."""
     import traceback
     busy = []
 
@@ -204,20 +232,44 @@ def install_excepthook(win: 'MainWindow'):
             sys.__excepthook__(etype, value, tb)
             return
         text = ''.join(traceback.format_exception(etype, value, tb))
-        sys.stderr.write(text)
+        _err(text)
         if busy:                             # failing inside the hook: stop here
             return
         busy.append(1)
         try:
+            # Before the traceback joins the debug log, so the report's
+            # recent log doesn't repeat it. record() never raises.
+            cid = crash.record('gui-exception',
+                               value if isinstance(value, BaseException) else text,
+                               page=current_page(win),
+                               log=win.activity.recent_debug(crash.LOG_LINES))
             win.activity._debug_append(None, f"\n[GUI error]\n{text}")
+            actions = [("Details", lambda: (win.go(win.ACTIVITY),
+                                            win.activity.show_debug(True)))]
+            if cid:
+                actions.append(("Report", lambda: win.open_report(cid)))
             win.toast(f"Something went wrong: {value or etype.__name__}", 'error',
-                      ("Details", lambda: (win.go(win.ACTIVITY),
-                                           win.activity.show_debug(True))), 10000)
+                      actions, 10000)
         except Exception:                    # noqa: BLE001 — never raise from the hook
             pass
         finally:
             busy.clear()
     sys.excepthook = hook
+
+
+def qt_message(mode, context, message) -> None:
+    """Qt's own warnings: to stderr as before, and a critical or fatal one
+    into the native crash file first, so a qFatal abort leaves its reason
+    (faulthandler adds the stack after it). Never raises."""
+    try:
+        text = str(message)
+        if mode == QtMsgType.QtFatalMsg:
+            crash.native_note(f"qFatal: {text}")
+        elif mode == QtMsgType.QtCriticalMsg:
+            crash.native_note(f"Qt critical: {text}")
+        _err(text)
+    except Exception:                        # noqa: BLE001
+        pass
 
 
 def refresh_desktop_entry(icon: str, argv) -> bool:
@@ -258,6 +310,10 @@ def main():
         instance = InstanceServer(app)
         if not instance.listen(argv):
             return
+        # This is the window: a segfault or qFatal from here on leaves
+        # logs/reports/native-<pid>.txt for the next start to offer.
+        crash.enable_native()
+        qInstallMessageHandler(qt_message)
     app.setStyle('Fusion')
     return_freed_images()
     NX.migrate()                          # fitgirl-install dirs -> nexus (once)
@@ -300,6 +356,7 @@ def main():
     win.deleteLater()
     app.processEvents()
     del win
+    crash.disable_native()                # a clean exit: no crash to report
     sys.exit(code)
 
 

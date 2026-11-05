@@ -308,6 +308,8 @@ def page_entries(win) -> list[Entry]:
              lambda: win.run(['--list', '--sizes'], "Measuring disk usage"), "size"),
             ('doctor', "Run the health check", G['health'],
              lambda: (win.go('health'), win.health.refresh()), "doctor"),
+            ('report', "Report a problem", G['shield_alert'], win.open_report,
+             "bug crash issue github"),
             ('debug', "Show the debug log", G['log'],
              lambda: (win.go('activity'), win.activity.show_debug(True)), "console")):
         out.append(E('command', title, "", glyph, fn, key=f"cmd:{key}", keywords=kw))

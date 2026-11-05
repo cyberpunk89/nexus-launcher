@@ -37,6 +37,54 @@ def fake_games():
     ]
 
 
+CRASH_ID = '20261105T120000Z-abcd'
+
+
+def fake_report_cli(url_clip=None, calls=None):
+    """cli_json for the Report page: canned answers per flag, at once."""
+    lines = [{'n': 1, 'group': 'error', 'text': 'Type: KeyError'},
+             {'n': 2, 'group': 'app', 'text': 'Version: 0.5.3'},
+             {'n': 3, 'group': 'system', 'text': 'OS: Test Linux'},
+             {'n': 4, 'group': 'proton_log', 'text': 'err:module: x'}]
+    groups = [('error', 'Error'), ('app', 'App'), ('system', 'System'),
+              ('proton_log', 'Proton log tail')]
+
+    def preview(args):
+        excl = next((a.split('=', 1)[1] for a in args if a.startswith('--exclude=')), None)
+        out = ['proton_log'] if excl is None else [g for g in excl.split(',') if g]
+        removed = {int(a.split('=', 1)[1]) for a in args if a.startswith('--remove-line=')}
+        return {'draft': 'abcdef012345', 'title': '[crash] KeyError', 'body': 'BODY',
+                'length': 4,
+                'lines': [dict(ln, included=ln['group'] not in out, removed=ln['n'] in removed)
+                          for ln in lines],
+                'groups': [{'key': k, 'label': lab, 'lines': 1, 'included': k not in out,
+                            'default': k != 'proton_log'} for k, lab in groups]}
+
+    def cli(args, cb, *_a, **_k):
+        if calls is not None:
+            calls.append(list(args))
+        flag = args[0]
+        if flag == '--report-pending':
+            cb({'reports': [{'id': CRASH_ID, 'kind': 'game-failure', 'type': 'KeyError',
+                             'signature': 'abc', 'count': 2, 'first': '2026-11-05T12:00:00Z',
+                             'last': '2026-11-05T12:00:00Z', 'version': '0.5.3',
+                             'edition': 'linux'}]}, '')
+        elif flag == '--report-collect':
+            cb({'draft': 'abcdef012345', 'title': '[crash] KeyError', 'kind': 'game-failure',
+                'groups': [k for k, _ in groups], 'default_exclude': ['proton_log']}, '')
+        elif flag == '--report-preview':
+            cb(preview(args), '')
+        elif flag == '--report-url':
+            cb({'draft': 'abcdef012345', 'title': 't',
+                'url': 'https://github.com/o/r/issues/new?template=bug.yml',
+                'clipboard': url_clip}, '')
+        elif flag == '--report-dismiss':
+            cb({'dismissed': True}, '')
+        else:
+            cb(None, 'not faked')
+    return cli
+
+
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Pure(unittest.TestCase):
     def test_shelf_page_target(self):
@@ -1928,6 +1976,15 @@ class Window(unittest.TestCase):
             w.theatre_modal.cancel()
             w.set_theatre(False)
             QApplication.processEvents()
+            with patch_gui('cli_json', fake_report_cli()):      # w-77: checkboxes, rows
+                w.open_report(CRASH_ID)
+                QApplication.processEvents()
+                w.report._rows[1].button.click()
+                w.report._checks['proton_log'].setChecked(True)
+                w.report._refresh_preview()
+                w.report.pick.setCurrentIndex(1)
+                w.report._picked()
+                QApplication.processEvents()
             w.jobs.jobs.clear()
             w.close()
             w.deleteLater()
@@ -1935,6 +1992,156 @@ class Window(unittest.TestCase):
         finally:
             app.removeEventFilter(spy)
         self.assertEqual(spy.seen, [])
+
+
+    # ---- bug reports (w-77) ----
+    def test_crash_toast_has_report(self):
+        """An exception escaping a slot keeps a crash file (page and recent
+        log with it) and the toast offers Report next to Details; no stderr
+        (the frozen Windows GUI) is not a problem."""
+        import sys
+        from nexus.report import crash
+        w = self.win
+        toasts, opened = [], []
+        saved = sys.excepthook
+        self.addCleanup(setattr, sys, 'excepthook', saved)
+        w.activity._debug_append(None, "first line\nsecond line\n")
+        with mock.patch.object(crash, 'record', return_value=CRASH_ID) as rec, \
+                mock.patch.object(w, 'toast', lambda text, kind, act=None, t=0:
+                                  toasts.append((text, act))), \
+                mock.patch.object(w, 'open_report', lambda cid=None: opened.append(cid)), \
+                mock.patch.object(sys, 'stderr', None):
+            nx.install_excepthook(w)
+            try:
+                raise ValueError("boom")
+            except ValueError as e:
+                sys.excepthook(type(e), e, e.__traceback__)
+            toasts[0][1][1][1]()                                # Report
+        kind, exc = rec.call_args.args
+        self.assertEqual((kind, type(exc)), ('gui-exception', ValueError))
+        self.assertEqual(rec.call_args.kwargs['page'], 'home')
+        self.assertEqual(rec.call_args.kwargs['log'][-2:], ['first line', 'second line'])
+        text, actions = toasts[0]
+        self.assertIn("boom", text)
+        self.assertEqual([a[0] for a in actions], ["Details", "Report"])
+        self.assertEqual(opened, [CRASH_ID])
+        # No crash file could be written: no Report button.
+        toasts.clear()
+        with mock.patch.object(crash, 'record', return_value=None), \
+                mock.patch.object(w, 'toast', lambda text, kind, act=None, t=0:
+                                  toasts.append((text, act))):
+            sys.excepthook(KeyError, KeyError('x'), None)
+        self.assertEqual([a[0] for a in toasts[0][1]], ["Details"])
+
+    def test_qt_message_handler_notes_fatal_and_never_raises(self):
+        import sys
+        from PyQt6.QtCore import QtMsgType
+        from nexus.report import crash
+        with mock.patch.object(crash, 'native_note') as note, \
+                mock.patch.object(sys, 'stderr', None):
+            nx.app.qt_message(QtMsgType.QtWarningMsg, None, "just a warning")
+            nx.app.qt_message(QtMsgType.QtFatalMsg, None, "painter died")
+        note.assert_called_once_with("qFatal: painter died")
+        with mock.patch.object(crash, 'native_note', side_effect=OSError):
+            nx.app.qt_message(QtMsgType.QtCriticalMsg, None, "x")        # swallowed
+
+    def test_recent_debug_tail(self):
+        a = self.win.activity
+        for i in range(30):
+            a._debug_append(None, f"held {i}\n")
+        a.show_debug(True)                                     # into the console
+        a._debug_append(None, "after 1\nafter 2\n")
+        tail = a.recent_debug(5)
+        self.assertEqual(tail, ['held 27', 'held 28', 'held 29', 'after 1', 'after 2'])
+
+    def test_report_page_long_body_copies(self):
+        """A report past the link limit: Open on GitHub copies the body,
+        says so, and still opens the (short) prefilled form."""
+        from nexus import platform
+        w = self.win
+        calls, toasts = [], []
+        w.report.toast.connect(lambda text, kind: toasts.append((text, kind)))
+        with patch_gui('cli_json', fake_report_cli('LONG BODY', calls)), \
+                mock.patch.object(platform, 'open_url', return_value=True) as op:
+            w.open_report(CRASH_ID)
+            QApplication.processEvents()
+            page = w.report
+            self.assertTrue(w._showing(w.REPORT))
+            self.assertEqual(page.pick.currentData(), CRASH_ID)
+            self.assertIn(['--report-collect', '--json', '--crash', CRASH_ID], calls)
+            # Proton log off by default, with its hint for a game failure;
+            # App can't be unticked.
+            self.assertFalse(page._checks['proton_log'].isChecked())
+            self.assertFalse(page._checks['app'].isEnabled())
+            hints = [lab.text() for lab in page.findChildren(QLabel)
+                     if lab.objectName() == 'ReportHint']
+            self.assertEqual(hints, [nx.report_page.PROTON_HINT])
+            self.assertTrue(page._rows[4].isHidden())
+            page.btn_github.click()
+        self.assertEqual(QApplication.clipboard().text(), 'LONG BODY')
+        op.assert_called_once_with('https://github.com/o/r/issues/new?template=bug.yml')
+        self.assertTrue(any('clipboard' in t for t, _k in toasts))
+        self.assertIn('clipboard', page.status.text())
+
+    def test_report_choices_reach_the_cli(self):
+        """Ticks, removed lines and the description become CLI options; the
+        preview waits 300 ms after the last change; Forget dismisses."""
+        w = self.win
+        calls = []
+        with patch_gui('cli_json', fake_report_cli(None, calls)):
+            w.open_report()
+            QApplication.processEvents()
+            page = w.report
+            page._checks['proton_log'].setChecked(True)
+            page._checks['system'].setChecked(False)
+            page._rows[2].button.click()
+            self.assertEqual(page._rows[2].button.text(), "Undo")
+            page.describe.setPlainText("-it broke")
+            self.assertTrue(page._timer.isActive())
+            self.assertEqual(page._timer.interval(), 300)
+            n = len(calls)
+            page._timer.timeout.emit()
+            self.assertEqual(calls[n], ['--report-preview', 'abcdef012345', '--exclude=system',
+                                        '--remove-line=2', '--describe=-it broke', '--json'])
+            self.assertTrue(page._rows[3].isHidden())
+            self.assertFalse(page._rows[4].isHidden())
+            page.btn_copy.click()
+            self.assertEqual(QApplication.clipboard().text(), '[crash] KeyError\n\nBODY')
+            gone = []
+            page.dismissed.connect(gone.append)
+            page.btn_forget.click()
+        self.assertIn(['--report-dismiss', CRASH_ID, '--json'], calls)
+        self.assertEqual(gone, [CRASH_ID])
+
+    def test_report_entry_points(self):
+        """The palette's Report a problem, a failed job's Report (CLI internal
+        error only), and the start-up check: other kinds toast once."""
+        w = self.win
+        keys = [e.key for e in nx.page_entries(w)]
+        self.assertIn('cmd:report', keys)
+        job = nx.Job(['--x'], "Doing x", None, 'task', '')
+        job.log = ['nexus-cli: internal error — KeyError: 1']
+        self.assertEqual([a[0] for a in w._failure_actions(job, "Show log")],
+                         ["Show log", "Report"])
+        job.log = ['plain failure']
+        self.assertEqual(w._failure_actions(job, "Show log")[0], "Show log")
+        toasts = []
+        with patch_gui('cli_json', fake_report_cli()), \
+                mock.patch.object(w, 'toast', lambda text, kind, act=None, t=0:
+                                  toasts.append((text, [a[0] for a in act or []]))):
+            w._check_reports()
+        self.assertEqual(toasts, [("Nexus kept a report of an error (KeyError).",
+                                   ["Report"])])
+        self.assertIsNone(w._native_crash)
+        native = {'id': CRASH_ID, 'kind': 'native-crash', 'type': 'Segmentation fault'}
+        with mock.patch.object(w, 'toast') as t:
+            w._reports_pending({'reports': [native]}, '')
+        t.assert_not_called()
+        self.assertEqual(w._native_crash, native)
+        st = nx.SystemWidget.status(None, w)
+        self.assertEqual((st['attention']['key'], st['attention']['crash']), ('report', CRASH_ID))
+        w._report_dismissed(CRASH_ID)
+        self.assertIsNone(w._native_crash)
 
     def _key(self, w, key):
         from PyQt6.QtCore import QEvent

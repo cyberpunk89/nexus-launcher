@@ -102,6 +102,7 @@ from .artpicker import (
     ART_KIND_LABEL, ART_THUMB, ArtPickerPage, ArtThumb)  # noqa: F401
 from .system import (
     HealthPage, PlayHistoryPage, SystemPage, WeekBars)  # noqa: F401
+from .report_page import crash_title, PreviewLine, ReportPage  # noqa: F401
 from .settings import (
     AppearanceCard, SettingsPage, Swatch)  # noqa: F401
 from .install import (

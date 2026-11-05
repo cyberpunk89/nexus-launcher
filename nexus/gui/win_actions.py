@@ -583,7 +583,7 @@ class ActionsMixin:
         if job.kind == 'open':                    # a steam:// / heroic:// hand-off
             if job.state == 'failed':
                 self.toast(f"{job.title} — failed: {job.detail or 'see the log'}", 'error',
-                           ("Details", lambda: self._open_job(job)))
+                           self._failure_actions(job, "Details"))
             return
         if job.kind == 'launch' and job.state == 'done' and job.slug in self._launching:
             # --launch has handed the game off; if nothing shows up within a
@@ -601,7 +601,7 @@ class ActionsMixin:
             if job.state == 'failed':
                 self.toast(f"{job.title.replace('Launching ', '')} didn't start — "
                            f"{job.detail or 'see the log'}", 'error',
-                           ("Details", lambda: self._open_job(job)))
+                           self._failure_actions(job, "Details"))
             else:
                 self.toast(f"{job.title.replace('Launching ', '')} is starting…", 'success', None,
                            3500)
@@ -621,7 +621,7 @@ class ActionsMixin:
             if not self.isActiveWindow():
                 notify_desktop(f"{job.title}: files changed", "Open Nexus to review them.")
         elif job.state == 'failed':
-            self.toast(f"{job.title} — failed", 'error', ("Show log", lambda: self._open_job(job)),
+            self.toast(f"{job.title} — failed", 'error', self._failure_actions(job, "Show log"),
                        10000)
             if not self.isActiveWindow():
                 notify_desktop(f"{job.title} failed", job.detail or "Open Nexus for "
@@ -647,10 +647,23 @@ class ActionsMixin:
             elif self._showing(self.STORAGE):
                 self.storage.load_orphans()
 
+    def _failure_actions(self, job, log_label: str):
+        """A failed job's toast buttons: its log, and Report when the CLI hit
+        an internal error (it kept a crash file, the newest one)."""
+        log = (log_label, lambda: self._open_job(job))
+        if not internal_error(job):
+            return log                       # one action: the toast's plain tuple
+        return [log, ("Report", lambda: self.open_report())]
+
     def toast(self, text, kind='info', action=None, timeout=6000):
         self.toasts.show_toast(text, kind, action, timeout)
         if kind in ('warn', 'error') and hasattr(self, 'sounds'):
             self.sounds.play('error')        # Theatre's refused action (w-65; silent elsewhere)
+
+
+def internal_error(job) -> bool:
+    """The CLI crashed in this job ("nexus-cli: internal error — ...")."""
+    return any('internal error' in line for line in job.log[-200:])
 
 
 def integrity_changed(job) -> bool:

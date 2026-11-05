@@ -274,6 +274,22 @@ class DashboardModel(unittest.TestCase):
         att = nx.system_status([], [], [], ge)['attention']
         self.assertEqual((att['key'], att['action']), ('proton', 'install-ge'))
 
+    @linux_features
+    def test_native_crash_attention(self):
+        """A native crash from last time beats everything else on the Home
+        System widget; any other kind of crash file makes no row (w-77)."""
+        job = [{'title': 'Installing X', 'state': 'running', 'step': 'Copying',
+                'progress': 40, 'active': True}]
+        native = {'id': '20261105T120000Z-abcd', 'kind': 'native-crash', 'count': 2}
+        att = nx.system_status(job, [], [], {}, crash=native)['attention']
+        self.assertEqual((att['key'], att['role'], att['crash']),
+                         ('report', 'danger', native['id']))
+        self.assertIn("(2 times)", att['text'])
+        other = dict(native, kind='gui-exception')
+        self.assertEqual(nx.system_status(job, [], [], {}, crash=other)['attention']['key'],
+                         'activity')
+        self.assertIsNone(nx.system_status([], [], [], {}, crash=None)['attention'])
+
     def test_cols(self):
         self.assertEqual([nx.dash_cols(w) for w in (500, 800, 1200, 2000)], [1, 2, 3, 3])
 

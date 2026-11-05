@@ -128,12 +128,13 @@ def system_badge(active: int, problems: int, fails: int) -> tuple[str, str]:
 
 
 def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict] | None,
-                  proton: dict | None) -> dict:
+                  proton: dict | None, crash: dict | None = None) -> dict:
     """The Home System widget's four tiles and the one thing (if any) that
     needs attention, from plain data. `jobs` are {title, state, step,
     progress (pct|None), active}; `disks` as from --library; `checks` from
     --doctor; `proton` the Proton page's info ({} while loading, None if the
-    check never ran)."""
+    check never ran); `crash` a --report-pending row. Only a native crash
+    (Nexus itself went down last time) makes a row, and it comes first."""
     tiles, attention = [], None
     running = [j for j in jobs if j.get('active')]
     failed = [j for j in jobs if j.get('state') == 'failed']
@@ -178,7 +179,13 @@ def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict]
     else:
         tiles.append(('proton', 'proton', "Up to date", proton.get('default') or 'Proton',
                       'success'))
-    if running:
+    if crash and crash.get('kind') == 'native-crash' and crash.get('id'):
+        n = int(crash.get('count') or 1)
+        attention = {'key': 'report', 'glyph': 'fail', 'role': 'danger',
+                     'text': "Nexus closed unexpectedly" + (f" ({n} times)" if n > 1 else ""),
+                     'sub': "Report it: you see every line before anything is sent",
+                     'crash': crash['id']}
+    elif running:
         j = running[0]
         pct = j.get('progress')
         attention = {'key': 'activity', 'glyph': 'spinner', 'role': 'accent',
@@ -738,7 +745,8 @@ class SystemWidget(DashWidget):
     def status(self, hub) -> dict:
         proton = getattr(getattr(hub, 'protonpage', None), 'info', None)
         return system_status(job_facts(hub.jobs.jobs), hub._disks,
-                             getattr(hub.health, 'checks', []), proton)
+                             getattr(hub.health, 'checks', []), proton,
+                             getattr(hub, '_native_crash', None))
 
     def fill(self, hub):
         st = self.status(hub)
@@ -765,6 +773,8 @@ class SystemWidget(DashWidget):
             if att['key'] == 'activity':
                 job = next((j['job'] for j in job_facts(hub.jobs.jobs) if j['active']), None)
                 go = (lambda _=False, j=job: hub._open_job(j)) if job else None
+            elif att['key'] == 'report':
+                go = lambda _=False, c=att['crash']: hub.open_report(c)
             else:
                 go = lambda _=False, k=att['key']: hub.go(k)
             line = QHBoxLayout()

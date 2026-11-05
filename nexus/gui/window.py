@@ -48,9 +48,11 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     # Sections reached by their old page keys: go(ACTIVITY) opens System on
     # Activity, go(UPCOMING) opens Deals on Upcoming.
     ACTIVITY, STORAGE, HEALTH, UPCOMING = 'activity', 'storage', 'health', 'upcoming'
+    REPORT = 'report'
 
     PAGE_ALIASES = {ACTIVITY: (SYSTEM, 'activity'), STORAGE: (SYSTEM, 'storage'),
-                    HEALTH: (SYSTEM, 'health'), UPCOMING: (DEALS, 'upcoming')}
+                    HEALTH: (SYSTEM, 'health'), REPORT: (SYSTEM, 'report'),
+                    UPCOMING: (DEALS, 'upcoming')}
 
     def __init__(self):
         super().__init__()
@@ -308,8 +310,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.health.update_wanted.connect(self.updater.act)
         self.playhistory = PlayHistoryPage()
         self.playhistory.reveal.connect(self._reveal_game)
+        self.report = ReportPage()
+        self.report.toast.connect(self.toast)
+        self.report.dismissed.connect(self._report_dismissed)
+        self._native_crash = None          # a native crash from last time (the Home row)
         self.system = SystemPage({'activity': self.activity, 'play': self.playhistory,
-                                  'storage': self.storage, 'health': self.health})
+                                  'storage': self.storage, 'health': self.health,
+                                  'report': self.report})
         self.system.section_changed.connect(self._on_system_section)
         self._add_page(self.SYSTEM, self.system)
         # Re-styling ~2000 widgets takes about a second: coalesce quick clicks
@@ -416,6 +423,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._note_version(used_before)
         QTimer.singleShot(0, lambda: alive(self) and (t := self.default_focus()) and t.setFocus())
         QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
+        QTimer.singleShot(2000, self._check_reports)    # a crash from last time
         # Repack downloads: "ready to install" toasts and repack updates.
         self._repack_updates: dict[str, str] = {}          # slug -> new repack folder
         self._feed_timer = QTimer(self)                     # FitGirl feed: newer repacks
@@ -568,6 +576,38 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             ("Install", lambda: self.run(['--proton-install', tag], f"Installing {tag}", None,
                                          'install-proton')),
             ("Details", lambda: self.go(self.PROTON))], 12000)
+
+    # ---- bug reports (System > Report) ----
+    def open_report(self, crash_id: str | None = None):
+        """System > Report on that crash (None: the newest one, if any)."""
+        self.report.want(crash_id)
+        self.go(self.REPORT)
+
+    def _check_reports(self):
+        """Crash files left from before (--report-pending, which also turns a
+        dead window's native-<pid>.txt into one): a native crash gets the
+        Home System row, any other kind one toast. Asked in the background."""
+        cli_json(['--report-pending', '--json'], self._reports_pending, 30000)
+
+    def _reports_pending(self, data, _err):
+        reports = [r for r in (data or {}).get('reports') or [] if r.get('id')]
+        native = [r for r in reports if r.get('kind') == 'native-crash']
+        self._native_crash = native[0] if native else None
+        if native:
+            self.dash_update('system')
+        others = [r for r in reports if r.get('kind') != 'native-crash']
+        if others:
+            first = others[0]
+            text = (f"Nexus kept a report of an error ({first.get('type') or 'unknown'})."
+                    if len(others) == 1 else
+                    f"Nexus kept {len(others)} error reports. Reporting one helps fix it.")
+            self.toast(text, 'info', [("Report", lambda: self.open_report(first['id']))],
+                       12000)
+
+    def _report_dismissed(self, crash_id: str):
+        if self._native_crash and self._native_crash.get('id') == crash_id:
+            self._native_crash = None
+            self.dash_update('system')
 
     def _check_update(self):
         in_thread(updates.available, self._update_checked)
@@ -1180,6 +1220,7 @@ from .protonpage import ProtonPage  # noqa: E402
 from .quickmenu import QuickMenu  # noqa: E402
 from .settings import SettingsPage, torrent_problem  # noqa: E402
 from .storage import StoragePage  # noqa: E402
+from .report_page import ReportPage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
 from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402
 from .theatre_settings import APPEARANCE_KEYS, TheatreSettings  # noqa: E402

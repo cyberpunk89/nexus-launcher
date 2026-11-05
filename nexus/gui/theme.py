@@ -518,6 +518,25 @@ def build_stylesheet(scale: float = 1.0) -> str:
         padding: ${sp_3}px; selection-background-color: $accent_35;
     }
 
+    /* The Report page's description: a multi-line field that looks like
+       the single-line ones. */
+    QPlainTextEdit#Describe {
+        background: $surface_2; color: $text;
+        border: 1px solid $border; border-radius: ${r_control}px;
+        padding: ${sp_1}px ${sp_1_5}px; font-size: ${fs_xs}px;
+        selection-background-color: $accent_35; selection-color: $text;
+    }
+    QPlainTextEdit#Describe:focus { border: 1px solid $accent; }
+    QLabel#ReportLine { color: $subtext; font-family: "$mono"; font-size: ${fs_xs}px; }
+    QLabel#ReportLineOff { color: $muted; font-family: "$mono"; font-size: ${fs_xs}px;
+                           font-style: italic; }
+    QLabel#ReportLineNo { color: $muted; font-family: "$mono"; font-size: ${fs_2xs}px;
+                          padding-top: 2px; }
+    QPushButton#LineAction { background: transparent; border: none; color: $muted;
+                             font-size: ${fs_2xs}px; padding: 1px ${sp_1_5}px;
+                             min-height: 0; border-radius: ${r_sm}px; }
+    QPushButton#LineAction:hover { background: $surface_2; color: $text; }
+
     /* ---- Inputs (§3.8 / §3.9) ------------------------------------------ */
     QLineEdit, QComboBox {
         background: $surface_2; border: 1px solid $border;

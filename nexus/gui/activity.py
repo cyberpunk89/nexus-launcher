@@ -290,6 +290,31 @@ class ActivityPage(QWidget):
         self.debug.moveCursor(self.debug.textCursor().MoveOperation.End)
         self.debug.insertPlainText(text)
 
+    def recent_debug(self, n: int = 50) -> list[str]:
+        """The last `n` lines of the debug log: what the console shows plus
+        what is still held back while it is hidden. For a crash report
+        (raw: the report scrubs it when it is collected). Never raises."""
+        try:
+            lines: list[str] = []
+            doc = self.debug.document()
+            block = doc.lastBlock()
+            while block.isValid() and len(lines) < n:
+                lines.append(block.text())
+                block = block.previous()
+            lines.reverse()
+            if lines and not lines[-1]:
+                lines.pop()                    # the console's text ends with a newline
+            tail, newlines = [], 0
+            for chunk in reversed(self._debug_buf):     # only as much as n lines need
+                tail.append(chunk)
+                newlines += chunk.count('\n')
+                if newlines > n:
+                    break
+            lines += ''.join(reversed(tail)).splitlines()
+            return [ln for ln in lines if ln.strip()][-n:]
+        except Exception:                      # noqa: BLE001 — called from the excepthook
+            return []
+
     def _toggle_debug(self):
         self.show_debug(not self.debug.isVisible())
 
