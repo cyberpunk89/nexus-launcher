@@ -511,7 +511,8 @@ class Relay(unittest.TestCase):
             text = (d.return_value / 'sent.jsonl').read_text()
             self.assertIn('filed', text)
             self.assertNotIn('someone', text)
-            self.assertEqual((d.return_value / 'sent.jsonl').stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':
+                self.assertEqual((d.return_value / 'sent.jsonl').stat().st_mode & 0o777, 0o600)
 
 
 class Sent(unittest.TestCase):
