@@ -574,6 +574,10 @@ Details:
   every 2 min (100 friends a call), each public friend's owned games once a day, one
   friend every 2 s, for at most 15 s a call (60 s with `--refresh`; the rest follow next
   time). With *Show friends* off only `--refresh` asks Steam.
+- `--friends --presence --json` asks only for names and "playing now", and only when the
+  last answer is a minute old; the friends list and owned games stay as cached. The app
+  uses it every 2 minutes while Home (desktop or Theatre) is on screen and Nexus is the
+  active window.
 - Friends whose profile or game details aren't public are kept and flagged
   (`visible: false`, `private_reason` `profile` or `game-details`). "Playing now" older
   than 10 minutes is not shown.

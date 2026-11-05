@@ -200,6 +200,28 @@ class Friends(_FakeSteamCase):
         self.assertEqual(self.names()[:2], ['GetFriendList', 'GetPlayerSummaries'])
         self.assertEqual(self.names().count('GetOwnedGames'), 3)
 
+    def test_presence_asks_only_for_summaries(self):
+        F.friends()
+        self.srv.calls.clear()
+        self.age(summary_at=30)
+        F.friends(presence=True)
+        self.assertEqual(self.names(), [])                         # under a minute
+        self.age(summary_at=31)
+        data = F.friends(presence=True)
+        self.assertEqual(self.names(), ['GetPlayerSummaries'])
+        self.assertEqual(data['counts']['playing'], 1)
+        self.srv.calls.clear()
+        # A stale list and stale owned games are left for the plain call
+        self.age(summary_at=F.PRESENCE_TTL + 1, list_at=F.LIST_TTL + 1,
+                 owned=F.OWNED_TTL + 1)
+        F.friends(presence=True)
+        self.assertEqual(self.names(), ['GetPlayerSummaries'])
+        self.srv.calls.clear()
+        self.age(summary_at=F.PRESENCE_TTL + 1)
+        self.cfg['enabled'] = False
+        F.friends(presence=True)
+        self.assertEqual(self.names(), [])                         # switched off
+
     def test_summaries_go_100_at_a_time(self):
         many = [f'765611910000{i:05d}' for i in range(150)]
         self.srv.world['friends'] = many

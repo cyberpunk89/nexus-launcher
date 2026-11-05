@@ -870,16 +870,38 @@ class LibraryMixin:
             FRIENDS.reset()
             if self._chip == 'friends':
                 self._set_chip('all')
+            self._sync_presence()
             return
+        self._friends_loading = True          # before: a memo answers right here
         cli_json(FRIENDS_ARGS, self._friends_done, 90000, ttl=300)
 
+    def _reload_friends(self):
+        """Ask again, past both memos (Settings saved, Retry on Home)."""
+        _CLI_MEMO.pop(tuple(FRIENDS_ARGS), None)
+        _CLI_MEMO.pop(tuple(PRESENCE_ARGS), None)
+        self._load_friends()
+
+    @staticmethod
+    def _older_answer(data) -> bool:
+        """A memo of the plain call can be older than what presence already
+        brought: keep the newer one (who plays what, its time)."""
+        if not isinstance(data, dict) or not FRIENDS.data:
+            return False
+        new, cur = _ts(data.get('updated')), _ts(FRIENDS.data.get('updated'))
+        return new is not None and cur is not None and new < cur \
+            and data.get('me') == FRIENDS.data.get('me')
+
     def _friends_done(self, data, _err):
-        FRIENDS.set_answer(data)              # None (it failed): the last answer stays
+        self._friends_loading = False
+        if not self._older_answer(data):
+            FRIENDS.set_answer(data)          # None (it failed): the last answer stays
         if self._chip == 'friends' and data is not None and not FRIENDS.usable():
             self._set_chip('all')
+        self._sync_presence()
 
     def _friends_changed(self):
-        """New friends data: who owns what, the chip, badges and tooltips."""
+        """New friends data: who owns what, the chip, badges and tooltips,
+        Home's Friends playing now and Theatre's row and drawer."""
         for g in getattr(self, '_games', None) or ():
             self._friends_of(g)
         self._store_chips()
@@ -887,6 +909,71 @@ class LibraryMixin:
         for v in (self.library, self.home, getattr(self, 'homeview', None)):
             if v is not None:
                 v.refresh_friends()
+        if hasattr(self, 'dashboard'):
+            self.dash_update('friends')
+        if hasattr(self, 'theatre'):
+            self._feed_theatre_friends()
+            self.theatre.refresh_friends()
+
+    # ---- who is playing now (w-82) ----
+    def _presence_wanted(self) -> bool:
+        """Presence is asked only while it is on screen: desktop Home, or
+        Theatre's Home tab (a game page over it counts), with the window
+        active. Never with a refused key or a private friends list (asking
+        again can't help)."""
+        if not self.config.get('friends_enabled') or not FRIENDS.usable() \
+                or FRIENDS.error_kind() in ('bad-key', 'private-list'):
+            return False
+        if not self.isActiveWindow() or self.isMinimized():
+            return False
+        if self._theatre:
+            return self.theatre.tabs.current() == 'home'
+        return self.current() == self.HOME
+
+    def _sync_presence(self, *_):
+        """Home came up or went away (a page, a tab, Theatre, the window's
+        focus): start or stop the presence timer; ask now when the last
+        answer is over a minute old."""
+        timer = getattr(self, '_presence_timer', None)
+        if timer is None:
+            return                            # still being built
+        if not self._presence_wanted():
+            timer.stop()
+            return
+        self.dash_update('friends')           # stale presence leaves at once
+        self._feed_theatre_friends()
+        if not timer.isActive():
+            timer.start()
+        age = FRIENDS.age()
+        if age is None or age > PRESENCE_AGE:
+            self._ask_presence()
+
+    def _presence_tick(self):
+        if not self._presence_wanted():
+            self._presence_timer.stop()
+            return
+        self._ask_presence()
+
+    def _ask_presence(self):
+        if getattr(self, '_friends_loading', False):
+            return                            # the plain call brings presence too
+        cli_json(PRESENCE_ARGS, self._presence_done, 60000, ttl=55)
+
+    def _presence_done(self, data, _err):
+        if not self._older_answer(data):
+            FRIENDS.set_answer(data)
+        # Minutes moved on even when nobody changed game.
+        self.dash_update('friends')
+        self._feed_theatre_friends()
+        if not self._presence_wanted():
+            self._presence_timer.stop()
+
+    def _feed_theatre_friends(self):
+        """Theatre's Friends playing now row (only while Theatre is on)."""
+        th = getattr(self, 'theatre', None)
+        if th is None or not self._theatre:
+            return
+        th.set_friends(playing_now(self._games))
 
     def _in_own(self):
         """The Installed / Not installed / Everything switch as a test on a
@@ -1285,9 +1372,10 @@ from .actions import build_game_menu, game_actions  # noqa: E402
 from .art import ART  # noqa: E402
 from .dashboard import _game_store_id, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
-from .friends import FRIENDS, FRIENDS_ARGS  # noqa: E402
+from .friends import (_ts, FRIENDS, FRIENDS_ARGS, playing_now, PRESENCE_AGE,  # noqa: E402
+    PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
-from .jobs import cli_json  # noqa: E402
+from .jobs import _CLI_MEMO, cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     ShelfRow, surprise_pick)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

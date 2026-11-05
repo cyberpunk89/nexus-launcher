@@ -107,6 +107,7 @@ class NavigationMixin:
             self._poll_torrents()
         if self.input.mode in ('keyboard', 'pad') and not self._theatre:
             self._page_focus.start()            # keys/pad: land somewhere on the new page
+        self._sync_presence()                   # friends' presence only while Home shows
 
     def _focus_new_page(self):
         f = QApplication.focusWidget()

@@ -138,6 +138,7 @@ class DealArt(QWidget):
         super().__init__()
         self.setFixedSize(w, h)
         self.radius = radius
+        self.round_all = False                         # all four corners (else the top two)
         self._pm: QPixmap | None = None
         self._path = None
         self.top_left: list[tuple[str, str]] = []      # (text, role)
@@ -219,7 +220,8 @@ class DealArt(QWidget):
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         clip = QPainterPath()                      # rounded on top only
-        clip.addRoundedRect(r.adjusted(0, 0, 0, self.radius), self.radius, self.radius)
+        clip.addRoundedRect(r if self.round_all else r.adjusted(0, 0, 0, self.radius),
+                            self.radius, self.radius)
         pt.setClipPath(clip)
         pt.fillRect(r, QColor(P['surface_2']))
         if self._pm is not None:

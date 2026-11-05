@@ -88,7 +88,7 @@ from .details import (
     StatChip, StatTile, BATCH_ACTIONS)  # noqa: F401
 from .friends import (
     Avatar, AvatarStack, FRIENDS, FRIENDS_ARGS, FriendsBlock, FriendsData, names_text,
-    paint_avatar, PersonChip)  # noqa: F401
+    paint_avatar, PersonChip, playing_now, PRESENCE_ARGS, who_text)  # noqa: F401
 from .storage import (
     _SEG_COLORS, SortItem, StorageBar, StoragePage)  # noqa: F401
 from .protonpage import (

@@ -3,7 +3,7 @@ from the Steam Web API with the user's own key ([steam] web_api_key or
 STEAM_WEB_API_KEY). Read-only: nothing about the user is sent anywhere
 except the key and their SteamID64, to Steam itself.
 
-    nexus-cli --friends [--refresh] [--json]
+    nexus-cli --friends [--refresh] [--presence] [--json]
 
 The cache, CACHE_DIR/friends.json (0600: it is personal), is what every
 answer comes from. Steam is asked only for the parts that are stale:
@@ -47,6 +47,7 @@ PRIVACY_URL = 'https://steamcommunity.com/my/edit/settings'
 CACHE_V = 1
 LIST_TTL = 6 * 3600
 PLAYING_TTL = 120
+PRESENCE_TTL = 60              # --presence: summaries only, at most once a minute
 PLAYING_STALE = 600            # presence older than this isn't shown as "playing now"
 OWNED_TTL = 24 * 3600
 OWNED_GAP = 2.0                # seconds between two friends' owned games
@@ -320,10 +321,13 @@ def _owned_due(state: dict, force: bool, now: float) -> list[str]:
 
 
 def refresh(state: dict, key: str, me: str, force: bool = False,
-            budget: float | None = None, now=time.time, sleep=time.sleep) -> FriendsError | None:
+            budget: float | None = None, now=time.time, sleep=time.sleep,
+            presence: bool = False) -> FriendsError | None:
     """Bring the stale parts of `state` up to date in place, within `budget`
     seconds for owned games. Returns the error that stopped it, or None.
-    Never removes good data because of an error."""
+    Never removes good data because of an error. `presence` asks only for
+    the summaries (who plays what), once they are PRESENCE_TTL old, and
+    leaves the friends list and owned games alone."""
     meta = state['meta']
     t0 = now()
     budget = (REFRESH_BUDGET if force else BUDGET) if budget is None else budget
@@ -331,7 +335,7 @@ def refresh(state: dict, key: str, me: str, force: bool = False,
         return FriendsError('rate-limited', "Steam said too many requests; Nexus waits "
                             "before asking again.", 429)
     try:
-        if force or t0 - (meta.get('list_at') or 0) >= LIST_TTL:
+        if not presence and (force or t0 - (meta.get('list_at') or 0) >= LIST_TTL):
             try:
                 rows = friend_list(key, me)
             except FriendsError as e:
@@ -347,7 +351,8 @@ def refresh(state: dict, key: str, me: str, force: bool = False,
                 keep[row['steamid']] = rec
             state['friends'] = keep
             meta['list_at'] = int(t0)
-        if force or t0 - (meta.get('summary_at') or 0) >= PLAYING_TTL:
+        ttl = PRESENCE_TTL if presence else PLAYING_TTL
+        if force or t0 - (meta.get('summary_at') or 0) >= ttl:
             ids = [me, *state['friends']]
             players = summaries(key, ids)
             mine = players.get(me) or {}
@@ -357,7 +362,7 @@ def refresh(state: dict, key: str, me: str, force: bool = False,
                     _apply_summary(rec, players[sid], t0)
             meta['summary_at'] = int(t0)
         first, key_ok = True, False
-        for sid in _owned_due(state, force, t0):
+        for sid in [] if presence else _owned_due(state, force, t0):
             if not first:
                 if now() - t0 + OWNED_GAP > budget:
                     break
@@ -452,9 +457,11 @@ def answer(state: dict, cfg: dict, who: dict, error: dict | None,
     }
 
 
-def friends(force: bool = False, budget: float | None = None) -> dict:
+def friends(force: bool = False, budget: float | None = None,
+            presence: bool = False) -> dict:
     """The --friends answer: the cache, with its stale parts refreshed when
-    the feature is on (or `force`), a key is set and Steam answers."""
+    the feature is on (or `force`), a key is set and Steam answers.
+    `presence` refreshes only who plays what (see refresh)."""
     cfg = settings()
     who = whose(cfg)
     me = who.get('steamid')
@@ -468,7 +475,8 @@ def friends(force: bool = False, budget: float | None = None) -> dict:
                  "No Steam account found on this PC; sign in to Steam once, or set "
                  "a SteamID64 in Settings."}
     elif cfg['enabled'] or force:
-        err = refresh(state, cfg['key'], me, force=force, budget=budget)
+        err = refresh(state, cfg['key'], me, force=force, budget=budget,
+                      presence=presence)
         state['meta']['me'] = me
         save_cache(state)
         if err:
@@ -480,8 +488,8 @@ def friends(force: bool = False, budget: float | None = None) -> dict:
     return answer(state, cfg, who, error)
 
 
-def cmd_friends(refresh_now: bool, as_json: bool) -> None:
-    data = friends(force=refresh_now)
+def cmd_friends(refresh_now: bool, as_json: bool, presence: bool = False) -> None:
+    data = friends(force=refresh_now, presence=presence)
     key = settings()['key']
     if as_json:
         text = json.dumps(data)

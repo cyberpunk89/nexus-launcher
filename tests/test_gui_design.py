@@ -210,11 +210,11 @@ class DashboardModel(unittest.TestCase):
         saved[2]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:4], ['jump', 'surprise', 'system', 'installed'])
-        # system is where activity was (surprise, added later, sits after jump)
+        self.assertEqual(ids[:5], ['jump', 'friends', 'surprise', 'system', 'installed'])
+        # system is where activity was (friends and surprise, added later, sit after jump)
         for gone in ('activity', 'storage', 'health', 'proton', 'unplayed'):
             self.assertNotIn(gone, ids)
-        self.assertEqual(out[2], {'id': 'system', 'size': 'wide', 'hidden': False})
+        self.assertEqual(out[3], {'id': 'system', 'size': 'wide', 'hidden': False})
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
         all_hidden = [dict(i, hidden=True) for i in saved]
         sysw = next(i for i in nx.dash_normalize(all_hidden) if i['id'] == 'system')
@@ -223,7 +223,13 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:3], ['deals', 'upcoming', 'jump'])
+        self.assertEqual(ids[:5], ['deals', 'upcoming', 'jump', 'friends', 'surprise'])
+        # A layout from before w-82 gains Friends playing now right after Jump back in
+        old = [i for i in nx.dash_default() if i['id'] != 'friends']
+        ids = [i['id'] for i in nx.dash_normalize(old)]
+        self.assertEqual(ids[:3], ['jump', 'friends', 'surprise'])
+        self.assertEqual(nx.DASH_SIZES['friends'], ('wide', 'full'))
+        self.assertEqual(nx.DASH_DEFAULT_SIZE['friends'], 'full')
 
     def test_full_size_for_playtime_and_achievements(self):
         for k in ('playtime', 'achievements'):

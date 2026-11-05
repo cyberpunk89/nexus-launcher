@@ -353,7 +353,11 @@ class FriendsFlag(unittest.TestCase):
         handler = dict((w, h) for w, h in entry.COMMANDS if not callable(w))['friends']
         with mock.patch.object(entry, 'cmd_friends') as cmd:
             handler(args, None)
-        cmd.assert_called_once_with(True, True)
+        cmd.assert_called_once_with(True, True, False)
+        args = fi.build_parser().parse_args(['--friends', '--presence', '--json'])
+        with mock.patch.object(entry, 'cmd_friends') as cmd:
+            handler(args, None)
+        cmd.assert_called_once_with(False, True, True)
         self.assertNotIn('friends', {d for ds in entry.GATED.values() for d in ds})
 
     def test_without_a_key_it_answers_without_the_network(self):

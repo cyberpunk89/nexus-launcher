@@ -37,7 +37,10 @@ once. Games you own but haven't installed are there too, with an Install button.
   quietly in the background. Pick another image for any game, Steam games included.
 - **Steam friends (optional):** with your own Steam Web API key, a game's page shows which
   friends own it and who is playing it now, and a *Friends own* filter narrows the Library.
-  Nexus only reads what Steam already shows; nothing about you is sent anywhere.
+  Home's *Friends playing now* shows the games your friends are in right now (click one you
+  own to open it, one you don't for its Steam page), and Theatre has the same row, a Friends
+  section on each game page and *Friends own* under Sort & filter. Nexus only reads what
+  Steam already shows; nothing about you is sent anywhere.
 - **Home** starts with a *Continue playing* banner, then widgets you can move, resize or hide:
   Jump back in, Surprise me (it picks a game for you), News, Upcoming releases and more.
 
@@ -105,7 +108,7 @@ run natively on Windows and need a compatibility layer on Linux.
 | One library for Steam and Epic games, with artwork, play time and achievements | ✓ (Epic through Heroic) | ✓ |
 | Install a game from its `setup.exe` | ✓ (runs under Proton) | ✓ (runs natively) |
 | Smart shelves, collections, game pages, Home widgets | ✓ | ✓ |
-| Steam friends: who owns a game, Friends own filter | ✓ | ✓ |
+| Steam friends: who owns a game, who plays now, Friends own filter | ✓ | ✓ |
 | Theatre mode and controller support | ✓ | ✓ |
 | Now playing: Resume and Quit game | ✓ | ✓ |
 | Storage cleanup, health checks, move and back up games | ✓ | ✓ |

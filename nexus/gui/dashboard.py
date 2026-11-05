@@ -4,18 +4,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath,
-    QRadialGradient)
-from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar,
-    QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtCore import pyqtSignal, QRectF, Qt, QTimer, QUrl
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
+    QPainterPath, QRadialGradient)
+from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from nexus import achievements as A, gamedb, smart
+from nexus import achievements as A, gamedb, smart, storeinfo
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
-from .fmt import fmt_hours, fmt_relative, fmt_size
-from .theme import FONTS, FS, G, GRAD, P, R, SP
+from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
+from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, SP
 from .theme import collection_look
 
 
@@ -23,6 +23,7 @@ DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99}
 # (id, sizes it allows, default size, hidden by default)
 DASH_KINDS = [                       # default order packs evenly in 3 columns
     ('jump',       ('full',),                  'full',  False),
+    ('friends',    ('wide', 'full'),           'full',  False),
     ('surprise',   ('full',),                  'full',  False),
     ('system',     ('small', 'wide'),          'wide',  False),
     ('news',       ('small', 'wide', 'full'),  'small', False),
@@ -45,7 +46,7 @@ DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
                'proton': 'system'}
 # Widgets added later that belong next to a related one rather than last.
 DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'jump', 'collections': 'favourites',
-                    'smart': 'installed'}
+                    'smart': 'installed', 'friends': 'jump'}
 
 
 def _dash_shelf(value) -> str:
@@ -104,15 +105,20 @@ def dash_normalize(items) -> list[dict]:
                     'hidden': bool(it.get('hidden'))})
         if wid == 'smart':
             out[-1]['shelf'] = _dash_shelf(it.get('shelf'))
+    last: dict[str, str] = {}             # anchor -> the newest widget put after it
     for d in dash_default():
         if d['id'] in seen:
             continue
         anchor = DASH_PLACE_AFTER.get(d['id'])
-        at = next((i for i, o in enumerate(out) if o['id'] == anchor), None)
+        # After the anchor, and after the new ones already put there, so two
+        # new widgets for one anchor keep their DASH_KINDS order.
+        after = last.get(anchor, anchor)
+        at = next((i for i, o in enumerate(out) if o['id'] == after), None)
         if at is None:
             out.append(d)
         else:
             out.insert(at + 1, d)
+            last[anchor] = d['id']
         seen.add(d['id'])
     return out
 
@@ -908,8 +914,9 @@ def game_row(g: dict, right: list, on_click, sub: str = '') -> ClickRow:
     t.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     col.addWidget(t)
     parts = [thumb, t]
+    w.sub_label = None
     if sub:
-        sl = label(sub, "Muted")
+        sl = w.sub_label = label(sub, "Muted")
         sl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         col.addWidget(sl)
         parts.append(sl)
@@ -920,6 +927,224 @@ def game_row(g: dict, right: list, on_click, sub: str = '') -> ClickRow:
     for x in parts:
         x.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
     return w
+
+
+class PresenceCard(ClickRow):
+    """One game friends are in right now (Friends playing now, full size):
+    the Steam header art with their avatars over its corner, the game and
+    an "In your library" pill, then who and how long."""
+    W = 248
+
+    def __init__(self, entry: dict):
+        super().__init__()
+        self.appid = entry['appid']
+        self.setFixedWidth(self.W)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(SP['1_5'], SP['1_5'], SP['1_5'], SP['2'])
+        lay.setSpacing(SP['1'])
+        aw = self.W - 2 * SP['1_5']
+        ah = int(aw * 215 / 460)                   # Steam's header is 460 x 215
+        self.art = DealArt(aw, ah, R['sm'])
+        self.art.round_all = True
+        self.art.set_url(entry.get('headerImage'))
+        lay.addWidget(self.art)
+        d = 30
+        self.stack = AvatarStack(entry['people'], d, 3, ring='surface', parent=self.art)
+        self.stack.move(SP['2'], ah - d - SP['2'])
+        row = QHBoxLayout()
+        row.setSpacing(SP['1_5'])
+        self.title = plain_label(entry['title'], None)
+        self.title.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px; "
+                                 f"font-weight: 600;")
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title.setFixedHeight(PILL_H)             # the same with or without the pill
+        row.addWidget(self.title, 1)
+        self.pill = _pill("In your library", 'accent') if entry.get('slug') else None
+        if self.pill is not None:
+            row.addWidget(self.pill)
+        lay.addLayout(row)
+        self.sub_label = label(who_text(entry), "Muted")
+        self.sub_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self.sub_label)
+        for x in (self.title, self.sub_label, *([self.pill] if self.pill else [])):
+            x.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setToolTip("Open its page" if entry.get('slug') else
+                        "Not in your library · opens its Steam page ↗")
+
+
+class FriendsWidget(DashWidget):
+    """Friends playing now (w-82): one card per game a Steam friend is in,
+    the most friends first (full: a strip of cards, wide: rows). In the
+    layout only while somebody plays (or Steam refused the key); Customise
+    shows its other states: set up, looking, nobody in a game, all
+    private. Presence is asked by the window (_sync_presence); this only
+    reads FRIENDS."""
+    KIND, TITLE, GLYPH, GRAD, LINK = 'friends', "Friends playing now", G['friends'], 'aurora', None
+    WIDE_ROWS = 4
+    PRIVATE_TIP = ("Private: their game details aren't public on Steam. “Friends only” "
+                   "counts as private for apps.")
+
+    def __init__(self):
+        super().__init__()
+        self._sig = None
+        self._filling = False
+        self.state = ''
+        self.cards: list[ClickRow] = []
+        self._subs: dict[int, QLabel] = {}
+        self.footer: QLabel | None = None
+
+    @staticmethod
+    def _entries(hub, limit: int | None = 0):
+        """playing_now over the library; limit 0: MAX_CARDS, None: all."""
+        return playing_now(getattr(hub, '_games', None) or (),
+                           limit=MAX_CARDS if limit == 0 else limit)
+
+    def has_content(self, hub):
+        if not hub.config.get('friends_enabled') or not FRIENDS.usable():
+            return False
+        return FRIENDS.error_kind() == 'bad-key' or bool(self._entries(hub))
+
+    def _state_of(self, hub) -> str:
+        if not hub.config.get('friends_enabled') or (
+                FRIENDS.data is not None and not FRIENDS.usable()):
+            return 'setup'
+        if FRIENDS.data is None:
+            return 'loading'
+        if FRIENDS.error_kind() == 'bad-key':
+            return 'bad-key'
+        if not FRIENDS.friends():
+            return 'none'
+        if not FRIENDS.public():
+            return 'private'
+        return 'live'
+
+    def fill(self, hub):
+        if self._filling:
+            return
+        self._filling = True
+        try:
+            self._fill(hub)
+        finally:
+            self._filling = False
+
+    def _fill(self, hub):
+        state = self._state_of(hub)
+        entries = self._entries(hub, None if self.size_ == 'wide' else MAX_CARDS) \
+            if state == 'live' else []
+        sig = (self.size_, state, len(FRIENDS.private()),
+               tuple((e['appid'], e['slug'], e['title'],
+                      tuple((r['steamid'], r.get('name'), r.get('avatar'))
+                            for r in e['people'])) for e in entries))
+        if sig == self._sig:
+            for e in entries:                       # only the minutes moved on
+                sub = self._subs.get(e['appid'])
+                if sub is not None:
+                    sub.setText(who_text(e))
+            self._set_footer()
+            return
+        self._sig = sig
+        f = QApplication.focusWidget()
+        focus_appid = next((c.appid for c in self.cards if c is f), None)
+        self.clear()
+        self.cards, self._subs, self.footer, self.state = [], {}, None, state
+        if state == 'setup':
+            self.body.addWidget(label("See what your Steam friends are playing and who owns "
+                                      "your games. Nexus only reads what Steam shows; it "
+                                      "shares nothing.", "Muted", wrap=True))
+            b = QPushButton("Set up in Settings")
+            b.clicked.connect(lambda: hub._open_settings('accounts', 'friends'))
+            self.body.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+            return
+        if state == 'loading':
+            self.body.addWidget(label("Looking for your friends…", "Muted"))
+            return
+        if state == 'bad-key':
+            self._error("Steam refused the key", hub._reload_friends)
+            return
+        if state == 'none':
+            self.body.addWidget(label("No friends on this Steam account.", "Muted"))
+            return
+        if state == 'private':
+            private = FRIENDS.private()
+            self.body.addWidget(AvatarStack(private, 28, 5, ring='surface'))
+            n = len(private)
+            self.body.addWidget(label(
+                f"None of your {n} friend{'s' if n != 1 else ''} show{'s' if n == 1 else ''} "
+                "their game details on Steam, so Nexus can't see what they play.",
+                "Muted", wrap=True))
+            self.body.addWidget(label("A friend can change it under Steam › Edit Profile › "
+                                      "Privacy Settings › Game details: Public.", "Muted",
+                                      wrap=True))
+            return
+        if not entries:
+            self.body.addWidget(label("No friends are in a game right now.", "Muted"))
+            self._set_footer(new=True)
+            return
+        if self.size_ == 'full':
+            host = QWidget()
+            flow = FlowLayout(host, margin=0, spacing=SP['3'])
+            for e in entries:
+                card = PresenceCard(e)
+                card.clicked.connect(lambda e=e: self._open(hub, e))
+                flow.addWidget(card)
+                self.cards.append(card)
+                self._subs[e['appid']] = card.sub_label
+            self.body.addWidget(host)
+        else:
+            for e in entries[:self.WIDE_ROWS]:
+                right = [AvatarStack(e['people'], 22, 3, ring='surface')]
+                if e['slug']:
+                    right.append(_pill("In your library", 'accent'))
+                row = game_row({'title': e['title'], 'headerImage': e['headerImage']}, right,
+                               lambda e=e: self._open(hub, e), sub=who_text(e))
+                row.appid = e['appid']
+                row.setToolTip("Open its page" if e['slug'] else
+                               "Not in your library · opens its Steam page ↗")
+                self.body.addWidget(row)
+                self.cards.append(row)
+                self._subs[e['appid']] = row.sub_label
+            if len(entries) > self.WIDE_ROWS:
+                self.body.addWidget(label(f"+{len(entries) - self.WIDE_ROWS} more", "Muted"))
+        self._set_footer(new=True)
+        card = next((c for c in self.cards if c.appid == focus_appid), None) \
+            if focus_appid is not None else None
+        if card is not None:
+            QTimer.singleShot(0, lambda c=card: alive(c) and focus_and_reveal(c))
+
+    def footer_text(self) -> str:
+        """'3 friends are private on Steam · updated 1 min ago'; 'as of
+        14:02' when Steam isn't answering (the cards are its last word)."""
+        n = len(FRIENDS.private())
+        parts = [f"{n} friend{'s are' if n != 1 else ' is'} private on Steam"] if n else []
+        t = _ts((FRIENDS.data or {}).get('updated'))
+        if t is not None:
+            if FRIENDS.error_kind() in ('offline', 'rate-limited', 'private-list'):
+                parts.append(f"as of {datetime.fromtimestamp(t).strftime('%H:%M')}")
+            else:
+                parts.append(f"updated {fmt_ago(t)}")
+        text = " · ".join(parts)
+        return text[:1].upper() + text[1:]
+
+    def _set_footer(self, new: bool = False):
+        if new:
+            self.footer = label("", "Muted")
+            self.footer.setToolTip(self.PRIVATE_TIP)
+            self.body.addWidget(self.footer)
+        if self.footer is not None:
+            self.footer.setText(self.footer_text())
+
+    @staticmethod
+    def _open(hub, entry: dict):
+        """A game you own: its page. One you don't: its Steam store page."""
+        if entry.get('slug'):
+            hub._reveal_game(entry['slug'])
+        else:
+            open_url(storeinfo.STORE_PAGE.format(appid=entry['appid']))
+
+
+def open_url(url: str):
+    """The browser (a function of its own, so tests can stand in for it)."""
+    QDesktopServices.openUrl(QUrl(url))
 
 
 class UpcomingWidget(DashWidget):
@@ -1259,7 +1484,7 @@ class AchievementsWidget(DashWidget):
 
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
-    JumpWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
+    JumpWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
     DealsWidget,
     UpcomingWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget, PlaytimeWidget,
     AchievementsWidget, OwnedWidget)}
@@ -1305,6 +1530,7 @@ class Dashboard(QWidget):
         self.grid.setVerticalSpacing(SP['5'])
         lay.addLayout(self.grid)
         self._cols = 0
+        self._skipped: set | None = None          # what the last relayout left out
         for kind, cls in DASH_WIDGETS.items():
             w = cls()
             w.setParent(self)                 # never a window of its own, even unplaced
@@ -1332,8 +1558,13 @@ class Dashboard(QWidget):
                 w.size_ = it['size'] if it else 'small'
                 if it and not it['hidden']:
                     w.fill(self.hub)
-        if kinds is None or {'jump', 'installed', 'smart', 'favourites', 'collections',
-                             'updates', 'upcoming', 'owned'} & set(kinds or ()):
+        if kinds is not None and set(kinds) <= {'friends'}:
+            # Presence ticks and every page or focus change ask for Friends
+            # playing now: lay out again only when it comes or goes.
+            if self._skip() != self._skipped:
+                self.relayout(force=True)
+        elif kinds is None or {'jump', 'friends', 'installed', 'smart', 'favourites',
+                               'collections', 'updates', 'upcoming', 'owned'} & set(kinds):
             self.relayout(force=True)
 
     # ---- layout ----
@@ -1349,7 +1580,8 @@ class Dashboard(QWidget):
         for c in range(6):
             self.grid.setColumnStretch(c, 0)
         self._cols = cols
-        placed = dash_pack(self.items, cols, self._skip())
+        self._skipped = self._skip()
+        placed = dash_pack(self.items, cols, self._skipped)
         on = {k for k, *_ in placed}
         for k, r, c, span in placed:
             it = next(i for i in self.items if i['id'] == k)
@@ -1435,7 +1667,9 @@ class Dashboard(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART  # noqa: E402
-from .deals import _pill, dim  # noqa: E402
+from .deals import _pill, DealArt, dim  # noqa: E402
+from .friends import (_ts, AvatarStack, FRIENDS, MAX_CARDS, playing_now,  # noqa: E402
+    who_text)
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

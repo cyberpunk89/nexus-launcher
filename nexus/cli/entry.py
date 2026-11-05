@@ -530,6 +530,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Your Steam friends: who plays what now and who owns which game "
                          "(needs a Steam Web API key; cached, stale parts refreshed; "
                          "--refresh asks Steam now; --json for the app)")
+    g9.add_argument('--presence', action='store_true',
+                    help="With --friends: refresh only who is playing what (names and "
+                         "presence, at most once a minute); the friends list and owned "
+                         "games stay as cached")
     g8 = parser.add_argument_group('bug reports')
     g8.add_argument('--report-pending', action='store_true', dest='report_pending',
                     help='List the crash reports waiting to be reported (a native crash '
@@ -916,7 +920,7 @@ COMMANDS = (
     ('upcoming', lambda a, base: cmd_gamedb('upcoming', a.refresh, a.json, a.time)),
     ('backlog', lambda a, base: cmd_gamedb('backlog', a.refresh, a.json, a.time)),
     ('gamedb_lookup', _cmd_gamedb_lookup),
-    ('friends', lambda a, base: cmd_friends(a.refresh, a.json)),
+    ('friends', lambda a, base: cmd_friends(a.refresh, a.json, a.presence)),
     ('gamedb_sync', _cmd_gamedb_sync),
     ('gamedb_delete_sessions', _cmd_gamedb_delete_sessions),
     ('protondb', lambda a, base: cmd_protondb(a.protondb, a.refresh, a.json)),

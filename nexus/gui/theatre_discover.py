@@ -53,9 +53,17 @@ class TheatreCard(QFrame):
             if price.get('cutPct') and kind == 'deal':
                 self.art.top_left.append((f"-{int(price['cutPct'])}%", 'accent'))
             if owned:
-                self.art.top_right.append(("Owned", 'glass'))
+                self.art.top_right.append(("In your library" if kind == 'friends' else "Owned",
+                                           'glass'))
             self.art.set_url(item.get('headerImage'))
-            if kind == 'upcoming':
+            if kind == 'friends':                   # w-82: friends in it, on Theatre's Home
+                from .friends import AvatarStack, who_text
+                d = 42                              # 30 px at Theatre's 1.4x
+                self.stack = AvatarStack(item.get('people') or [], d, 3, ring='surface_2',
+                                         parent=self.art)
+                self.stack.move(SP['3'], self.art.height() - d - SP['3'])
+                facts = who_text(item)
+            elif kind == 'upcoming':
                 facts = gamedb.release_label(item)
             else:
                 facts = price.get('currentStr') or ''
@@ -66,8 +74,9 @@ class TheatreCard(QFrame):
         self.facts = plain_label(facts, "TheatreSub")
         body.addWidget(self.facts)
         self.title = plain_label(item.get('title') or "", "TheatreMeta")
-        self.title.setWordWrap(True)
-        self.title.setFixedHeight(int(FS['lg'] * 1.5 * 1.4 * 2) + 4)    # two lines at Theatre's size
+        lines = 1 if kind == 'friends' else 2       # a game's name: one line is enough
+        self.title.setWordWrap(lines > 1)
+        self.title.setFixedHeight(int(FS['lg'] * 1.5 * 1.4 * lines) + 4)  # at Theatre's size
         self.title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         body.addWidget(self.title)
         lay.addLayout(body)

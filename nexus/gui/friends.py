@@ -1,6 +1,8 @@
 """Steam friends in the window (w-81): what `nexus-cli --friends --json` last
 answered (FRIENDS), and the small widgets that show people: an avatar, a
-stack of them, a person chip and the game page's Friends block.
+stack of them, a person chip and the game page's Friends block. w-82 adds
+who is playing what right now, grouped by game (playing_now), for Home's
+"Friends playing now" and Theatre.
 
 The GUI never asks Steam: it reads the CLI's JSON (win_library._load_friends,
 Settings' status row) and joins `by_app` against the library by Steam app id
@@ -14,10 +16,17 @@ from PyQt6.QtCore import pyqtSignal, QObject, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from .fmt import fmt_hours
+from nexus import storeinfo
+
+from .fmt import fmt_duration, fmt_hours
 from .theme import FONTS, FS, P, PERSON_H, scaled, SP
 
 FRIENDS_ARGS = ['--friends', '--json']
+# Only who plays what (GetPlayerSummaries), asked while Home is on screen.
+PRESENCE_ARGS = ['--friends', '--presence', '--json']
+PRESENCE_MS = 120_000          # how often, while Home shows and the window is active
+PRESENCE_AGE = 60              # s: older than this, Home asks as soon as it shows
+MAX_CARDS = 8                  # games in "Friends playing now"
 PLAYING_STALE = 600            # s: "playing now" older than this misleads (the CLI's rule)
 # Errors that mean "not set up": the answer still carries the old cache, but
 # nothing is shown from it. A refused key, no network or a throttle keep it.
@@ -26,9 +35,12 @@ HUES = ('accent', 'success', 'attention', 'warning', 'danger', 'info')
 MAX_CHIPS = 8
 
 
-def _ts(iso) -> float | None:
+def _ts(value) -> float | None:
+    """An ISO time or epoch seconds (the CLI's `playing.since`) as epoch."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
     try:
-        return datetime.fromisoformat(str(iso)).timestamp()
+        return datetime.fromisoformat(str(value)).timestamp()
     except (TypeError, ValueError):
         return None
 
@@ -130,6 +142,16 @@ class FriendsData(QObject):
     def public(self) -> list[dict]:
         return [r for r in self.friends() if r.get('visible') is not False]
 
+    def age(self, now: float | None = None) -> float | None:
+        """Seconds since presence was last asked, None when never."""
+        t = _ts((self.data or {}).get('updated'))
+        if t is None:
+            return None
+        return max(0.0, (time.time() if now is None else now) - t)
+
+    def error_kind(self) -> str | None:
+        return ((self.data or {}).get('error') or {}).get('kind')
+
     def fresh(self, now: float | None = None) -> bool:
         """Was presence asked recently enough to say who plays now?"""
         t = _ts((self.data or {}).get('updated'))
@@ -181,6 +203,57 @@ class FriendsData(QObject):
 
 
 FRIENDS = FriendsData()
+
+
+def playing_now(games, now: float | None = None, limit: int | None = MAX_CARDS) -> list[dict]:
+    """Who of your friends is in which game right now, one entry per game:
+    {appid, title, slug (the library game, or None), people (longest in
+    the game first), minutes, headerImage}; the most friends first, then
+    the longest. Nothing once presence is stale (10 min) or friends are
+    off. A hidden game counts as not in your library."""
+    if not FRIENDS.usable() or not FRIENDS.fresh(now):
+        return []
+    now = time.time() if now is None else now
+    groups: dict[str, list[dict]] = {}
+    for r in FRIENDS.public():
+        appid = (r.get('playing') or {}).get('appid')
+        if appid is None or not str(appid).isdigit():
+            continue
+        groups.setdefault(str(int(appid)), []).append(r)
+    if not groups:
+        return []
+    owned = {}
+    for g in games or ():
+        if g.get('hidden') or g.get('dup_of'):
+            continue
+        sid = _game_store_id(g)
+        if sid is not None:
+            owned.setdefault(str(sid), g)
+
+    def since(r):
+        t = _ts((r.get('playing') or {}).get('since'))
+        return now if t is None else min(t, now)
+    out = []
+    for appid, people in groups.items():
+        people.sort(key=lambda r: (since(r), (r.get('name') or '').casefold()))
+        g = owned.get(appid)
+        name = next(((r.get('playing') or {}).get('name') for r in people
+                     if (r.get('playing') or {}).get('name')), None)
+        start = since(people[0])
+        out.append({'appid': int(appid),
+                    'title': (g or {}).get('display_name') or name or f"App {appid}",
+                    'slug': (g or {}).get('slug'), 'people': people,
+                    'minutes': max(0, int((now - start) // 60)),
+                    'headerImage': storeinfo.HEADER.format(appid=appid)})
+    out.sort(key=lambda e: (-len(e['people']), -e['minutes'], e['title'].casefold()))
+    return out[:limit] if limit else out
+
+
+def who_text(entry: dict) -> str:
+    """'Ana and Ben · 1 h 20 min'."""
+    who = names_text([r.get('name') or '' for r in entry.get('people') or ()])
+    return f"{who} · {fmt_duration(entry.get('minutes'))}" if who else \
+        fmt_duration(entry.get('minutes'))
 
 
 def hue_of(rec: dict | None) -> str:

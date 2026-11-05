@@ -541,6 +541,9 @@ class ControllerMixin:
             if not was & Qt.WindowState.WindowFullScreen:
                 self.setWindowState(was)         # maximised stays maximised
         self._sync_hints()
+        if on:
+            self._feed_theatre_friends()
+        self._sync_presence()                     # w-82: Home is a different Home now
         # anim_ms: a wall-clock 80 ms outlived the tests that left Theatre and
         # moved the focus inside whichever test ran next (CI, 0.5.2).
         QTimer.singleShot(anim_ms(80), lambda: alive(self) and focus_and_reveal(self.default_focus()))
@@ -647,6 +650,9 @@ class ControllerMixin:
                          ('x', 'Options'), ('↓', 'Your games')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
+            elif isinstance(f, TheatreCard) and f.kind == 'friends':       # w-82, Home
+                hints = ([('a', 'Open'), ('x', 'Options')] if th._friend_game(f) is not None
+                         else [('a', 'Options')]) + [('b', 'Home')]
             elif th.tabs.current() == 'discover' and isinstance(f, (TheatreCard, TheatreSetupCard)):
                 hints = [('a', 'Read' if isinstance(f, TheatreCard) and f.kind == 'news'
                           else 'Options' if isinstance(f, TheatreCard) else 'Open Settings'),

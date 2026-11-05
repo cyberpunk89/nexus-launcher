@@ -3,8 +3,8 @@
 The page is a stage (the art, the logo, one quiet line of facts, a big
 Play, a round Favourite and Options) with the section tabs along its
 bottom edge. D-pad Down (or LB / RB) slides those tabs up into a glass
-drawer over the lower half: Overview, Media, News, Achievements and
-Compatibility, each hidden while it has nothing to show. While the drawer
+drawer over the lower half: Overview, Friends (w-82), Media, News,
+Achievements and Compatibility, each hidden while it has nothing to show. While the drawer
 is open the game shrinks to a band at the top, with Play one Up away."""
 
 import html
@@ -13,26 +13,34 @@ from datetime import datetime
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPixmap
-from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QProgressBar,
-    QPushButton, QScrollArea, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from nexus import gamedb
 from nexus.features import has
 
 from .common import alive
-from .fmt import fmt_hours, fmt_relative, fmt_size
+from .fmt import fmt_duration, fmt_hours, fmt_relative, fmt_size
 from .theme import G, P, R, SP
 
 
-SECTIONS = (('overview', "Overview"), ('media', "Media"), ('news', "News"),
-            ('achievements', "Achievements"), ('compat', "Compatibility"))
+SECTIONS = (('overview', "Overview"), ('friends', "Friends"), ('media', "Media"),
+            ('news', "News"), ('achievements', "Achievements"), ('compat', "Compatibility"))
+FRIENDS_SHOWN = 8               # owners in the drawer's Friends, then "and N more"
+PRIVATE_SHOWN = 6
 
 
-def fact_text(g: dict) -> str:
+def fact_text(g: dict, friends: bool = False) -> str:
     """The game's one quiet line, as rich text: time played, when, its
     ProtonDB tier and an update waiting. The stage, the drawer's band and
-    Home's spotlight all show it instead of a row of pills."""
+    Home's spotlight all show it instead of a row of pills. `friends` (the
+    game page) adds "Ana and Ben playing" while friends are in it."""
     parts = []
+    if friends:
+        live = [r.get('name') or '' for r in FRIENDS.playing_in(_game_store_id(g))]
+        if live:
+            parts.append(f"<span style='color:{P['live_on_art']}'>"
+                         f"{html.escape(names_text(live))} playing</span>")
     hours = fmt_hours(played_minutes(g))         # a running session counted in
     last = fmt_relative(g.get('last_played'))
     if hours:
@@ -47,6 +55,8 @@ def fact_text(g: dict) -> str:
                      f"ProtonDB {html.escape(tier.capitalize())}</span>")
     if g.get('update_pending'):
         parts.append(f"<span style='color:{P['warning']}'>Update ready</span>")
+    if friends and parts and 'playing</span>' in parts[0]:
+        parts.append(parts.pop(0))               # last: the news of the moment
     return "&nbsp;&nbsp;·&nbsp;&nbsp;".join(parts)
 
 
@@ -205,6 +215,8 @@ class TheatreDrawer(QFrame):
         self.pages = QStackedWidget()
         self.sections: dict[str, QWidget] = {}
         self._overview()
+        self._add('friends', QWidget())              # filled by TheatreDetails._fill_friends
+        QVBoxLayout(self.sections['friends']).setContentsMargins(0, 0, 0, 0)
         self._media()
         for key in ('news', 'achievements', 'compat'):
             w = QWidget()
@@ -540,8 +552,8 @@ class TheatreDetails(QWidget):
             slug = g.get('slug')
             ART.fetch(url, lambda p, slug=slug: self.game.get('slug') == slug
                       and self._set_logo(p))
-        self.facts.setText(fact_text(g))
-        self.band_facts.setText(fact_text(g))
+        self.facts.setText(fact_text(g, friends=True))
+        self.band_facts.setText(fact_text(g, friends=True))
         self.set_play(g)
         fav = bool(g.get('favorite'))
         self.btn_fav.setText(G['star'] if fav else G['star_outline'])
@@ -675,6 +687,7 @@ class TheatreDetails(QWidget):
         self._filling = True
         try:
             self._fill_overview()
+            self._fill_friends()
             self._fill_media()
             self._fill_news()
             self._fill_achievements()
@@ -757,6 +770,115 @@ class TheatreDetails(QWidget):
         if ach:
             d.ach_line.setText(f"{ach[0]} of {ach[1]} achievements")
         _set_bar(d.ach_bar, ach[0] / ach[1] if ach else None)
+
+    def _fill_friends(self):
+        """Friends (w-82): who owns it (a 2-column grid, playing now
+        first, at most 8 then "and N more") and, on the right, the friends
+        whose game details are private. Nothing in it is a focus stop, as
+        in Overview. Hidden without friends data or a Steam app id."""
+        g = self.game
+        appid = _game_store_id(g) if g else None
+        owners = FRIENDS.owners(appid) if appid is not None else []
+        private = FRIENDS.private() if appid is not None else []
+        live = {r['steamid']: r for r in FRIENDS.playing_in(appid)}
+        owners.sort(key=lambda r: r['steamid'] not in live)      # stable: minutes after
+        now = time.time()
+        minutes = {sid: max(0, int((now - (_ts((r.get('playing') or {}).get('since'))
+                                           or now)) // 60)) for sid, r in live.items()}
+        sig = (appid, tuple((r['steamid'], r.get('name'), r.get('avatar'),
+                             (r.get('owned') or {}).get(str(appid)), minutes.get(r['steamid']))
+                            for r in owners),
+               tuple((r['steamid'], r.get('name'), r.get('avatar')) for r in private))
+        show = FRIENDS.usable() and appid is not None and bool(owners or private)
+        self.drawer.set_section_visible('friends', show)
+        if sig == getattr(self, '_friends_sig', None):
+            return
+        self._friends_sig = sig
+        lay = self._rows('friends')
+        if not show:
+            return
+        body = QWidget()
+        h = QHBoxLayout(body)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(SP['8'] * 2)
+        if owners:
+            left = QVBoxLayout()
+            left.setSpacing(SP['3'])
+            n = len(owners)
+            left.addWidget(label(f"{n} FRIEND{'S' if n != 1 else ''} OWN{'' if n != 1 else 'S'} "
+                                 "THIS", "TheatreLabel"))
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(SP['5'])
+            grid.setVerticalSpacing(SP['3'])
+            for i, r in enumerate(owners[:FRIENDS_SHOWN]):
+                grid.addWidget(self._friend_cell(r, appid, minutes.get(r['steamid'])),
+                               i // 2, i % 2)
+            left.addLayout(grid)
+            if n > FRIENDS_SHOWN:
+                left.addWidget(label(f"and {n - FRIENDS_SHOWN} more", "TheatreSub"))
+            left.addStretch()
+            h.addLayout(left, 3)
+        if private:
+            right = QVBoxLayout()
+            right.setSpacing(SP['3'])
+            right.addWidget(label("PRIVATE ON STEAM", "TheatreLabel"))
+            for r in private[:PRIVATE_SHOWN]:
+                row = QHBoxLayout()
+                row.setSpacing(SP['3'])
+                row.addWidget(Avatar(r, 44, dim=True))
+                name = plain_label(r.get('name') or r.get('steamid') or '?', "TheatreSub")
+                name.setProperty('dim', True)
+                row.addWidget(name, 1)
+                right.addLayout(row)
+            if len(private) > PRIVATE_SHOWN:
+                right.addWidget(label(f"and {len(private) - PRIVATE_SHOWN} more",
+                                      "TheatreSub"))
+            note = label("Nexus can't see their games. Steam shows game details to apps "
+                         "only when a friend sets them to Public.", "TheatreSub", wrap=True)
+            note.setProperty('dim', True)
+            right.addWidget(note)
+            right.addStretch()
+            h.addLayout(right, 2)
+        if not owners:
+            h.addStretch(3)
+        lay.addWidget(body)
+        lay.addStretch()
+
+    @staticmethod
+    def _friend_cell(r: dict, appid, live_minutes) -> QFrame:
+        """One owner: avatar, name, "Playing now · 1 h 20 min" or "41 h
+        played". Display only."""
+        cell = QFrame()
+        cell.setObjectName("TheatreRow")
+        cell.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        cl = QHBoxLayout(cell)
+        cl.setContentsMargins(SP['3'], SP['2'], SP['5'], SP['2'])
+        cl.setSpacing(SP['3'])
+        cl.addWidget(Avatar(r, 56, live=live_minutes is not None))
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(plain_label(r.get('name') or r.get('steamid') or '?', "TheatreMeta"))
+        if live_minutes is not None:
+            sub = plain_label(f"Playing now · {fmt_duration(live_minutes)}", "TheatreSub")
+            sub.setProperty('live', True)
+        else:
+            hours = fmt_hours((r.get('owned') or {}).get(str(appid)))
+            sub = plain_label(f"{hours} played" if hours else "Not played yet", "TheatreSub")
+        col.addWidget(sub)
+        cl.addLayout(col, 1)
+        return cell
+
+    def refresh_friends(self):
+        """New friends data, or presence went stale: the Friends section
+        and the fact line follow (nothing rebuilt when nothing changed)."""
+        if not self.game:
+            return
+        self.facts.setText(fact_text(self.game, friends=True))
+        self.band_facts.setText(fact_text(self.game, friends=True))
+        self._fill_friends()
+        d = self.drawer
+        if not d.reader_open():
+            d.show_section(d.tabs.current())
 
     def _fill_media(self):
         """Trailers from the Steam store (screenshots wait for Game-db)."""
@@ -1114,6 +1236,7 @@ from .art import (anim_ms, ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS,
     screen_pixmap)  # noqa: E402
 from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # noqa: E402
     played_minutes, SOURCE_LABEL, TIER_COLORS)
+from .friends import _game_store_id, _ts, Avatar, FRIENDS, names_text  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .widgets import (clear_layout, glyph_pixmap, icon_button, icon_label, label, plain_label,

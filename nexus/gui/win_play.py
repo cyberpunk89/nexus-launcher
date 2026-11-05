@@ -140,6 +140,8 @@ class PlayMixin:
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
+        if ev.type() in (QEvent.Type.WindowStateChange, QEvent.Type.ActivationChange):
+            self._sync_presence()           # w-82: friends' presence only while you look
         if self._session_pending is not None and ev.type() in (
                 QEvent.Type.WindowStateChange, QEvent.Type.ActivationChange):
             QTimer.singleShot(0, self._show_session)       # Nexus came back to the front

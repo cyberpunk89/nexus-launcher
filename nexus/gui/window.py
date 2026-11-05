@@ -218,6 +218,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre.library_sheet.connect(self._open_library_sheet)
         self.theatre.discover_shown.connect(self._discover_shown)
         self.theatre.deal_asked.connect(self._theatre_deal)
+        self.theatre.tabs.changed.connect(self._sync_presence)       # w-82: Home's presence
         self.theatre.reader_options.connect(self._reader_options)
         self.theatre.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
         self.theatre.hide_gamedb.connect(self._hide_theatre_gamedb)
@@ -291,6 +292,12 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._dash_timer.setSingleShot(True)
         self._dash_timer.setInterval(250)
         self._dash_timer.timeout.connect(self._flush_dashboard)
+        # Who of your friends plays what (w-82): asked only while Home shows
+        # and the window is active (win_library._sync_presence).
+        self._friends_loading = False
+        self._presence_timer = QTimer(self)
+        self._presence_timer.setInterval(PRESENCE_MS)
+        self._presence_timer.timeout.connect(self._presence_tick)
         self._home_sig = None
         self._add_page(self.HOME, self.homeview)
         self._add_page(self.LIBRARY, self._build_library())
@@ -794,8 +801,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                 self.dealspage.refresh()
         self.dash_update('news', 'deals', 'upcoming')
         # Steam friends may have been switched on or off, or got a key.
-        _CLI_MEMO.pop(tuple(FRIENDS_ARGS), None)
-        self._load_friends()
+        self._reload_friends()
         self._poll_torrents()                  # the torrent client may have changed
         if proton_changed and self._games:
             self.toast("Point every game at the new Proton now?", 'info',
@@ -1217,8 +1223,8 @@ from .gameinfo import is_installed  # noqa: E402
 from .input import (ControllerInput, focus_and_reveal, FocusRing, HintBar,  # noqa: E402
     install_input_mode, SpatialNav)
 from .install import InstallPage, RepackWatcher  # noqa: E402
-from .friends import FRIENDS_ARGS  # noqa: E402
-from .jobs import _CLI_MEMO, cli_json, in_thread, JobManager  # noqa: E402
+from .friends import PRESENCE_MS  # noqa: E402
+from .jobs import cli_json, in_thread, JobManager  # noqa: E402
 from .modal import Modal  # noqa: E402
 from .setup import SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402

@@ -7,12 +7,21 @@ status line, edits save to [steam]/[friends], and the search finds it.
 
 w-81: the FRIENDS store (what is shown, and when nothing is), the game
 page's Friends block and hero pill, and the Library's Friends own chip,
-tile badge, tooltip and List column."""
+tile badge, tooltip and List column.
 
+w-82: who plays what grouped by game (playing_now), Home's Friends playing
+now widget and its states, the presence timer (only while Home shows and
+the window is active), and Theatre's Home row, game drawer section, fact
+line and Sort & filter's Friends own."""
+
+import json
 import os
+import shutil
+import tempfile
 import time
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest import mock
 
 try:
@@ -22,10 +31,11 @@ except ImportError:             # run as tests.<module>
 from tests.patching import patch_gui, set_gui  # noqa: E402
 
 if nx is not None:
-    from nexus.gui import settings as gsettings
+    from nexus.gui import dashboard as gdash, settings as gsettings
     from nexus.gui.friends import FRIENDS
     from PyQt6.QtCore import QEvent, Qt
-    from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit
+    from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QLineEdit, QPushButton,
+        QWidget)
 
 KEY = 'ABCDEF0123456789ABCDEF0123456789'          # made up
 ME = '76561190000000001'
@@ -491,3 +501,441 @@ class LibraryFriends(unittest.TestCase):
                 for r in range(lv.rowCount())}
         self.assertEqual(rows['steam-10'], '10')
         self.assertEqual(rows['rp'], '—')
+
+
+# ---- w-82 ----
+def playing(i, name, appid, mins, owned=None, visible=True):
+    """A friend in appid for `mins` minutes (since as epoch seconds, as the CLI)."""
+    r = friend(i, name, owned, visible)
+    r['playing'] = {'appid': appid, 'gameid': str(appid), 'name': f"Steam {appid}",
+                    'since': int(time.time() - mins * 60)}
+    return r
+
+
+def live_crowd():
+    """Ana (80 min), Ben (50) and Cy (10) in app 10; Dee in app 99 for 3 h;
+    Eve in a mod (no appid); Fay private and 'in' app 10; Gus idle."""
+    rows = [playing(1, "Ana", 10, 80, {10: 600}), playing(2, "Ben", 10, 50, {10: 300}),
+            playing(3, "Cy", 10, 10), playing(4, "Dee", 99, 180), friend(5, "Eve"),
+            playing(6, "Fay", 10, 5, visible=False), friend(7, "Gus", {10: 50})]
+    rows[4]['playing'] = {'appid': None, 'gameid': '9' * 19, 'name': 'A mod', 'since': iso()}
+    return rows
+
+
+GAMES = [{'slug': 'steam-10', 'display_name': 'Ten', 'source': 'steam', 'appid': 10,
+          'launcher': 'steam://rungameid/10'},
+         {'slug': 'steam-20', 'display_name': 'Twenty', 'source': 'steam', 'appid': 20,
+          'launcher': 'steam://rungameid/20', 'installed': False},
+         {'slug': 'steam-30', 'display_name': 'Thirty', 'source': 'steam', 'appid': 30,
+          'launcher': 'steam://rungameid/30'}]
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class PlayingNow(unittest.TestCase):
+    def setUp(self):
+        FRIENDS.reset()
+        self.addCleanup(FRIENDS.reset)
+
+    def test_playing_now_groups_by_game_most_friends_first(self):
+        FRIENDS.set_answer(answer(live_crowd()))
+        out = nx.playing_now(GAMES)
+        self.assertEqual([e['appid'] for e in out], [10, 99])     # three friends beat 3 h
+        ten = out[0]
+        self.assertEqual([r['name'] for r in ten['people']], ["Ana", "Ben", "Cy"])  # longest first
+        self.assertEqual(ten['minutes'], 80)
+        self.assertEqual((ten['slug'], ten['title']), ('steam-10', 'Ten'))       # your copy's name
+        self.assertIn('/apps/10/header.jpg', ten['headerImage'])
+        self.assertEqual((out[1]['slug'], out[1]['title']), (None, "Steam 99"))  # Steam's name
+        # A hidden game counts as not in your library
+        hidden = [dict(g, hidden=True) if g['appid'] == 10 else g for g in GAMES]
+        self.assertIsNone(nx.playing_now(hidden)[0]['slug'])
+        # ISO times work as well as epoch seconds
+        rows = live_crowd()
+        rows[0]['playing']['since'] = iso(80 * 60)
+        FRIENDS.set_answer(answer(rows))
+        self.assertEqual(nx.playing_now(GAMES)[0]['minutes'], 80)
+        # Stale presence, friends off: nothing
+        self.assertEqual(nx.playing_now(GAMES, now=time.time() + 11 * 60), [])
+        FRIENDS.set_answer(answer(live_crowd(), {'kind': 'no-key', 'message': 'x'}))
+        self.assertEqual(nx.playing_now(GAMES), [])
+        # At most eight games, unless asked for all
+        FRIENDS.set_answer(answer([playing(i, f"P{i}", 100 + i, i) for i in range(12)]))
+        self.assertEqual(len(nx.playing_now(GAMES)), 8)
+        self.assertEqual(len(nx.playing_now(GAMES, limit=None)), 12)
+        self.assertEqual(nx.playing_now(GAMES)[0]['appid'], 111)              # the longest
+
+    def test_who_text(self):
+        FRIENDS.set_answer(answer(live_crowd()))
+        out = nx.playing_now(GAMES)
+        self.assertEqual(nx.who_text(out[0]), "Ana, Ben +1 · 1 h 20 min")
+        self.assertEqual(nx.who_text(out[1]), "Dee · 3 h")
+        self.assertEqual(nx.who_text({'people': [], 'minutes': 5}), "5 min")
+
+    def test_age(self):
+        self.assertIsNone(FRIENDS.age())
+        FRIENDS.set_answer(answer(live_crowd(), updated=iso(90)))
+        self.assertAlmostEqual(FRIENDS.age(), 90, delta=2)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class _FriendsWindow(unittest.TestCase):
+    """A MainWindow with friends on, whose CLI answers `--friends` with
+    self.reply (and records every call)."""
+
+    def setUp(self):
+        FRIENDS.reset()
+        self.calls, self.reply, self.active = [], answer(live_crowd()), True
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.opened = []
+        for p in (patch_gui('cli_json', self.fake_cli), patch_gui('CliQuery', lambda *a, **k: None),
+                  mock.patch.object(nx.LibraryPrefs, 'save', lambda self: None),
+                  mock.patch.object(nx.LibraryPrefs, 'PATH', tmp / 'library.json'),
+                  mock.patch.object(nx.MainWindow, '_poll_running', lambda self: None),
+                  mock.patch.object(gdash, 'open_url', self.opened.append)):
+            p.start()
+            self.addCleanup(p.stop)
+        for name, ret in (('power_caps', set()), ('power', True), ('bluetooth_pads', []),
+                          ('bluetooth_disconnect', True)):
+            p = mock.patch(f'nexus.platform.{name}', return_value=ret)
+            p.start()
+            self.addCleanup(p.stop)
+        w = self.win = nx.MainWindow()
+        w.isActiveWindow = lambda: self.active
+        w.prefs.dashboard = nx.dash_default()
+        w.prefs.library_state = {}
+        w.config['friends_enabled'] = True
+        w.resize(1400, 900)
+        w.show()
+        w._on_library({'games': [dict(g) for g in GAMES], 'disks': []}, '')
+        QApplication.processEvents()
+
+    def tearDown(self):
+        stop_leftovers(self.win.jobs)
+        self.win.close()
+        self.win.deleteLater()
+        QApplication.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        FRIENDS.reset()
+
+    def fake_cli(self, args, cb, *a, **k):
+        self.calls.append(list(args))
+        if '--friends' in args and self.reply is not None:
+            cb(self.reply, '')
+
+    def presence_calls(self):
+        return [c for c in self.calls if '--presence' in c]
+
+    def widget(self):
+        self.win.dashboard.refresh(['friends'])
+        QApplication.processEvents()
+        return self.win.dashboard.widgets['friends']
+
+    def placed(self):
+        return 'friends' in {k for k, *_ in nx.dash_pack(
+            self.win.dashboard.items, 3, self.win.dashboard._skip())}
+
+    def set_size(self, size):
+        for it in self.win.prefs.dashboard:
+            if it['id'] == 'friends':
+                it['size'] = size
+
+
+class HomeFriends(_FriendsWindow):
+    def test_widget_only_while_a_friend_plays_after_jump(self):
+        ids = [i['id'] for i in self.win.prefs.dashboard]
+        self.assertEqual(ids[ids.index('jump') + 1], 'friends')
+        fw = self.widget()
+        self.assertTrue(self.placed())
+        self.assertEqual(fw.state, 'live')
+        self.assertEqual([c.appid for c in fw.cards], [10, 99])
+        card = fw.cards[0]
+        self.assertEqual(card.title.text(), "Ten")
+        self.assertIsNotNone(card.pill)                     # In your library
+        self.assertIsNone(fw.cards[1].pill)
+        self.assertEqual(card.sub_label.text(), "Ana, Ben +1 · 1 h 20 min")
+        self.assertEqual(card.stack.parentWidget(), card.art)
+        self.assertIn("1 friend is private on Steam · updated", fw.footer.text())
+        # Nobody in a game: out of the layout, but Customise still shows it
+        rows = [dict(r, playing=None) for r in live_crowd()]
+        FRIENDS.set_answer(answer(rows))
+        fw = self.widget()
+        self.assertFalse(self.placed())
+        self.assertIn("No friends are in a game", fw.body.itemAt(0).widget().text())
+        self.win.dashboard.set_editing(True)
+        self.assertTrue(self.placed())
+        self.win.dashboard.set_editing(False)
+
+    def test_wide_rows_and_footer(self):
+        FRIENDS.set_answer(answer([playing(i, f"P{i}", 100 + i, 60 - i) for i in range(6)],
+                                  {'kind': 'offline', 'message': 'x'}))
+        self.set_size('wide')
+        fw = self.widget()
+        self.assertEqual(len(fw.cards), 4)
+        self.assertEqual(fw.cards[0].sub_label.text(), "P0 · 1 h")
+        texts = [fw.body.itemAt(i).widget().text() for i in range(fw.body.count())
+                 if isinstance(fw.body.itemAt(i).widget(), QLabel)]
+        self.assertIn("+2 more", texts)
+        self.assertTrue(fw.footer.text().startswith("As of "))           # offline
+        self.assertIn("Friends only", fw.footer.toolTip())
+
+    def test_click_owned_reveals_unowned_opens_store(self):
+        fw = self.widget()
+        fw.cards[1].clicked.emit()
+        self.assertEqual(self.opened, ["https://store.steampowered.com/app/99/"])
+        fw.cards[0].clicked.emit()
+        QApplication.processEvents()
+        self.assertEqual(self.win.current(), self.win.LIBRARY)
+        self.assertEqual(self.win.selected, ['steam-10'])
+
+    def test_states_setup_loading_bad_key_offline(self):
+        w = self.win
+        w.config['friends_enabled'] = False
+        w._load_friends()
+        fw = self.widget()
+        self.assertEqual(fw.state, 'setup')
+        self.assertFalse(self.placed())
+        btn = next(b for b in fw.findChildren(QPushButton) if b.text() == "Set up in Settings")
+        with mock.patch.object(w, '_open_settings') as op:
+            btn.click()
+        op.assert_called_once_with('accounts', 'friends')
+        w.config['friends_enabled'] = True
+        self.reply = None                                   # the CLI hasn't answered yet
+        w._reload_friends()
+        self.assertEqual(self.widget().state, 'loading')
+        self.reply = answer(live_crowd(), {'kind': 'bad-key', 'message': 'refused'})
+        w._reload_friends()
+        fw = self.widget()
+        self.assertEqual(fw.state, 'bad-key')
+        self.assertTrue(self.placed())                     # an error shows outside Customise
+        retry = next(b for b in fw.findChildren(QPushButton) if b.text() == "Retry")
+        n = len(self.calls)
+        retry.click()
+        self.assertEqual(self.calls[n:], [['--friends', '--json']])
+        self.reply = answer([friend(1, "Ana", visible=False)])
+        w._reload_friends()
+        self.assertEqual(self.widget().state, 'private')
+        self.reply = answer([])
+        w._reload_friends()
+        self.assertEqual(self.widget().state, 'none')
+
+    def test_refill_keeps_focus_updates_minutes_in_place(self):
+        fw = self.widget()
+        card = fw.cards[0]
+        card.setFocus()
+        QApplication.processEvents()
+        rows = live_crowd()
+        rows[0]['playing']['since'] -= 600                      # ten more minutes
+        FRIENDS.set_answer(answer(rows))
+        fw = self.widget()
+        self.assertIs(fw.cards[0], card)                        # nothing rebuilt
+        self.assertEqual(card.sub_label.text(), "Ana, Ben +1 · 1 h 30 min")
+        rows.append(playing(8, "Hal", 99, 1))                   # someone joins Dee: rebuilt
+        FRIENDS.set_answer(answer(rows))
+        fw = self.widget()
+        self.assertIsNot(fw.cards[0], card)
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), fw.cards[0])  # the same game keeps focus
+        self.assertEqual(fw.cards[0].appid, 10)
+
+
+class Presence(_FriendsWindow):
+    def test_timer_only_on_home_while_active(self):
+        w = self.win
+        t = w._presence_timer
+        w.go(w.LIBRARY)
+        self.assertFalse(t.isActive())
+        self.reply = answer(live_crowd(), updated=iso(90))       # over a minute old
+        FRIENDS.reset()                                          # (an older answer is kept out)
+        w._reload_friends()
+        self.calls.clear()
+        w.go(w.HOME)
+        self.assertTrue(t.isActive())
+        self.assertEqual(t.interval(), 120_000)
+        self.assertEqual(self.presence_calls(), [['--friends', '--presence', '--json']])
+        self.calls.clear()
+        self.reply = answer(live_crowd())                        # fresh now
+        w._presence_tick()
+        self.assertEqual(len(self.presence_calls()), 1)
+        self.calls.clear()
+        w._sync_presence()                                       # fresh: no new ask
+        self.assertEqual(self.presence_calls(), [])
+        self.active = False                                      # another window in front
+        w._sync_presence()
+        self.assertFalse(t.isActive())
+        self.active = True
+        w._sync_presence()
+        self.assertTrue(t.isActive())
+        # Not while the plain call is on its way (it brings presence too)
+        w._friends_loading = True
+        w._presence_tick()
+        self.assertEqual(self.presence_calls(), [])
+        w._friends_loading = False
+        # A refused key or a private list never polls
+        self.reply = answer(live_crowd(), {'kind': 'bad-key', 'message': 'x'})
+        w._reload_friends()
+        self.assertFalse(t.isActive())
+        self.reply = answer(live_crowd())
+        w._reload_friends()
+        self.assertTrue(t.isActive())
+        # Theatre: its Home tab, a game page over it too; not Library
+        w.set_theatre(True)
+        QApplication.processEvents()
+        self.assertTrue(t.isActive())
+        w.theatre.open_game(w.game('steam-10'))
+        w._sync_presence()
+        self.assertTrue(t.isActive())
+        w.theatre.close_game()
+        w.theatre.tabs.set_current('library', emit=True)
+        self.assertFalse(t.isActive())
+        w.theatre.tabs.set_current('home', emit=True)
+        self.assertTrue(t.isActive())
+        w.set_theatre(False)
+        QApplication.processEvents()
+
+    def test_an_older_memo_never_replaces_presence(self):
+        w = self.win
+        newer = answer(live_crowd(), updated=iso(5))
+        FRIENDS.set_answer(newer)
+        w._friends_done(answer([], updated=iso(200)), '')
+        self.assertIs(FRIENDS.data, newer)
+
+
+class TheatreFriends(_FriendsWindow):
+    def theatre(self):
+        w = self.win
+        w.set_theatre(True)
+        QApplication.processEvents()
+        return w.theatre
+
+    def done(self):
+        self.win.set_theatre(False)
+        QApplication.processEvents()
+
+    def row_index(self, th, w):
+        return [th.rows.itemAt(i).widget() for i in range(th.rows.count())].index(w)
+
+    def test_row_after_your_week_kept_across_set_games(self):
+        th = self.theatre()
+        self.assertTrue(th.friends_row.isVisibleTo(th))
+        self.assertEqual(self.row_index(th, th.friends_row), self.row_index(th, th.week_row) + 1)
+        self.assertEqual([c.item['appid'] for c in th.friend_cards], [10, 99])
+        card = th.friend_cards[0]
+        self.assertEqual(card.kind, 'friends')
+        self.assertEqual(card.facts.text(), "Ana, Ben +1 · 1 h 20 min")
+        self.assertIn("In your library", card.art.badges())
+        self.assertNotIn("In your library", th.friend_cards[1].art.badges())
+        th.set_games([g for g in self.win._games if not g.get('hidden')])
+        self.assertTrue(th.friends_row.isVisibleTo(th))
+        self.assertEqual(self.row_index(th, th.friends_row), self.row_index(th, th.week_row) + 1)
+        self.assertIs(th.friend_cards[0], card)                   # kept, not rebuilt
+        card.setFocus()
+        QApplication.processEvents()
+        self.assertEqual(th._game_at(card)['slug'], 'steam-10')    # the tint follows
+        self.win._update_hints()
+        self.assertEqual(self.win.hints._shown[1][0], ('a', 'Open'))
+        # Nobody plays: focus leaves first, then the row hides
+        FRIENDS.set_answer(answer([dict(r, playing=None) for r in live_crowd()]))
+        QApplication.processEvents()
+        self.assertFalse(th.friends_row.isVisibleTo(th))
+        f = QApplication.focusWidget()
+        self.assertTrue(f is not None and th.isAncestorOf(f) and not th.friends_row.isAncestorOf(f))
+        self.done()
+
+    def test_a_owned_opens_page_unowned_opens_sheet(self):
+        th = self.theatre()
+        owned, other = th.friend_cards
+        seen = []
+        th.deal_asked.connect(lambda item, kind: seen.append((item['appid'], kind)))
+        th._friend_activated(other)
+        self.assertEqual(seen[-1], (99, 'friends'))
+        self.assertTrue(self.win.theatre_sheet.isVisible())       # Open in Steam
+        self.win.theatre_sheet.close_sheet(restore=False)
+        other.setFocus()
+        QApplication.processEvents()
+        self.win._update_hints()
+        self.assertEqual(self.win.hints._shown[1][0], ('a', 'Options'))
+        th._friend_activated(owned)
+        self.assertTrue(th.details.isVisible())
+        self.assertEqual(th.details.game['slug'], 'steam-10')
+        th.close_game()
+        self.done()
+
+    def test_drawer_section_after_overview_grid_private(self):
+        rows = live_crowd() + [friend(20 + i, f"Q{i}", {10: 5}) for i in range(8)]
+        FRIENDS.set_answer(answer(rows))
+        th = self.theatre()
+        from nexus.gui import theatre_game as tg
+        self.assertEqual([k for k, _t in tg.SECTIONS][:2], ['overview', 'friends'])
+        th.open_game(self.win.game('steam-10'))
+        QApplication.processEvents()
+        det = th.details
+        dr = det.drawer
+        self.assertIn('friends', dr.visible_keys())
+        det.cycle_section(1)                                      # opens on Overview
+        det.cycle_section(1)                                      # RB: Friends
+        self.assertEqual(dr.tabs.current(), 'friends')
+        sec = dr.sections['friends']
+        texts = [lab.text() for lab in sec.findChildren(QLabel) if not lab.isHidden()]
+        self.assertIn("11 FRIENDS OWN THIS", texts)               # Ana, Ben, Gus + 8
+        self.assertIn("and 3 more", texts)
+        self.assertIn("Playing now · 1 h 20 min", texts)
+        self.assertIn("PRIVATE ON STEAM", texts)
+        self.assertIn("Fay", texts)
+        cells = [c for c in sec.findChildren(QFrame) if c.objectName() == "TheatreRow"]
+        self.assertEqual(len(cells), 8)
+        for wdg in sec.findChildren(QWidget):
+            self.assertEqual(wdg.focusPolicy(), Qt.FocusPolicy.NoFocus, wdg)
+        # A game nobody has: hidden; friends off: hidden
+        th.open_game(self.win.game('steam-30'))
+        QApplication.processEvents()
+        self.assertIn('friends', dr.visible_keys())               # Fay's private line still
+        FRIENDS.set_answer(answer([friend(1, "Ana", {10: 5})]))
+        QApplication.processEvents()
+        self.assertNotIn('friends', dr.visible_keys())
+        th.close_game()
+        self.done()
+
+    def test_stage_fact_line(self):
+        th = self.theatre()
+        th.open_game(self.win.game('steam-10'))
+        QApplication.processEvents()
+        self.assertIn("Ana, Ben +1 playing", th.details.facts.text())
+        self.assertIn("Ana, Ben +1 playing", th.details.band_facts.text())
+        FRIENDS.set_answer(answer(live_crowd(), updated=iso(11 * 60)))   # stale
+        th._tick()
+        self.assertNotIn("playing", th.details.facts.text())
+        self.assertNotIn("playing", nx.fact_text(self.win.game('steam-10')))
+        th.close_game()
+        self.done()
+
+    def test_sort_filter_friends_own(self):
+        th = self.theatre()
+        th.tabs.set_current('library', emit=True)
+        QApplication.processEvents()
+        sheet = self.win.theatre_sheet
+        th.set_library_state({'sort': 'name', 'show': 'friends'})
+        self.assertEqual([g['slug'] for g in th._lib_games()], ['steam-10'])
+        self.assertIn("Friends own", th.lib_chip.text())
+        sheet.close_sheet(restore=False)
+        # Without friends data it falls back to Installed and isn't offered
+        FRIENDS.set_answer(answer(live_crowd(), {'kind': 'no-key', 'message': 'x'}))
+        QApplication.processEvents()
+        self.assertIn("Installed", th.lib_chip.text())
+        th.lib_state = {'sort': 'name', 'show': 'installed'}
+        chosen = []
+        with mock.patch.object(sheet, 'choose', lambda t, items, **k: chosen.extend(items)):
+            th.open_library_sheet(sheet)
+        self.assertNotIn("Friends own", [i[0] for i in chosen if isinstance(i, tuple)])
+        self.done()
+        # Prefs keep it; an unknown value reads as Installed
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        f = tmp / 'library.json'
+        f.write_text(json.dumps({'theatre_library': {'sort': 'most', 'show': 'friends'}}))
+        with mock.patch.object(nx.LibraryPrefs, 'PATH', f):
+            self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'most',
+                                                                 'show': 'friends'})
+        f.write_text(json.dumps({'theatre_library': {'show': 'bogus'}}))
+        with mock.patch.object(nx.LibraryPrefs, 'PATH', f):
+            self.assertEqual(nx.LibraryPrefs().theatre_library['show'], 'installed')

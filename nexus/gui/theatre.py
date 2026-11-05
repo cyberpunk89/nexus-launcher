@@ -790,6 +790,16 @@ class TheatreView(QWidget):
         self.week_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.week_row.hide()
         self._week_slug: str | None = None
+        # Friends playing now (w-82): kept across set_games like Your week,
+        # right after it. The shelf inside is rebuilt only when who plays
+        # what changed; the minutes are updated in place.
+        self.friends_row = QWidget(host)
+        QVBoxLayout(self.friends_row).setContentsMargins(0, 0, 0, 0)
+        self.friends_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.friends_row.hide()
+        self.friends_shelf: ShelfRow | None = None
+        self.friend_cards: list[TheatreCard] = []
+        self._friends_sig = None
         self.home_lay.addStretch()
         self.home.setWidget(host)
         self.pages.addWidget(self.home)
@@ -886,6 +896,7 @@ class TheatreView(QWidget):
         self.hero.setVisible(bool(games))
         self._sync_art()
         self.rows.removeWidget(self.week_row)       # kept: clear_layout would delete it
+        self.rows.removeWidget(self.friends_row)
         clear_layout(self.rows)
         played = sorted((g for g in games if g.get('last_played')),
                         key=lambda g: g['last_played'], reverse=True)
@@ -918,6 +929,7 @@ class TheatreView(QWidget):
                 self.rows.addWidget(self.week_row)
         if self.rows.indexOf(self.week_row) < 0:     # nothing played: first
             self.rows.insertWidget(0, self.week_row)
+        self.rows.insertWidget(self.rows.indexOf(self.week_row) + 1, self.friends_row)
         self._sync_week_game()
         self._fill_library()
         if self.details.isVisible():
@@ -959,20 +971,105 @@ class TheatreView(QWidget):
         if g is not None:
             self.open_game(g)
 
+    # ---- Friends playing now (w-82) ----
+    def set_friends(self, entries: list[dict]):
+        """friends.playing_now entries: a card per game (the window feeds
+        it). Absent when nobody plays; focus leaves the row before it hides."""
+        f = QApplication.focusWidget()
+        inside = f is not None and self.friends_row.isAncestorOf(f)
+        sig = tuple((e['appid'], e['slug'], e['title'],
+                     tuple((r['steamid'], r.get('name'), r.get('avatar')) for r in e['people']))
+                    for e in entries)
+        if not entries:
+            self._friends_sig = sig
+            if inside:
+                self.friends_row.hide()          # first: default_focus skips it
+                nxt = self.default_focus()
+                if nxt is not None:
+                    focus_and_reveal(nxt)
+            self.friends_row.hide()
+            return
+        if sig == self._friends_sig and self.friends_shelf is not None:
+            for card, e in zip(self.friend_cards, entries):     # the minutes moved on
+                card.item = e
+                card.facts.setText(who_text(e))
+            self.friends_row.show()
+            return
+        self._friends_sig = sig
+        key = next((c.key for c in self.friend_cards if c is f), None)
+        cards = []
+        for e in entries:
+            c = TheatreCard('friends', e, owned=bool(e.get('slug')))
+            c.activated.connect(self._friend_activated)
+            c.options.connect(self._friend_options)
+            cards.append(c)
+        h = max(c.sizeHint().height() for c in cards) + SP['2']
+        shelf = ShelfRow("Friends playing now", TheatreCard.W, 'wide', tile_h=h)
+        for c in cards:
+            c.setFixedHeight(h)
+            shelf.add(c)
+        shelf.finish()
+        lay = self.friends_row.layout()
+        old = self.friends_shelf
+        lay.addWidget(shelf)
+        self.friends_shelf, self.friend_cards = shelf, cards
+        self.friends_row.show()
+        shelf.show()
+        if inside:                               # the same game again, else the first
+            focus_and_reveal(next((c for c in cards if c.key == key), cards[0]))
+        if old is not None:
+            lay.removeWidget(old)
+            old.hide()
+            old.deleteLater()
+
+    def _friend_game(self, card) -> dict | None:
+        slug = (card.item or {}).get('slug')
+        return next((g for g in self.everything if g.get('slug') == slug), None) \
+            if slug else None
+
+    def _friend_activated(self, card):
+        """A on a game friends play: its page when you have it, else the
+        sheet (Open in Steam), as a Discover deal."""
+        g = self._friend_game(card)
+        if g is not None:
+            self.open_game(g)
+        else:
+            self.deal_asked.emit(card.item, 'friends')
+
+    def _friend_options(self, card):
+        self.deal_asked.emit(card.item, 'friends')
+
+    def refresh_friends(self):
+        """New friends data: the game page's Friends and fact line, and the
+        Library under Friends own (or its fallback once nobody owns)."""
+        self.details.refresh_friends()
+        if self.lib_state.get('show') == 'friends':
+            self._fill_library()
+
     # ---- the Library tab ----
     SORTS = (('name', "A to Z"), ('played', "Recently played"), ('most', "Most played"),
              ('added', "Recently added"), ('collection', "By collection"))
-    SHOWS = (('installed', "Installed"), ('missing', "Not installed"), ('all', "Everything"))
+    SHOWS = (('installed', "Installed"), ('missing', "Not installed"), ('all', "Everything"),
+             ('friends', "Friends own"))
 
     def set_library_state(self, state: dict):
         """The saved sort and filter (prefs.theatre_library)."""
         self.lib_state = {'sort': state.get('sort', 'name'), 'show': state.get('show', 'installed')}
         self._fill_library()
 
+    def _show(self) -> str:
+        """The Show filter in use: Friends own falls back to Installed while
+        no game has friends data."""
+        show = self.lib_state['show']
+        if show == 'friends' and not any(g.get('friends') for g in self.everything):
+            return 'installed'
+        return show
+
     def _lib_games(self) -> list[dict]:
         pool = {'installed': self.games,
                 'missing': [g for g in self.everything if not is_installed(g)],
-                'all': self.everything}[self.lib_state['show']]
+                'all': self.everything,
+                'friends': [g for g in self.everything if g.get('friends')]}[self._show()]
         name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
         sort = self.lib_state['sort']
         by_name = sorted(pool, key=name)                 # stable: ties keep A to Z
@@ -990,7 +1087,7 @@ class TheatreView(QWidget):
         refresh keeps focus. By collection: a block per collection (a game in
         two shows in both), the rest last."""
         games = self._lib_games()
-        sort, show = self.lib_state['sort'], self.lib_state['show']
+        sort, show = self.lib_state['sort'], self._show()
         name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
         if sort == 'collection':
             groups = [(n, [g for g in games if n in (g.get('collections') or ())])
@@ -1052,9 +1149,12 @@ class TheatreView(QWidget):
             on = self.lib_state[kind] == key
             return (text, G['check'] if on else G['list'],
                     lambda: self._pick_library(sheet, kind, key, i), on)
+        # Friends own only once some game has friends data (or it is in use).
+        shows = [(k, t) for k, t in self.SHOWS if k != 'friends' or self.lib_state['show'] == k
+                 or any(g.get('friends') for g in self.everything)]
         items = ["Sort by"] + [row('sort', k, t, i) for i, (k, t) in enumerate(self.SORTS)] \
             + ["Show"] + [row('show', k, t, len(self.SORTS) + i)
-                          for i, (k, t) in enumerate(self.SHOWS)]
+                          for i, (k, t) in enumerate(shows)]
         sheet.choose("Sort & filter", items, focus=focus, keep_open=True)
 
     def _pick_library(self, sheet, kind: str, key: str, index: int):
@@ -1215,6 +1315,8 @@ class TheatreView(QWidget):
                 return self.hero.game or None
             if w is self.week_card:
                 return self._week_game()
+            if isinstance(w, TheatreCard) and w.kind == 'friends':
+                return self._friend_game(w)
             w = w.parentWidget()
         return None
 
@@ -1461,6 +1563,8 @@ class TheatreView(QWidget):
         now = datetime.now().strftime('%H:%M')
         self.clock.setText(now)
         self.details.clock.setText(now)
+        if self.details.isVisible():             # friends in it: minutes, or gone once stale
+            self.details.refresh_friends()
         if self.hero.pinned is not None:         # "42 min" on the spotlight and tiles
             self.hero.tick()
             for t in self.findChildren(GameTile):
@@ -1542,7 +1646,8 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
-from .theatre_discover import TheatreDiscover, TheatreReader  # noqa: E402
+from .friends import who_text  # noqa: E402
+from .theatre_discover import TheatreCard, TheatreDiscover, TheatreReader  # noqa: E402
 from .theatre_settings import WeekCard  # noqa: E402
 from .theme import TILE_LIFT  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402

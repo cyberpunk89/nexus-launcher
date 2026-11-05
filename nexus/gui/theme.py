@@ -805,6 +805,8 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#TheatreMeta { color: $on_art; font-size: ${fs_lg}px; font-weight: 500; }
     QLabel#TheatreAbout { color: $on_art; font-size: ${fs_base}px; }
     QLabel#TheatreSub { color: $on_art; font-size: ${fs_sm}px; }
+    QLabel#TheatreSub[live="true"] { color: $live_on_art; }
+    QLabel#TheatreSub[dim="true"] { color: rgba(255, 255, 255, 0.55); }
     QLabel#TheatreBig { color: $on_art; font-size: ${fs_big}px; font-weight: 600; }
     QLabel#TheatreLabel { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
     /* Theatre Discover (w-62) */
