@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nexus Home: Tonight</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Lexend:wght@300;400;500;700;800&display=swap">
+<style>
+/* Layout: one stage that answers "what do I play now", a deck of alternatives beside it,
+   a fortnight ribbon of real play history, and a single-line wire for everything else.
+   Palette is Nexus's own Rosé Pine (dark first, Dawn for light); Lexend + JetBrains Mono as in the app. */
+:root {
+  --bg: #191724; --surface: #1f1d2e; --overlay: #26233a;
+  --line: rgba(224,222,244,.10); --line-strong: rgba(224,222,244,.22);
+  --text: #e0def4; --subtle: #908caa; --muted: #6e6a86;
+  --accent: #c4a7e7; --accent-2: #eb6f92; --on-accent: #191724;
+  --good: #9ccfd8; --warn: #f6c177;
+  --t1: #2f6b3a; --t2: #0f2a1a;           /* stage tint, set per game by script */
+  --font-ui: "Lexend", "Inter", "Noto Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #faf4ed; --surface: #fffaf3; --overlay: #f2e9e1;
+    --line: rgba(87,82,121,.14); --line-strong: rgba(87,82,121,.30);
+    --text: #575279; --subtle: #797593; --muted: #9893a5;
+    --accent: #907aa9; --accent-2: #b4637a; --on-accent: #fffaf3;
+    --good: #286983; --warn: #b8741a; color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #faf4ed; --surface: #fffaf3; --overlay: #f2e9e1;
+  --line: rgba(87,82,121,.14); --line-strong: rgba(87,82,121,.30);
+  --text: #575279; --subtle: #797593; --muted: #9893a5;
+  --accent: #907aa9; --accent-2: #b4637a; --on-accent: #fffaf3;
+  --good: #286983; --warn: #b8741a; color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 400 14px/1.5 var(--font-ui);
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 48px;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1280px; margin-inline: auto; }
+
+/* App bar (context only, the redesign is everything below it) */
+.bar { display: flex; align-items: center; gap: 24px; height: 60px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 800; font-size: 20px; letter-spacing: -.02em; color: var(--accent); }
+.tabs { display: flex; gap: 20px; color: var(--subtle); }
+.tabs span[aria-current] { color: var(--text); box-shadow: 0 2px 0 var(--accent); padding-bottom: 6px; }
+.bar .grow { flex: 1; }
+.ghost { background: none; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; color: var(--subtle); }
+.ghost:hover, .ghost[aria-pressed="true"] { color: var(--text); border-color: var(--line-strong); }
+
+/* Opener: the one question Home asks */
+.ask { display: flex; flex-wrap: wrap; align-items: end; gap: 20px 40px; padding-block: 36px 24px; }
+.ask h1 { margin: 0; font-weight: 300; font-size: clamp(28px, 4.2vw, 52px); line-height: 1.05; letter-spacing: -.03em; text-wrap: balance; }
+.ask h1 b { font-weight: 800; }
+.ask .sub { color: var(--subtle); margin: 8px 0 0; }
+.controls { display: flex; flex-direction: column; gap: 10px; margin-left: auto; min-width: 0; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.seg .lbl { font: 500 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); width: 56px; }
+.chip { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 6px 14px; color: var(--subtle); transition: background .15s, color .15s, border-color .15s; }
+.chip:hover { color: var(--text); border-color: var(--line-strong); }
+.chip[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+/* Stage + deck */
+.main { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 20px; }
+.stage {
+  position: relative; overflow: hidden; border-radius: 28px; min-height: 460px;
+  display: flex; flex-direction: column; justify-content: flex-end; padding: 40px;
+  background:
+    radial-gradient(120% 90% at 85% 0%, color-mix(in srgb, var(--t1) 80%, transparent), transparent 60%),
+    radial-gradient(90% 80% at 0% 100%, color-mix(in srgb, var(--t2) 95%, black), transparent 70%),
+    linear-gradient(160deg, var(--t2), #0b0a12);
+  color: #f4f1ff; transition: background .4s;
+}
+.stage::before { /* a faint grid so flat gradients read as a surface, not a gradient */
+  content: ""; position: absolute; inset: 0; opacity: .12; pointer-events: none;
+  background: repeating-linear-gradient(115deg, #fff 0 1px, transparent 1px 22px);
+}
+.stage .inner { position: relative; display: flex; flex-direction: column; gap: 18px; max-width: 560px; animation: rise .35s ease both; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+.kicker { font: 500 11px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; opacity: .8; display: flex; gap: 10px; align-items: center; }
+.kicker i { width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 0 12px #fff; }
+.logo { margin: 0; font-weight: 800; font-size: clamp(40px, 6.4vw, 84px); line-height: .92; letter-spacing: -.035em; text-transform: uppercase; text-wrap: balance; text-shadow: 0 6px 40px rgba(0,0,0,.45); }
+.why { display: flex; flex-direction: column; gap: 6px; font-size: 16px; line-height: 1.45; max-width: 46ch; }
+.why .fit { font: 400 13px var(--font-mono); opacity: .85; }
+.fit.over { color: #ffd9a0; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.facts span { font: 500 12px var(--font-mono); background: rgba(255,255,255,.12); backdrop-filter: blur(6px); border-radius: 999px; padding: 4px 12px; }
+.acts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.play { border: 0; border-radius: 16px; padding: 16px 40px; font-weight: 700; font-size: 18px; color: var(--on-accent);
+  background: linear-gradient(120deg, #c4a7e7, #eb6f92); box-shadow: 0 12px 40px -10px rgba(235,111,146,.7); }
+.play:hover { filter: brightness(1.08); }
+.sec { background: rgba(255,255,255,.12); border: 0; border-radius: 16px; padding: 16px 22px; color: #f4f1ff; backdrop-filter: blur(6px); }
+.sec:hover { background: rgba(255,255,255,.2); }
+.toast { font: 400 13px var(--font-mono); opacity: .9; min-height: 20px; }
+.progress { position: absolute; left: 40px; right: 40px; top: 36px; display: flex; align-items: center; gap: 12px; font: 400 12px var(--font-mono); opacity: .85; }
+.progress .track { flex: 1; height: 4px; border-radius: 4px; background: rgba(255,255,255,.18); overflow: hidden; }
+.progress .track i { display: block; height: 100%; background: #fff; border-radius: 4px; }
+
+.deck { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.deck h2, .ribbon h2 { margin: 0 0 4px; font: 500 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.card { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px; align-items: center; text-align: left; width: 100%;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 12px; transition: transform .15s, border-color .15s, background .15s; }
+.card:hover { transform: translateX(4px); border-color: var(--line-strong); background: var(--overlay); }
+.thumb { width: 64px; height: 64px; border-radius: 12px; display: grid; place-items: center; font-weight: 800; font-size: 9.5px; letter-spacing: 0; text-transform: uppercase; text-align: center; padding: 4px; overflow-wrap: anywhere; color: #fff; line-height: 1.05; overflow: hidden; }
+.card .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .r { color: var(--subtle); font-size: 12.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pill { display: inline-block; margin-top: 4px; font: 500 11px var(--font-mono); border-radius: 999px; padding: 2px 8px; }
+.pill.ok { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+.pill.over { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.reroll { align-self: flex-start; margin-top: 4px; }
+
+/* Fortnight ribbon */
+.ribbon { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: end; }
+.plot { position: relative; height: 200px; padding-left: 36px; }
+.grid-lines { position: absolute; inset: 0 0 22px 36px; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.grid-lines div { border-top: 1px dashed var(--line); position: relative; }
+.grid-lines span { position: absolute; left: -36px; top: -8px; font: 400 10px var(--font-mono); color: var(--muted); width: 28px; text-align: right; }
+.cols { position: absolute; inset: 0 0 0 36px; display: grid; grid-template-columns: repeat(14, 1fr); gap: 8px; }
+.col { display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; min-width: 0; }
+.col .stack { height: 178px; display: flex; flex-direction: column-reverse; justify-content: flex-start; }
+.col .stack i { display: block; border-top: 2px solid var(--bg); }
+.col .stack i:last-child { border-radius: 6px 6px 0 0; }
+.col .d { height: 22px; text-align: center; font: 400 10px/22px var(--font-mono); color: var(--muted); }
+.col.today .d { color: var(--text); font-weight: 500; box-shadow: inset 0 2px 0 var(--accent); }
+.legend { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--subtle); }
+.legend div { display: flex; align-items: center; gap: 8px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.legend b { margin-left: auto; font: 400 12px var(--font-mono); color: var(--text); }
+.total { font: 300 40px/1 var(--font-ui); letter-spacing: -.03em; color: var(--text); }
+.total small { font: 400 12px var(--font-mono); color: var(--muted); display: block; letter-spacing: 0; margin-top: 4px; }
+
+/* The wire: one line for downloads, updates, deals, disk */
+.wire { margin-top: 28px; display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 16px; overflow-x: auto; scrollbar-width: thin; }
+.wire .h { font: 500 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); flex: none; }
+.w { text-decoration: none; flex: none; display: inline-flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 14px; color: var(--text); }
+.w:hover { border-color: var(--line-strong); background: var(--overlay); }
+.w i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.w.live i { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+.w.warn i { background: var(--warn); }
+.w.good i { background: var(--good); }
+.w .m { font: 400 12px var(--font-mono); color: var(--subtle); }
+
+/* Design notes overlay */
+.n { display: none; position: absolute; z-index: 5; top: 12px; left: 12px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-2); color: #fff; font: 700 12px/26px var(--font-mono); text-align: center; }
+body.notes .n { display: block; }
+.has-n { position: relative; }
+.notes-panel { display: none; margin-top: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 20px 24px; }
+body.notes .notes-panel { display: block; }
+.notes-panel ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; color: var(--subtle); }
+.notes-panel b { color: var(--text); font-weight: 500; }
+.foot { margin-top: 28px; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 960px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .controls { margin-left: 0; }
+  .ribbon { grid-template-columns: minmax(0, 1fr); }
+  .stage { padding: 72px 22px 28px; min-height: 420px; }
+  .progress { left: 22px; right: 22px; }
+}
+@media (max-width: 520px) {
+  .tabs { display: none; }
+  .seg .lbl { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="bar" aria-label="Nexus">
+    <span class="brand">Nexus</span>
+    <div class="tabs"><span aria-current="page">Home</span><span>Library</span><span>Deals</span><span>News</span></div>
+    <span class="grow"></span>
+    <button class="ghost" id="tNotes" aria-pressed="false">Design notes</button>
+    <button class="ghost" id="tTheme" aria-label="Switch light or dark theme">Theme</button>
+  </nav>
+
+  <header class="ask">
+    <div>
+      <h1 id="greet"></h1>
+      <p class="sub" id="sub"></p>
+    </div>
+    <div class="controls has-n" role="group" aria-label="Tell Nexus about tonight">
+      <span class="n">1</span>
+      <div class="seg" id="segTime"><span class="lbl">Time</span></div>
+      <div class="seg" id="segMood"><span class="lbl">Mood</span></div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="stage has-n" id="stage" aria-live="polite"><span class="n">2</span></section>
+    <aside class="deck has-n" aria-label="Other picks">
+      <span class="n">3</span>
+      <h2>Also good tonight</h2>
+      <div id="deck" style="display:flex;flex-direction:column;gap:10px"></div>
+      <button class="ghost reroll" id="reroll">Shuffle the deck</button>
+    </aside>
+  </main>
+
+  <section class="ribbon has-n" aria-label="Your last two weeks">
+    <span class="n">4</span>
+    <div>
+      <h2>The last fortnight, by game</h2>
+      <div class="plot" id="plot" role="img" aria-label="Stacked bars of minutes played per day over the last 14 days"></div>
+    </div>
+    <div>
+      <div class="total mono" id="total"></div>
+      <div class="legend" id="legend" style="margin-top:16px"></div>
+    </div>
+  </section>
+
+  <section class="wire has-n" aria-label="Everything else">
+    <span class="n">5</span>
+    <span class="h">The wire</span>
+    <a class="w live" href="#wire"><i></i>2 downloads <span class="m">63% · 14 min left</span></a>
+    <a class="w warn" href="#wire"><i></i>Repack update <span class="m">Hollow Quarry v1.4</span></a>
+    <a class="w good" href="#wire"><i></i>3 wishlist deals <span class="m">best −72%</span></a>
+    <a class="w" href="#wire"><i></i>GE-Proton 10-28 <span class="m">new</span></a>
+    <a class="w warn" href="#wire"><i></i>D: drive <span class="m">82% full</span></a>
+    <a class="w" href="#wire"><i></i>News <span class="m">4 for your games</span></a>
+  </section>
+
+  <section class="notes-panel" aria-label="Design notes">
+    <ol>
+      <li><b>Ask.</b> Home opens with two inputs, time and mood. Everything below reacts to them.</li>
+      <li><b>Stage.</b> One game, full bleed, tinted by its art. It says why it was picked and whether it fits the time you have.</li>
+      <li><b>Deck.</b> The runners-up, each with its own reason. Selecting one swaps it onto the stage.</li>
+      <li><b>Fortnight.</b> Your real session history replaces the Play time and Achievements cards.</li>
+      <li><b>Wire.</b> Downloads, updates, deals, Proton, disk and news shrink to one scannable line.</li>
+    </ol>
+  </section>
+
+  <p class="foot">Prototype with sample data. Game names come from the current Home screenshot or are made up (Hollow Quarry); colours stand in for real artwork. Change time and mood to see the ranking react.</p>
+</div>
+
+<script>
+/* Sample library. `stop` = minutes to the next natural stopping point; `progress` 0-1 through the main story. */
+const GAMES = [
+  { id:'sch', name:'Schedule I', c:['#3f8a4a','#0f2a1a'], hours:11.9, last:0, stop:25, progress:.55, coop:false, src:'Steam', size:'6.8 GB',
+    why:{ pickup:'You played it today and stopped mid-job.', finish:'About 55% through the story, roughly 6 h to go.' } },
+  { id:'pbz', name:'Phantom Blade Zero', c:['#9c8a6a','#1c1a1f'], hours:3.1, last:0, stop:50, progress:.15, coop:false, src:'Steam', size:'61 GB',
+    why:{ pickup:'Played today, first chapter still in progress.', finish:'Long game, 3.1 h in. Not a finisher tonight.' } },
+  { id:'abs', name:'Absolum', c:['#d0493a','#2a0f1e'], hours:4.3, last:2, stop:35, progress:.4, coop:true, src:'Epic', size:'9.2 GB',
+    why:{ pickup:'Two days since your last run.', finish:'Run-based, about 40% through. One more run is a clean stop.', together:'Two-player co-op, and one run suits a short night.' } },
+  { id:'smt', name:'Supermarket Together', c:['#e0535f','#3a1220'], hours:17.9, last:8, stop:45, progress:.7, coop:true, src:'Steam', size:'3.1 GB',
+    why:{ pickup:'Eight days away. Your save is waiting.', finish:'Most of the way through at 17.9 h.', together:'Co-op for up to 4. Last night together was 8 days ago.' } },
+  { id:'eso', name:'Esoteric Ebb', c:['#2fb0ae','#0d2b33'], hours:.7, last:15, stop:20, progress:.05, coop:false, src:'Steam', size:'1.4 GB',
+    why:{ pickup:'41 minutes in, 15 days ago.', new:'Barely started. The first chapter is a gentle 20 minutes.' } },
+  { id:'hol', name:'Hollow Quarry', c:['#d8922e','#2b1a0b'], hours:0, last:null, stop:15, progress:0, coop:true, src:'Repack', size:'12 GB',
+    why:{ new:'Owned since March and never opened. A first session is about 15 minutes.', together:'Never played, 2-4 players. A fresh game for a fresh night.' } },
+];
+/* Sample sessions: minutes per game for each of the last 14 days, oldest first. */
+const DAYS = [
+  {smt:70,abs:40},{},{sch:55},{sch:80,pbz:30},{abs:45},{},{smt:95,abs:50,eso:20},
+  {sch:60},{pbz:90},{},{sch:120,pbz:25},{abs:35},{pbz:75,sch:40},{sch:50,pbz:25,abs:20}
+];
+
+const TIMES = [[30,'30 min'],[60,'1 hour'],[120,'2 hours'],[300,'All night']];
+const MOODS = [['pickup','Pick up where I was'],['finish','Finish something'],['together','Play with someone'],['new','Try something new']];
+const st = { budget:60, mood:'pickup', pick:null, shuffle:0 };
+const $ = s => document.querySelector(s);
+const label = m => TIMES.find(t => t[0] === m)[1];
+const ago = d => d === null ? 'never played' : d === 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago';
+
+function score(g) {
+  let s = 0;
+  if (st.mood === 'pickup')   s += g.last === null ? -20 : Math.max(-20, 40 - g.last * 3);
+  if (st.mood === 'finish')   s += g.progress * 60;
+  if (st.mood === 'together') s += g.coop ? 60 : -30;
+  if (st.mood === 'new')      s += g.hours < 2 ? 55 : -10;
+  s += g.stop <= st.budget ? 20 : -Math.min(40, (g.stop - st.budget) * .8);
+  if (st.shuffle) s += ((g.id.charCodeAt(0) * (st.shuffle + 7)) % 17) - 8;
+  return s;
+}
+function fitText(g) {
+  return g.stop <= st.budget
+    ? { ok:true,  t:`Next save point in ${g.stop} min, inside your ${label(st.budget).toLowerCase()}.` }
+    : { ok:false, t:`Next save point in ${g.stop} min, ${g.stop - st.budget} min over.` };
+}
+const reason = g => g.why[st.mood] || `Last played ${ago(g.last)}, ${g.hours} h in.`;
+
+function renderAsk() {
+  const h = new Date().getHours();
+  const part = h < 5 ? 'late' : h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  $('#greet').innerHTML = `Good ${part}.<br><b>What are we playing?</b>`;
+  $('#sub').textContent = `${GAMES.length} installed. Nexus ranks them for the time you have and how you feel.`;
+  $('#segTime').innerHTML = '<span class="lbl">Time</span>' + TIMES.map(([m, l]) =>
+    `<button class="chip" data-b="${m}" aria-pressed="${st.budget === m}">${l}</button>`).join('');
+  $('#segMood').innerHTML = '<span class="lbl">Mood</span>' + MOODS.map(([k, l]) =>
+    `<button class="chip" data-m="${k}" aria-pressed="${st.mood === k}">${l}</button>`).join('');
+}
+
+function render() {
+  const ranked = [...GAMES].sort((a, b) => score(b) - score(a));
+  const top = st.pick ? GAMES.find(g => g.id === st.pick) : ranked[0];
+  const rest = ranked.filter(g => g !== top).slice(0, 4);
+  const f = fitText(top);
+  const root = document.documentElement.style;
+  root.setProperty('--t1', top.c[0]); root.setProperty('--t2', top.c[1]);
+
+  $('#stage').innerHTML = `<span class="n">2</span>
+    <div class="progress"><span>${Math.round(top.progress * 100)}% through</span><span class="track"><i style="width:${top.progress * 100}%"></i></span><span>${top.hours} h played</span></div>
+    <div class="inner" key="${top.id}">
+      <div class="kicker"><i></i>${st.pick ? 'You picked this' : 'Best fit tonight'}</div>
+      <h2 class="logo">${top.name}</h2>
+      <div class="why"><span>${reason(top)}</span><span class="fit ${f.ok ? '' : 'over'}">${f.t}</span></div>
+      <div class="facts"><span>${top.src}</span><span>Played ${ago(top.last)}</span><span>${top.size}</span>${top.coop ? '<span>Co-op</span>' : ''}</div>
+      <div class="acts"><button class="play" id="play">Play</button><button class="sec">Details</button><button class="sec" id="skip">Not this one</button></div>
+      <div class="toast mono" id="toast"></div>
+    </div>`;
+
+  $('#deck').innerHTML = rest.map(g => {
+    const fx = fitText(g);
+    return `<button class="card" data-id="${g.id}" aria-label="Play ${g.name} instead">
+      <div class="thumb" style="background:linear-gradient(150deg,${g.c[0]},${g.c[1]})">${g.name}</div>
+      <div style="min-width:0"><div class="t">${g.name}</div><div class="r">${reason(g)}</div>
+      <span class="pill ${fx.ok ? 'ok' : 'over'}">${fx.ok ? 'fits' : '+' + (g.stop - st.budget) + ' min over'} · ${g.stop} min stop</span></div></button>`;
+  }).join('');
+}
+
+function renderRibbon() {
+  const axis = 240, today = new Date();
+  const totals = {}; let all = 0;
+  const cols = DAYS.map((day, i) => {
+    const d = new Date(today); d.setDate(today.getDate() - (DAYS.length - 1 - i));
+    const dayTotal = Object.values(day).reduce((a, b) => a + b, 0);
+    const bars = Object.entries(day).map(([id, m]) => {
+      totals[id] = (totals[id] || 0) + m; all += m;
+      const g = GAMES.find(x => x.id === id);
+      return `<i style="height:${m / axis * 100}%;background:${g.c[0]}" title="${g.name}: ${m} min"></i>`;
+    }).join('');
+    return `<div class="col ${i === DAYS.length - 1 ? 'today' : ''}" title="${d.toDateString()}: ${dayTotal} min"><div class="stack">${bars}</div><div class="d">${'SMTWTFS'[d.getDay()]}</div></div>`;
+  }).join('');
+  $('#plot').innerHTML = `<div class="grid-lines">${[4,3,2,1,0].map(h => `<div><span>${h} h</span></div>`).join('')}</div><div class="cols">${cols}</div>`;
+  $('#total').innerHTML = `${(all / 60).toFixed(1)} h<small>over 14 days, ${DAYS.filter(d => Object.keys(d).length).length} days played</small>`;
+  $('#legend').innerHTML = Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([id, m]) => {
+    const g = GAMES.find(x => x.id === id);
+    return `<div><i style="background:${g.c[0]}"></i>${g.name}<b>${(m / 60).toFixed(1)} h</b></div>`;
+  }).join('');
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.b) { st.budget = +b.dataset.b; st.pick = null; renderAsk(); render(); }
+  else if (b.dataset.m) { st.mood = b.dataset.m; st.pick = null; renderAsk(); render(); }
+  else if (b.dataset.id) { st.pick = b.dataset.id; render(); $('#stage').scrollIntoView({ block:'nearest', behavior:'smooth' }); }
+  else if (b.id === 'reroll' || b.id === 'skip') { st.pick = null; st.shuffle++; render(); }
+  else if (b.id === 'play') { $('#toast').textContent = 'Prototype: this would launch the game and open Now playing.'; }
+  else if (b.id === 'tNotes') { const on = document.body.classList.toggle('notes'); b.setAttribute('aria-pressed', on); }
+  else if (b.id === 'tTheme') {
+    const r = document.documentElement, dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    const cur = r.dataset.theme || (dark ? 'dark' : 'light');
+    r.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  }
+});
+
+renderAsk(); render(); renderRibbon();
+</script>
+</body>
+</html>
