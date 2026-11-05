@@ -143,6 +143,11 @@ R = {'sm': 6, 'control': 10, 'lg': 10, 'xl': 12, 'tile': 12, 'popover': 12,
 
 
 R_BASE = dict(R)
+# The most a radius may grow under Corners → Round. Qt draws a box square
+# (radius dropped to 0) once two radii on a side add up to more than the
+# side, so a control's radius must stay under half the shortest control:
+# about 24 px for a button at Size 0.9, 14 px for a line action.
+R_CAP = {'sm': 7, 'control': 12, 'lg': 12}
 
 # --- Appearance: base themes, accents, and the function that applies them ---
 # Each theme is the ladder the UI is built from (base → surface → overlay →
@@ -388,7 +393,8 @@ def apply_appearance(ap: dict) -> dict:
     GRAD['aurora'] = (accent, PAL['foam'])
     SRC_HUE['nexus'] = accent
     k = CORNERS[ap['corners']]
-    R.update({key: max(2, int(round(v * k))) for key, v in R_BASE.items() if key != 'full'})
+    R.update({key: min(R_CAP.get(key, 9999), max(2, int(round(v * k))))
+              for key, v in R_BASE.items() if key != 'full'})
     LOOK['glow'] = GLOW[ap['glow']] * (0.6 if light_theme else 1.0)
     LOOK['art_tint'] = ap['art_tint']
     LOOK['light'] = light_theme
