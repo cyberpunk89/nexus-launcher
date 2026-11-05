@@ -11,7 +11,11 @@ opens the browser on a prefilled form, which the user still submits, and
 Send anonymously (--report-send) posts the same text to the reports relay,
 which holds it in a private inbox until it is checked. --report-status says
 on load whether the relay takes reports; the button greys out with the
-reason when it doesn't, and is hidden when [report] relay = false."""
+reason when it doesn't, and is hidden when [report] relay = false.
+Your reports (--report-sent) lists what was sent from here with the state
+the daily update check last heard ("#123 fixed in 0.5.4"), and a draft whose
+crash signature matches a public issue says so above the choices
+(--report-similar)."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -165,6 +169,23 @@ class ReportPage(QWidget):
         srow.addLayout(texts, 1)
         lay.addWidget(self.summary)
 
+        # "This looks like #N": a public issue with the draft's signature.
+        self.similar = QFrame()
+        self.similar.setObjectName("Card")
+        mrow = QHBoxLayout(self.similar)
+        mrow.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
+        mrow.setSpacing(SP['2_5'])
+        mrow.addWidget(icon_label(G['info'], 16, P['info']), 0, Qt.AlignmentFlag.AlignTop)
+        self.similar_text = label("", "Muted", wrap=True)
+        mrow.addWidget(self.similar_text, 1)
+        self.similar_open = QPushButton("Open issue")
+        self.similar_open.setToolTip("Opens the public issue in your browser")
+        self.similar_open.clicked.connect(lambda: self._open(self._similar_url))
+        mrow.addWidget(self.similar_open, 0, Qt.AlignmentFlag.AlignTop)
+        self._similar_url = None
+        self.similar.setVisible(False)
+        lay.addWidget(self.similar)
+
         body = QHBoxLayout()
         body.setSpacing(SP['4'])
         left = QWidget()
@@ -215,6 +236,17 @@ class ReportPage(QWidget):
                         "report waits in a private inbox until it is checked.", "Muted",
                         wrap=True)
         ll.addWidget(privacy)
+        ll.addSpacing(SP['1'])
+        sent_body = QWidget()
+        self.sent_lay = QVBoxLayout(sent_body)
+        self.sent_lay.setContentsMargins(SP['1'], 0, 0, 0)
+        self.sent_lay.setSpacing(SP['1_5'])
+        self.sent = Disclosure('report-sent', "Your reports", G['history'], sent_body)
+        self.sent.setToolTip("Reports sent anonymously from this computer, checked once a "
+                             "day with the update check. Kept 90 days.")
+        self.sent.setVisible(False)
+        self._sent: list[dict] = []
+        ll.addWidget(self.sent)
         ll.addStretch()
         side = QScrollArea()                  # a short window scrolls the choices
         side.setWidgetResizable(True)
@@ -293,6 +325,92 @@ class ReportPage(QWidget):
         cli_json(['--report-status', '--json'], self._on_status, 30000)
         self.status.setText("Looking for crash reports…")
         cli_json(['--report-pending', '--json'], self._on_pending, 30000)
+        self.load_sent()
+
+    # ---- Your reports ----
+    def load_sent(self):
+        """The reports sent from here (--report-sent reads sent.jsonl; the
+        relay is only asked by the daily check)."""
+        if self._loaded:
+            cli_json(['--report-sent', '--json'], self._on_sent, 30000)
+
+    def _on_sent(self, data, _err):
+        self._sent = [r for r in (data or {}).get('reports') or [] if r.get('id')]
+        clear_layout(self.sent_lay)
+        for r in self._sent:
+            self.sent_lay.addWidget(self._sent_row(r))
+        n = len(self._sent)
+        self.sent.setVisible(bool(n))
+        fixed = sum(1 for r in self._sent if r.get('state') == 'fixed')
+        self.sent.set_summary(f"{n}" + (f" · {fixed} fixed" if fixed else ''))
+
+    def _sent_row(self, r: dict) -> QWidget:
+        row = QWidget()
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(SP['1_5'])
+        texts = QVBoxLayout()
+        texts.setSpacing(0)
+        state = plain_label(r.get('text') or '', None, wrap=True)
+        color = {'fixed': P['success'], 'open': P['info'], 'closed': P['muted']}.get(
+            r.get('state'), P['text'])
+        state.setStyleSheet(f"color: {color}; font-size: {FS['sm']}px; font-weight: 600;")
+        texts.addWidget(state)
+        when = when_text(r.get('at'))
+        what = r.get('title') or KIND_TEXT.get(r.get('kind'), "Problem report")
+        texts.addWidget(label(f"{what}" + (f" · {when}" if when else ''), "Muted", wrap=True))
+        hl.addLayout(texts, 1)
+        if (r.get('url') or '').startswith(GITHUB):
+            b = QPushButton(G['external'])
+            b.setObjectName("LineAction")
+            b.setToolTip("Open the public issue")
+            b.clicked.connect(lambda _=False, u=r['url']: self._open(u))
+            hl.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+        rm = QPushButton("Remove")
+        rm.setObjectName("LineAction")
+        rm.setToolTip("Drop it from this list (the report itself stays where it is)")
+        rm.clicked.connect(lambda _=False, sid=r['id']: self._remove_sent(sid))
+        hl.addWidget(rm, 0, Qt.AlignmentFlag.AlignTop)
+        return row
+
+    def _remove_sent(self, sid: str):
+        def done(data, err):
+            if not (data or {}).get('removed'):
+                self.toast.emit(f"Couldn't remove it: {err or 'it was already gone'}", 'error')
+            self.load_sent()
+        cli_json(['--report-sent-remove', sid, '--json'], done, 30000)
+
+    def _open(self, url):
+        if url and url.startswith(GITHUB) and not platform.open_url(url):
+            self.toast.emit("Couldn't open the browser.", 'error')
+
+    # ---- a public issue like this one ----
+    def _check_similar(self, gen):
+        if not self._draft or (self._relay or {}).get('off'):
+            return
+        cli_json(['--report-similar', self._draft['draft'], '--json'],
+                 lambda d, e: self._on_similar(gen, d, e), 30000)
+
+    def _on_similar(self, gen, data, _err):
+        if gen != self._gen:
+            return
+        m = (data or {}).get('match')
+        url = (m or {}).get('url') or ''
+        if not m or not url.startswith(GITHUB):
+            self.similar.setVisible(False)
+            return
+        n = m.get('issue')
+        if m.get('state') == 'fixed':
+            text = (f"This looks like #{n}, fixed in {m['fixed_in']}. Updating Nexus should "
+                    "fix it; send this report if it still happens there.")
+        elif m.get('state') == 'closed':
+            text = f"This looks like #{n}, which is closed. Send it if it still matters."
+        else:
+            text = (f"This looks like #{n}, already open. Sending counts it once more; you "
+                    "can also follow the issue.")
+        self._similar_url = url
+        self.similar_text.setText(text)
+        self.similar.setVisible(True)
 
     def _on_pending(self, data, err):
         self._pending = [r for r in (data or {}).get('reports') or [] if r.get('id')]
@@ -323,6 +441,7 @@ class ReportPage(QWidget):
         self._removed.clear()
         self._timer.stop()
         self._clear_draft_widgets()
+        self.similar.setVisible(False)
         r = self.current_crash()
         self.btn_forget.setVisible(r is not None)
         if r is None:
@@ -350,6 +469,7 @@ class ReportPage(QWidget):
         self._draft = data
         self.status.setText("")
         self._refresh_preview()
+        self._check_similar(gen)
 
     # ---- choices ----
     def selection_args(self) -> list[str]:
@@ -550,6 +670,7 @@ class ReportPage(QWidget):
             self.status.setText(msg + (" You can forget this crash now."
                                        if self.current_crash() else ''))
             self.toast.emit("Report sent. Thank you!", 'success')
+            self.load_sent()
         cli_json(['--report-send', self._draft['draft'], *self.selection_args(),
                   *self.contact_args(), '--json'], done, 60000)
 
@@ -643,6 +764,7 @@ class ReportPage(QWidget):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .details import Disclosure  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .widgets import (clear_layout, icon_label, label, NoWheelCombo, plain_label,  # noqa: E402
     short_path, soft_wrap)

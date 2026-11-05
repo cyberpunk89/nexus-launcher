@@ -1008,6 +1008,10 @@ addresses and tokens before you see it:
 | `--report-url DRAFT` | The prefilled `issues/new` link; a report too long for a link is printed to paste |
 | `--report-send DRAFT [--contact NAME] [--mention-me]` | Send it anonymously through the relay ([nexus-reports](https://github.com/cyberpunk89/nexus-reports)). `--contact` is your GitHub username, kept in the private inbox; `--mention-me` puts `@NAME` on the public issue. A crash already reported counts one more instead of filing again |
 | `--report-status` | Whether the relay takes reports right now, and why not |
+| `--report-sent` | The reports sent from this computer, kept 90 days: "Received, waiting for review", "#123 open", "#123 fixed in 0.5.4" |
+| `--report-sent-remove ID` | Drop one report from that list |
+| `--report-refresh` | Ask the relay what became of them. The window does this with the daily update check; it is skipped when `[updates] check` or `[report] relay` is off |
+| `--report-similar DRAFT` | A public issue with the same crash signature, so you can follow it there instead |
 | `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url / send: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
 | `--report-dismiss ID` | Forget one crash report |
 

@@ -40,7 +40,7 @@ def fake_games():
 CRASH_ID = '20261105T120000Z-abcd'
 
 
-def fake_report_cli(url_clip=None, calls=None, relay=None, send=None):
+def fake_report_cli(url_clip=None, calls=None, relay=None, send=None, sent=None, similar=None):
     """cli_json for the Report page: canned answers per flag, at once."""
     lines = [{'n': 1, 'group': 'error', 'text': 'Type: KeyError'},
              {'n': 2, 'group': 'app', 'text': 'Version: 0.5.3'},
@@ -85,6 +85,12 @@ def fake_report_cli(url_clip=None, calls=None, relay=None, send=None):
                                                 'url': 'https://relay.invalid'}, '')
         elif flag == '--report-send':
             cb(send or {'status': 'filed', 'where': 'inbox', 'issue': None}, '')
+        elif flag == '--report-sent':
+            cb({'reports': sent or []}, '')
+        elif flag == '--report-sent-remove':
+            cb({'removed': True}, '')
+        elif flag == '--report-similar':
+            cb({'match': similar}, '')
         else:
             cb(None, 'not faked')
     return cli
@@ -2096,6 +2102,55 @@ class Window(unittest.TestCase):
             page.reload()
             QApplication.processEvents()
             self.assertTrue(page.btn_send.isHidden())
+
+    def test_report_page_lists_sent_and_similar(self):
+        """w-79: Your reports lists what was sent with its state, Remove asks
+        the CLI, and a draft matching a public issue says so."""
+        w = self.win
+        calls = []
+        sent = [{'id': 'a1b2c3d4e5f6', 'at': '2026-11-05T12:00:00Z', 'kind': 'gui-exception',
+                 'title': '[crash] KeyError in library', 'state': 'fixed',
+                 'url': 'https://github.com/o/r/issues/123', 'text': '#123 fixed in 0.5.4'},
+                {'id': 'old-20261101', 'at': '2026-11-01T09:00:00Z', 'kind': 'user-report',
+                 'title': '', 'state': None, 'url': None, 'text': 'Sent, status unknown'}]
+        match = {'state': 'fixed', 'issue': 123, 'url': 'https://github.com/o/r/issues/123',
+                 'fixed_in': '0.5.4'}
+        with patch_gui('cli_json', fake_report_cli(None, calls, sent=sent, similar=match)):
+            w.open_report(CRASH_ID)
+            QApplication.processEvents()
+            page = w.report
+            self.assertFalse(page.sent.isHidden())
+            self.assertEqual(page.sent.summary.text(), '2 · 1 fixed')
+            texts = [lb.text() for lb in page.sent.body.findChildren(QLabel)]
+            self.assertIn('#123 fixed in 0.5.4', texts)
+            self.assertIn('Sent, status unknown', texts)
+            self.assertIn(['--report-similar', 'abcdef012345', '--json'], calls)
+            self.assertFalse(page.similar.isHidden())
+            self.assertIn('#123, fixed in 0.5.4', page.similar_text.text())
+            rm = [b for b in page.sent.body.findChildren(QPushButton) if b.text() == 'Remove']
+            rm[1].click()
+            QApplication.processEvents()
+        self.assertIn(['--report-sent-remove', 'old-20261101', '--json'], calls)
+        with patch_gui('cli_json', fake_report_cli(None, None, sent=[], similar=None)):
+            page.reload()
+            QApplication.processEvents()
+            self.assertTrue(page.sent.isHidden())
+            self.assertTrue(page.similar.isHidden())
+
+    def test_daily_check_refreshes_reports(self):
+        w = self.win
+        calls = []
+
+        def cli(args, cb, *_a, **_k):
+            calls.append(list(args))
+            cb({'checked': 1} if args[0] == '--report-refresh' else {'reports': []}, '')
+        with patch_gui('cli_json', cli), \
+                patch_gui('in_thread', lambda fn, cb, *_a, **_k: cb(None, None)):
+            w.report._loaded = True
+            w._check_update()
+            QApplication.processEvents()
+        self.assertIn(['--report-refresh', '--json'], calls)
+        self.assertIn(['--report-sent', '--json'], calls)
 
     def test_report_page_long_body_copies(self):
         """A report past the link limit: Open on GitHub copies the body,

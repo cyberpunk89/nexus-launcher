@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -491,6 +491,88 @@ class Relay(unittest.TestCase):
             self.assertEqual((d.return_value / 'sent.jsonl').stat().st_mode & 0o777, 0o600)
 
 
+class Sent(unittest.TestCase):
+    """w-79: sent.jsonl keeps the relay's token; the daily check asks about it."""
+    URL = 'https://relay.invalid'
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        p = mock.patch.object(crash, '_dir', lambda: self.dir)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def send(self, token='t' * 32, **answer):
+        return RL.note_sent({'kind': 'gui-exception', 'sig': 'abcdef', 'title': '[crash] X',
+                             'contact': 'someone'},
+                            {'status': 'filed', 'where': 'inbox', 'issue': None,
+                             'token': token, **answer})
+
+    def test_sent_log_keeps_token_not_contact(self):
+        sid = self.send()
+        text = (self.dir / 'sent.jsonl').read_text()
+        self.assertIn('t' * 32, text)
+        self.assertNotIn('someone', text)
+        rows = RL.load_sent()
+        self.assertEqual(rows[0]['id'], sid)
+        pub = RL.public_row(rows[0])
+        self.assertNotIn('token', pub)
+        self.assertEqual(pub['text'], 'Received, waiting for review')
+
+    def test_old_lines_load_unknown(self):
+        (self.dir / 'sent.jsonl').write_text(
+            json.dumps({'at': '2026-11-04T10:00:00Z', 'kind': 'user-report', 'sig': None,
+                        'status': 'filed', 'where': 'inbox', 'issue': None}) + '\nnot json\n')
+        rows = RL.load_sent(datetime(2026, 11, 5, tzinfo=timezone.utc))
+        self.assertEqual(rows[0]['id'], 'old-20261104100000')
+        self.assertEqual(RL.describe(rows[0]), 'Sent, status unknown')
+
+    def test_refresh_merges_and_stamps(self):
+        a = self.send('a' * 32)
+        self.send('b' * 32)
+        answer = {'a' * 32: {'state': 'fixed', 'issue': 123,
+                             'url': 'https://github.com/o/r/issues/123', 'fixed_in': '0.5.4',
+                             'extra': 'dropped'}}
+        now = datetime.now(timezone.utc)
+        with mock.patch.object(RL, 'track', return_value=answer) as tr:
+            self.assertEqual(RL.refresh_sent(self.URL, now=now), {'checked': 2})
+            self.assertEqual(sorted(tr.call_args[0][1]), ['a' * 32, 'b' * 32])
+            self.assertEqual(RL.refresh_sent(self.URL, now=now), {'checked': 0})  # once a day
+            later = now + timedelta(hours=25)
+            self.assertEqual(RL.refresh_sent(self.URL, now=later), {'checked': 2})
+        row = next(r for r in RL.load_sent() if r['id'] == a)
+        self.assertEqual(RL.describe(row), '#123 fixed in 0.5.4')
+        self.assertNotIn('extra', row['track'])
+        self.assertEqual(RL.public_row(row)['url'], 'https://github.com/o/r/issues/123')
+
+    def test_refresh_offline_keeps_states(self):
+        self.send()
+        with mock.patch.object(RL, 'track', return_value={'error': 'offline', 'reason': 'x'}):
+            self.assertEqual(RL.refresh_sent(self.URL)['error'], 'offline')
+        self.assertNotIn('checked', RL.load_sent()[0])
+
+    def test_bad_answers_are_dropped(self):
+        self.assertEqual(RL._clean({'state': 'pwned', 'issue': -1,
+                                    'url': 'https://evil.test/issues/1', 'fixed_in': '<b>'}),
+                         {'state': None, 'issue': None, 'url': None, 'fixed_in': None})
+
+    def test_prune_and_remove(self):
+        (self.dir / 'sent.jsonl').write_text(
+            json.dumps({'id': 'old1', 'at': '2026-01-01T00:00:00Z'}) + '\n')
+        keep = self.send()
+        self.assertEqual([r['id'] for r in RL.load_sent()], [keep])    # 90 days
+        self.assertTrue(RL.remove_sent(keep))
+        self.assertFalse(RL.remove_sent(keep))
+        self.assertEqual(RL.load_sent(), [])
+
+    def test_describe(self):
+        d = RL.describe
+        self.assertEqual(d({'token': 'x', 'track': {'state': 'open', 'issue': 7}}), '#7 open')
+        self.assertEqual(d({'token': 'x', 'track': {'state': 'closed', 'issue': None}}),
+                         'Closed after review')
+        self.assertEqual(d({'token': 'x', 'track': {'state': 'closed', 'issue': 7}}), '#7 closed')
+        self.assertEqual(d({'issue': 'https://github.com/o/r/issues/9'}), '#9')
+
+
 class Cli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -534,6 +616,34 @@ class Cli(unittest.TestCase):
                                                                 encoding='utf-8')
         r = self.cli('--report-send', draft['id'], '--json')
         self.assertEqual((r.returncode, json.loads(r.stdout)['error']['kind']), (1, 'off'))
+
+    def test_refresh_skipped_when_off(self):
+        cfg = tests.sandbox.config_dir(self.home) / 'config.toml'
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        for text in ('[updates]\ncheck = false\n', '[report]\nrelay = false\n'):
+            cfg.write_text(text, encoding='utf-8')
+            r = self.cli('--report-refresh', '--json')
+            self.assertEqual(json.loads(r.stdout), {'skipped': 'off'}, r.stderr)
+
+    def test_sent_and_remove_json(self):
+        (self.reports / 'sent.jsonl').write_text(json.dumps(
+            {'id': 'abc123', 'at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+             'kind': 'gui-exception', 'token': 'secret' * 6, 'title': '[crash] X'}) + '\n')
+        r = self.cli('--report-sent', '--json')
+        self.assertNotIn('secret', r.stdout)
+        self.assertEqual(json.loads(r.stdout)['reports'][0]['text'],
+                         'Received, waiting for review')
+        r = self.cli('--report-sent-remove', 'abc123', '--json')
+        self.assertEqual(json.loads(r.stdout), {'removed': True})
+        r = self.cli('--report-sent-remove', '../x', '--json')
+        self.assertEqual(json.loads(r.stdout)['error']['kind'], 'bad-id')
+
+    def test_similar_without_signature_asks_nothing(self):
+        draft = dict(big_draft(1), signature=None)
+        (self.reports / f"draft-{draft['id']}.json").write_text(json.dumps(draft),
+                                                                encoding='utf-8')
+        r = self.cli('--report-similar', draft['id'], '--json')
+        self.assertEqual(json.loads(r.stdout), {'match': None}, r.stderr)
 
     def test_send_refuses_a_bad_contact(self):
         draft = big_draft(1)

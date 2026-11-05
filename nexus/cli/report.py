@@ -8,6 +8,10 @@ drives the same flags):
     --report-url DRAFT               the prefilled GitHub issue link
     --report-send DRAFT              send it anonymously through the relay
     --report-status                  is the relay taking reports?
+    --report-sent                    the reports this computer sent, and their state
+    --report-sent-remove ID          drop one from that list
+    --report-refresh                 ask the relay what became of them (daily)
+    --report-similar DRAFT           a public issue with the same crash signature
     --report-dismiss ID              forget one crash file
 
 Preview, url and send take --exclude GROUP[,GROUP], --remove-line N (repeat),
@@ -160,9 +164,10 @@ def cmd_report_send(args) -> None:
     answer = RL.send(url, body)
     if 'error' in answer:
         _fail(as_json, answer['error'], answer.get('reason') or "The relay refused the report.")
-    RL.note_sent(body, answer)
+    sent_id = RL.note_sent(body, answer)
+    answer = {k: v for k, v in answer.items() if k != 'token'}     # stays in sent.jsonl
     if as_json:
-        print(json.dumps({'draft': draft['id'], **answer}))
+        print(json.dumps({'draft': draft['id'], 'sent': sent_id, **answer}))
         return
     if answer.get('status') == 'counted':
         print("Sent. This problem was already reported; it now counts one more.")
@@ -171,6 +176,66 @@ def cmd_report_send(args) -> None:
               "without your contact.")
     if answer.get('issue'):
         print(answer['issue'])
+
+
+def cmd_report_sent(as_json: bool) -> None:
+    rows = [RL.public_row(r) for r in RL.load_sent()]
+    if as_json:
+        print(json.dumps({'reports': rows}))
+        return
+    if not rows:
+        print("No reports sent from this computer.")
+    for r in rows:
+        print(f"{r['id']}  {r['at'] or '?'}  {r['text']}  {r['title']}")
+
+
+def cmd_report_sent_remove(sent_id: str, as_json: bool) -> None:
+    if not RL.SENT_ID.match(sent_id or ''):
+        _fail(as_json, 'bad-id', f"{sent_id!r} isn't a sent report id.")
+    ok = RL.remove_sent(sent_id)
+    if as_json:
+        print(json.dumps({'removed': ok}))
+    elif not ok:
+        print(f"No sent report {sent_id}.", file=sys.stderr)
+    if not ok:
+        sys.exit(1)
+
+
+def cmd_report_refresh(as_json: bool) -> None:
+    """What became of the sent reports: at most one look a day, and only
+    while both the update check and the relay are on."""
+    from nexus import updates
+    url = RL.relay_url(load_config())
+    if not url or not updates.enabled():
+        out = {'skipped': 'off'}
+    else:
+        out = RL.refresh_sent(url)
+    if as_json:
+        print(json.dumps(out))
+    elif 'error' in out:
+        print(f"Couldn't check: {out.get('reason') or out['error']}", file=sys.stderr)
+    elif out.get('skipped'):
+        print("Not checking: the update check or the reports relay is off.")
+    else:
+        print(f"Checked {out['checked']} report(s).")
+
+
+def cmd_report_similar(draft_id: str, as_json: bool) -> None:
+    """A public issue with the draft's crash signature, before sending."""
+    draft = _draft(draft_id, as_json)
+    url = RL.relay_url(load_config())
+    sig = draft.get('signature')
+    out = RL.similar(url, sig) if url and sig else {'match': None}
+    if as_json:
+        print(json.dumps(out))
+        return
+    m = out.get('match')
+    if 'error' in out:
+        print(f"Couldn't check: {out.get('reason') or out['error']}", file=sys.stderr)
+    elif m:
+        print(f"This looks like #{m['issue']} ({m['state']}): {m['url']}")
+    else:
+        print("No public issue with this signature.")
 
 
 def cmd_report_dismiss(crash_id: str, as_json: bool) -> None:

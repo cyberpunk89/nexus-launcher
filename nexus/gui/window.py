@@ -611,6 +611,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _check_update(self):
         in_thread(updates.available, self._update_checked)
+        # What became of the reports sent anonymously: the CLI looks at most
+        # once a day, and not at all with the update check or the relay off.
+        cli_json(['--report-refresh', '--json'], self._reports_refreshed, 60000)
+
+    def _reports_refreshed(self, data, _err):
+        if (data or {}).get('checked') and self.page_built(self.REPORT):
+            self.report.load_sent()
 
     def _update_checked(self, rel, _err):
         """A newer Nexus release (updates.available): a toast, and Health's
