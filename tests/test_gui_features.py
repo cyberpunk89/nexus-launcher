@@ -534,11 +534,14 @@ class SettingsCategories(unittest.TestCase):
              'gdb_url': 'https://gamedb.example.com', 'gdb_token': 'gdb_' + 'a' * 43,
              'gdb_device': 'Test PC', 'tor_url': 'http://127.0.0.1:9091', 'tor_user': 'me',
              'tor_pass': 'secret', 'tor_dir': '/tmp/nexus-torrents', 'tor_ratio': '1.5',
-             'custom': '#123456'}
+             'custom': '#123456', 'fr_key': '0123456789ABCDEF' * 2,
+             'fr_steamid': '76561190000000001'}
     # Rows whose only control is a button (they run something, not save).
     ACTION_ROWS = {'library.fill_art', 'installing.torrent_test', 'alerts.test',
                    'system.backup', 'system.setup', 'system.version', 'system.update',
-                   'system.check_updates', 'system.whats_new', 'system.config_file'}
+                   'system.check_updates', 'system.whats_new', 'system.config_file',
+                   'accounts.friends_whose', 'accounts.friends_status',
+                   'accounts.friends_privacy'}
 
     def page(self):
         page = nx.SettingsPage()
@@ -549,7 +552,7 @@ class SettingsCategories(unittest.TestCase):
         page = self.page()
         rows = [r for cat in page.categories.values() for r in cat.rows]
         self.assertEqual(len(rows), len(set(map(id, rows))))
-        self.assertEqual(len(page.rows), 63)
+        self.assertEqual(len(page.rows), 69)
         self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
         for key, row in page.rows.items():
             cat, _, short = key.partition('.')

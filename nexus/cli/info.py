@@ -501,7 +501,8 @@ def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1
 CONFIG_SECRETS = (('steamgriddb', 'api_key', 'SteamGridDB key'),
                   ('gamedb', 'token', 'Game-db token'),
                   ('torrent', 'password', 'torrent client password'),
-                  ('notify', 'ntfy_token', 'ntfy token'))
+                  ('notify', 'ntfy_token', 'ntfy token'),
+                  ('steam', 'web_api_key', 'Steam Web API key'))
 
 
 def config_secrets_doctor(add, group: str) -> None:

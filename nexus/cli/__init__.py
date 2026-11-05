@@ -151,6 +151,8 @@ from .importgame import cmd_add_exe, cmd_import, guess_name, run_windows_exe, wi
 from .backup import (
     BackupError, cmd_export_settings, cmd_import_settings, export_settings, import_settings,
     keep_secrets, strip_secrets)  # noqa: F401
+from .friends import (
+    cmd_friends, FriendsError)  # noqa: F401
 from .report import (
     cmd_report_collect, cmd_report_dismiss, cmd_report_pending, cmd_report_preview,
     cmd_report_refresh, cmd_report_send, cmd_report_sent, cmd_report_sent_remove,

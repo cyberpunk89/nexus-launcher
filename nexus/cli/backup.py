@@ -38,7 +38,7 @@ SESSIONS = 'data/sessions.jsonl'
 ART_RE = re.compile(r'^art/([A-Za-z0-9][\w-]{0,80})/([\w.-]{1,120})$')
 ART_EXT = ('.png', '.jpg', '.jpeg', '.webp', '.ico')
 SECRETS = (('steamgriddb', 'api_key'), ('gamedb', 'token'), ('torrent', 'password'),
-           ('notify', 'ntfy_token'))
+           ('notify', 'ntfy_token'), ('steam', 'web_api_key'))
 
 
 class BackupError(Exception):

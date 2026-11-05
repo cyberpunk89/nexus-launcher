@@ -152,6 +152,29 @@ class Scrub(unittest.TestCase):
             self.assertNotIn(v, out)
             self.assertNotIn(v, body)
 
+    def test_steam_web_api_key_is_scrubbed(self):
+        from nexus import paths
+        from nexus.cli.common import SECRET_ENV
+        from nexus.cli.info import CONFIG_SECRETS
+        self.assertIn(('steam', 'web_api_key'), {(s, k) for s, k, _ in CONFIG_SECRETS})
+        self.assertIn('STEAM_WEB_API_KEY', SECRET_ENV)
+        key, env_key = 'ABCDEF0123456789ABCDEF0123456789', 'FEDCBA9876543210FEDCBA9876543210'
+        cfg = paths.CONFIG_PATH
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        old = cfg.read_text() if cfg.exists() else None
+        self.addCleanup(lambda: cfg.write_text(old) if old is not None
+                        else cfg.unlink(missing_ok=True))
+        cfg.write_text(f'[steam]\nweb_api_key = "{key}"\n')
+        with mock.patch.dict(os.environ, {'STEAM_WEB_API_KEY': env_key}):
+            ctx = S.context()
+        self.assertIn(key, ctx['secrets'])
+        self.assertIn(env_key, ctx['secrets'])
+        out = S.scrub(f"GET /ISteamUser/GetFriendList/v1/?key={key} and {env_key}", ctx)
+        self.assertNotIn(key, out)
+        self.assertNotIn(env_key, out)
+        lines = '\n'.join(sysinfo.settings_group({}, {'steam': {'web_api_key': key}}))
+        self.assertNotIn(key, lines)
+
     def test_report_package_is_qt_free(self):
         for p in (NEXUS / 'report').glob('*.py'):
             text = p.read_text(encoding='utf-8')

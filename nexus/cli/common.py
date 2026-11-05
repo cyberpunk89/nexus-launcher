@@ -325,7 +325,7 @@ WINE_ABORTS: list[str] = []      # "wine: Call from … to unimplemented functio
 # exactly that way, fails at once, and the installer then deletes the game.
 WINE_ENV_DROP = ('NoDefaultCurrentDirectoryInExePath',)
 # Nexus's own credentials: no installer or game needs to see them.
-SECRET_ENV = ('GITHUB_TOKEN', 'NEXUS_GAMEDB_TOKEN', 'STEAMGRIDDB_API_KEY')
+SECRET_ENV = ('GITHUB_TOKEN', 'NEXUS_GAMEDB_TOKEN', 'STEAMGRIDDB_API_KEY', 'STEAM_WEB_API_KEY')
 
 
 def wine_env(base: dict | None = None) -> dict:

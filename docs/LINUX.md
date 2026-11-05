@@ -552,6 +552,44 @@ Details:
   the sync state of both, a config.toml that holds the token but isn't 0600, and a Steam
   account mismatch between Game-db and Nexus.
 
+## Steam friends (optional)
+
+What your Steam friends play right now and which games they own, read with your own Steam
+Web API key. Nexus only reads what Steam already shows; nothing about you is sent anywhere
+but to Steam (your key and your SteamID64).
+
+1. Get a key at <https://steamcommunity.com/dev/apikey> (any domain name works, such as
+   `localhost`).
+2. **Settings → Accounts and keys → Steam friends**: paste it, switch on *Show friends*.
+   Or put it in config.toml as `[steam] web_api_key = "…"`, or set `STEAM_WEB_API_KEY`
+   (the environment wins), and `[friends] enabled = true`.
+
+Details:
+
+- Whose friends: the same Steam account shortcuts go to (`[integrations] steam_account`,
+  else the one last signed in). `[friends] steamid = "7656119…"` (Settings → Advanced) sets
+  another SteamID64.
+- `--friends [--refresh] [--json]` answers from `~/.cache/nexus/friends.json` (0600) and
+  asks Steam only for what is stale: the friends list every 6 h, names and "playing now"
+  every 2 min (100 friends a call), each public friend's owned games once a day, one
+  friend every 2 s, for at most 15 s a call (60 s with `--refresh`; the rest follow next
+  time). With *Show friends* off only `--refresh` asks Steam.
+- Friends whose profile or game details aren't public are kept and flagged
+  (`visible: false`, `private_reason` `profile` or `game-details`). "Playing now" older
+  than 10 minutes is not shown.
+- A refused key (401/403), too many requests (429: Nexus waits, `Retry-After` or
+  10 minutes) or no network keep the last good copy and say so in `error` (`no-key`,
+  `no-account`, `bad-key`, `rate-limited`, `offline`, `private-list`). An error is never
+  saved as "no friends". The key is never printed; it is masked in any message.
+- `--json`: `{enabled, me, account, friends: [{steamid, name, avatar, visible,
+  private_reason, playing: {appid, gameid, name, since} | null, owned: {appid: minutes},
+  owned_at, fetched_at, evidence}], by_app: {appid: [steamid…]}, counts: {total, public,
+  private, playing}, updated, evidence, error}`. `evidence` keeps what Steam actually
+  answered (`communityvisibilitystate`, whether `gameid`/`gameextrainfo` came,
+  `owned_answer` `games`/`empty`/`error-N`, the friends-list status).
+- `NEXUS_STEAM_API_BASE` points the client at another server (https, or http on this
+  machine only; for tests).
+
 ## Finding a repack to install
 
 ```bash

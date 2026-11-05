@@ -65,6 +65,11 @@ def load_config() -> dict:
     cfg['gamedb_upload_other'] = gd.get('upload_other', False) is True
     cfg['gamedb_upload_library'] = gd.get('upload_library', True) is not False
     cfg['gamedb_enabled'] = gamedb.settings()['enabled']       # config, or the env token
+    st = data.get('steam') if isinstance(data.get('steam'), dict) else {}
+    cfg['steam_web_api_key'] = str(st.get('web_api_key') or '').strip() or None
+    fr = data.get('friends') if isinstance(data.get('friends'), dict) else {}
+    cfg['friends_enabled'] = fr.get('enabled', False) is True
+    cfg['friends_steamid'] = str(fr.get('steamid') or '').strip() or None
     tr = data.get('torrent', {}) if isinstance(data.get('torrent'), dict) else {}
     client = str(tr.get('client') or '').lower()
     cfg['torrent_client'] = client if client in ('transmission', 'qbittorrent') else None

@@ -16,6 +16,13 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
                           # login or persona name). Omit to auto-detect: --list-steam-accounts
 # keep_awake = false      # don't block sleep/screen blanking while a repack plays or installs
 
+[steam]
+# web_api_key = ""        # steamcommunity.com/dev/apikey — Steam friends (or STEAM_WEB_API_KEY)
+
+[friends]                 # what your Steam friends play and own (read-only)
+# enabled = false
+# steamid = ""            # whose friends (SteamID64); default: the Steam account above
+
 [install]
 # base = "~/Games/FitGirl"               # where games install (default ~/Games/FitGirl)
 # scan_dir = "~/Downloads"               # where --scan looks for repacks

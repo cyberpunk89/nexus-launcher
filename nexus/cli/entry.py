@@ -390,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help='List recent GE-Proton releases')
     g4.add_argument('--refresh', action='store_true',
                     help='Bypass the cache for --protons, --proton-releases, --news, '
-                         '--protondb and the Game-db flags')
+                         '--protondb, --friends and the Game-db flags')
     g4.add_argument('--proton-install', metavar='TAG', dest='proton_install',
                     help="Download, verify and install a GE-Proton release ('latest' or a tag)")
     g4.add_argument('--proton-remove', metavar='NAME', dest='proton_remove',
@@ -525,6 +525,11 @@ def build_parser() -> argparse.ArgumentParser:
     g7.add_argument('--gamedb-delete-sessions', action='store_true',
                     dest='gamedb_delete_sessions',
                     help='Delete every play session this Game-db account got from Nexus')
+    g9 = parser.add_argument_group('Steam friends')
+    g9.add_argument('--friends', action='store_true',
+                    help="Your Steam friends: who plays what now and who owns which game "
+                         "(needs a Steam Web API key; cached, stale parts refreshed; "
+                         "--refresh asks Steam now; --json for the app)")
     g8 = parser.add_argument_group('bug reports')
     g8.add_argument('--report-pending', action='store_true', dest='report_pending',
                     help='List the crash reports waiting to be reported (a native crash '
@@ -911,6 +916,7 @@ COMMANDS = (
     ('upcoming', lambda a, base: cmd_gamedb('upcoming', a.refresh, a.json, a.time)),
     ('backlog', lambda a, base: cmd_gamedb('backlog', a.refresh, a.json, a.time)),
     ('gamedb_lookup', _cmd_gamedb_lookup),
+    ('friends', lambda a, base: cmd_friends(a.refresh, a.json)),
     ('gamedb_sync', _cmd_gamedb_sync),
     ('gamedb_delete_sessions', _cmd_gamedb_delete_sessions),
     ('protondb', lambda a, base: cmd_protondb(a.protondb, a.refresh, a.json)),
@@ -1028,6 +1034,7 @@ from .downloads import (cmd_check_repack, cmd_repack_feed, cmd_repack_grab, cmd_
 from .gamecmds import (add_existing_to_steam, cmd_achievements, cmd_add_heroic, cmd_add_steam,
     cmd_detect, cmd_discard_incomplete, cmd_prefix_tool, cmd_refetch_art, cmd_reindex,
     cmd_rename, cmd_repair_launchers, cmd_scan, cmd_set_exe, cmd_trash_repack)  # noqa: E402
+from .friends import cmd_friends  # noqa: E402
 from .heroic import remove_heroic_entry  # noqa: E402
 from .info import (cmd_apply_recipe, cmd_explain_log, cmd_game_facts, cmd_game_tips, cmd_gamedb,
     cmd_history, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402

@@ -17,7 +17,8 @@ def load_config() -> dict:
            'unattended': True, 'trash_repack': False, 'runner': 'auto',
            'discord_client_id': None, 'keep_awake': True, 'subvolumes': True,
            'snapshots_keep': 1, 'repacks': True,
-           'report_relay': True, 'report_url': None}
+           'report_relay': True, 'report_url': None, 'steam_web_api_key': None,
+           'friends_enabled': False, 'friends_steamid': None}
 
     def as_bool(v, default=True):
         # `steam = "no"` is a truthy string; only real TOML booleans count.
@@ -74,6 +75,12 @@ def load_config() -> dict:
         cfg['report_relay'] = as_bool(rep.get('relay', True))
         url = str(rep.get('url') or '').strip()
         cfg['report_url'] = url if url.startswith('https://') else None
+        # Steam friends (nexus/cli/friends.py): the user's own Web API key.
+        st = data.get('steam') if isinstance(data.get('steam'), dict) else {}
+        cfg['steam_web_api_key'] = str(st.get('web_api_key') or '').strip() or None
+        fr = data.get('friends') if isinstance(data.get('friends'), dict) else {}
+        cfg['friends_enabled'] = fr.get('enabled', False) is True
+        cfg['friends_steamid'] = str(fr.get('steamid') or '').strip() or None
         rp = data.get('repacks')
         cfg['repacks'] = not isinstance(rp, dict) or rp.get('enabled', True) is not False
         try:
@@ -88,6 +95,8 @@ def load_config() -> dict:
               file=sys.stderr)
     # Environment override for the API key
     cfg['api_key'] = os.environ.get('STEAMGRIDDB_API_KEY') or cfg['api_key']
+    cfg['steam_web_api_key'] = (os.environ.get('STEAM_WEB_API_KEY') or '').strip() \
+        or cfg['steam_web_api_key']
     return cfg
 
 

@@ -146,7 +146,8 @@ class ChildOutput(unittest.TestCase):
 
     def test_wine_env_drops_secrets(self):
         env = fi.wine_env({'GITHUB_TOKEN': 't', 'NEXUS_GAMEDB_TOKEN': 'g',
-                           'STEAMGRIDDB_API_KEY': 'k', 'HOME': '/h'})
+                           'STEAMGRIDDB_API_KEY': 'k', 'STEAM_WEB_API_KEY': 's',
+                           'HOME': '/h'})
         self.assertEqual(env, {'HOME': '/h'})
 
 
@@ -345,6 +346,52 @@ def fi_sandbox(test, fn, *a):
         return fn(*a)
 
 
+class FriendsFlag(unittest.TestCase):
+    def test_friends_flag_runs_cmd_friends_with_refresh_and_json(self):
+        from nexus.cli import entry
+        args = fi.build_parser().parse_args(['--friends', '--refresh', '--json'])
+        handler = dict((w, h) for w, h in entry.COMMANDS if not callable(w))['friends']
+        with mock.patch.object(entry, 'cmd_friends') as cmd:
+            handler(args, None)
+        cmd.assert_called_once_with(True, True)
+        self.assertNotIn('friends', {d for ds in entry.GATED.values() for d in ds})
+
+    def test_without_a_key_it_answers_without_the_network(self):
+        from nexus.cli import friends
+        with mock.patch.object(friends, 'settings',
+                               lambda: {'key': None, 'enabled': True, 'steamid': None}), \
+                mock.patch.object(friends, '_get', side_effect=AssertionError('network')), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+            friends.cmd_friends(True, True)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data['error']['kind'], 'no-key')
+        self.assertEqual(data['friends'], [])
+        self.assertEqual(data['counts'], {'total': 0, 'public': 0, 'private': 0,
+                                          'playing': 0})
+
+    def test_config_reads_the_key_and_friends_and_env_wins(self):
+        from nexus.cli import config
+        text = ('[steam]\nweb_api_key = "KEY-FROM-CONFIG"\n\n[friends]\nenabled = true\n'
+                'steamid = "76561190000000001"\n')
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'config.toml'
+            p.write_text(text)
+            with mock.patch.object(config, 'CONFIG_PATH', p), \
+                    mock.patch.dict(os.environ, {'STEAM_WEB_API_KEY': ''}):
+                c = config.load_config()
+                self.assertEqual(c['steam_web_api_key'], 'KEY-FROM-CONFIG')
+                self.assertTrue(c['friends_enabled'])
+                self.assertEqual(c['friends_steamid'], '76561190000000001')
+                with mock.patch.dict(os.environ, {'STEAM_WEB_API_KEY': 'KEY-FROM-ENV'}):
+                    self.assertEqual(config.load_config()['steam_web_api_key'], 'KEY-FROM-ENV')
+            p.write_text('')
+            with mock.patch.object(config, 'CONFIG_PATH', p), \
+                    mock.patch.dict(os.environ, {'STEAM_WEB_API_KEY': ''}):
+                c = config.load_config()
+            self.assertFalse(c['friends_enabled'])                 # off by default
+            self.assertIsNone(c['steam_web_api_key'])
+
+
 class CommandTable(unittest.TestCase):
     def test_gated_options_exist_and_name_real_features(self):
         from nexus import features
@@ -378,6 +425,9 @@ class CommandTable(unittest.TestCase):
                 entry._refuse_unavailable(parser, parser.parse_args([flag]))
             # The facts index is the same everywhere (the window fills it on Windows).
             entry._refuse_unavailable(parser, parser.parse_args(['--game-facts', '--fill', '5']))
+            # Steam friends use the Web API, which Windows has too (w-80).
+            entry._refuse_unavailable(parser, parser.parse_args(['--friends', '--json']))
+            self.assertIn('--friends', helptext)
         with mock.patch.object(features, 'FEATURES', features.ALL):
             self.assertIn('--proton-install', fi.build_parser().format_help())
 

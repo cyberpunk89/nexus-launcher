@@ -58,6 +58,7 @@ ICONS = {
     'spinner':        '\ue10a',  # loader-circle
     'eye':            '\ue0ba',  # eye
     'eye_off':        '\ue0bb',  # eye-off
+    'friends':        '\ue1a4',  # users (Steam friends)
     'chevron_left':   '\ue06e',  # chevron-left
     'chevron_right':  '\ue06f',  # chevron-right
     'chevron_down':   '\ue06d',  # chevron-down

@@ -28,6 +28,11 @@ from .theme import (_hex_ok, _mix, accent_hex, accent_pair, ACCENTS, APPEARANCE_
     THEMES)
 
 SGDB_KEY_URL = 'https://www.steamgriddb.com/profile/preferences/api'
+STEAM_KEY_URL = 'https://steamcommunity.com/dev/apikey'
+STEAM_PRIVACY_URL = 'https://steamcommunity.com/my/edit/settings'
+STEAM_KEY_ENV = 'STEAM_WEB_API_KEY'
+STEAM_KEY_RE = re.compile(r'^[0-9A-Fa-f]{32}$')
+STEAMID_RE = re.compile(r'^7656119\d{10}$')
 LOCAL_URL_RE = re.compile(r'^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$')
 FIELD_W = (200, 340)           # text fields on the right of a row: they share a narrow one
 MOTION = not os.environ.get('NEXUS_NO_MOTION')
@@ -549,6 +554,67 @@ SESSIONS_NOTE = ("What you play in Nexus, with the store and title, goes to Game
 LIBRARY_NOTE = ("Once a day, the Epic, GOG and Amazon games Heroic says you own, so Game-db "
                 "can fill in their game pages here too.")
 TOKEN_NOTE = "Kept in config.toml, readable only by you; data is cached 45 minutes."
+FRIENDS_DESC = ("What your friends play and own, on Home, game pages and the Library. Nexus "
+                "only reads what Steam already shows; nothing about you is sent anywhere.")
+FRIENDS_KEY_NOTE = ("Free from Steam; any domain name works, such as localhost. Kept in "
+                    "config.toml, readable only by you.")
+FRIENDS_PRIVACY_NOTE = ("Friends show what they own only when their game details are public "
+                        "on Steam (\u201cfriends only\u201d counts as private). If Steam won't "
+                        "list your friends, make your own friends list public too.")
+
+
+def _ago_text(iso: str | None, now: float | None = None) -> str | None:
+    """'updated 3 min ago' for an ISO time from the CLI."""
+    if not iso:
+        return None
+    from datetime import datetime
+    try:
+        ts = datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        return None
+    mins = int(((time.time() if now is None else now) - ts) // 60)
+    if mins < 1:
+        return "updated just now"
+    if mins < 60:
+        return f"updated {mins} min ago"
+    if mins < 48 * 60:
+        return f"updated {mins // 60} h ago"
+    return f"updated {mins // 1440} days ago"
+
+
+def friends_status_text(data: dict | None, err: str = '', now: float | None = None) -> str:
+    """The Settings status line for a `--friends --json` answer:
+    '10 friends · 7 public · 3 private · updated 2 min ago'. Its error is
+    shown apart (friends_problem)."""
+    if not data:
+        return f"Couldn't ask: {err or 'no answer'}"
+    c = data.get('counts') or {}
+    total = c.get('total') or 0
+    error = data.get('error') or None
+    parts = []
+    if total:
+        parts.append(f"{total} friend{'' if total == 1 else 's'} \u00b7 {c.get('public', 0)} "
+                     f"public \u00b7 {c.get('private', 0)} private")
+    elif data.get('updated') and not error:
+        parts.append("No friends on this Steam account")
+    ago = _ago_text(data.get('updated'), now)
+    if ago and parts:
+        parts.append(ago)
+    if parts:
+        return " \u00b7 ".join(parts)
+    return "Nothing found yet." if error else "Not asked yet: Refresh now asks Steam."
+
+
+def friends_problem(data: dict | None) -> tuple[str | None, str | None]:
+    """(error, note) for a `--friends` answer: a refused key, no account or a
+    private list is an error to fix; too many requests or no network only a
+    note (the last good copy is still shown)."""
+    e = (data or {}).get('error') or None
+    if not e:
+        return None, None
+    msg = e.get('message') or e.get('kind') or "error"
+    return (msg, None) if e.get('kind') in ('bad-key', 'no-account', 'private-list') \
+        else (None, msg)
 
 
 def token_note(scopes) -> str:
@@ -1194,7 +1260,8 @@ class SettingsPage(QWidget):
 
     def _build_accounts(self):
         cat = self._add_category('accounts', "Accounts and keys", 'link', 'aurora',
-                                 "Game-db, SteamGridDB and the Steam account Nexus uses.")
+                                 "Game-db, SteamGridDB, the Steam account Nexus uses and "
+                                 "your Steam friends.")
         sec = self._group(cat, 'gamedb', "Game-db", 'deals',
                           "Wishlist deals, upcoming releases and your backlog, from your "
                           "Game-db account.")
@@ -1253,6 +1320,101 @@ class SettingsPage(QWidget):
         self._field_row(sec, "Steam account", "Whose Steam gets the shortcuts. Leave empty for "
                         "the last one signed in.", self.account, keywords="profile user",
                         key='steam_account')
+        self._build_friends(cat)
+
+    def _build_friends(self, cat):
+        """Steam friends (w-80): the key, whose friends, and what the CLI last
+        found. The page never asks Steam; Refresh now runs `--friends`."""
+        sec = self._group(cat, 'friends', "Steam friends", 'friends', FRIENDS_DESC)
+        words = "friends social who owns play together playing now steam"
+        self.fr_enabled = Switch()
+        self.fr_enabled_row = self._row(
+            sec, "Show friends", "Needs a Steam Web API key.", self.fr_enabled,
+            keywords=words, key='friends')
+        self.fr_key = self._secret(QLineEdit())
+        self.fr_key.setPlaceholderText("not set")
+        get = QPushButton("Get a key")
+        get.setToolTip("Opens Steam's Web API key page (free, needs a Steam account)")
+        get.clicked.connect(self._open_steam_key_page)
+        self.fr_key_row = self._field_row(
+            sec, "Steam Web API key", FRIENDS_KEY_NOTE, self.fr_key, extra=(get,),
+            keywords=words + " web api key token", key='steam_web_api_key')
+        self.fr_whose_row = self._row(
+            sec, "Whose friends", "The Steam account above.", None,
+            keywords=words + " account profile steamid", key='friends_whose')
+        self.fr_refresh = QPushButton("Refresh now")
+        self.fr_refresh.setToolTip("Asks Steam for your friends now")
+        self.fr_refresh.clicked.connect(self._friends_refresh)
+        self.fr_status_row = self._row(
+            sec, "Friends found", "Add a key to see your friends.", self.fr_refresh,
+            keywords=words + " refresh status public private", key='friends_status')
+        privacy = QPushButton("Privacy on Steam")
+        privacy.setToolTip("Opens your Steam privacy settings in the browser")
+        privacy.clicked.connect(self._open_steam_privacy)
+        self._row(sec, "Who Nexus can see", FRIENDS_PRIVACY_NOTE, privacy,
+                  keywords=words + " private public game details friends list privacy",
+                  key='friends_privacy')
+        self.fr_steamid = QLineEdit()
+        self.fr_steamid.setMaxLength(17)
+        self.fr_steamid.setPlaceholderText("the Steam account above")
+        self._field_row(cat.adv_body, "Whose friends (SteamID64)", "17 digits, 7656119\u2026 "
+                        "Leave empty for the Steam account above.", self.fr_steamid,
+                        keywords=words + " steamid64 account", key='friends_steamid')
+        self.fr_key.textChanged.connect(self._friends_key_changed)
+
+    def _open_steam_key_page(self):
+        QDesktopServices.openUrl(QUrl(STEAM_KEY_URL))
+
+    def _open_steam_privacy(self):
+        QDesktopServices.openUrl(QUrl(STEAM_PRIVACY_URL))
+
+    def _friends_have_key(self) -> bool:
+        return bool(self.fr_key.text().strip() or os.environ.get(STEAM_KEY_ENV))
+
+    def _friends_key_changed(self, *_):
+        """Show friends and Refresh now wait for a key."""
+        have = self._friends_have_key()
+        self.fr_enabled.setEnabled(have)
+        self.fr_enabled_row.set_description("" if have else "Needs a Steam Web API key.")
+        self.fr_refresh.setEnabled(have)
+
+    def _friends_status(self, refresh: bool = False):
+        """Ask the CLI (in the background, never Steam from here) what it has;
+        `refresh` makes it ask Steam now."""
+        if not self._friends_have_key():
+            self.fr_status_row.set_description("Add a key to see your friends.")
+            return
+        self.fr_refresh.setEnabled(False)
+        self.fr_status_row.set_description("Asking Steam\u2026" if refresh else "Looking\u2026")
+        self.fr_status_row.set_error(None)
+        self.fr_status_row.set_note(None)
+        args = ['--friends', *(['--refresh'] if refresh else []), '--json']
+        cli_json(args, self._friends_done, 120000 if refresh else 60000)
+
+    def _friends_refresh(self):
+        self.commit()                           # a key typed but not yet saved
+        if self.fr_key in self._invalid:
+            return
+        self._friends_status(refresh=True)
+
+    def _friends_done(self, data, err):
+        try:
+            self.fr_refresh.setEnabled(self._friends_have_key())
+        except RuntimeError:                    # the page is gone
+            return
+        if data:
+            acct = data.get('account') or {}
+            who = acct.get('persona') or data.get('me')
+            if acct.get('source') == 'config' and data.get('me'):
+                self.fr_whose_row.set_description(f"SteamID64 {data['me']} (set under Advanced).")
+            elif who:
+                self.fr_whose_row.set_description(f"{who}, the Steam account above.")
+            else:
+                self.fr_whose_row.set_description("No Steam account found on this PC.")
+        self.fr_status_row.set_description(friends_status_text(data, err))
+        error, note = friends_problem(data)
+        self.fr_status_row.set_error(error)
+        self.fr_status_row.set_note(note)
 
     def _build_system(self):
         cat = self._add_category('system', "System", 'system', 'tide',
@@ -1427,7 +1589,8 @@ class SettingsPage(QWidget):
     def _wire(self):
         """Switches and menus save when they change; text fields when you
         leave them (or press Enter). Library preferences go out as signals."""
-        for e in (self.key, self.base, self.scan_dir, self.scan_more, self.account,
+        for e in (self.key, self.fr_key, self.fr_steamid, self.base, self.scan_dir,
+                  self.scan_more, self.account,
                   self.gdb_url, self.gdb_token, self.gdb_device, self.tor_url, self.tor_user, self.tor_pass,
                   self.tor_dir, self.tor_ratio):
             e.textChanged.connect(self._edited)
@@ -1435,7 +1598,7 @@ class SettingsPage(QWidget):
         self.repacks.toggled.connect(self._show_repacks)
         for c in (self.repacks, self.steam, self.desktop, self.heroic, self.news, self.unattended,
                   self.trash_repack, self.gdb_enabled, self.gdb_games, self.gdb_sessions,
-                  self.gdb_other, self.gdb_library, self.al_atl, self.al_fitgirl,
+                  self.gdb_other, self.gdb_library, self.fr_enabled, self.al_atl, self.al_fitgirl,
                   self.al_updates, self.al_proton):
             c.toggled.connect(self.commit)
         for cb in (self.runner, self.proton, self.al_sale):
@@ -1879,6 +2042,14 @@ class SettingsPage(QWidget):
         self.gdb_token.setPlaceholderText("set by NEXUS_GAMEDB_TOKEN" if env_token else "gdb_…")
         self.gdb_games.setChecked(c.get('gamedb_games', True))
         self.gdb_device.setText(c.get('gamedb_device') or "")
+        env_key = bool(os.environ.get(STEAM_KEY_ENV))
+        self.fr_key.setText("" if env_key else (c.get('steam_web_api_key') or ""))
+        self.fr_key.setEnabled(not env_key)
+        self.fr_key.setPlaceholderText(f"set by {STEAM_KEY_ENV}" if env_key else "not set")
+        self.fr_enabled.setChecked(c.get('friends_enabled', False))
+        self.fr_steamid.setText(c.get('friends_steamid') or "")
+        self._friends_key_changed()
+        self._friends_status()
         self.gdb_token_row.set_description(token_note(gamedb.token_scopes()))
         self.gdb_sessions.setChecked(c.get('gamedb_upload_sessions', False))
         self.gdb_other.setChecked(c.get('gamedb_upload_other', False))
@@ -2020,6 +2191,18 @@ class SettingsPage(QWidget):
             c.get('torrent_download_dir'))
         put('integrations', 'steam_account', self.account.text().strip() or None,
             c.get('steam_account'))
+        n = len(u)
+        fkey = self.fr_key.text().strip() or None
+        if self.fr_key.isEnabled() and self._check(
+                self.fr_key, not fkey or bool(STEAM_KEY_RE.match(fkey)),
+                "A Steam Web API key is 32 letters and digits (0-9 and A-F)."):
+            put('steam', 'web_api_key', fkey, c.get('steam_web_api_key'))
+        put('friends', 'enabled', self.fr_enabled.isChecked(), c.get('friends_enabled', False))
+        sid = self.fr_steamid.text().strip() or None
+        if self._check(self.fr_steamid, not sid or bool(STEAMID_RE.match(sid)),
+                       "A SteamID64 is 17 digits starting 7656119."):
+            put('friends', 'steamid', sid, c.get('friends_steamid'))
+        friends_changed = len(u) > n
         put('install', 'base', self.base.text().strip() or None, c.get('install_base'))
         put('install', 'scan_dir', self.scan_dir.text().strip() or None, c.get('scan_dir'))
         more = [d.strip() for d in self.scan_more.text().split(';') if d.strip()]
@@ -2053,6 +2236,8 @@ class SettingsPage(QWidget):
         self.gamedb_changed = gamedb_changed
         self._proton_current = proton
         self.cfg = load_config()
+        if friends_changed:
+            self._friends_status()
         self._saved_note_flash()
         self.saved.emit(changed)
 

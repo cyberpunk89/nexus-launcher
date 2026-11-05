@@ -87,6 +87,26 @@ class Backup(unittest.TestCase):
         self.assertEqual(why_not_private(NX.CONFIG_PATH), '')
         self.assertEqual(plan['keep_secrets'], ['steamgriddb.api_key'])
 
+    def test_steam_web_api_key_is_a_secret(self):
+        text = (CONFIG + '\n[steam]\nweb_api_key = "STEAMKEY0123"\n\n[friends]\n'
+                'enabled = true\n')
+        out, removed = B.strip_secrets(text)
+        self.assertNotIn('STEAMKEY0123', out)
+        self.assertIn('steam.web_api_key', removed)
+        self.assertIn('[friends]\nenabled = true', out)
+        self.assertIn('api_key = "SECRET-KEY"', CONFIG)
+        # an import onto a machine that has its own key keeps it
+        kept, names = B.keep_secrets(out, text)
+        self.assertIn('web_api_key = "STEAMKEY0123"', kept)
+        self.assertIn('steam.web_api_key', names)
+        NX.CONFIG_PATH.write_text(text)
+        r = B.export_settings(self.t / 'k1')
+        with tarfile.open(r['path']) as tf:
+            self.assertNotIn('STEAMKEY0123', tf.extractfile('config/config.toml').read().decode())
+        r = B.export_settings(self.t / 'k2', with_secrets=True)
+        with tarfile.open(r['path']) as tf:
+            self.assertIn('STEAMKEY0123', tf.extractfile('config/config.toml').read().decode())
+
     def test_games_only_where_their_folder_is(self):
         r = B.export_settings(self.t / 'out.tar.gz')
         NX.REGISTRY_PATH.write_text(json.dumps({'version': 1, 'games': {}}))
