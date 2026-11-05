@@ -86,6 +86,9 @@ from .dashboard import (
 from .details import (
     _hero_art, AchievementRow, DetailsPanel, Disclosure, ElideLabel, HeroBanner, PerfPanel,
     StatChip, StatTile, BATCH_ACTIONS)  # noqa: F401
+from .friends import (
+    Avatar, AvatarStack, FRIENDS, FRIENDS_ARGS, FriendsBlock, FriendsData, names_text,
+    paint_avatar, PersonChip)  # noqa: F401
 from .storage import (
     _SEG_COLORS, SortItem, StorageBar, StoragePage)  # noqa: F401
 from .protonpage import (

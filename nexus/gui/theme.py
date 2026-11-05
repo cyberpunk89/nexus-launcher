@@ -426,6 +426,7 @@ def pill(h: int) -> int:
 PILL_H = 18      # status pills / badges
 CHIP_H = 28      # filter chips
 GLYPH_H = 22     # controller hint glyphs
+PERSON_H = 30    # a friend's chip on the game page (friends.PersonChip)
 
 
 def pill_qss(bg: str, fg: str, h: int = PILL_H, pad: int = 7) -> str:
@@ -725,6 +726,12 @@ def build_stylesheet(scale: float = 1.0) -> str:
                           border-radius: ${r_tag}px; padding: 0 ${sp_2_5}px;
                           font-size: ${fs_xs}px; min-height: 20px; max-height: 20px; }
     QPushButton#TagChip:hover { background: $accent_22; color: $accent; border-color: $accent_35; }
+    /* Friends (w-81): a person chip on the game page. */
+    QFrame#PersonChip { background: $surface_2; border: 1px solid $border;
+                        border-radius: ${r_person}px; }
+    QLabel#PersonName { color: $text; font-size: ${fs_xs}px; }
+    QLabel#PersonSub { color: $muted; font-size: ${fs_2xs}px; }
+    QLabel#PersonSub[live="true"] { color: $success; }
     QPushButton#ContextMore { background: transparent; border: none; color: $accent;
                               padding: 0; font-size: ${fs_xs}px; text-align: left; }
     QPushButton#ContextMore:hover { text-decoration: underline; }
@@ -980,6 +987,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         r_groove=pill(4), r_knob=pill(12), r_search=pill(36),
         r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,
+        r_person=pill(int(round(PERSON_H * scale))),
         r_card_inner=R['card'] - 1,
         chevron=_chevron_icon_path('muted'),
         chevron_hi=_chevron_icon_path('accent'),

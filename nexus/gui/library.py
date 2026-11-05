@@ -28,6 +28,36 @@ class _TileSignals:
         tile.menu.connect(self.menu)
         tile.activated.connect(self.activated)
         tile.double.connect(self.double)
+        tile.friends_badge = self.friends_badge
+
+    friends_badge = False       # tiles paint who of your friends owns them (w-81)
+
+    def _friend_tiles(self):
+        return [t for _slug, t in self._each_tile()]
+
+    def set_friends_badge(self, on: bool):
+        """The Friends own filter is on (or off): tiles show (or drop) their
+        owners' avatars."""
+        on = bool(on)
+        if on == self.friends_badge:
+            return
+        self.friends_badge = on
+        for t in self._friend_tiles():
+            t.friends_badge = on
+            t.update()
+
+    def refresh_friends(self):
+        """Friends data changed: tooltips say who owns it, badges repaint."""
+        for t in self._friend_tiles():
+            t.setToolTip(t._tooltip())
+            t.update()
+
+    def _friend_avatars(self):
+        """An avatar arrived: repaint the badges that show one."""
+        if self.friends_badge:
+            for t in self._friend_tiles():
+                if t.game.get('friends'):
+                    t.update()
 
 
 class _GridHost(QWidget):
@@ -135,6 +165,11 @@ class LibraryView(QScrollArea, _TileSignals):
         self._sel: set = set()
         self._job_of: dict = {}
         self.flow_host.installEventFilter(self)
+        FRIENDS.avatar_ready.connect(self._friend_avatars)
+
+    def _each_tile(self):
+        for t in [*self._built.values(), *self._spare]:
+            yield t.game.get('slug'), t
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
         # Tiles are kept and re-pointed at the new game dicts (same size): a
@@ -1134,6 +1169,7 @@ class HomeView(QScrollArea, _TileSignals):
         self.tiles: dict[str, list[GameTile]] = {}
         self._smart: list[QWidget] = []
         self._kept: dict[str, ShelfRow] = {}   # Shelves: the source rows, by title
+        FRIENDS.avatar_ready.connect(self._friend_avatars)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1319,8 +1355,8 @@ class ListView(QTableWidget):
     double = pyqtSignal(dict)
     pending_clicked = pyqtSignal(object)
 
-    COLS = ["", "Game", "Source", "Size", "Played", "Last played", "Proton"]
-    NUMERIC = (3, 4)
+    COLS = ["", "Game", "Source", "Size", "Played", "Last played", "Proton", "Friends"]
+    NUMERIC = (3, 4, 7)
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -1344,6 +1380,7 @@ class ListView(QTableWidget):
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         hh.setMinimumSectionSize(64)
         self.setColumnHidden(self.COLS.index("Proton"), not has('proton'))
+        self.setColumnHidden(self.COLS.index("Friends"), True)     # until friends answer
         # No sort column until the user picks one: keep the toolbar's order
         # (otherwise Qt sorts by the empty thumbnail column).
         hh.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
@@ -1411,7 +1448,7 @@ class ListView(QTableWidget):
         if row >= 0:
             self.menu.emit(self._game(row), self.viewport().mapToGlobal(pos))
 
-    AUTO_COLS = (0, 2, 3, 4, 5, 6)
+    AUTO_COLS = (0, 2, 3, 4, 5, 6, 7)
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
         self._syncing = True
@@ -1452,17 +1489,22 @@ class ListView(QTableWidget):
                 (fmt_hours(g.get('playtime_minutes')) or '—', g.get('playtime_minutes') or 0),
                 (fmt_relative(g.get('last_played')) or 'never', g.get('last_played') or ''),
                 (g.get('proton') or '—', g.get('proton') or ''),
+                (str(len(g.get('friends') or ())) if g.get('friends') else '—',
+                 len(g.get('friends') or ())),
             ]
             for c, (text, key) in enumerate(cells, start=1):
                 it = SortItem(text, key)
                 if c in self.NUMERIC:
                     it.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                         | Qt.AlignmentFlag.AlignVCenter)
+                if c == 7 and g.get('friends'):
+                    it.setToolTip(html.escape(FRIENDS.owned_by_text(g['friends'])))
                 if c == 1:
                     it.setData(Qt.ItemDataRole.UserRole, g['slug'])
                     if g.get('favorite'):
                         it.setText(f"★ {text}")
                 self.setItem(r, c, it)
+        self.setColumnHidden(self.COLS.index("Friends"), not FRIENDS.usable())
         self.setSortingEnabled(True)
         for i in self.AUTO_COLS:
             hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
@@ -1521,6 +1563,7 @@ class ListView(QTableWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import (anim_ms, ART, art_source, cover_pixmap, dominant_color, HERO_KINDS,
     LOGO_KINDS, MOTION, placeholder_pixmap, rounded_pixmap)  # noqa: E402
+from .friends import FRIENDS  # noqa: E402
 from .gameinfo import (is_installed, play_enabled, play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: E402
 from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402

@@ -793,6 +793,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             if self.config.get('gamedb_enabled'):
                 self.dealspage.refresh()
         self.dash_update('news', 'deals', 'upcoming')
+        # Steam friends may have been switched on or off, or got a key.
+        _CLI_MEMO.pop(tuple(FRIENDS_ARGS), None)
+        self._load_friends()
         self._poll_torrents()                  # the torrent client may have changed
         if proton_changed and self._games:
             self.toast("Point every game at the new Proton now?", 'info',
@@ -1214,7 +1217,8 @@ from .gameinfo import is_installed  # noqa: E402
 from .input import (ControllerInput, focus_and_reveal, FocusRing, HintBar,  # noqa: E402
     install_input_mode, SpatialNav)
 from .install import InstallPage, RepackWatcher  # noqa: E402
-from .jobs import cli_json, in_thread, JobManager  # noqa: E402
+from .friends import FRIENDS_ARGS  # noqa: E402
+from .jobs import _CLI_MEMO, cli_json, in_thread, JobManager  # noqa: E402
 from .modal import Modal  # noqa: E402
 from .setup import SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402

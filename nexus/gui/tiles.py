@@ -30,6 +30,9 @@ class GameTile(QFrame):
     menu = pyqtSignal(dict, QPoint)
     activated = pyqtSignal(dict)            # Enter / controller A (Settings → Controls)
     double = pyqtSignal(dict)               # a double click (Settings → Controls)
+    # Friends who own it as an avatar stack, bottom left: only while the view
+    # filters by friends (the Library's Friends own chip), never at rest.
+    friends_badge = False
 
     def __init__(self, game: dict, pending: bool = False, width: int = TILE_W,
                  kind: str = 'cover', theatre: bool = False):
@@ -355,6 +358,9 @@ class GameTile(QFrame):
             lines.append(" · ".join(stats))
         if g.get('proton'):
             lines.append(f"Proton: {html.escape(g['proton'])}")
+        owned_by = FRIENDS.owned_by_text(g.get('friends'))
+        if owned_by:
+            lines.append(html.escape(owned_by))
         lines.append("<i>Click to open · right-click for actions</i>")
         return "<br>".join(lines)
 
@@ -404,6 +410,11 @@ class GameTile(QFrame):
             self._paint_caption(pt, body)
             pt.setOpacity(1.0)
         pt.restore()
+        if self.friends_badge and self.kind != 'wide' and self.game.get('friends') \
+                and cap < 0.99:
+            pt.setOpacity(1.0 - cap)               # gives way to the caption
+            self._paint_friends_badge(pt, body)
+            pt.setOpacity(1.0)
 
         if self.game.get('playing') or self.game.get('launching'):
             self._paint_playing(pt, body)
@@ -466,6 +477,35 @@ class GameTile(QFrame):
         pt.setFont(f)
         pt.setPen(QColor(P['on_art']))
         pt.drawText(r, Qt.AlignmentFlag.AlignCenter, G['download'])
+
+    FRIEND_D, FRIEND_OVERLAP = 22.0, 7.0
+
+    def _paint_friends_badge(self, pt: QPainter, body: QRectF):
+        """Friends who own it: up to three avatars, then "+N", on a small
+        capsule at the bottom left."""
+        ids = list(self.game.get('friends') or ())
+        d, step, pad = self.FRIEND_D, self.FRIEND_D - self.FRIEND_OVERLAP, 3.0
+        shown = ids[:3]
+        more = f"+{len(ids) - 3}" if len(ids) > 3 else ''
+        f = QFont(FONTS.ui, -1, QFont.Weight.DemiBold)
+        f.setPixelSize(FS['2xs'])
+        pt.setFont(f)
+        more_w = pt.fontMetrics().horizontalAdvance(more) + SP['1_5'] if more else 0.0
+        w = d + step * (len(shown) - 1) + more_w + 2 * pad
+        h = d + 2 * pad
+        cap = QRectF(body.left() + SP['2'], body.bottom() - SP['2'] - h, w, h)
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(QColor(P['scrim_badge']))
+        pt.drawRoundedRect(cap, h / 2, h / 2)
+        x, y = cap.left() + pad, cap.top() + pad
+        for i in reversed(range(len(shown))):    # the first one on top
+            paint_avatar(pt, QRectF(x + i * step, y, d, d), FRIENDS.record(shown[i]),
+                         ring='scrim')
+        if more:
+            pt.setFont(f)
+            pt.setPen(QColor(P['on_art']))
+            pt.drawText(QRectF(x + d + step * (len(shown) - 1), y, more_w, d),
+                        Qt.AlignmentFlag.AlignCenter, more)
 
     def _paint_new_badge(self, pt: QPainter, body: QRectF):
         """Installed but never played: a small "New" pill, top-left."""
@@ -569,5 +609,6 @@ class GameTile(QFrame):
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART, art_lookup, COVER_KINDS, placeholder_pixmap, WIDE_KINDS  # noqa: E402
 from .gameinfo import install_fraction, is_installed, play_label, session_minutes  # noqa: E402
+from .friends import FRIENDS, paint_avatar  # noqa: E402
 from .input import input_mode  # noqa: E402
 from .jobs import Job  # noqa: E402

@@ -1347,6 +1347,7 @@ class DetailsPanel(QFrame):
             lay.addWidget(w)                     # parent first: a parentless show is a window
             w.setVisible(key == 'overview')
         lay.addStretch()
+        FRIENDS.changed.connect(self._friends_changed)
 
         # ---- batch (several selected) ----
         batch = QWidget()
@@ -1393,6 +1394,9 @@ class DetailsPanel(QFrame):
         self.context = GameContext()
         self.context.filter_library.connect(self.filter_library)
         v.addWidget(self.context)
+        # Friends who own it (w-81): hidden until there is something to say.
+        self.friends_box = FriendsBlock()
+        v.addWidget(self.friends_box)
         self.glance_box, gv = self._column(SP['2'])
         gv.addWidget(kicker("At a glance"))
         self.glance = QGridLayout()
@@ -2122,7 +2126,29 @@ class DetailsPanel(QFrame):
         rel = status_pill(self._context_facts())
         if rel:
             out.append(rel)
+        live = [r.get('name') or '' for r in FRIENDS.playing_in(_game_store_id(g))]
+        if live:
+            out.append((f"{names_text(live)} {'is' if len(live) == 1 else 'are'} playing",
+                        'live_on_art'))
         return [(t, r) for t, r in out if t]
+
+    def _sync_pills(self):
+        pills = self._pills(self.game)
+        if pills != getattr(self, '_pills_shown', None):
+            self._pills_shown = pills
+            clear_layout(self.chips)
+            for text, role in pills:
+                lab = plain_label(text, None) if role == 'live_on_art' else label(text, None)
+                lab.setStyleSheet(pill_qss(P['glass_hi'], P[role] if role and role != 'muted'
+                                           else P['on_art']))
+                lab.setFixedHeight(PILL_H)
+                self.chips.addWidget(lab)
+
+    def _friends_changed(self):
+        """New friends data: the hero pill and the Friends block."""
+        if self.__dict__.get('_built') and self.game and len(self.games) <= 1:
+            self._sync_pills()
+            self.friends_box.set_game(self.game)
 
     def _fill(self):
         g = self.game
@@ -2132,16 +2158,7 @@ class DetailsPanel(QFrame):
         self.name.setText(g.get('display_name', g['slug']))
         self.name.setVisible(not self.hero.has_logo())     # the logo already names it
         src = g.get('source', 'nexus')
-        pills = self._pills(g)
-        if pills != getattr(self, '_pills_shown', None):
-            self._pills_shown = pills
-            clear_layout(self.chips)
-            for text, role in pills:
-                lab = label(text, None)
-                lab.setStyleSheet(pill_qss(P['glass_hi'], P[role] if role and role != 'muted'
-                                           else P['on_art']))
-                lab.setFixedHeight(PILL_H)
-                self.chips.addWidget(lab)
+        self._sync_pills()
         external = src != 'nexus'
         self._launch_full = not external and has('launch_profiles')
         for w in (self.runtime_box, self.perf, self.adv_box):
@@ -2210,6 +2227,7 @@ class DetailsPanel(QFrame):
         ctx = self.context.set_facts(rec, st.get('blurb') or '')
         glance = self._fill_glance(rec)
         similar = self._fill_similar()
+        self.friends_box.set_game(self.game)
         self.bare_note.setVisible(not (ctx or glance or similar))
 
     # Kept for older callers: the context block now lives in Overview.
@@ -2698,7 +2716,8 @@ from .actions import glance_rows  # noqa: E402
 from .app import main  # noqa: E402
 from .art import (ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS, placeholder_pixmap,
     rounded_pixmap)  # noqa: E402
-from .dashboard import ClickRow  # noqa: E402
+from .dashboard import _game_store_id, ClickRow  # noqa: E402
+from .friends import FRIENDS, FriendsBlock, names_text  # noqa: E402
 from .gameinfo import (anticheat_warning, is_installed, play_enabled, play_label,
     SOURCE_LABEL)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

@@ -1402,6 +1402,7 @@ class SettingsPage(QWidget):
             self.fr_refresh.setEnabled(self._friends_have_key())
         except RuntimeError:                    # the page is gone
             return
+        FRIENDS.set_answer(data)                # the game page and Library see it too
         if data:
             acct = data.get('account') or {}
             who = acct.get('persona') or data.get('me')
@@ -2247,6 +2248,7 @@ class SettingsPage(QWidget):
 from .config import ConfigError, load_config, save_config  # noqa: E402
 from .dashboard import ClickRow, GlyphBadge  # noqa: E402
 from .details import Disclosure, ElideLabel  # noqa: E402
+from .friends import FRIENDS  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402

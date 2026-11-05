@@ -140,13 +140,19 @@ class LibraryMixin:
         # (Epic) shows once the library has a game from it (_store_chips).
         for key, text in (('all', "All"), ('nexus', "Repacks"), ('steam', "Steam"),
                           *((('heroic', "Heroic"),) if has('heroic') else ()),
-                          ('epic', "Epic"), ('favorite', "★ Favourites")):
+                          ('epic', "Epic"), ('favorite', "★ Favourites"),
+                          ('friends', "Friends own")):
             c = QPushButton(text)
             c.setObjectName("Chip")
             c.setCheckable(True)
             c.clicked.connect(lambda _=False, k=key: self._set_chip(k))
             cl.addWidget(c)
             self.chips[key] = c
+        # Games a friend whose game details are public owns (w-81): shown
+        # once friends data says so (_store_chips).
+        set_glyph_icon(self.chips['friends'], G['friends'], 14, 'subtext', on_role='accent')
+        self.chips['friends'].setToolTip("Games your Steam friends own")
+        FRIENDS.changed.connect(self._friends_changed)
         self.chips['all'].setChecked(True)
         self._chip = 'all'
         self._store_chips()
@@ -276,6 +282,9 @@ class LibraryMixin:
         for key in STORE_CHIPS:
             if key in self.chips:
                 self.chips[key].setVisible(key in have or key == self._chip)
+        if 'friends' in self.chips:
+            self.chips['friends'].setVisible(self._chip == 'friends' or FRIENDS.usable() and any(
+                g.get('friends') for g in getattr(self, '_games', None) or ()))
 
     def _set_chip(self, key):
         key = key if key in self.chips else 'all'
@@ -691,6 +700,7 @@ class LibraryMixin:
                 tier = self._protondb.get(str(g.get('appid')))
                 if tier:
                     g['protondb'] = tier
+                self._friends_of(g)
                 # Repacks record when Nexus installed them; Steam games when
                 # their manifest was written — one "added" date for both.
                 g['added_at'] = g.get('added_at') or g.get('installed_at')
@@ -724,6 +734,7 @@ class LibraryMixin:
             return
         self._load_protondb()
         self._watch_installs()
+        self._load_friends()
         if data is not None and not self._feed_timer.isActive():
             self._feed_timer.start(8000)            # first check soon, then every 6 h
         if data is not None and not getattr(self, '_art_filled', False) \
@@ -781,6 +792,7 @@ class LibraryMixin:
         chip = self._chip
         in_chip = (lambda g: True) if chip == 'all' else \
             (lambda g: g.get('favorite')) if chip == 'favorite' else \
+            (lambda g: g.get('friends')) if chip == 'friends' else \
             (lambda g, n=chip[4:]: n in (g.get('collections') or ())) \
             if chip.startswith('col:') else \
             (lambda g: g.get('source', 'nexus') == chip)
@@ -828,6 +840,9 @@ class LibraryMixin:
                                     and in_own(g)])
         self.count_label.setText(f"{n} of {total}" if n != total else
                                  f"{n} game{'s' if n != 1 else ''}")
+        badge = chip == 'friends'                   # avatars on tiles only while filtering
+        self.library.set_friends_badge(badge)
+        self.home.set_friends_badge(badge)
         if isinstance(target, HomeView):            # shelves are rebuilt: keep the place
             with KeepPlace(target):
                 target.set_games(games, empty, pending)
@@ -838,6 +853,40 @@ class LibraryMixin:
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
         self._refresh_home(empty, pending)
+
+    # ---- Steam friends (w-81) ----
+    def _friends_of(self, g: dict):
+        """g['friends']: the public friends who own it, most played first."""
+        ids = FRIENDS.owner_ids_of(g)
+        if ids:
+            g['friends'] = ids
+        else:
+            g.pop('friends', None)
+
+    def _load_friends(self):
+        """What the CLI knows of your Steam friends (it asks Steam itself
+        when its copy is stale), kept 5 minutes; only with Show friends on."""
+        if not self.config.get('friends_enabled'):
+            FRIENDS.reset()
+            if self._chip == 'friends':
+                self._set_chip('all')
+            return
+        cli_json(FRIENDS_ARGS, self._friends_done, 90000, ttl=300)
+
+    def _friends_done(self, data, _err):
+        FRIENDS.set_answer(data)              # None (it failed): the last answer stays
+        if self._chip == 'friends' and data is not None and not FRIENDS.usable():
+            self._set_chip('all')
+
+    def _friends_changed(self):
+        """New friends data: who owns what, the chip, badges and tooltips."""
+        for g in getattr(self, '_games', None) or ():
+            self._friends_of(g)
+        self._store_chips()
+        self.apply_filter()
+        for v in (self.library, self.home, getattr(self, 'homeview', None)):
+            if v is not None:
+                v.refresh_friends()
 
     def _in_own(self):
         """The Installed / Not installed / Everything switch as a test on a
@@ -1236,6 +1285,7 @@ from .actions import build_game_menu, game_actions  # noqa: E402
 from .art import ART  # noqa: E402
 from .dashboard import _game_store_id, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
+from .friends import FRIENDS, FRIENDS_ARGS  # noqa: E402
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
@@ -1244,6 +1294,7 @@ from .input import focus_and_reveal  # noqa: E402
 from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import amp, icon_button, label, SegmentedControl, WrapRow  # noqa: E402
+from .widgets import (amp, icon_button, label, SegmentedControl, set_glyph_icon,
+    WrapRow)  # noqa: E402
 from .topbar import CollectionChip, CollectionLookPicker  # noqa: E402
 from .prefs import MAX_PINNED  # noqa: E402
