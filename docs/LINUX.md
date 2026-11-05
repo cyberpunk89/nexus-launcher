@@ -994,8 +994,9 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 | `--news-source NAME on\|off` | Switch a news source on or off: a source id from the News page, `steam` (news for your games) or `proton` (releases) |
 | `--notify-test` | Send a test push to the phone targets in `[notify]` |
 
-**Bug reports** (nothing is sent anywhere; the link opens GitHub's issue form, prefilled). A
-crash leaves a file in `~/.local/share/nexus/logs/reports/` (0600). A report replaces the home
+**Bug reports** (nothing is sent until you ask: `--report-url` opens GitHub's issue form,
+prefilled, and `--report-send` posts the report through the Nexus reports relay, no GitHub
+account needed; it waits in a private inbox until it is checked). A crash leaves a file in `~/.local/share/nexus/logs/reports/` (0600). A report replaces the home
 folder, user name, hostname, install and Steam paths, game names, quoted strings, emails,
 addresses and tokens before you see it:
 
@@ -1005,7 +1006,9 @@ addresses and tokens before you see it:
 | `--report-collect [--crash ID] [--game SLUG] [--log-file FILE]` | Gather a report draft about this machine, a crash, a game's last run and a log's last 50 lines; prints the draft id |
 | `--report-preview DRAFT` | The exact issue text, every line numbered in `--json` |
 | `--report-url DRAFT` | The prefilled `issues/new` link; a report too long for a link is printed to paste |
-| `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
+| `--report-send DRAFT [--contact NAME] [--mention-me]` | Send it anonymously through the relay ([nexus-reports](https://github.com/cyberpunk89/nexus-reports)). `--contact` is your GitHub username, kept in the private inbox; `--mention-me` puts `@NAME` on the public issue. A crash already reported counts one more instead of filing again |
+| `--report-status` | Whether the relay takes reports right now, and why not |
+| `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url / send: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
 | `--report-dismiss ID` | Forget one crash report |
 
 ## Config & data

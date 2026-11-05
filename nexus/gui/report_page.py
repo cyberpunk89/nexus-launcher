@@ -7,14 +7,18 @@ draft (slow: Doctor runs), --report-preview renders it with the user's
 choices and --report-url turns it into the prefilled issue link. This page
 never renders a report itself, so what it shows is what the CLI would send.
 Nothing leaves the computer without a button press: Open on GitHub only
-opens the browser on a prefilled form, which the user still submits."""
+opens the browser on a prefilled form, which the user still submits, and
+Send anonymously (--report-send) posts the same text to the reports relay,
+which holds it in a private inbox until it is checked. --report-status says
+on load whether the relay takes reports; the button greys out with the
+reason when it doesn't, and is hidden when [report] relay = false."""
 
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout,
-    QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+    QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import platform
 from .theme import FS, G, P, SP
@@ -27,6 +31,7 @@ PROTON_HINT = "Adding the Proton log helps most with game crashes."
 GAME_HINT = "The game's title and appid. Off unless you tick it, for this report only."
 DEBOUNCE_MS = 300
 GITHUB = 'https://github.com/'
+GH_USER = r'[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}'
 
 
 def when_text(stamp: str | None) -> str:
@@ -112,6 +117,8 @@ class ReportPage(QWidget):
         self._draft = None                 # {draft, title, kind, groups, default_exclude}
         self._preview = None               # the last --report-preview answer
         self._removed: set[int] = set()
+        self._relay = None                 # the last --report-status answer
+        self._sending = False
         self._checks: dict[str, QCheckBox] = {}
         self._rows: dict[int, PreviewLine] = {}
         self._heads: dict[str, QWidget] = {}
@@ -183,10 +190,30 @@ class ReportPage(QWidget):
         self.describe.setFixedHeight(96)
         self.describe.textChanged.connect(self._changed)
         ll.addWidget(self.describe)
+        ll.addSpacing(SP['1'])
+        ll.addWidget(label("Contact (only for Send anonymously)", "StatLabel"))
+        self.contact = QLineEdit()
+        self.contact.setObjectName("ReportContact")
+        self.contact.setPlaceholderText("Your GitHub username (optional)")
+        self.contact.setMaxLength(39)
+        from PyQt6.QtCore import QRegularExpression
+        from PyQt6.QtGui import QRegularExpressionValidator
+        self.contact.setValidator(QRegularExpressionValidator(
+            QRegularExpression('@?' + GH_USER), self.contact))
+        self.contact.setToolTip("Kept in the private inbox so we can ask you about it. It "
+                                "never goes on the public issue unless you tick Mention me.")
+        self.contact.textChanged.connect(self._contact_changed)
+        ll.addWidget(self.contact)
+        self.mention = QCheckBox("Mention me on the public issue")
+        self.mention.setToolTip("Puts @username on the issue, so GitHub tells you when it "
+                                "changes")
+        self.mention.setEnabled(False)
+        ll.addWidget(self.mention)
         privacy = label("Your home folder, user name, game names and paths are replaced "
                         "before you see the preview. Nothing leaves this computer until you "
-                        "press a button below, and GitHub still asks before it files "
-                        "anything.", "Muted", wrap=True)
+                        "press a button below. Send anonymously needs no GitHub account: the "
+                        "report waits in a private inbox until it is checked.", "Muted",
+                        wrap=True)
         ll.addWidget(privacy)
         ll.addStretch()
         side = QScrollArea()                  # a short window scrolls the choices
@@ -238,6 +265,11 @@ class ReportPage(QWidget):
                                    "submit it there")
         self.btn_github.clicked.connect(self._github)
         foot.addWidget(self.btn_github)
+        self.btn_send = QPushButton("Send anonymously")
+        self.btn_send.setToolTip("Sends exactly the preview through the Nexus reports relay. "
+                                 "No GitHub account needed")
+        self.btn_send.clicked.connect(self._send)
+        foot.addWidget(self.btn_send)
         lay.addLayout(foot)
         self._set_ready(False)
         self.btn_forget.setVisible(False)
@@ -258,6 +290,7 @@ class ReportPage(QWidget):
         self._loaded = True
         self._gen += 1
         self._set_ready(False)
+        cli_json(['--report-status', '--json'], self._on_status, 30000)
         self.status.setText("Looking for crash reports…")
         cli_json(['--report-pending', '--json'], self._on_pending, 30000)
 
@@ -447,6 +480,78 @@ class ReportPage(QWidget):
     def _set_ready(self, on: bool):
         for b in (self.btn_github, self.btn_copy, self.btn_save):
             b.setEnabled(on)
+        self._ready = on
+        self._update_send()
+
+    # ---- the relay ----
+    def _on_status(self, data, err):
+        self._relay = data or {'enabled': False,
+                               'reason': f"Couldn't reach the relay: {err or 'no answer'}"}
+        self._update_send()
+
+    def relay_reason(self) -> str | None:
+        """Why Send anonymously is off, or None when it can be pressed."""
+        r = self._relay
+        if r is None:
+            return "Checking whether the relay takes reports…"
+        if self._sending:
+            return "Sending…"
+        return None if r.get('enabled') else (r.get('reason') or "The relay is off.")
+
+    def _update_send(self):
+        r = self._relay or {}
+        hidden = bool(r.get('off'))          # [report] relay = false
+        self.btn_send.setVisible(not hidden)
+        self.contact.setEnabled(not hidden)
+        reason = self.relay_reason()
+        self.btn_send.setEnabled(bool(getattr(self, '_ready', False)) and reason is None)
+        self.btn_send.setToolTip(reason or "Sends exactly the preview through the Nexus "
+                                           "reports relay. No GitHub account needed")
+
+    def _contact_changed(self, text):
+        self.mention.setEnabled(bool(text.strip().lstrip('@')))
+        if not self.mention.isEnabled():
+            self.mention.setChecked(False)
+
+    def contact_args(self) -> list[str]:
+        name = self.contact.text().strip().lstrip('@')
+        out = ['--contact', name] if name and self.contact.hasAcceptableInput() else []
+        return out + (['--mention-me'] if out and self.mention.isChecked() else [])
+
+    def _send(self):
+        if not self._draft or self.relay_reason():
+            return
+        self._timer.stop()
+        gen = self._gen
+        self._sending = True
+        self._update_send()
+        self.status.setText("Sending the report…")
+
+        def done(data, err):
+            self._sending = False
+            self._update_send()
+            if gen != self._gen:
+                return
+            data = data or {}
+            if 'error' in data or not data.get('status'):
+                e = data.get('error') or {}
+                msg = e.get('message') if isinstance(e, dict) else None
+                self.status.setText(f"Not sent: {msg or err or 'no answer'}")
+                self.toast.emit(f"The report wasn't sent: {msg or err or 'no answer'}",
+                                'error')
+                return
+            if data['status'] == 'counted':
+                msg = "Sent. This problem was already reported, so it now counts one more."
+            else:
+                msg = ("Sent. It waits in a private inbox until it is checked, then goes "
+                       "public without your contact.")
+            if data.get('issue'):
+                msg += f" Issue: {data['issue']}"
+            self.status.setText(msg + (" You can forget this crash now."
+                                       if self.current_crash() else ''))
+            self.toast.emit("Report sent. Thank you!", 'success')
+        cli_json(['--report-send', self._draft['draft'], *self.selection_args(),
+                  *self.contact_args(), '--json'], done, 60000)
 
     # ---- the buttons ----
     def _render(self, then):

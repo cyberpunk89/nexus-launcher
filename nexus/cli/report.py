@@ -6,17 +6,21 @@ drives the same flags):
                                      gather a scrubbed draft (slow: Doctor)
     --report-preview DRAFT           the exact issue text
     --report-url DRAFT               the prefilled GitHub issue link
+    --report-send DRAFT              send it anonymously through the relay
+    --report-status                  is the relay taking reports?
     --report-dismiss ID              forget one crash file
 
-Preview and url take --exclude GROUP[,GROUP], --remove-line N (repeat),
+Preview, url and send take --exclude GROUP[,GROUP], --remove-line N (repeat),
 --with-game and --describe TEXT. Every one supports --json. Ids are checked
-against their pattern and never used as a path of their own."""
+against their pattern and never used as a path of their own. --report-send
+also takes --contact NAME (a GitHub username, kept in the private inbox)
+and --mention-me (put @NAME on the public issue)."""
 
 import json
 import sys
 from pathlib import Path
 
-from nexus.report import crash as C, render as RD, scrub as S, sysinfo
+from nexus.report import crash as C, relay as RL, render as RD, scrub as S, sysinfo
 
 
 def _fail(as_json: bool, kind: str, message: str) -> None:
@@ -117,6 +121,58 @@ def cmd_report_url(args) -> None:
         print(link['clipboard'])
 
 
+def _relay_url(as_json: bool) -> str:
+    url = RL.relay_url(load_config())
+    if not url:
+        _fail(as_json, 'off', "Anonymous reports are turned off ([report] relay = false).")
+    return url
+
+
+def cmd_report_status(as_json: bool) -> None:
+    url = RL.relay_url(load_config())
+    out = {'enabled': False, 'off': True,
+                       'reason': "Turned off in config.toml ([report] relay = false)."} \
+        if not url else RL.status(url)
+    if url and 'error' not in out:
+        from nexus import __version__
+        ok = out.get('mode') != 'off'
+        reason = None if ok else "Anonymous reports are paused for now."
+        if ok and RL.version_tuple(__version__) < RL.version_tuple(out.get('min_client') or '0'):
+            ok, reason = False, f"This Nexus is too old; update to {out['min_client']} or later."
+        out = {**out, 'enabled': ok, 'reason': reason, 'url': url}
+    elif url:
+        out = {'enabled': False, 'reason': out.get('reason'), 'url': url}
+    if as_json:
+        print(json.dumps(out))
+    else:
+        print(f"Relay: {out.get('url') or 'off'}")
+        print("Taking reports." if out['enabled'] else f"Not taking reports: {out['reason']}")
+
+
+def cmd_report_send(args) -> None:
+    as_json = args.json
+    draft = _draft(args.report_send, as_json)
+    url = _relay_url(as_json)
+    contact = (args.report_contact or '').strip().lstrip('@') or None
+    if contact and not RL.GH_USER.match(contact):
+        _fail(as_json, 'bad-contact', f"{contact!r} isn't a GitHub username.")
+    body = RL.payload(draft, _selection(args, draft), contact, args.report_mention_me)
+    answer = RL.send(url, body)
+    if 'error' in answer:
+        _fail(as_json, answer['error'], answer.get('reason') or "The relay refused the report.")
+    RL.note_sent(body, answer)
+    if as_json:
+        print(json.dumps({'draft': draft['id'], **answer}))
+        return
+    if answer.get('status') == 'counted':
+        print("Sent. This problem was already reported; it now counts one more.")
+    else:
+        print("Sent. It waits in the private inbox until it is checked, then goes public "
+              "without your contact.")
+    if answer.get('issue'):
+        print(answer['issue'])
+
+
 def cmd_report_dismiss(crash_id: str, as_json: bool) -> None:
     if not C.CRASH_ID.match(crash_id or ''):
         _fail(as_json, 'bad-id', f"{crash_id!r} isn't a crash id.")
@@ -131,4 +187,5 @@ def cmd_report_dismiss(crash_id: str, as_json: bool) -> None:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .config import load_config  # noqa: E402
 from .registry import registry_get  # noqa: E402

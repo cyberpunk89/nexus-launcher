@@ -544,19 +544,29 @@ def build_parser() -> argparse.ArgumentParser:
     g8.add_argument('--report-url', metavar='DRAFT', dest='report_url',
                     help="Print the prefilled GitHub issue link for a report draft (a long "
                          "report is printed too, to paste)")
+    g8.add_argument('--report-send', metavar='DRAFT', dest='report_send',
+                    help='Send a report draft anonymously through the Nexus reports relay '
+                         '(no GitHub account needed; it waits in a private inbox first)')
+    g8.add_argument('--report-status', action='store_true', dest='report_status',
+                    help='Say whether the reports relay is taking reports')
+    g8.add_argument('--contact', metavar='NAME', dest='report_contact',
+                    help='With --report-send: your GitHub username, kept in the private '
+                         'inbox only (optional)')
+    g8.add_argument('--mention-me', action='store_true', dest='report_mention_me',
+                    help='With --report-send --contact: put @NAME on the public issue')
     g8.add_argument('--report-dismiss', metavar='ID', dest='report_dismiss',
                     help='Forget one crash report')
     g8.add_argument('--exclude', metavar='GROUP[,GROUP]', action='append',
                     dest='report_exclude',
-                    help='With --report-preview/--report-url: leave these groups out '
+                    help='With --report-preview/-url/-send: leave these groups out '
                          '(an empty value includes every group, the Proton log too)')
     g8.add_argument('--remove-line', metavar='N', action='append', dest='report_remove_line',
-                    help='With --report-preview/--report-url: blank this numbered line '
+                    help='With --report-preview/-url/-send: blank this numbered line '
                          '(repeat, or N,M)')
     g8.add_argument('--with-game', action='store_true', dest='report_with_game',
-                    help="With --report-preview/--report-url: include the game's name")
+                    help="With --report-preview/-url/-send: include the game's name")
     g8.add_argument('--describe', metavar='TEXT', dest='report_describe',
-                    help='With --report-preview/--report-url: what happened, in your words')
+                    help='With --report-preview/-url/-send: what happened, in your words')
     _hide_unavailable(parser)
     return parser
 
@@ -819,6 +829,8 @@ COMMANDS = (
     ('report_collect', lambda a, base: cmd_report_collect(a)),
     ('report_preview', lambda a, base: cmd_report_preview(a)),
     ('report_url', lambda a, base: cmd_report_url(a)),
+    ('report_send', lambda a, base: cmd_report_send(a)),
+    ('report_status', lambda a, base: cmd_report_status(a.json)),
     ('report_dismiss', lambda a, base: cmd_report_dismiss(a.report_dismiss, a.json)),
     ('list_steam_accounts', lambda a, base: cmd_list_steam_accounts()),
     ('doctor', lambda a, base: cmd_doctor(base, as_json=a.json)),
@@ -1028,4 +1040,4 @@ from .importgame import cmd_add_exe, cmd_import  # noqa: E402
 from .move import cmd_move, move_targets  # noqa: E402
 from .snapshots import cmd_snapshots  # noqa: E402
 from .report import (cmd_report_collect, cmd_report_dismiss, cmd_report_pending,
-    cmd_report_preview, cmd_report_url)  # noqa: E402
+    cmd_report_preview, cmd_report_send, cmd_report_status, cmd_report_url)  # noqa: E402

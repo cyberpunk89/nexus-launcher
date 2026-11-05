@@ -40,7 +40,7 @@ def fake_games():
 CRASH_ID = '20261105T120000Z-abcd'
 
 
-def fake_report_cli(url_clip=None, calls=None):
+def fake_report_cli(url_clip=None, calls=None, relay=None, send=None):
     """cli_json for the Report page: canned answers per flag, at once."""
     lines = [{'n': 1, 'group': 'error', 'text': 'Type: KeyError'},
              {'n': 2, 'group': 'app', 'text': 'Version: 0.5.3'},
@@ -80,6 +80,11 @@ def fake_report_cli(url_clip=None, calls=None):
                 'clipboard': url_clip}, '')
         elif flag == '--report-dismiss':
             cb({'dismissed': True}, '')
+        elif flag == '--report-status':
+            cb(relay if relay is not None else {'enabled': True, 'mode': 'hold',
+                                                'url': 'https://relay.invalid'}, '')
+        elif flag == '--report-send':
+            cb(send or {'status': 'filed', 'where': 'inbox', 'issue': None}, '')
         else:
             cb(None, 'not faked')
     return cli
@@ -2053,6 +2058,44 @@ class Window(unittest.TestCase):
         a._debug_append(None, "after 1\nafter 2\n")
         tail = a.recent_debug(5)
         self.assertEqual(tail, ['held 27', 'held 28', 'held 29', 'after 1', 'after 2'])
+
+    def test_report_page_send_anonymously(self):
+        """Send anonymously posts the same selection plus the contact; it is
+        greyed with the reason when the relay is off, hidden when turned off
+        in config.toml."""
+        w = self.win
+        calls = []
+        with patch_gui('cli_json', fake_report_cli(None, calls)):
+            w.open_report(CRASH_ID)
+            QApplication.processEvents()
+            page = w.report
+            self.assertTrue(page.btn_send.isEnabled())
+            self.assertFalse(page.mention.isEnabled())
+            page.contact.setText('@some-user')
+            page.mention.setChecked(True)
+            page.btn_send.click()
+            QApplication.processEvents()
+        sent = next(c for c in calls if c[0] == '--report-send')
+        self.assertEqual(sent[1], 'abcdef012345')
+        self.assertIn('--contact', sent)
+        self.assertEqual(sent[sent.index('--contact') + 1], 'some-user')
+        self.assertIn('--mention-me', sent)
+        self.assertIn('private inbox', page.status.text())
+        page.contact.setText('bad name!')                  # refused by the validator
+        self.assertEqual(page.contact_args(), [])
+        off = {'enabled': False, 'mode': 'off', 'reason': 'Paused for now.',
+               'url': 'https://relay.invalid'}
+        with patch_gui('cli_json', fake_report_cli(None, None, relay=off)):
+            page.reload()
+            QApplication.processEvents()
+            self.assertFalse(page.btn_send.isHidden())
+            self.assertFalse(page.btn_send.isEnabled())
+            self.assertEqual(page.btn_send.toolTip(), 'Paused for now.')
+        cfg_off = {'enabled': False, 'off': True, 'reason': 'Turned off in config.toml'}
+        with patch_gui('cli_json', fake_report_cli(None, None, relay=cfg_off)):
+            page.reload()
+            QApplication.processEvents()
+            self.assertTrue(page.btn_send.isHidden())
 
     def test_report_page_long_body_copies(self):
         """A report past the link limit: Open on GitHub copies the body,

@@ -153,4 +153,4 @@ from .backup import (
     keep_secrets, strip_secrets)  # noqa: F401
 from .report import (
     cmd_report_collect, cmd_report_dismiss, cmd_report_pending, cmd_report_preview,
-    cmd_report_url)  # noqa: F401
+    cmd_report_send, cmd_report_status, cmd_report_url)  # noqa: F401

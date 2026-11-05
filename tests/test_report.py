@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus import features  # noqa: E402
-from nexus.report import crash, render as RD, scrub as S, sysinfo  # noqa: E402
+from nexus.report import crash, relay as RL, render as RD, scrub as S, sysinfo  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 CLI = REPO / 'bin' / 'nexus-cli'
@@ -451,6 +451,46 @@ class LaunchLog(unittest.TestCase):
         self.assertEqual(last_exit_code(slug), 3)
 
 
+class Relay(unittest.TestCase):
+    def test_payload_is_the_preview(self):
+        draft = big_draft(3)
+        body = RL.payload(draft, {'exclude': ['runtime'], 'remove': [10], 'with_game': False,
+                                  'description': 'It froze'}, '@someone', True)
+        self.assertEqual(set(body['groups']), {'app', 'system', 'log'})   # no game, no runtime
+        self.assertEqual(body['groups']['log'][0], RD.REMOVED)            # line 10 = log 1
+        self.assertEqual(body['removed_lines'], 1)
+        self.assertEqual((body['contact'], body['mention_me']), ('someone', True))
+        self.assertEqual(body['description'], 'It froze')
+        self.assertNotIn('Majora', json.dumps(body))
+        none = RL.payload(draft, {}, '', True)
+        self.assertEqual((none['contact'], none['mention_me']), (None, False))
+        long = dict(draft, groups={'app': ['x' * 900]})
+        self.assertEqual(len(RL.payload(long, {})['groups']['app'][0]), RL.MAX_LINE)
+
+    def test_relay_url(self):
+        self.assertEqual(RL.relay_url({}), RL.DEFAULT_URL)
+        self.assertIsNone(RL.relay_url({'report_relay': False}))
+        self.assertEqual(RL.relay_url({'report_url': 'https://x.test/'}), 'https://x.test')
+
+    def test_errors_become_reasons(self):
+        import urllib.error
+        err = urllib.error.HTTPError('u', 503, 'x', {}, io.BytesIO(
+            b'{"error": "off", "reason": "Paused."}'))
+        with mock.patch('urllib.request.urlopen', side_effect=err):
+            self.assertEqual(RL.send('https://x.test', {}), {'error': 'off', 'reason': 'Paused.'})
+        with mock.patch('urllib.request.urlopen', side_effect=urllib.error.URLError('down')):
+            self.assertEqual(RL.status('https://x.test')['error'], 'offline')
+
+    def test_sent_log_has_no_contact(self):
+        with mock.patch.object(crash, '_dir', return_value=Path(tempfile.mkdtemp())) as d:
+            RL.note_sent({'kind': 'crash', 'sig': 'abc', 'contact': 'someone'},
+                         {'status': 'filed', 'where': 'inbox'})
+            text = (d.return_value / 'sent.jsonl').read_text()
+            self.assertIn('filed', text)
+            self.assertNotIn('someone', text)
+            self.assertEqual((d.return_value / 'sent.jsonl').stat().st_mode & 0o777, 0o600)
+
+
 class Cli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -482,6 +522,25 @@ class Cli(unittest.TestCase):
         self.assertIn('Majora', link['url'].replace('%27', "'").replace('+', ' '))
         r = self.cli('--report-pending', '--json')
         self.assertEqual(json.loads(r.stdout), {'reports': []})
+
+    def test_relay_off_in_config(self):
+        cfg = tests.sandbox.config_dir(self.home) / 'config.toml'
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text('[report]\nrelay = false\n', encoding='utf-8')
+        r = self.cli('--report-status', '--json')
+        self.assertEqual(json.loads(r.stdout)['off'], True)
+        draft = big_draft(1)
+        (self.reports / f"draft-{draft['id']}.json").write_text(json.dumps(draft),
+                                                                encoding='utf-8')
+        r = self.cli('--report-send', draft['id'], '--json')
+        self.assertEqual((r.returncode, json.loads(r.stdout)['error']['kind']), (1, 'off'))
+
+    def test_send_refuses_a_bad_contact(self):
+        draft = big_draft(1)
+        (self.reports / f"draft-{draft['id']}.json").write_text(json.dumps(draft),
+                                                                encoding='utf-8')
+        r = self.cli('--report-send', draft['id'], '--contact', 'not a user', '--json')
+        self.assertEqual(json.loads(r.stdout)['error']['kind'], 'bad-contact')
 
     def test_bad_ids_are_refused(self):
         for args in (('--report-preview', '../../etc'), ('--report-url', 'nope'),

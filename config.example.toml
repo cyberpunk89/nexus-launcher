@@ -91,3 +91,7 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 # password = ""
 # download_dir = "/home/you/Games/Install"   # full path; default: the first [install] scan_dirs
 # seed_ratio = 1.0                       # stop seeding at this ratio
+
+[report]                  # "Report a problem"
+# relay = true                           # false hides "Send anonymously" (GitHub account path only)
+# url = "https://..."                    # another reports relay (testing, or a fork's own)
