@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in Nexus broke or crashed.
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Nexus's "Report a problem" page (or `nexus-cli --report-url`) fills in this form for you, with names and paths already taken out. Everything here is public.
+  - type: input
+    id: version
+    attributes:
+      label: Nexus version
+      description: Shown in Settings > About.
+      placeholder: 0.5.3
+    validations:
+      required: true
+  - type: input
+    id: edition
+    attributes:
+      label: Edition
+      description: linux or windows
+      placeholder: linux
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Steps to make it happen again help most.
+    validations:
+      required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: The report Nexus made. If the link said so, paste it here from your clipboard.
+    validations:
+      required: false

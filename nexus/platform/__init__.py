@@ -119,6 +119,24 @@ memory
     meminfo()                               {MemTotal, MemAvailable, SwapTotal,
                                             SwapFree, ...} in kB; {} if unknown
 
+this machine (bug reports and the launch log's system block)
+    os_release() -> {id, version, name, kernel, arch}
+                                            the distro from os-release and
+                                            uname; Windows '10'/'11' with its
+                                            DisplayVersion and build from the
+                                            registry (+ 'build'). 'unknown'
+                                            where it can't be read
+    cpu_info() -> {model, cores, threads}   /proc/cpuinfo; the registry's
+                                            ProcessorNameString on Windows
+                                            (cores None there)
+    gpus() -> [{vendor, name, gen, integrated, driver, driver_version}]
+                                            tips.hardware() plus the kernel
+                                            driver bound to each and NVIDIA's
+                                            version; the display class key
+                                            (DriverDesc, ProviderName,
+                                            DriverVersion) on Windows. Never
+                                            runs a program; [] if unknown
+
 shortcuts (Windows)
     create_shortcut(path, target, args='', workdir=None, icon=None)
                                             write a .lnk; Linux:
@@ -214,6 +232,9 @@ new_group = _impl.new_group
 kill_tree = _impl.kill_tree
 stop_process = _impl.stop_process
 meminfo = _impl.meminfo
+os_release = _impl.os_release
+cpu_info = _impl.cpu_info
+gpus = _impl.gpus
 open_url = _impl.open_url
 cli_command = _impl.cli_command
 console_encoding = _impl.console_encoding

@@ -551,6 +551,66 @@ class PlatformEdid(unittest.TestCase):
             self.assertIsNone(windows.screen_size_mm(0, 0))
 
 
+class MachineProbes(unittest.TestCase):
+    """os_release / cpu_info / gpus: what a bug report says about the PC."""
+
+    def test_shapes_on_this_machine(self):
+        osr, cpu = platform.os_release(), platform.cpu_info()
+        self.assertTrue({'id', 'version', 'name', 'kernel', 'arch'} <= set(osr))
+        self.assertTrue(all(isinstance(v, str) and v for v in osr.values()))
+        self.assertTrue(cpu['model'])
+        for g in platform.gpus():
+            self.assertTrue({'vendor', 'name', 'integrated', 'driver', 'driver_version'}
+                            <= set(g))
+
+    @windows_only
+    def test_windows_reads_the_registry(self):
+        from nexus.platform import windows
+        nt, cpu, cls = windows._NT_VERSION, windows._CPU_KEY, windows._DISPLAY_CLASS
+        reg = {nt: {'CurrentBuild': '22631', 'UBR': 4317, 'DisplayVersion': '23H2'},
+               cpu: {'ProcessorNameString': 'AMD Ryzen 7 7800X3D 8-Core Processor   '},
+               cls + r'\0000': {'DriverDesc': 'AMD Radeon RX 7900 XTX',
+                                'DriverVersion': '32.0.11021.1011',
+                                'ProviderName': 'Advanced Micro Devices, Inc.'},
+               cls + r'\0002': {'DriverDesc': 'Microsoft Basic Display Adapter',
+                                'ProviderName': 'Microsoft'}}
+
+        class Key:
+            def __init__(self, path):
+                if path not in reg:
+                    raise FileNotFoundError(path)
+                self.path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def query(key, name):
+            if name not in reg[key.path]:
+                raise FileNotFoundError(name)
+            return reg[key.path][name], 1
+
+        with mock.patch.object(windows.winreg, 'OpenKey', lambda root, path: Key(path)), \
+                mock.patch.object(windows.winreg, 'QueryValueEx', query):
+            osr, c, gs = windows.os_release(), windows.cpu_info(), windows.gpus()
+        self.assertEqual((osr['version'], osr['build']), ('11', '22631.4317'))
+        self.assertEqual(osr['name'], 'Windows 11 23H2')
+        self.assertEqual(c['model'], 'AMD Ryzen 7 7800X3D 8-Core Processor')
+        self.assertEqual(len(gs), 1)          # the basic adapter is left out
+        self.assertEqual((gs[0]['vendor'], gs[0]['driver_version']), ('amd', '32.0.11021.1011'))
+        self.assertFalse(gs[0]['integrated'])
+
+    @windows_only
+    def test_windows_unknown_when_the_registry_says_nothing(self):
+        from nexus.platform import windows
+        with mock.patch.object(windows.winreg, 'OpenKey', side_effect=OSError):
+            self.assertEqual(windows.os_release()['version'], 'unknown')
+            self.assertEqual(windows.cpu_info()['model'], 'unknown')
+            self.assertEqual(windows.gpus(), [])
+
+
 class ConfigPermissions(unittest.TestCase):
     """--doctor warns about a readable config.toml with a token on Linux only:
     Windows reports 0o666 for every file, so the check would always fire."""

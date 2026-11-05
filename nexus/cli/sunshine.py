@@ -529,6 +529,18 @@ def _start_game(launcher: str, exe: bool, fh) -> int:
         return 1
 
 
+def _system_block() -> list[str]:
+    """This machine in a few lines for the top of the launch log (Heroic
+    does the same), so a log pasted by hand says what it ran on. Nothing
+    personal in it, and no word explain_log takes for trouble; win_play only
+    reads the `# exited` line at the end."""
+    try:
+        from nexus.report import sysinfo
+        return sysinfo.brief()
+    except Exception:                       # noqa: BLE001 — the game starts anyway
+        return []
+
+
 def _run_session(slug: str, launcher: str, out: Path, started: datetime,
                  notes: list[str] = ()) -> tuple[int, float]:
     """Run launch.sh (Linux) or the game's exe from its own folder (Windows),
@@ -536,6 +548,7 @@ def _run_session(slug: str, launcher: str, out: Path, started: datetime,
     (exit code, seconds played)."""
     with open(out, 'w', encoding='utf-8') as fh:
         fh.write(f"# {slug} launched {started.isoformat(timespec='seconds')}\n")
+        fh.write(''.join(f"# {line}\n" for line in _system_block()))
         for n in notes:
             fh.write(n + '\n')
         fh.flush()

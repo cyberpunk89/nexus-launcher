@@ -24,6 +24,7 @@ def main() -> None:
     except (SystemExit, KeyboardInterrupt):
         raise
     except Exception as e:                 # noqa: BLE001 — reported, then exit 1
+        _keep_crash(e)
         import traceback
         traceback.print_exc(file=sys.stderr)
         msg = f"{type(e).__name__}: {e}"
@@ -31,6 +32,18 @@ def main() -> None:
             print(json.dumps({'error': {'kind': 'internal', 'message': msg}}))
         print(f"nexus-cli: internal error — {msg}", file=sys.stderr)
         sys.exit(1)
+
+
+def _keep_crash(e: Exception) -> None:
+    """A crash file for --report-collect: the option names given, never
+    their values. Can't raise."""
+    try:
+        from nexus.report import crash
+        known = set(build_parser()._option_string_actions)
+        flags = [a.split('=', 1)[0] for a in sys.argv[1:] if a.split('=', 1)[0] in known]
+        crash.record('cli-internal', e, flags=flags)
+    except Exception:                      # noqa: BLE001 — the error itself matters more
+        pass
 
 
 # Options whose value (or first value) names a managed game by slug. They
@@ -49,7 +62,7 @@ _SLUG_OPTS = {
     'track_session': '--track-session', 'apply_recipe': '--apply-recipe',
     'explain_log': '--explain-log', 'move': '--move', 'snapshots': '--snapshots',
     'snapshot': '--snapshot', 'rollback': '--rollback', 'delete_snapshot': '--delete-snapshot',
-    'snapshots_enable': '--snapshots-enable',
+    'snapshots_enable': '--snapshots-enable', 'report_game': '--game',
 }
 
 
@@ -512,6 +525,38 @@ def build_parser() -> argparse.ArgumentParser:
     g7.add_argument('--gamedb-delete-sessions', action='store_true',
                     dest='gamedb_delete_sessions',
                     help='Delete every play session this Game-db account got from Nexus')
+    g8 = parser.add_argument_group('bug reports')
+    g8.add_argument('--report-pending', action='store_true', dest='report_pending',
+                    help='List the crash reports waiting to be reported (a native crash '
+                         'left by a closed window becomes one now)')
+    g8.add_argument('--report-collect', action='store_true', dest='report_collect',
+                    help='Gather a scrubbed report draft about this machine (and --crash ID, '
+                         '--game SLUG, --log-file FILE); prints its id')
+    g8.add_argument('--crash', metavar='ID', dest='report_crash',
+                    help='With --report-collect: the crash report to include')
+    g8.add_argument('--game', metavar='SLUG', dest='report_game',
+                    help="With --report-collect: the game whose run went wrong (its name "
+                         "is only shown with --with-game)")
+    g8.add_argument('--log-file', metavar='FILE', dest='report_log_file',
+                    help='With --report-collect: a log whose last 50 lines go in, scrubbed')
+    g8.add_argument('--report-preview', metavar='DRAFT', dest='report_preview',
+                    help='Print the exact issue text of a report draft')
+    g8.add_argument('--report-url', metavar='DRAFT', dest='report_url',
+                    help="Print the prefilled GitHub issue link for a report draft (a long "
+                         "report is printed too, to paste)")
+    g8.add_argument('--report-dismiss', metavar='ID', dest='report_dismiss',
+                    help='Forget one crash report')
+    g8.add_argument('--exclude', metavar='GROUP[,GROUP]', action='append',
+                    dest='report_exclude',
+                    help='With --report-preview/--report-url: leave these groups out '
+                         '(an empty value includes every group, the Proton log too)')
+    g8.add_argument('--remove-line', metavar='N', action='append', dest='report_remove_line',
+                    help='With --report-preview/--report-url: blank this numbered line '
+                         '(repeat, or N,M)')
+    g8.add_argument('--with-game', action='store_true', dest='report_with_game',
+                    help="With --report-preview/--report-url: include the game's name")
+    g8.add_argument('--describe', metavar='TEXT', dest='report_describe',
+                    help='With --report-preview/--report-url: what happened, in your words')
     _hide_unavailable(parser)
     return parser
 
@@ -770,6 +815,11 @@ def _cmd_apply_launch(args, install_base):
 # status with sys.exit). With no command flag, the args name a repack to
 # install (cmd_install).
 COMMANDS = (
+    ('report_pending', lambda a, base: cmd_report_pending(a.json)),
+    ('report_collect', lambda a, base: cmd_report_collect(a)),
+    ('report_preview', lambda a, base: cmd_report_preview(a)),
+    ('report_url', lambda a, base: cmd_report_url(a)),
+    ('report_dismiss', lambda a, base: cmd_report_dismiss(a.report_dismiss, a.json)),
     ('list_steam_accounts', lambda a, base: cmd_list_steam_accounts()),
     ('doctor', lambda a, base: cmd_doctor(base, as_json=a.json)),
     ('prune', lambda a, base: sys.exit(cmd_prune(yes=a.yes, as_json=a.json))),
@@ -977,3 +1027,5 @@ from .backup import cmd_export_settings, cmd_import_settings  # noqa: E402
 from .importgame import cmd_add_exe, cmd_import  # noqa: E402
 from .move import cmd_move, move_targets  # noqa: E402
 from .snapshots import cmd_snapshots  # noqa: E402
+from .report import (cmd_report_collect, cmd_report_dismiss, cmd_report_pending,
+    cmd_report_preview, cmd_report_url)  # noqa: E402

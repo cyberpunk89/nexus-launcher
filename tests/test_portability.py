@@ -13,7 +13,8 @@ NEXUS = Path(__file__).resolve().parent.parent / 'nexus'
 SHARED = ('net', 'gamedb', 'repackindex', 'repackfeed', 'torrent', 'hltb', 'storeinfo',
           'news', 'inno', 'safety', 'history', 'achievements', 'icons', 'watch', 'alerts',
           'cleanup', 'steamlib', 'instance', 'cli/registry', 'cli/sgdb', 'cli/config',
-          'sources/__init__', 'sources/epic')
+          'sources/__init__', 'sources/epic', 'report/__init__', 'report/scrub',
+          'report/sysinfo', 'report/crash', 'report/render')
 
 FORBIDDEN = {
     r'\bimport fcntl\b': "file locks: platform.file_lock",

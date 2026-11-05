@@ -21,6 +21,7 @@ NEWS_CONFIG = CONFIG_DIR / "news.toml"
 GAMEDB_CACHE = CACHE_DIR / "gamedb"                # Game-db summary (0600, personal)
 
 LOG_DIR = DATA_DIR / "logs"
+REPORTS_DIR = LOG_DIR / "reports"                # crash files and report drafts (0600)
 ARTWORK_DIR = DATA_DIR / "artwork"
 LAUNCHERS_DIR = DATA_DIR / "launchers"
 SAVES_DIR = DATA_DIR / "saves"

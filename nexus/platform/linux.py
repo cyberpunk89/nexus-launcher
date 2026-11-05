@@ -239,6 +239,87 @@ def meminfo() -> dict[str, int]:
         return {}
 
 
+OS_RELEASE = (Path('/etc/os-release'), Path('/usr/lib/os-release'))
+
+
+def os_release() -> dict[str, str]:
+    """{id, version, name, kernel, arch} from os-release and uname; a field
+    that can't be read is 'unknown'."""
+    import platform as pyplatform
+    out = {'id': 'unknown', 'version': 'unknown', 'name': 'unknown'}
+    for p in OS_RELEASE:
+        try:
+            text = p.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        vals = {}
+        for line in text.splitlines():
+            k, sep, v = line.partition('=')
+            if sep:
+                vals[k.strip()] = v.strip().strip('"\'')
+        out['id'] = vals.get('ID') or 'unknown'
+        out['version'] = vals.get('VERSION_ID') or vals.get('BUILD_ID') or 'unknown'
+        out['name'] = vals.get('PRETTY_NAME') or vals.get('NAME') or 'unknown'
+        break
+    out['kernel'] = pyplatform.release() or 'unknown'
+    out['arch'] = pyplatform.machine() or 'unknown'
+    return out
+
+
+def cpu_info() -> dict:
+    """{model, cores, threads} from /proc/cpuinfo; model 'unknown' and
+    cores None when it can't be read."""
+    model, cores = 'unknown', set()
+    try:
+        with open('/proc/cpuinfo', encoding='utf-8', errors='replace') as f:
+            phys = core = None
+            for line in f:
+                k, _, v = line.partition(':')
+                k, v = k.strip(), v.strip()
+                if k == 'model name' and model == 'unknown':
+                    model = ' '.join(v.split()) or 'unknown'
+                elif k == 'physical id':
+                    phys = v
+                elif k == 'core id':
+                    core = v
+                elif not k and core is not None:
+                    cores.add((phys, core))
+                    phys = core = None
+            if core is not None:
+                cores.add((phys, core))
+    except OSError:
+        pass
+    return {'model': model, 'cores': len(cores) or None, 'threads': os.cpu_count()}
+
+
+def gpus() -> list[dict]:
+    """tips.hardware()'s GPUs, each with the kernel driver bound to it
+    (amdgpu, nvidia, i915, xe, nouveau) and, for NVIDIA's driver, its
+    version. [] when there are none or /sys can't be read."""
+    from nexus import tips
+    try:
+        found = tips.hardware()['gpus']
+    except (OSError, ValueError, KeyError):
+        return []
+    nvidia = None
+    try:
+        text = Path('/proc/driver/nvidia/version').read_text(encoding='utf-8', errors='replace')
+        m = re.search(r'Kernel Module(?: for \S+)?\s+([\d.]+)', text)
+        nvidia = m.group(1) if m else None
+    except OSError:
+        pass
+    out = []
+    for g in found:
+        try:
+            driver = os.path.basename(os.readlink(f"/sys/bus/pci/devices/{g['slot']}/driver"))
+        except OSError:
+            driver = 'unknown'
+        out.append({'vendor': g['vendor'], 'name': g['name'], 'gen': g.get('gen'),
+                    'integrated': g.get('integrated', False), 'driver': driver,
+                    'driver_version': nvidia if driver == 'nvidia' else None})
+    return out
+
+
 def open_url(url: str) -> bool:
     """`steam URL` reaches a running client (or starts one); anything else
     goes through xdg-open so whatever registered the scheme handles it.

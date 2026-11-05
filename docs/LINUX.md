@@ -156,7 +156,7 @@ flowchart TB
     direction TB
     c1["Base: common (paths, logger, atomic writes, run)"] --> c2["Core: repack, runner, config, registry, sgdb, launchprofile"]
     c2 --> c3["Launchers: steam, heroic, desktop, sunshine"]
-    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install, importgame, move, snapshots, agent"]
+    c3 --> c4["Commands: manage, running, apply, protoncmds, downloads, info, gamecmds, doctor, install, importgame, move, snapshots, agent, report"]
     c4 --> c5["entry: build_parser(), the COMMANDS table, main()"]
   end
 ```
@@ -993,6 +993,20 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 | `--news-add-feed URL [NAME]`, `--news-remove-feed URL` | Add or remove your own RSS/Atom feed |
 | `--news-source NAME on\|off` | Switch a news source on or off: a source id from the News page, `steam` (news for your games) or `proton` (releases) |
 | `--notify-test` | Send a test push to the phone targets in `[notify]` |
+
+**Bug reports** (nothing is sent anywhere; the link opens GitHub's issue form, prefilled). A
+crash leaves a file in `~/.local/share/nexus/logs/reports/` (0600). A report replaces the home
+folder, user name, hostname, install and Steam paths, game names, quoted strings, emails,
+addresses and tokens before you see it:
+
+| Flag | Does |
+|---|---|
+| `--report-pending` | Crash reports waiting to be reported (`--json` too) |
+| `--report-collect [--crash ID] [--game SLUG] [--log-file FILE]` | Gather a report draft about this machine, a crash, a game's last run and a log's last 50 lines; prints the draft id |
+| `--report-preview DRAFT` | The exact issue text, every line numbered in `--json` |
+| `--report-url DRAFT` | The prefilled `issues/new` link; a report too long for a link is printed to paste |
+| `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
+| `--report-dismiss ID` | Forget one crash report |
 
 ## Config & data
 

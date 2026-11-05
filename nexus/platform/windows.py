@@ -476,6 +476,82 @@ def meminfo() -> dict[str, int]:
             'SwapFree': max(0, st.ullAvailPageFile - st.ullAvailPhys) // kb}
 
 
+_NT_VERSION = r'SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+_CPU_KEY = r'HARDWARE\DESCRIPTION\System\CentralProcessor\0'
+_DISPLAY_CLASS = r'SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+
+
+def _reg_value(path: str, name: str):
+    """One HKLM value, or None when the key or value isn't there."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def os_release() -> dict[str, str]:
+    """{id, version, name, kernel, arch, build}: '10' or '11' (Windows 11
+    still calls itself "Windows 10" in ProductName; build 22000 and up is
+    11), DisplayVersion (24H2) and the build with its update revision.
+    Registry only; a field that can't be read is 'unknown'."""
+    build = str(_reg_value(_NT_VERSION, 'CurrentBuild') or _reg_value(
+        _NT_VERSION, 'CurrentBuildNumber') or '')
+    ubr = _reg_value(_NT_VERSION, 'UBR')
+    display = str(_reg_value(_NT_VERSION, 'DisplayVersion') or '')
+    version = ('11' if int(build) >= 22000 else '10') if build.isdigit() else 'unknown'
+    full = f"{build}.{ubr}" if build and isinstance(ubr, int) else (build or 'unknown')
+    return {'id': 'windows', 'version': version,
+            'name': ' '.join(filter(None, ('Windows', version if build else '', display)))
+            if build else 'unknown',
+            'kernel': full, 'build': full,
+            'arch': os.environ.get('PROCESSOR_ARCHITECTURE', '').lower() or 'unknown'}
+
+
+def cpu_info() -> dict:
+    """{model, cores, threads}: the first CPU's ProcessorNameString; cores
+    None (the registry doesn't say)."""
+    name = _reg_value(_CPU_KEY, 'ProcessorNameString')
+    return {'model': ' '.join(str(name).split()) if name else 'unknown', 'cores': None,
+            'threads': os.cpu_count()}
+
+
+_VENDOR_WORDS = (('nvidia', 'nvidia'), ('amd', 'amd'), ('radeon', 'amd'), ('ati ', 'amd'),
+                 ('intel', 'intel'))
+_INTEGRATED = ('Radeon(TM) Graphics', 'Radeon Graphics', 'HD Graphics', 'UHD', 'Iris',
+               'Vega 8', 'Vega 7', 'Vega 6', '780M', '760M', '680M', '660M')
+
+
+def gpus() -> list[dict]:
+    """The display adapters from the display device class key (0000, 0001,
+    ...): DriverDesc, DriverVersion and ProviderName. Microsoft's basic and
+    remote display adapters are left out. [] when it can't be read."""
+    out = []
+    for i in range(32):
+        sub = f"{_DISPLAY_CLASS}\\{i:04d}"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub) as key:
+                def value(name):
+                    try:
+                        return winreg.QueryValueEx(key, name)[0]
+                    except OSError:
+                        return None
+                desc, version, provider = (value('DriverDesc'), value('DriverVersion'),
+                                           value('ProviderName'))
+        except OSError:                 # numbers can have gaps
+            continue
+        if not desc or str(provider or '').lower() == 'microsoft':
+            continue
+        desc = ' '.join(str(desc).split())
+        text = f"{desc} {provider or ''}".lower()
+        vendor = next((v for w, v in _VENDOR_WORDS if w in text), 'unknown')
+        out.append({'vendor': vendor, 'name': desc, 'gen': None,
+                    'integrated': any(w.lower() in desc.lower() for w in _INTEGRATED),
+                    'driver': str(provider) if provider else 'unknown',
+                    'driver_version': str(version) if version else None})
+    return out
+
+
 def open_url(url: str) -> bool:
     """Whichever app registered the scheme: Steam, Heroic, Epic, GOG,
     Ubisoft, the browser."""
