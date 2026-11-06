@@ -77,14 +77,15 @@ from .library import (
     HomeView, KeepPlace,
     LibraryView, ListView, shelf_page_target, ShelfRow, surprise_pick)  # noqa: F401
 from .dashboard import (
-    _game_store_id, _visible_games, AchievementsWidget, ClickRow, CollectionsWidget,
-    dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_KINDS, DASH_MERGED, dash_move,
+    _game_store_id, _visible_games, ClickRow, CollectionsWidget,
+    dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_KINDS, DASH_MERGED, DASH_MERGED_SHOWN,
+    dash_move,
     dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
     InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget, stage_height,
     StageArt, StageWidget,
-    PlaytimeWidget, ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
-    SysTile, UpcomingWidget, UpdatesWidget)  # noqa: F401
+    ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
+    SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
 from .details import (
     _hero_art, AchievementRow, DetailsPanel, Disclosure, ElideLabel, HeroBanner, PerfPanel,
     StatChip, StatTile, BATCH_ACTIONS)  # noqa: F401
@@ -106,7 +107,8 @@ from .downloads import (
 from .artpicker import (
     ART_KIND_LABEL, ART_THUMB, ArtPickerPage, ArtThumb)  # noqa: F401
 from .system import (
-    HealthPage, PlayHistoryPage, SystemPage, WeekBars)  # noqa: F401
+    achievement_view, HealthPage, MinuteBars, play_rows, PlayHistoryPage, SystemPage,
+    WeekBars)  # noqa: F401
 from .report_page import crash_title, PreviewLine, ReportPage  # noqa: F401
 from .settings import (
     AppearanceCard, SettingsPage, Swatch)  # noqa: F401

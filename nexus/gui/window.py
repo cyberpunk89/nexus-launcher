@@ -52,7 +52,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     PAGE_ALIASES = {ACTIVITY: (SYSTEM, 'activity'), STORAGE: (SYSTEM, 'storage'),
                     HEALTH: (SYSTEM, 'health'), REPORT: (SYSTEM, 'report'),
-                    UPCOMING: (DEALS, 'upcoming')}
+                    UPCOMING: (DEALS, 'upcoming'), 'history': (SYSTEM, 'play')}
 
     def __init__(self):
         super().__init__()

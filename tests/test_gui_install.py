@@ -198,24 +198,22 @@ class AchievementsUI(unittest.TestCase):
         self.assertEqual(panel.current_tab(), 'overview')
         panel.deleteLater()
 
-    def test_dashboard_widget(self):
+    def test_play_history_achievements(self):
+        """Achievements live on Play history (w-87), no longer on Home."""
         recent = {'recent': [{'appid': 7, 'title': 'First', 'time': 1700000000}]}
         set_gui('cli_json', lambda args, cb, *a, **k: cb(recent, ''))
-
-        class Hub:
-            _games = [dict(self.GAME), {'slug': 'steam-8', 'display_name': 'Eight',
-                                        'source': 'steam', 'appid': 8, 'achievements': [5, 5]}]
-        w = nx.AchievementsWidget()
-        w.fill(Hub())
+        games = [dict(self.GAME), {'slug': 'steam-8', 'display_name': 'Eight',
+                                   'source': 'steam', 'appid': 8, 'achievements': [5, 5]}]
+        w = nx.PlayHistoryPage()
+        w.refresh(games=games)
         texts = self.texts(w)
         self.assertIn("8", texts)                            # 3 + 5 unlocked
         self.assertTrue(any('1 complete' in t for t in texts), texts)
         self.assertIn("First", texts)
         self.assertIn("Closest to 100%", texts)
         w.deleteLater()
-        self.assertIn('achievements', {k for k, *_ in nx.DASH_KINDS})
-        self.assertTrue(next(it for it in nx.dash_default() if it['id'] == 'achievements')
-                        ['hidden'])
+        self.assertNotIn('achievements', {k for k, *_ in nx.DASH_KINDS})
+        self.assertNotIn('achievements', {it['id'] for it in nx.dash_default()})
 
 
 class _Prefs:

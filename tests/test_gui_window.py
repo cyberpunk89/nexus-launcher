@@ -1273,7 +1273,7 @@ class Window(unittest.TestCase):
                    '--torrent-detect': {'found': {'client': 'transmission',
                                                   'url': 'http://127.0.0.1:9091'}}}
         saved = []
-        with patch_gui('cli_json', lambda args, cb, *_a: cb(answers.get(args[0]), None)), \
+        with patch_gui('cli_json', lambda args, cb, *_a, **_k: cb(answers.get(args[0]), None)), \
                 patch_gui('save_config', saved.append), \
                 mock.patch.object(w, 'set_appearance') as look:
             w.open_setup()
@@ -4403,7 +4403,7 @@ class Window(unittest.TestCase):
         for poll, games in zip(polls, libraries):
             data = {'games': games, 'disks': []}
             with patch_gui('in_thread', lambda fn, cb, d=poll: cb(d, None)), \
-                    patch_gui('cli_json', lambda a, cb, *_x, d=data:
+                    patch_gui('cli_json', lambda a, cb, *_x, d=data, **_k:
                                       (reloads.append(a), cb(d, ''))), \
                     mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a[0])):
                 w._install_tick()

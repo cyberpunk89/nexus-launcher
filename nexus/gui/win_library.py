@@ -758,6 +758,8 @@ class LibraryMixin:
             QTimer.singleShot(2500, self.dealspage.refresh)
         if self._showing(self.STORAGE):
             self.storage.set_library([g for g in self._games if is_installed(g)], self._disks)
+        if self._showing('history'):
+            self.playhistory.refresh(games=self._games)
 
     def apply_filter(self):
         if self._loaded and not self._showing(self.LIBRARY) and not self._theatre:

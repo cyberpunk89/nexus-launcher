@@ -149,7 +149,7 @@ class NavigationMixin:
     def _on_system_section(self, key):
         """Each System section brings itself up to date when shown."""
         if key == 'play':
-            self.playhistory.refresh()
+            self.playhistory.refresh(games=self._games)
         elif key == 'health' and self._health_stale:
             self._health_stale = False
             self.health.refresh()

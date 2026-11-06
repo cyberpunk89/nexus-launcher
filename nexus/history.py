@@ -3,8 +3,8 @@
 launch tracker; Steam and Heroic games by the GUI while it's open (it sees
 them start and stop). Lines are appended with O_APPEND, so the two never
 interleave. summary() turns them into the play-history page: the last
-weeks, and a year in review; periods() into the Home Play time widget's
-week and month."""
+weeks, and a year in review; periods() into its month by day and Home's
+Your week."""
 
 import json
 import os
@@ -102,9 +102,9 @@ def current_streak(sessions: list[dict], today: date | None = None) -> int:
 
 
 def periods(sessions: list[dict] | None = None, today: date | None = None) -> dict:
-    """This week (Monday on) and this month, by day and by game: what the
-    Home Play time widget charts; and the current streak (Theatre's Your
-    week)."""
+    """This week (Monday on) and this month, by day and by game: what Home's
+    Your week and Play history's month chart show; and the current streak
+    (Theatre's Your week)."""
     sessions = load() if sessions is None else sessions
     today = today or date.today()
     names = {}

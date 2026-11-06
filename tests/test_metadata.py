@@ -269,6 +269,47 @@ class Gui(unittest.TestCase):
         self.assertEqual(glance_rows(None, None, None), [])
         self.assertIn('Silver', glance_rows(None, None, None, protondb='silver')[0][1])
 
+    def test_play_rows(self):
+        """Play history's This week / This month / All time rows (w-87):
+        (name, text, minutes, the most of that list)."""
+        games = [{'slug': 'a', 'display_name': 'Alpha', 'playtime_minutes': 60},
+                 {'slug': 'b', 'display_name': 'Beta', 'playtime_minutes': 600},
+                 {'slug': 'c', 'display_name': 'Never'}]
+        hist = {'periods': {'week': {'games': [{'slug': 'a', 'name': 'Alpha', 'minutes': 90}]},
+                            'month': {'games': [{'slug': 'b', 'name': 'Beta', 'minutes': 150},
+                                                {'slug': 'a', 'name': 'Alpha', 'minutes': 50}]}}}
+        rows = nx.play_rows(games, hist)
+        self.assertEqual(rows['all'], [('Beta', '10.0 h', 600, 600), ('Alpha', '1.0 h', 60, 600)])
+        self.assertEqual([r[0] for r in rows['month']], ['Beta', 'Alpha'])
+        self.assertEqual(rows['month'][1][2:], (50, 150))
+        self.assertEqual(rows['week'], [('Alpha', '1.5 h', 90, 90)])
+        self.assertEqual(nx.play_rows([], None), {'week': [], 'month': [], 'all': []})
+
+    def test_achievement_view(self):
+        games = [{'slug': 'a', 'display_name': 'Alpha', 'source': 'steam', 'appid': 1,
+                  'achievements': [9, 10]},
+                 {'slug': 'b', 'display_name': 'Beta', 'source': 'steam', 'appid': 2,
+                  'achievements': [10, 10]},
+                 {'slug': 'c', 'display_name': 'Gamma', 'source': 'steam', 'appid': 3,
+                  'achievements': [1, 10]},
+                 {'slug': 'd', 'display_name': 'Repack', 'achievements': [5, 10]}]
+        recent = [{'appid': 1, 'title': 'First steps', 'time': 1_700_000_000},
+                  {'appid': 2, 'title': 'Second', 'time': 1_700_000_000}]
+        rarest = [{'appid': 1, 'title': 'Needle', 'percent': 0.7},
+                  {'appid': 9, 'title': 'Orphan', 'percent': 3.4}]
+        v = nx.achievement_view(games, recent, rarest, 6)
+        self.assertEqual((v['games'], v['unlocked'], v['complete']), (3, 20, 1))
+        self.assertEqual([r[0] for r in v['recent']], ['First steps', 'Second'])
+        self.assertTrue(v['recent'][0][1].startswith('Alpha · '))
+        self.assertEqual(v['closest'], [('Alpha', '9/10', 9, 10), ('Gamma', '1/10', 1, 10)])
+        self.assertEqual(v['rarest'], [('Needle', '0.7% · Alpha'), ('Orphan', '3.4%')])
+        short = nx.achievement_view(games, recent, rarest, 1)
+        self.assertEqual((len(short['recent']), len(short['closest']), len(short['rarest'])),
+                         (1, 1, 1))
+        none = nx.achievement_view([{'slug': 'x', 'source': 'steam'}], None, None, 6)
+        self.assertEqual((none['games'], none['recent'], none['closest'], none['rarest']),
+                         (0, [], [], []))
+
     def test_play_history_page(self):
         page = nx.PlayHistoryPage()
         page.fill({})
@@ -279,6 +320,13 @@ class Gui(unittest.TestCase):
         page.fill(history.summary(sessions, today))
         self.assertTrue(page.body.isVisibleTo(page))
         self.assertEqual(page.t_sessions.value.text(), '1')
+        # w-87: the month by day under the year, this week bright.
+        self.assertTrue(page.play_sec.isVisibleTo(page))
+        month = [b for b in page.play_sec.findChildren(nx.MinuteBars) if b.isVisibleTo(page)
+                 and not isinstance(b, nx.WeekBars)]
+        self.assertEqual(len(month), 1)
+        self.assertIn(today.day - 1, month[0].highlight)
+        self.assertFalse(page.empty.isVisibleTo(page))
         page.deleteLater()
 
     def test_prefs_keep_notes_and_names(self):

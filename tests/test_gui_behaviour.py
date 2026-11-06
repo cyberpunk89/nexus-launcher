@@ -273,19 +273,6 @@ class Regressions(unittest.TestCase):
         self.assertEqual(host.findChildren(Ticking), [])
         self.assertNotIn(key, nx.common._DOOMED)          # let go once Qt deleted it
 
-    def test_achievements_error_clears_on_an_empty_success(self):
-        w = nx.AchievementsWidget()
-        self.addCleanup(w.deleteLater)
-        hub = mock.Mock(_games=[{'slug': 's', 'source': 'steam', 'appid': 1,
-                                 'achievements': (1, 2)}])
-        with patch_gui('cli_json', lambda *a, **k: None):
-            w._got_recent(hub, None, 'offline')
-            def shown():                                   # clear() hides, then deletes later
-                return [c.text() for c in w.findChildren(QLabel) if not c.isHidden()]
-            self.assertTrue(any('unavailable' in t for t in shown()))
-            w._got_recent(hub, {'recent': []})
-            self.assertFalse(any('unavailable' in t for t in shown()))
-
     def test_seen_repacks_trim_drops_the_oldest(self):
         import json
         import tempfile

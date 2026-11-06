@@ -224,7 +224,7 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:5], ['deals', 'upcoming', 'stage', 'friends', 'surprise'])
+        self.assertEqual(ids[:6], ['deals', 'upcoming', 'week', 'stage', 'friends', 'surprise'])
         # A layout from before w-82 gains Friends playing now right after the Stage
         old = [i for i in nx.dash_default() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
@@ -286,22 +286,60 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(h('banner', 850), 250)
         self.assertEqual(h('banner', 400), 250)
 
-    def test_full_size_for_playtime_and_achievements(self):
-        for k in ('playtime', 'achievements'):
-            self.assertEqual(nx.DASH_SIZES[k], ('small', 'wide', 'full'))
-            self.assertEqual(nx.DASH_DEFAULT_SIZE[k], 'small')
-        items = self.items(('playtime', 'full'), ('achievements', 'small'))
-        self.assertEqual(nx.dash_pack(items, 3), [('playtime', 0, 0, 3),
-                                                  ('achievements', 1, 0, 1)])
+    def test_week_sizes(self):
+        """w-87: Your week is small or wide; Play time and Achievements left Home."""
+        self.assertEqual(nx.DASH_SIZES['week'], ('small', 'wide'))
+        self.assertEqual(nx.DASH_DEFAULT_SIZE['week'], 'small')
+        for gone in ('playtime', 'achievements'):
+            self.assertNotIn(gone, nx.DASH_SIZES)
+            self.assertNotIn(gone, nx.DASH_WIDGETS)
+        items = self.items(('deals', 'wide'), ('week', 'small'), ('news', 'small'))
+        self.assertEqual(nx.dash_pack(items, 3), [('deals', 0, 0, 2), ('week', 0, 2, 1),
+                                                  ('news', 1, 0, 1)])
+        self.assertEqual(nx.DASH_OPTIONS['week'], {'style': ('bars', 'number')})
+
+    def test_week_shown_by_default(self):
+        d = nx.dash_default()
+        ids = [i['id'] for i in d]
+        week = d[ids.index('week')]
+        self.assertEqual((week['size'], week['hidden'], week['style']), ('small', False, 'bars'))
+        self.assertEqual(ids.index('week'), ids.index('upcoming') + 1)
+        # A layout saved without it (or Play time) gets it after Upcoming.
+        saved = self.items(('stage', 'cinematic'), ('deals', 'wide'), ('upcoming', 'small'),
+                           ('news', 'small'))
+        ids = [i['id'] for i in nx.dash_normalize(saved) if i['id'] not in ('friends', 'surprise')]
+        self.assertEqual(ids[:5], ['stage', 'deals', 'upcoming', 'week', 'news'])
+        self.assertEqual(nx.DASH_PLACE_AFTER['week'], 'upcoming')
+
+    def test_playtime_becomes_week_in_place(self):
+        saved = self.items(('stage', 'cinematic'), ('system', 'wide'), ('playtime', 'full'),
+                           ('deals', 'wide'), ('achievements', 'wide'), ('news', 'small'))
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual([i for i in ids if i not in ('friends', 'surprise')][:4],
+                         ['stage', 'system', 'week', 'deals'])
+        self.assertNotIn('achievements', ids)
+        self.assertNotIn('playtime', ids)
+        week = out[ids.index('week')]
+        self.assertEqual((week['size'], week['hidden'], week['style']), ('small', False, 'bars'))
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        saved[2]['hidden'] = True                                    # hidden stays hidden
+        out = nx.dash_normalize(saved)
+        self.assertTrue(next(i for i in out if i['id'] == 'week')['hidden'])
+        self.assertNotIn('week', nx.DASH_MERGED_SHOWN)
+        self.assertEqual(nx.DASH_MERGED['playtime'], 'week')
 
     def test_old_layout_round_trips(self):
-        """A layout saved before full size existed loads unchanged."""
-        old = nx.dash_normalize([dict(i, size='wide') if i['id'] in ('playtime', 'achievements')
+        """A saved layout with Your week wide and as a number loads unchanged."""
+        old = nx.dash_normalize([dict(i, size='wide', style='number') if i['id'] == 'week'
                                  else i for i in nx.dash_default()])
+        week = next(i for i in old if i['id'] == 'week')
+        self.assertEqual((week['size'], week['style']), ('wide', 'number'))
         self.assertEqual(nx.dash_normalize(old), old)
         self.assertEqual(nx.dash_normalize(nx.dash_normalize(old)), old)
-        full = [dict(i, size='full') if i['id'] == 'playtime' else i for i in old]
-        self.assertEqual(nx.dash_normalize(full), full)
+        bad = [dict(i, size='full', style='pie') if i['id'] == 'week' else i for i in old]
+        week = next(i for i in nx.dash_normalize(bad) if i['id'] == 'week')
+        self.assertEqual((week['size'], week['style']), ('small', 'bars'))
 
     def test_system_badge(self):
         self.assertEqual(nx.system_badge(2, 3, 1), ('2', 'accent'))   # jobs first
@@ -397,6 +435,10 @@ class DashboardModel(unittest.TestCase):
         self.assertTrue(owned['hidden'])
         smart = next(i for i in out if i['id'] == 'smart')
         self.assertEqual(smart['shelf'], 'unfinished')
+        # w-87: Play time (full) is Your week (small) in its place; Achievements left.
+        self.assertEqual(rest[rest.index('surprise') + 1], 'week')
+        self.assertEqual(next(i for i in out if i['id'] == 'week')['size'], 'small')
+        self.assertNotIn('achievements', ids)
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
 
     def test_v1_layout_with_the_stage_mid_page_or_hidden(self):
@@ -540,12 +582,14 @@ class Dwell(unittest.TestCase):
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class DashboardFill(unittest.TestCase):
-    """Play time and Achievements at each size, from stub CLI answers that
+    """Home's Your week at each size and style, from stub CLI answers that
     come back synchronously (as a cached cli_json answer does, inside fill)."""
     HIST = {'since': '2026-10-01', 'weeks': [{'start': '2026-10-26', 'minutes': 90}],
             'periods': {'today': '2026-10-28',
-                        'week': {'minutes': 90, 'days': [{'date': f'2026-10-{d}', 'minutes': 45}
-                                                         for d in range(26, 33) if d < 32],
+                        'week': {'minutes': 90,
+                                 'days': [{'date': f'2026-10-{d}', 'minutes': 45 * (d < 28)}
+                                          for d in range(26, 32)]
+                                 + [{'date': '2026-11-01', 'minutes': 0}],
                                  'games': [{'slug': 'a', 'name': 'Alpha', 'minutes': 90}]},
                         'month': {'minutes': 200,
                                   'days': [{'date': f'2026-10-{d:02}', 'minutes': 10}
@@ -556,6 +600,11 @@ class DashboardFill(unittest.TestCase):
                'recent': {'recent': [{'appid': 1, 'title': 'First steps', 'time': 1_700_000_000}]},
                'rarest': {'rarest': [{'appid': 1, 'title': 'Needle', 'time': 1_700_000_000,
                                       'percent': 0.7}]}}
+
+    GAMES = [{'slug': 'a', 'display_name': 'Alpha', 'playtime_minutes': 600, 'source': 'steam',
+              'appid': 1, 'achievements': [9, 10]},
+             {'slug': 'b', 'display_name': 'Beta', 'playtime_minutes': 60, 'source': 'steam',
+              'appid': 2, 'achievements': [10, 10]}]
 
     def setUp(self):
         from types import SimpleNamespace
@@ -575,62 +624,140 @@ class DashboardFill(unittest.TestCase):
         p = mock.patch.object(D, 'cli_json', cli_json)
         p.start()
         self.addCleanup(p.stop)
-        self.hub = SimpleNamespace(_games=[
-            {'slug': 'a', 'display_name': 'Alpha', 'playtime_minutes': 600, 'source': 'steam',
-             'appid': 1, 'achievements': [9, 10]},
-            {'slug': 'b', 'display_name': 'Beta', 'playtime_minutes': 60, 'source': 'steam',
-             'appid': 2, 'achievements': [10, 10]}])
+        self.hub = SimpleNamespace(_games=[dict(g) for g in self.GAMES])
 
     def texts(self, w):
         return [lb.text() for lb in w.findChildren(QLabel) if lb.text()]
 
-    def filled(self, cls, size):
+    def filled(self, cls, size, **options):
         w = cls()
         self.addCleanup(w.deleteLater)
         w.size_ = size
+        w.options = options
         w.fill(self.hub)
         return w
 
-    def test_playtime_fill_sizes(self):
+    def test_week_fill_styles(self):
         D = self.D
-        small = self.filled(D.PlaytimeWidget, 'small')
-        self.assertEqual(len(small.findChildren(D.MinuteBars)), 1)
-        self.assertIn('Alpha', self.texts(small))
-        wide = self.filled(D.PlaytimeWidget, 'wide')
-        self.assertIn('This month', self.texts(wide))
-        bars = wide.findChildren(D.MinuteBars)[0]
-        self.assertEqual(len(bars.bars), 31)
-        self.assertEqual(bars.highlight, set(range(25, 31)))    # this week: 26th–31st
-        full = self.filled(D.PlaytimeWidget, 'full')
-        self.assertTrue({'This month', 'All time', 'Last 12 weeks'} <= set(self.texts(full)))
-        self.assertEqual(len(full.findChildren(D.MinuteBars)), 2)
-        # No change: the rows are kept (pad focus), not rebuilt.
-        before = full.findChildren(QLabel)[0]
-        full.fill(self.hub)
-        self.assertIs(full.findChildren(QLabel)[0], before)
-
-    def test_playtime_without_sessions(self):
-        self.ANSWERS = dict(self.ANSWERS, **{'--history': {}})
-        w = self.filled(self.D.PlaytimeWidget, 'wide')
-        self.assertFalse(w.findChildren(self.D.MinuteBars))
-        self.assertTrue(any('recorded from now on' in t for t in self.texts(w)))
-
-    def test_achievements_fill_sizes(self):
-        D = self.D
-        small = self.filled(D.AchievementsWidget, 'small')
-        self.assertNotIn('rarest', self.asked)                  # small never asks
+        small = self.filled(D.WeekWidget, 'small')
+        charts = small.findChildren(nx.MinuteBars)
+        self.assertEqual(len(charts), 1)
+        self.assertEqual(len(charts[0].bars), 7)
+        self.assertEqual(charts[0].highlight, {2})                   # today, the 28th
         t = self.texts(small)
-        self.assertEqual(t.count('First steps'), 1)             # drawn once despite the sync answer
+        self.assertIn('1.5 h', t)
+        self.assertIn('1 game this week', t)
+        self.assertNotIn('Alpha', t)                                 # small: no top games
+        wide = self.filled(D.WeekWidget, 'wide')
+        self.assertEqual(len(wide.findChildren(nx.MinuteBars)), 1)
+        self.assertIn('Alpha', self.texts(wide))
+        self.assertEqual(D.WeekWidget.LINK, 'history')
+        num = self.filled(D.WeekWidget, 'wide', style='number')
+        self.assertFalse(num.findChildren(nx.MinuteBars))
+        self.assertIn('1.5 h', self.texts(num))
+        # No change: the rows are kept (pad focus), not rebuilt.
+        before = set(wide.findChildren(QLabel))
+        wide.fill(self.hub)
+        self.assertEqual(set(wide.findChildren(QLabel)), before)
+        self.assertEqual(self.asked, ['--history'] * 3)              # one ask per widget
+
+    def test_week_without_sessions(self):
+        self.ANSWERS = dict(self.ANSWERS, **{'--history': {}})
+        w = self.filled(self.D.WeekWidget, 'small')
+        self.assertFalse(w.findChildren(nx.MinuteBars))
+        self.assertIn('0 h', self.texts(w))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class PlayHistoryFill(unittest.TestCase):
+    """The big Play time and Achievements charts on Play history (w-87), from
+    stub CLI answers that come back synchronously, as a cached one does."""
+
+    def setUp(self):
+        from unittest import mock
+        from nexus.gui import system as S
+        self.S = S
+        self.asked = []
+        self.fail_rarest = False
+        self.answers = dict(DashboardFill.ANSWERS)
+
+        def cli_json(args, cb, timeout=0, ttl=0):
+            key = args[1] if args[0] == '--achievements' else args[0]
+            self.asked.append(key)
+            if key == 'rarest' and self.fail_rarest:
+                cb(None, 'offline')
+            else:
+                cb(self.answers[key], '')
+        p = mock.patch.object(S, 'cli_json', cli_json)
+        p.start()
+        self.addCleanup(p.stop)
+        self.games = [dict(g) for g in DashboardFill.GAMES]
+
+    def page(self):
+        p = self.S.PlayHistoryPage()
+        self.addCleanup(p.deleteLater)
+        p.refresh(games=self.games)
+        return p
+
+    def texts(self, p):
+        return [lb.text() for lb in p.findChildren(QLabel) if lb.text() and lb.isVisibleTo(p)]
+
+    def charts(self, p, n):
+        return [b for b in p.findChildren(self.S.MinuteBars)
+                if len(b.bars) == n and b.isVisibleTo(p)]
+
+    def test_play_time_section(self):
+        p = self.page()
+        t = self.texts(p)
+        self.assertTrue({'This month by day', 'This month', 'All time'} <= set(t), t)
+        month = self.charts(p, 31)
+        self.assertEqual(len(month), 1)
+        self.assertEqual(month[0].highlight, set(range(25, 31)))    # this week: 26th-31st
+        self.assertIn('Beta', t)                                     # all time, by game
+        # Nothing changed: the same widgets stay (pad focus), nothing is redrawn.
+        before = set(p.findChildren(QLabel))
+        p.refresh(games=[dict(g) for g in self.games])
+        p.refresh(force=True, games=self.games)
+        self.assertEqual(set(p.findChildren(QLabel)), before)
+        self.assertEqual(self.asked.count('--history'), 2)          # the 30 s throttle
+
+    def test_no_sessions_still_shows_all_time(self):
+        self.answers['--history'] = {}
+        p = self.page()
+        self.assertTrue(p.empty.isVisibleTo(p))
+        t = self.texts(p)
+        self.assertIn('No sessions yet', t)
+        self.assertNotIn('This month by day', t)
+        self.assertFalse(self.charts(p, 31))
+        self.assertIn('All time', t)
+        self.assertIn('Alpha', t)
         self.assertIn('Closest to 100%', t)
-        wide = self.filled(D.AchievementsWidget, 'wide')
-        self.assertIn('Needle', self.texts(wide))
-        self.assertIn('0.7% · Alpha', self.texts(wide))
-        full = self.filled(D.AchievementsWidget, 'full')
-        self.assertTrue({'Recent', 'Closest to 100%', 'Rarest'} <= set(self.texts(full)))
+
+    def test_achievements_section(self):
+        p = self.page()
+        t = self.texts(p)
+        self.assertEqual(t.count('First steps'), 1)        # drawn once despite the sync answer
+        self.assertTrue({'Recent', 'Closest to 100%', 'Rarest', 'Needle', '0.7% · Alpha'}
+                        <= set(t), t)
+        self.assertIn('19', t)                                       # 9 + 10 unlocked
         self.fail_rarest = True
-        off = self.filled(D.AchievementsWidget, 'wide')
-        self.assertNotIn('Rarest', self.texts(off))             # offline: section left out
+        off = self.page()
+        self.assertNotIn('Rarest', self.texts(off))                  # offline: left out
         self.assertIn('First steps', self.texts(off))
+        self.asked.clear()
+        for g in self.games:
+            g.pop('achievements')
+        bare = self.page()
+        self.assertEqual(self.asked, ['--history'])                  # no Steam stats: not asked
+        self.assertNotIn('Closest to 100%', self.texts(bare))
+
+    def test_achievements_error_clears_on_an_empty_success(self):
+        p = self.page()
+        p._got_recent(None, 'offline')
+        self.assertTrue(any('unavailable' in t for t in self.texts(p)))
+        p._got_recent({'recent': []}, '')
+        self.assertFalse(any('unavailable' in t for t in self.texts(p)))
+        self.assertNotIn('First steps', self.texts(p))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
