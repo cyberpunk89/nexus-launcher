@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nexus Downloads: Pipeline</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Lexend:wght@300;400;500;700;800&display=swap">
+<style>
+/* Layout: a disk forecast on top, then one card per game. Each card is a four-stage track
+   (Download, Verify, Install, Finish) so a repack shows one continuous progress from magnet to Play.
+   Palette and fonts are Nexus's own (Rosé Pine, Lexend, JetBrains Mono), dark first. */
+:root {
+  --bg: #191724; --surface: #1f1d2e; --overlay: #26233a;
+  --line: rgba(224,222,244,.10); --line-strong: rgba(224,222,244,.22);
+  --text: #e0def4; --subtle: #908caa; --muted: #6e6a86;
+  --accent: #c4a7e7; --accent-2: #eb6f92; --on-accent: #191724;
+  --good: #9ccfd8; --warn: #f6c177; --track: rgba(224,222,244,.08);
+  --font-ui: "Lexend", "Inter", "Noto Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #faf4ed; --surface: #fffaf3; --overlay: #f2e9e1;
+    --line: rgba(87,82,121,.14); --line-strong: rgba(87,82,121,.30);
+    --text: #575279; --subtle: #797593; --muted: #9893a5;
+    --accent: #907aa9; --accent-2: #b4637a; --on-accent: #fffaf3;
+    --good: #286983; --warn: #b8741a; --track: rgba(87,82,121,.10); color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #faf4ed; --surface: #fffaf3; --overlay: #f2e9e1;
+  --line: rgba(87,82,121,.14); --line-strong: rgba(87,82,121,.30);
+  --text: #575279; --subtle: #797593; --muted: #9893a5;
+  --accent: #907aa9; --accent-2: #b4637a; --on-accent: #fffaf3;
+  --good: #286983; --warn: #b8741a; --track: rgba(87,82,121,.10); color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 400 14px/1.5 var(--font-ui);
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 48px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1100px; margin-inline: auto; }
+.bar { display: flex; align-items: center; gap: 24px; height: 60px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 800; font-size: 20px; letter-spacing: -.02em; color: var(--accent); }
+.tabs { display: flex; gap: 20px; color: var(--subtle); }
+.tabs span[aria-current] { color: var(--text); box-shadow: 0 2px 0 var(--accent); padding-bottom: 6px; }
+.grow { flex: 1; }
+.ghost { background: none; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; color: var(--subtle); }
+.ghost:hover, .ghost[aria-pressed="true"] { color: var(--text); border-color: var(--line-strong); }
+
+h1 { margin: 32px 0 4px; font-weight: 300; font-size: clamp(26px, 3.6vw, 40px); letter-spacing: -.03em; line-height: 1.1; }
+h1 b { font-weight: 800; }
+.lead { margin: 0 0 24px; color: var(--subtle); max-width: 60ch; }
+
+/* Disk forecast */
+.disk { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 18px 22px; display: grid; gap: 12px; }
+.disk .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 24px; }
+.disk .lbl { font: 500 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.stackbar { height: 14px; border-radius: 8px; background: var(--track); display: flex; overflow: hidden; }
+.stackbar i { display: block; height: 100%; }
+.stackbar .used { background: var(--subtle); opacity: .55; }
+.stackbar .incoming { background: repeating-linear-gradient(135deg, var(--accent) 0 6px, color-mix(in srgb, var(--accent) 45%, transparent) 6px 12px); }
+.key { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 12.5px; color: var(--subtle); }
+.key span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+.key .u { --c: color-mix(in srgb, var(--subtle) 55%, transparent); }
+.key .i { --c: var(--accent); }
+.key .f { --c: var(--track); border: 1px solid var(--line-strong); }
+
+/* Cards */
+.list { margin-top: 20px; display: grid; gap: 14px; }
+.sec { font: 500 11px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 14px 0 -4px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 18px; display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 18px; align-items: center; }
+.art { width: 88px; height: 88px; border-radius: 16px; display: grid; place-items: center; text-align: center; padding: 6px; color: #fff; font-weight: 800; font-size: 11px; line-height: 1.05; text-transform: uppercase; overflow-wrap: anywhere; }
+.main { min-width: 0; display: grid; gap: 10px; }
+.main > div { min-width: 0; }
+.title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.title b { font-weight: 500; font-size: 16px; }
+.title span { color: var(--muted); font: 400 12px var(--font-mono); }
+.phase { font-size: 13px; color: var(--subtle); display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+.phase em { font-style: normal; color: var(--text); font-weight: 500; }
+.tag { font: 500 10.5px var(--font-mono); letter-spacing: .04em; border-radius: 999px; padding: 2px 8px; border: 1px solid var(--line-strong); color: var(--subtle); }
+.tag.est { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.tag.ok { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+
+/* Four-stage track: widths follow how long each stage usually takes, not equal quarters */
+.track { display: flex; gap: 4px; }
+.seg { position: relative; height: 10px; border-radius: 5px; background: var(--track); overflow: hidden; min-width: 0; }
+.seg .fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .45s linear; }
+.seg.done .fill { width: 100%; background: color-mix(in srgb, var(--accent) 70%, var(--bg)); }
+.seg.active .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.45) 50%, transparent 70%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.seg.paused .fill::after { display: none; }
+.labels { display: flex; gap: 4px; font: 500 10.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.labels span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.labels span.on { color: var(--text); }
+
+.side { display: grid; justify-items: end; gap: 6px; min-width: 150px; }
+.pct { font: 300 40px/1 var(--font-ui); letter-spacing: -.03em; }
+.pct small { font-size: 18px; color: var(--muted); }
+.eta { font: 400 12px var(--font-mono); color: var(--subtle); text-align: right; }
+.spark { width: 150px; height: 34px; display: block; }
+.btns { display: flex; gap: 6px; }
+.btn { border: 1px solid var(--line-strong); background: none; border-radius: 10px; padding: 6px 12px; color: var(--text); }
+.btn:hover { background: var(--overlay); }
+.btn.go { border: 0; color: var(--on-accent); font-weight: 700; padding: 8px 20px; border-radius: 12px; background: linear-gradient(120deg, #c4a7e7, #eb6f92); }
+.card.dim { opacity: .75; }
+.foot { margin-top: 28px; color: var(--muted); font-size: 12px; max-width: 80ch; }
+
+@media (max-width: 760px) {
+  .card { grid-template-columns: 64px minmax(0, 1fr); }
+  .art { width: 64px; height: 64px; font-size: 9px; }
+  .side { grid-column: 1 / -1; grid-template-columns: auto 1fr auto; justify-items: start; align-items: center; min-width: 0; }
+  .spark { width: 100%; }
+  .labels span:not(.on) { visibility: hidden; }
+}
+@media (max-width: 520px) { .tabs { display: none; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="bar" aria-label="Nexus">
+    <span class="brand">Nexus</span>
+    <div class="tabs"><span>Home</span><span>Library</span><span aria-current="page">Downloads</span><span>News</span></div>
+    <span class="grow"></span>
+    <button class="ghost" id="tTheme" aria-label="Switch light or dark theme">Theme</button>
+  </nav>
+
+  <h1>Downloads, <b>start to Play</b></h1>
+  <p class="lead">One card per game. The track runs from the torrent through verifying and installing to a game that's ready, so a repack never drops out of view when its download ends.</p>
+
+  <section class="disk" aria-label="Disk forecast">
+    <div class="row"><span class="lbl">D: drive forecast</span><span class="mono" id="diskTxt"></span></div>
+    <div class="stackbar" id="diskBar" role="img" aria-label="Disk use now and after the current downloads and installs finish"></div>
+    <div class="key"><span class="u">In use now</span><span class="i">Still to be written by these games</span><span class="f">Free after they finish</span></div>
+  </section>
+
+  <div class="list" id="list"></div>
+
+  <p class="foot">Prototype with simulated data, running live. Stage widths, percentages and the install estimate are illustrative. Install progress here is the folder's size divided by the game's "Original Size" from the repack page, which is an estimate, so it is tagged "estimate" and capped at 99% until the installer exits.</p>
+</div>
+
+<script>
+const GB = 1e9, MB = 1e6;
+const STAGES = [['Download', .52], ['Verify', .10], ['Install', .33], ['Finish', .05]];   // illustrative weights
+const FINISH_STEPS = ['Finding the game', 'Adding to your library', 'Fetching artwork'];
+
+const items = [
+  { id:'hol', name:'Hollow Quarry', src:'FitGirl · Transmission', c:['#d8922e','#2b1a0b'], repack:14.2*GB, original:38*GB,
+    stage:0, f:.62, rate:42*MB, hist:[], files:38, paused:false },
+  { id:'abs', name:'Absolum Deluxe', src:'FitGirl · Transmission', c:['#d0493a','#2a0f1e'], repack:7.8*GB, original:19*GB,
+    stage:1, f:.3, rate:0, hist:[], files:40, paused:false },
+  { id:'tid', name:'Tidewater Run', src:'FitGirl · qBittorrent', c:['#2fb0ae','#0d2b33'], repack:9.1*GB, original:21*GB,
+    stage:2, f:.45, written:9.4*GB, rate:160*MB, hist:[], paused:false },
+  { id:'pbz', name:'Phantom Blade Zero', src:'FitGirl · Transmission', c:['#9c8a6a','#1c1a1f'], repack:44*GB, original:61*GB,
+    stage:-1, f:0, rate:0, hist:[], paused:false },
+  { id:'eso', name:'Esoteric Ebb', src:'FitGirl · Transmission', c:['#3f8a4a','#0f2a1a'], repack:1.1*GB, original:1.4*GB,
+    stage:4, f:1, rate:0, hist:[], paused:false },
+];
+const DRIVE = { total:1000*GB, used:588*GB };
+const $ = s => document.querySelector(s);
+const fmt = b => b >= GB ? (b / GB).toFixed(1) + ' GB' : Math.round(b / MB) + ' MB';
+const eta = s => !isFinite(s) ? '' : s < 90 ? 'under a minute' : s < 5400 ? 'about ' + Math.round(s / 60) + ' min' : 'about ' + (s / 3600).toFixed(1) + ' h';
+const pctOf = it => { // overall 0-1 across stages by weight
+  if (it.stage < 0) return 0; if (it.stage > 3) return 1;
+  let p = 0; for (let i = 0; i < it.stage; i++) p += STAGES[i][1];
+  return p + STAGES[it.stage][1] * it.f;
+};
+
+function tick(dt) {
+  const running = items.filter(i => i.stage >= 0 && i.stage <= 3 && !i.paused);
+  for (const it of items) {
+    if (it.stage === -1 && !items.some(o => o.stage === 2 && !o.paused) && items.filter(o => o.stage === 0).length < 2) { it.stage = 0; it.f = 0; it.rate = 38 * MB; }
+    if (it.paused || it.stage < 0 || it.stage > 3) { if (it.paused) it.rate = 0; continue; }
+    if (it.stage === 0) { it.rate = Math.max(8*MB, it.rate + (Math.random() - .5) * 8 * MB); it.f += it.rate * dt / it.repack; if (it.f >= 1) { it.stage = 1; it.f = 0; it.rate = 0; } }
+    else if (it.stage === 1) { it.f += dt / 14; if (it.f >= 1) { const busy = items.some(o => o !== it && o.stage === 2); if (busy) { it.f = 1; } else { it.stage = 2; it.f = 0; it.written = 0; } } }
+    else if (it.stage === 2) { it.rate = Math.max(60*MB, it.rate + (Math.random() - .5) * 40 * MB); it.written += it.rate * dt; it.f = Math.min(.99, it.written / it.original); if (it.written >= it.original) { it.stage = 3; it.f = 0; it.rate = 0; } }
+    else if (it.stage === 3) { it.f += dt / 6; if (it.f >= 1) { it.stage = 4; it.f = 1; } }
+    it.hist.push(it.rate / MB); if (it.hist.length > 40) it.hist.shift();
+  }
+}
+
+function spark(h) {
+  if (h.length < 2) return '<svg class="spark" viewBox="0 0 150 34"></svg>';
+  const max = Math.max(...h, 1) * 1.15;
+  const pts = h.map((v, i) => [i / 39 * 150, 32 - v / max * 30]);
+  const line = pts.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ');
+  const last = pts[pts.length - 1];
+  return `<svg class="spark" viewBox="0 0 150 34" role="img" aria-label="Recent speed">
+    <polygon points="0,34 ${line} ${last[0]},34" fill="var(--accent)" opacity=".16"/>
+    <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" fill="var(--accent-2)"/></svg>`;
+}
+
+function phaseLine(it) {
+  if (it.stage === -1) return `<span><em>Queued</em> Waits for a free download slot</span>`;
+  if (it.paused) return `<span><em>Paused</em> at ${Math.round(pctOf(it) * 100)}%</span>`;
+  if (it.stage === 0) return `<span><em>Downloading</em> ${fmt(it.f * it.repack)} of ${fmt(it.repack)}</span><span class="mono">↓ ${fmt(it.rate)}/s</span>`;
+  if (it.stage === 1) { const n = Math.min(it.files, Math.floor(it.f * it.files) + 1); return `<span><em>Checking files</em> ${n} of ${it.files}</span><span class="tag ok">exact</span>`; }
+  if (it.stage === 2) return `<span><em>Installing</em> ${fmt(it.written)} of about ${fmt(it.original)}</span><span class="mono">${fmt(it.rate)}/s</span><span class="tag est">estimate</span>`;
+  if (it.stage === 3) return `<span><em>${FINISH_STEPS[Math.min(2, Math.floor(it.f * 3))]}</em></span>`;
+  return `<span><em>Ready to play</em> Installed ${fmt(it.original)} on D:</span>`;
+}
+function etaText(it) {
+  if (it.stage < 0 || it.paused || it.stage > 3) return '';
+  let s = 0;
+  if (it.stage === 0) s += (1 - it.f) * it.repack / Math.max(it.rate, 1) + 14 + it.original * .9 / (130 * MB);
+  if (it.stage === 1) s += (1 - it.f) * 14 + it.original / (130 * MB);
+  if (it.stage === 2) s += (it.original - it.written) / Math.max(it.rate, 1) + 6;
+  if (it.stage === 3) s += (1 - it.f) * 6;
+  return 'Done in ' + eta(s) + (it.stage === 2 ? '' : ', est.');
+}
+
+function card(it) {
+  const p = pctOf(it), ready = it.stage > 3;
+  const track = STAGES.map(([n, w], i) => {
+    const cls = ready || i < it.stage ? 'done' : i === it.stage ? 'active' + (it.paused ? ' paused' : '') : '';
+    const width = i === it.stage && !ready ? `style="--w:${it.f * 100}%"` : '';
+    return `<div class="seg ${cls}" style="flex:${w}" ${width}><div class="fill" ${i === it.stage && !ready ? `style="width:${it.f * 100}%"` : ''}></div></div>`;
+  }).join('');
+  const labels = STAGES.map(([n, w], i) => `<span style="flex:${w}" class="${i === it.stage ? 'on' : ''}">${ready || i < it.stage ? '✓ ' : ''}${n}</span>`).join('');
+  const side = ready
+    ? `<div class="side"><div class="btns"><button class="btn go">Play</button><button class="btn">Show</button></div></div>`
+    : `<div class="side">${it.stage >= 0 ? `<div class="pct mono">${Math.floor(p * 100)}<small>%</small></div>` : ''}
+        <div class="eta">${etaText(it)}</div>${it.stage === 0 || it.stage === 2 ? spark(it.hist) : ''}
+        <div class="btns">${it.stage >= 0 ? `<button class="btn" data-pause="${it.id}">${it.paused ? 'Resume' : 'Pause'}</button>` : ''}</div></div>`;
+  return `<article class="card ${it.stage === -1 ? 'dim' : ''}" aria-label="${it.name}">
+    <div class="art" style="background:linear-gradient(150deg,${it.c[0]},${it.c[1]})">${it.name}</div>
+    <div class="main"><div class="title"><b>${it.name}</b><span>${it.src}</span></div>
+      <div class="phase">${phaseLine(it)}</div>
+      <div><div class="track" role="progressbar" aria-valuenow="${Math.floor(p * 100)}" aria-valuemin="0" aria-valuemax="100" aria-label="${it.name} overall progress">${track}</div>
+      <div class="labels" style="margin-top:6px">${labels}</div></div></div>${side}</article>`;
+}
+
+let sig = '';
+function patch() {   // update numbers in place so the shimmer and bar transitions keep running
+  for (const it of items) {
+    const el = document.querySelector(`[aria-label="${it.name}"].card`); if (!el || it.stage > 3) continue;
+    const p = pctOf(it);
+    const f = el.querySelectorAll('.seg')[Math.max(0, it.stage)]?.querySelector('.fill');
+    if (f && it.stage >= 0) f.style.width = (it.f * 100) + '%';
+    const pc = el.querySelector('.pct'); if (pc) pc.innerHTML = Math.floor(p * 100) + '<small>%</small>';
+    el.querySelector('.phase').innerHTML = phaseLine(it);
+    const e = el.querySelector('.eta'); if (e) e.textContent = etaText(it);
+    const sp = el.querySelector('.spark'); if (sp) sp.outerHTML = spark(it.hist);
+    el.querySelector('[role=progressbar]').setAttribute('aria-valuenow', Math.floor(p * 100));
+  }
+}
+function render(force) {
+  const active = items.filter(i => i.stage < 4), done = items.filter(i => i.stage >= 4);
+  const now = items.map(i => i.id + i.stage + i.paused).join();
+  if (force || now !== sig) {
+    sig = now;
+    $('#list').innerHTML = `<div class="sec">In progress · ${active.length}</div>` + active.map(card).join('') +
+      `<div class="sec">Ready to play · ${done.length}</div>` + done.map(card).join('');
+  } else patch();
+  // Disk forecast: what these games still have to write = original size minus what is already on disk
+  const incoming = items.reduce((a, i) => a + (i.stage <= 1 ? i.original : i.stage === 2 ? Math.max(0, i.original - i.written) : 0), 0);
+  const used = DRIVE.used + items.reduce((a, i) => a + (i.stage === 2 ? i.written : i.stage > 2 ? i.original : 0), 0);
+  const free = DRIVE.total - used, after = free - incoming;
+  $('#diskBar').innerHTML = `<i class="used" style="width:${used / DRIVE.total * 100}%"></i><i class="incoming" style="width:${Math.min(incoming, free) / DRIVE.total * 100}%"></i>`;
+  $('#diskTxt').textContent = `${fmt(free)} free now · ${after > 0 ? fmt(after) + ' free after' : 'short by ' + fmt(-after)}`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.pause) { const it = items.find(i => i.id === b.dataset.pause); it.paused = !it.paused; render(true); }
+  if (b.id === 'tTheme') { const r = document.documentElement, d = matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = (r.dataset.theme || (d ? 'dark' : 'light')) === 'dark' ? 'light' : 'dark'; }
+});
+let last = performance.now();
+setInterval(() => { const n = performance.now(); tick(Math.min(2, (n - last) / 1000) * 12); last = n; render(); }, 600);  // 12x speed so stages move
+for (let i = 0; i < 20; i++) tick(1);
+render(true);
+</script>
+</body>
+</html>
