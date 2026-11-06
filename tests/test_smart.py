@@ -381,5 +381,115 @@ class UserShelves(unittest.TestCase):
                          {'field': 'protondb', 'op': 'is', 'value': None})
 
 
+A, B, C = '76561190000000101', '76561190000000102', '76561190000000103'
+
+
+class FriendsRule(unittest.TestCase):
+    """Play together (w-83): the `friends:<ids>[:multi]` filter key and the
+    "Friends own (all of)" rule. `g['friends']` holds the public owners."""
+
+    def setUp(self):
+        self.games = [game('both', friends=[A, B]), game('ana', friends=[A]),
+                      game('coop', friends=[A, B]), game('solo', friends=[A, B]),
+                      game('unknown', friends=[A, B]), game('none')]
+        self.facts = {'coop': fact(modes=('single', 'coop')), 'solo': fact(modes=('single',)),
+                      'both': fact(modes=('online',)), 'unknown': {'modes': None}}
+        self.public = {A, B, C}
+
+    def on(self, rules, friends, match='all'):
+        return slugs(smart.user_games(shelf(*rules, match=match), self.games, self.facts, NOW,
+                                      friends=friends))
+
+    def key(self, key, friends=None):
+        return slugs(smart.games_for(key, self.games, self.facts, NOW,
+                                     friends=self.public if friends is None else friends))
+
+    def test_all_of_needs_every_friend(self):
+        self.assertEqual(sorted(self.key(f'friends:{A}')),
+                         ['ana', 'both', 'coop', 'solo', 'unknown'])
+        self.assertEqual(sorted(self.key(f'friends:{A},{B}')),
+                         ['both', 'coop', 'solo', 'unknown'])
+        self.assertEqual(sorted(self.on([('friends', 'all', [A, B])], self.public)),
+                         ['both', 'coop', 'solo', 'unknown'])
+
+    def test_multi_keeps_unknown_modes_drops_single_only(self):
+        self.assertEqual(sorted(self.key(f'friends:{A},{B}:multi')), ['both', 'coop', 'unknown'])
+        self.assertEqual(sorted(self.on([('friends', 'all_multi', [A, B])], self.public)),
+                         ['both', 'coop', 'unknown'])
+        self.assertTrue(smart.multiplayer(None))
+        self.assertTrue(smart.multiplayer({'modes': []}))
+        self.assertTrue(smart.multiplayer({'modes': ['single', 'local']}))
+        self.assertFalse(smart.multiplayer({'modes': ['single']}))
+
+    def test_stale_ids_dropped_remaining_still_match(self):
+        gone = '76561190000000999'
+        self.assertEqual(sorted(self.key(f'friends:{A},{gone}')),
+                         ['ana', 'both', 'coop', 'solo', 'unknown'])
+        self.assertEqual(sorted(self.on([('friends', 'all', [A, gone])], self.public)),
+                         ['ana', 'both', 'coop', 'solo', 'unknown'])
+        # No friend left: the key shows nothing, the rule is skipped
+        self.assertEqual(self.key(f'friends:{gone}'), [])
+        self.assertEqual(self.on([('friends', 'all', [gone])], self.public), [])
+        self.assertEqual(sorted(self.on([('friends', 'all', [gone]), ('playtime', 'none', None)],
+                                        self.public)), sorted(slugs(self.games)))
+        # A private friend counts as gone (only public ids are passed)
+        self.assertEqual(sorted(self.key(f'friends:{A},{B}', friends={A})),
+                         ['ana', 'both', 'coop', 'solo', 'unknown'])
+
+    def test_no_friends_data_matches_nothing(self):
+        self.assertEqual(slugs(smart.games_for(f'friends:{A}', self.games, self.facts, NOW)), [])
+        self.assertEqual(self.on([('friends', 'all', [A])], None), [])
+        self.assertEqual(sorted(self.on([('friends', 'all', [A]), ('playtime', 'none', None)],
+                                        None, match='any')), sorted(slugs(self.games)))
+        # A plain rule needs no friends at all
+        self.assertEqual(len(self.on([('playtime', 'none', None)], None)), len(self.games))
+
+    def test_clean_rule_keeps_ids_drops_junk(self):
+        clean = smart.clean_rule({'field': 'friends', 'op': 'all_multi',
+                                  'value': [A, 'x', 7, A, '', B, None]})
+        self.assertEqual(clean, {'field': 'friends', 'op': 'all_multi', 'value': [A, B]})
+        self.assertEqual(smart.clean_rule({'field': 'friends', 'op': 'all', 'value': A}),
+                         {'field': 'friends', 'op': 'all', 'value': None})
+        self.assertEqual(smart.clean_rule({'field': 'friends', 'op': 'all', 'value': ['x']}),
+                         {'field': 'friends', 'op': 'all', 'value': None})
+        self.assertIsNone(smart.clean_rule({'field': 'friends', 'op': 'any', 'value': [A]}))
+        s = smart.clean_shelf(shelf(('friends', 'all', [A, B])))
+        self.assertEqual(s['rules'], [{'field': 'friends', 'op': 'all', 'value': [A, B]}])
+
+    def test_empty_ids_not_ready(self):
+        self.assertFalse(smart.rule_ready({'field': 'friends', 'op': 'all', 'value': []}))
+        self.assertFalse(smart.rule_ready({'field': 'friends', 'op': 'all', 'value': None}))
+        self.assertTrue(smart.rule_ready({'field': 'friends', 'op': 'all', 'value': [A]}))
+
+    def test_key_round_trip_and_bad_keys(self):
+        k = smart.friends_key([B, A, B], multi=True)
+        self.assertEqual(k, f'friends:{B},{A}:multi')
+        self.assertTrue(k.startswith(smart.KEY_PREFIXES))
+        self.assertEqual(smart.parse_friends_key(k), ([B, A], True))
+        self.assertEqual(smart.parse_friends_key(smart.friends_key([A], multi=False)),
+                         ([A], False))
+        self.assertEqual(smart.friends_key([], multi=True), '')
+        for bad in ('friends:', 'friends::multi', 'friends:abc', f'friends:{A}:solo',
+                    f'friends:{A},,{B}', 'smart:coop', None, 7, f'friends:{A}' + ',1' * 200):
+            self.assertIsNone(smart.parse_friends_key(bad), bad)
+        # Never offered by the automatic filter keys
+        games = [game('a', friends=[A]), game('b', friends=[A]), game('c', friends=[A])]
+        self.assertFalse(any(k.startswith('friends:')
+                             for k in smart.filter_keys(games, {}, NOW)))
+
+    def test_describe_names_and_not_offered(self):
+        names = {A: "Ana", B: "Ben"}
+        s = shelf(('friends', 'all_multi', [A, B]))
+        self.assertEqual(smart.describe(s, names=names),
+                         "Friends own (all of) Ana and Ben, more than one player")
+        self.assertEqual(smart.describe_rule({'field': 'friends', 'op': 'all', 'value': [A, C]},
+                                             names=names),
+                         "Friends own (all of) Ana +1")
+        self.assertEqual(smart.describe_rule({'field': 'friends', 'op': 'all', 'value': [C]}),
+                         "Friends own (all of) 1 friend")
+        self.assertNotIn('friends', smart.fields_offered(self.games, self.facts, linux=True))
+        self.assertEqual(smart.values_for('people', self.games, self.facts, [A]), [])
+
+
 if __name__ == '__main__':
     unittest.main()

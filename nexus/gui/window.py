@@ -225,6 +225,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre.download_action.connect(self._theatre_download)
         self.theatre.moment_changed.connect(self._update_hints)
         self.theatre.library_changed.connect(self._save_theatre_library)
+        self.theatre.together_asked.connect(self._theatre_together)     # w-83
         self.theatre.set_library_state(self.prefs.theatre_library)
         self.theatre_sheet.closed.connect(self._show_session)
         # Y on the desktop without Steam's on-screen keyboard: Theatre's
@@ -913,6 +914,12 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def _save_theatre_library(self, state: dict):
         self.prefs.theatre_library = dict(state)
         self.prefs.save()
+
+    def _theatre_together(self, key: str):
+        """Sort & filter's Play together…: the picker in Theatre's modal;
+        Show N games sets Theatre's Library, not the desktop filter."""
+        if self._theatre:
+            self._play_together(key or None, theatre=True)
 
     # ---- Theatre's settings sheet and Your week (w-63) ----
     def _theatre_setting(self, key: str, value):

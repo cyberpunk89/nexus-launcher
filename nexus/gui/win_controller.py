@@ -502,6 +502,7 @@ class ControllerMixin:
         if on:
             self.desk_search.close_search()
             self._was_state = self.windowState() & ~Qt.WindowState.WindowMinimized
+            self.theatre.set_facts(self._smart_facts())
             self.theatre.set_games([g for g in self._games if not g.get('hidden')])
 
             if self.config.get('news', True) and not self.newspage._loaded:
@@ -601,6 +602,9 @@ class ControllerMixin:
             if modal.scope() is not modal:             # the keyboard, typing for its field
                 self.hints.show_hints([('a', 'Type'), ('x', 'Delete'), ('y', 'Space'),
                                        ('b', 'Close')])
+            elif isinstance(f, FriendToggle):          # Play together (w-83): A ticks
+                self.hints.show_hints([('a', 'Remove' if f.isChecked() else 'Add'),
+                                       ('b', 'Cancel')])
             else:
                 self.hints.show_hints([('a', 'Type' if f is not None and f is modal.field
                                         else 'Select'), ('b', 'Cancel')])
@@ -700,6 +704,7 @@ class ControllerMixin:
 # below is inside a method, so the cycle resolves at call time.
 from .dashboard import mark_duplicates  # noqa: E402
 from .deals import DealCard, DealSpotlight  # noqa: E402
+from .friends import FriendToggle  # noqa: E402
 from .gameinfo import can_quick_play, now_playing  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402

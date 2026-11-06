@@ -732,6 +732,20 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#PersonName { color: $text; font-size: ${fs_xs}px; }
     QLabel#PersonSub { color: $muted; font-size: ${fs_2xs}px; }
     QLabel#PersonSub[live="true"] { color: $success; }
+    /* Play together (w-83): a friend row you tick, a "private" pill. */
+    QPushButton#FriendToggle { background: transparent; border: 1px solid transparent;
+                               border-radius: ${r_control}px; padding: 0; text-align: left; }
+    QPushButton#FriendToggle:hover, QPushButton#FriendToggle:focus { background: $accent_09; }
+    QPushButton#FriendToggle:checked { background: $accent_09; }
+    QPushButton#FriendToggle:checked:hover,
+    QPushButton#FriendToggle:checked:focus { background: $accent_16; }
+    QPushButton#FriendToggle:disabled { background: transparent; }
+    QLabel#FriendName { color: $text; font-size: ${fs_sm}px; }
+    QLabel#FriendName[dim="true"] { color: $muted; }
+    QLabel#FriendSub { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#FriendSub[live="true"] { color: $success; }
+    QLabel#PrivatePill { background: $surface_3; color: $muted; border-radius: ${r_private}px;
+                         padding: 0 7px; font-size: ${fs_2xs}px; font-weight: 500; }
     QPushButton#ContextMore { background: transparent; border: none; color: $accent;
                               padding: 0; font-size: ${fs_xs}px; text-align: left; }
     QPushButton#ContextMore:hover { text-decoration: underline; }
@@ -990,6 +1004,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,
         r_person=pill(int(round(PERSON_H * scale))),
+        r_private=pill(int(PILL_H * scale)),
         r_card_inner=R['card'] - 1,
         chevron=_chevron_icon_path('muted'),
         chevron_hi=_chevron_icon_path('accent'),

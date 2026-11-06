@@ -389,6 +389,37 @@ class UserShelves(unittest.TestCase):
         self.assertEqual(w.filter.currentData(), f"user:{s['id']}")
         self.assertEqual(sorted(g['slug'] for g in w._shown_games), ['new0', 'new1', 'new2'])
 
+    def test_friends_rule_row_is_read_only(self):
+        """A shelf saved from Play together (w-83): its "Friends own (all
+        of)" row shows the friends' names in a disabled value combo, keeps
+        the ids on Save, and the field isn't offered for new rules."""
+        a, b = '76561190000000101', '76561190000000102'
+        names = {a: "Ana", b: "Ben"}
+        w = self.win
+        shelf = w.prefs.add_shelf({'name': "Play with Ana and Ben", 'match': 'all',
+                                   'rules': [{'field': 'friends', 'op': 'all_multi',
+                                              'value': [a, b]}]})
+        pool = w._shelf_pool()
+        f = ShelfForm(shelf, pool, pool, {}, w._shelf_fields(), friends={a, b}, names=names)
+        row = f.rows[0]
+        self.assertEqual(row.field.currentData(), 'friends')
+        self.assertEqual(row.op.currentData(), 'all_multi')
+        self.assertEqual(row.value.count(), 1)
+        self.assertEqual(row.value.currentText(), "Ana and Ben")
+        self.assertFalse(row.value.isEnabled())
+        self.assertFalse(row.value.isHidden())
+        row.op.setCurrentIndex(row.op.findData('all'))             # the op can change
+        self.assertEqual(f.draft()['rules'], [{'field': 'friends', 'op': 'all',
+                                               'value': [a, b]}])
+        f._add_rule()
+        self.assertEqual(f.rows[1].field.findData('friends'), -1)   # never offered
+        self.assertEqual(f.matches(), [])                           # nobody owns these
+        f.deleteLater()
+        # The window's own modal (no friends data: names unknown) never raises
+        w._edit_shelf(shelf['id'])
+        self.assertEqual(self.form().rows[0].value.currentText(), "2 friends")
+        w.modal.cancel()
+
     def test_keyboard_and_pad_reach_every_shelf_control(self):
         w, m = self.win, self.win.modal
         w.activateWindow()

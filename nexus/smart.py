@@ -6,8 +6,10 @@ A game is a library dict (slug, last_played as a local ISO time,
 playtime_minutes, added_at, installed, protondb); `facts` is the index's
 `games` ({slug: record}). Keys: `smart:<rule>` for the fixed rules and
 `genre:<Nexus genre>` for the genre shelves (a game page's genre chip sends
-the same key), and `user:<id>` for shelves you build from rules (w-51, at
-the end of this file)."""
+the same key), `user:<id>` for shelves you build from rules (w-51, at
+the end of this file), and `friends:<steamids>[:multi]` for Play together
+(w-83: the games every one of those friends owns; `g['friends']` holds a
+game's public owners)."""
 
 from datetime import datetime
 
@@ -148,11 +150,24 @@ def _order(rule: str, items: list[dict], facts: dict) -> list[dict]:
 
 
 def games_for(key: str, games: list[dict], facts: dict, now: datetime | None = None,
-              linux: bool = True) -> list[dict]:
-    """The games under one key (`smart:<rule>` or `genre:<name>`), ordered
-    for its shelf."""
+              linux: bool = True, friends: set | None = None) -> list[dict]:
+    """The games under one key (`smart:<rule>`, `genre:<name>` or
+    `friends:<ids>[:multi]`), ordered for its shelf. `friends` = the
+    steamids of your public friends (None: no friends data, so a friends
+    key shows nothing)."""
     now = now or datetime.now()
     facts = facts or {}
+    if key.startswith(FRIENDS_KEY):
+        parsed = parse_friends_key(key)
+        if parsed is None:
+            return []
+        ids, multi = parsed
+        ids = _known_friends(ids, friends)
+        if not ids:
+            return []
+        hit = [g for g in games if _all_own(g, ids)
+               and (not multi or multiplayer(facts.get(g.get('slug'))))]
+        return _order('friends', hit, facts)
     if key.startswith('genre:'):
         genre = key[6:]
         hit = [g for g in games if genre in ((facts.get(g.get('slug')) or {}).get('genres') or ())]
@@ -226,7 +241,12 @@ def filter_keys(games: list[dict], facts: dict, now: datetime | None = None,
 # `removed`: the shelf stays in the file and can come back.
 
 USER = 'user:'
-KEY_PREFIXES = ('smart:', 'genre:', USER)     # every smart filter key starts with one
+# Play together (w-83): `friends:<steamid>,<steamid>[:multi]`, the games every
+# one of those friends owns (and, with :multi, that more than one can play).
+FRIENDS_KEY = 'friends:'
+MAX_FRIENDS = 100                             # ids in one key or rule
+# every smart filter key starts with one
+KEY_PREFIXES = ('smart:', 'genre:', USER, FRIENDS_KEY)
 MAX_USER_SHELVES = 50
 MAX_RULES = 8
 MAX_NAME = 40
@@ -265,11 +285,74 @@ FIELDS = {
     'genre': ("Genre", (('is', "is", 'genre'), ('not', "is not", 'genre')), True),
     'mode': ("Mode", (('has', "has", 'mode'), ('lacks', "doesn't have", 'mode')), True),
     'length': ("Main story", (('under', "under", 'length'), ('over', "over", 'length')), True),
+    # Play together's "Save as shelf" (w-83) only: never offered in the
+    # builder (fields_offered); the value is a list of Steam ids ('people').
+    'friends': ("Friends own (all of)", (('all', "any game", 'people'),
+                                         ('all_multi', "more than one player", 'people')),
+                False),
 }
 
 
 def is_user(key) -> bool:
     return isinstance(key, str) and key.startswith(USER) and len(key) > len(USER)
+
+
+# ── Play together (w-83) ─────────────────────────────────────────────────
+def _steamids(value) -> list[str] | None:
+    """The digit-string ids in a list, unique, in order; None when that
+    leaves none (or it isn't a list)."""
+    if not isinstance(value, list):
+        return None
+    out = []
+    for v in value:
+        if isinstance(v, str) and v.isdigit() and len(v) <= 20 and v not in out:
+            out.append(v)
+    return out[:MAX_FRIENDS] or None
+
+
+def friends_key(ids, multi: bool = True) -> str:
+    """`friends:<id>,<id>[:multi]` for these friends ('' for none)."""
+    ids = _steamids(list(ids or ()))
+    if not ids:
+        return ''
+    return FRIENDS_KEY + ','.join(ids) + (':multi' if multi else '')
+
+
+def parse_friends_key(key) -> tuple[list[str], bool] | None:
+    """(ids, multi) from a friends key, or None when it isn't a good one."""
+    if not isinstance(key, str) or not key.startswith(FRIENDS_KEY):
+        return None
+    rest = key[len(FRIENDS_KEY):]
+    multi = rest.endswith(':multi')
+    if multi:
+        rest = rest[:-len(':multi')]
+    parts = rest.split(',')
+    if not rest or len(parts) > MAX_FRIENDS \
+            or not all(p.isdigit() and len(p) <= 20 for p in parts):
+        return None
+    return _steamids(parts), multi
+
+
+def multiplayer(fact: dict | None) -> bool:
+    """Can more than one person play it? True unless the facts index says
+    single-player only: a game with unknown modes stays in."""
+    modes = (fact or {}).get('modes')
+    if not modes:
+        return True
+    return any(m in modes for m in ('coop', 'online', 'local'))
+
+
+def _known_friends(ids, friends) -> list[str]:
+    """The ids still among your public friends (an unfriended or now
+    private friend drops out); none without friends data."""
+    if friends is None:
+        return []
+    return [i for i in ids or () if i in friends]
+
+
+def _all_own(g: dict, ids) -> bool:
+    owners = g.get('friends') or ()
+    return all(i in owners for i in ids)
 
 
 def ops(field: str) -> tuple:
@@ -309,6 +392,8 @@ def clean_rule(r) -> dict | None:
     elif kind in _NUMBERS:
         ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
         value = value if ok else None
+    elif kind == 'people':
+        value = _steamids(value)
     elif not isinstance(value, str) or not value:
         value = None
     return {'field': r['field'], 'op': o[0], 'value': value}
@@ -351,14 +436,25 @@ def title_of(shelf: dict) -> str:
 def rule_ready(rule: dict) -> bool:
     """A rule counts once it has the value its op needs."""
     o = _op(rule.get('field'), rule.get('op'))
-    return o is not None and (o[2] is None or rule.get('value') not in (None, ''))
+    if o is None:
+        return False
+    value = rule.get('value')
+    if o[2] == 'people':
+        return bool(_steamids(value))
+    return o[2] is None or value not in (None, '')
 
 
-def rule_match(rule: dict, g: dict, fact: dict | None, now: datetime) -> bool:
+def rule_match(rule: dict, g: dict, fact: dict | None, now: datetime,
+               friends: set | None = None) -> bool:
     """One ready rule against one game. A rule on store facts (genre, mode,
     main story) never matches a game the facts index knows nothing about,
-    whichever way it is put: Nexus doesn't claim what it doesn't know."""
+    whichever way it is put: Nexus doesn't claim what it doesn't know.
+    A friends rule counts only the ids still in `friends` (your public
+    friends; None = no friends data, so it matches nothing)."""
     field, op, value = rule.get('field'), rule.get('op'), rule.get('value')
+    if field == 'friends':
+        ids = _known_friends(_steamids(value), friends)
+        return bool(ids) and _all_own(g, ids) and (op != 'all_multi' or multiplayer(fact))
     if field == 'playtime':
         mins = g.get('playtime_minutes') or 0
         if op in ('none', 'some'):
@@ -394,19 +490,28 @@ def rule_match(rule: dict, g: dict, fact: dict | None, now: datetime) -> bool:
     return False
 
 
+def _stale(rule: dict, friends) -> bool:
+    """A friends rule none of whose friends is left (unfriended, private):
+    left out, as a rule still waiting for a value. Without friends data at
+    all it stays in and matches nothing."""
+    return rule.get('field') == 'friends' and friends is not None \
+        and not _known_friends(_steamids(rule.get('value')), friends)
+
+
 def user_games(shelf: dict, games: list[dict], facts: dict,
-               now: datetime | None = None) -> list[dict]:
+               now: datetime | None = None, friends: set | None = None) -> list[dict]:
     """The games on a user shelf, most recently played first. Rules still
     waiting for a value are left out; a shelf with no ready rule is empty
-    rather than the whole library."""
+    rather than the whole library. `friends`: see rule_match."""
     now = now or datetime.now()
     facts = facts or {}
-    rules = [r for r in shelf.get('rules') or () if rule_ready(r)]
+    rules = [r for r in (shelf or {}).get('rules') or ()
+             if rule_ready(r) and not _stale(r, friends)]
     if not rules:
         return []
     join = any if shelf.get('match') == 'any' else all
     hit = [g for g in games
-           if join(rule_match(r, g, facts.get(g.get('slug')), now) for r in rules)]
+           if join(rule_match(r, g, facts.get(g.get('slug')), now, friends) for r in rules)]
     return _order('user', hit, facts)
 
 
@@ -425,6 +530,7 @@ def fields_offered(games: list[dict], facts: dict, linux: bool = False) -> list[
         'genre': any(r.get('genres') for r in recs),
         'mode': any(r.get('modes') for r in recs),
         'length': any(main_hours(r) is not None for r in recs),
+        'friends': False,           # only Play together's Save as shelf makes one
     }
     return [f for f in FIELDS if known.get(f, True)]
 
@@ -454,10 +560,29 @@ def values_for(kind: str, games: list[dict], facts: dict, current=None) -> list[
     return out
 
 
-def describe_rule(rule: dict) -> str:
+def people_text(ids, names: dict | None = None) -> str:
+    """'Ana and Ben', 'Ana, Ben +1', or '2 friends' when no name is known."""
+    ids = list(ids or ())
+    known = [names[i] for i in ids if names and names.get(i)]
+    more = len(ids) - len(known)
+    if not known:
+        return f"{len(ids)} friend{'s' if len(ids) != 1 else ''}"
+    if more == 0 and len(known) <= 2:
+        return " and ".join(known)
+    shown = known[:2]
+    return f"{', '.join(shown)} +{len(ids) - len(shown)}"
+
+
+def describe_rule(rule: dict, names: dict | None = None) -> str:
     o = _op(rule.get('field'), rule.get('op'))
     if o is None:
         return ''
+    if o[2] == 'people':
+        ids = _steamids(rule.get('value'))
+        if not ids:
+            return f"{FIELDS['friends'][0]} …"
+        return f"{FIELDS['friends'][0]} {people_text(ids, names)}" + (
+            ", more than one player" if o[0] == 'all_multi' else '')
     text, kind, value = f"{FIELDS[rule['field']][0]} {o[1]}", o[2], rule.get('value')
     if kind is None:
         return text
@@ -468,9 +593,10 @@ def describe_rule(rule: dict) -> str:
     return f"{text} {_NAMES.get(value, value)}"
 
 
-def describe(shelf: dict) -> str:
-    """The shelf's rules as one line, for its tooltip."""
-    parts = [describe_rule(r) for r in shelf.get('rules') or () if rule_ready(r)]
+def describe(shelf: dict, names: dict | None = None) -> str:
+    """The shelf's rules as one line, for its tooltip. `names`: steamid ->
+    friend's name, for a friends rule."""
+    parts = [describe_rule(r, names) for r in shelf.get('rules') or () if rule_ready(r)]
     if not parts:
         return "No rules yet"
     return (" or " if shelf.get('match') == 'any' else " and ").join(parts)

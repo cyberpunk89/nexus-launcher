@@ -637,7 +637,8 @@ class SmartShelfWidget(ShelfWidget):
         get = getattr(hub, '_smart_facts', None)
         facts, key = get() if get else {}, self.key(hub)
         if smart.is_user(key):
-            return smart.user_games(_user_shelf(hub, key), _visible_games(hub), facts)[:24]
+            return smart.user_games(_user_shelf(hub, key), _visible_games(hub), facts,
+                                    friends=FRIENDS.public_ids())[:24]
         return smart.games_for(key, _visible_games(hub), facts, linux=has('proton'))[:24]
 
     def fill(self, hub):
@@ -654,7 +655,8 @@ class SmartShelfWidget(ShelfWidget):
             mine = _user_shelf(hub, key)
             row = view.make_shelf(smart.title_of(mine) if mine else smart.label(key), games,
                                   self.KIND_TILE, smart=key,
-                                  tip=smart.describe(mine) if mine else smart.tip(key))
+                                  tip=smart.describe(mine, names=FRIENDS.names()) if mine
+                                  else smart.tip(key))
             row.btn_menu.hide()                # hide/save live in the Library; Customise here
             self._tiles = row.tiles
             self.body.addWidget(row)

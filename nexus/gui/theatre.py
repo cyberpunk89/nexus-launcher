@@ -699,6 +699,7 @@ class TheatreView(QWidget):
     surprise = pyqtSignal()
     library_sheet = pyqtSignal()                 # View on Library: the window opens Sort & filter
     library_changed = pyqtSignal(dict)           # a pick in that sheet: save it
+    together_asked = pyqtSignal(str)             # Play together… (w-83): the friends key in use
     download_action = pyqtSignal(str, dict)      # a Downloads row: its action key, its row
     moment_changed = pyqtSignal()                # the banner came or went (the hints follow)
     discover_shown = pyqtSignal()                # the Discover tab came up: the window fetches
@@ -829,6 +830,7 @@ class TheatreView(QWidget):
         self.lib_col.addStretch()
         self._lib_groups: list[QWidget] = []
         self.lib_state = {'sort': 'name', 'show': 'installed'}
+        self.facts: dict = {}                     # the facts index's games (Play together's modes)
         self.lib.setWidget(lhost)
         lp.addWidget(self.lib, 1)
         self.pages.addWidget(self.lib_page)
@@ -1043,8 +1045,14 @@ class TheatreView(QWidget):
         """New friends data: the game page's Friends and fact line, and the
         Library under Friends own (or its fallback once nobody owns)."""
         self.details.refresh_friends()
-        if self.lib_state.get('show') == 'friends':
+        show = str(self.lib_state.get('show') or '')
+        if show == 'friends' or show.startswith(smart.FRIENDS_KEY):
             self._fill_library()
+
+    def set_facts(self, facts: dict):
+        """The facts index's games, for Play together's "More than one
+        player" (the window feeds it with set_games)."""
+        self.facts = facts or {}
 
     # ---- the Library tab ----
     SORTS = (('name', "A to Z"), ('played', "Recently played"), ('most', "Most played"),
@@ -1061,15 +1069,22 @@ class TheatreView(QWidget):
         """The Show filter in use: Friends own falls back to Installed while
         no game has friends data."""
         show = self.lib_state['show']
-        if show == 'friends' and not any(g.get('friends') for g in self.everything):
+        together = show.startswith(smart.FRIENDS_KEY)     # Play together (w-83)
+        if (show == 'friends' or together) \
+                and not any(g.get('friends') for g in self.everything):
             return 'installed'
         return show
 
     def _lib_games(self) -> list[dict]:
-        pool = {'installed': self.games,
-                'missing': [g for g in self.everything if not is_installed(g)],
-                'all': self.everything,
-                'friends': [g for g in self.everything if g.get('friends')]}[self._show()]
+        show = self._show()
+        if show.startswith(smart.FRIENDS_KEY):            # Play together (w-83)
+            pool = smart.games_for(show, self.everything, self.facts,
+                                   friends=FRIENDS.public_ids())
+        else:
+            pool = {'installed': self.games,
+                    'missing': [g for g in self.everything if not is_installed(g)],
+                    'all': self.everything,
+                    'friends': [g for g in self.everything if g.get('friends')]}[show]
         name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
         sort = self.lib_state['sort']
         by_name = sorted(pool, key=name)                 # stable: ties keep A to Z
@@ -1139,7 +1154,8 @@ class TheatreView(QWidget):
                 w.deleteLater()
         sort_t = dict(self.SORTS)[sort]
         n = len(games)
-        self.lib_chip.setText(f"{sort_t}  ·  {dict(self.SHOWS)[show]}  ·  "
+        show_t = "Play together" if show.startswith(smart.FRIENDS_KEY) else dict(self.SHOWS)[show]
+        self.lib_chip.setText(f"{sort_t}  ·  {show_t}  ·  "
                               f"{n} game{'s' if n != 1 else ''}")
 
     def open_library_sheet(self, sheet, focus: int = 0):
@@ -1155,7 +1171,25 @@ class TheatreView(QWidget):
         items = ["Sort by"] + [row('sort', k, t, i) for i, (k, t) in enumerate(self.SORTS)] \
             + ["Show"] + [row('show', k, t, len(self.SORTS) + i)
                           for i, (k, t) in enumerate(shows)]
+        # Play together… (w-83): the picker in Theatre's modal, ticked while
+        # its filter is the one in use; only with a public friend to pick.
+        cur = str(self.lib_state.get('show') or '')
+        together = cur.startswith(smart.FRIENDS_KEY)
+        if FRIENDS.public() or together:
+            items.append(("Play together…", G['check'] if together else G['friends'],
+                          self._ask_together, together))
         sheet.choose("Sort & filter", items, focus=focus, keep_open=True)
+
+    def _ask_together(self):
+        cur = str(self.lib_state.get('show') or '')
+        self.together_asked.emit(cur if cur.startswith(smart.FRIENDS_KEY) else '')
+
+    def use_show(self, key: str):
+        """Play together's Show N games: the Library shows that friends
+        filter (saved like a pick in Sort & filter)."""
+        self.lib_state = {**self.lib_state, 'show': key}
+        self._fill_library()
+        self.library_changed.emit(dict(self.lib_state))
 
     def _pick_library(self, sheet, kind: str, key: str, index: int):
         self.lib_state = {**self.lib_state, kind: key}
@@ -1646,7 +1680,8 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
-from .friends import who_text  # noqa: E402
+from .friends import FRIENDS, who_text  # noqa: E402
+from nexus import smart  # noqa: E402
 from .theatre_discover import TheatreCard, TheatreDiscover, TheatreReader  # noqa: E402
 from .theatre_settings import WeekCard  # noqa: E402
 from .theme import TILE_LIFT  # noqa: E402

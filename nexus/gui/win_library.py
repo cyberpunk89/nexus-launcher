@@ -19,6 +19,9 @@ from .theme import G, SP
 # Chips for the stores in nexus/sources: hidden until the library has a
 # game from one.
 STORE_CHIPS = ('epic',)
+# The status filter's "Play together…" entry (w-83): picking it opens the
+# picker and the filter stays where it was.
+PICK_FRIENDS = '__play_together__'
 
 
 class LibraryMixin:
@@ -82,16 +85,17 @@ class LibraryMixin:
                           *((("Not in Heroic", 'no-heroic'),) if has('heroic') else ()),
                           ("Hidden games", 'hidden')):
             self.filter.addItem(text, key)
-        self.filter.currentIndexChanged.connect(self.apply_filter)
+        self.filter.currentIndexChanged.connect(self._filter_changed)
+        self._filter_last = 'all'                 # the last real choice (Play together reverts to it)
         self._smart_from = self.filter.count()    # the Smart group starts here
         self.btn_clear_filter = icon_button(G['close'], "Clear filter", 34, "Ghost", round_=True)
         self.btn_clear_filter.clicked.connect(self._clear_filter)
         self.btn_clear_filter.setVisible(False)
-        # A shelf you built, shown as the filter: edit its rules (w-51).
+        # A shelf you built, shown as the filter: edit its rules (w-51);
+        # Play together's filter: pick again (w-83).
         self.btn_edit_shelf = icon_button(G['pencil'], "Edit this shelf", 34, "Ghost",
                                           round_=True)
-        self.btn_edit_shelf.clicked.connect(
-            lambda: self._edit_shelf(str(self.filter.currentData())[len(smart.USER):]))
+        self.btn_edit_shelf.clicked.connect(self._edit_current_filter)
         self.btn_edit_shelf.setVisible(False)
         self.sort = QComboBox()
         for text, key in (("Recently played", 'played'), ("Name", 'name'),
@@ -316,6 +320,8 @@ class LibraryMixin:
 
     def _save_library_state(self, *_):
         status = self.filter.currentData()
+        if status == PICK_FRIENDS:                    # an action, not a filter
+            return
         if status == 'all' and self._smart_want:      # not restored yet: keep it
             status = self._smart_want
         st = {'sort': self.sort.currentData(), 'status': status,
@@ -455,6 +461,7 @@ class LibraryMixin:
         else:
             self._set_chip('all')               # its collection is gone
         if self._theatre:
+            self.theatre.set_facts(self._smart_facts())
             self.theatre.set_games([g for g in self._games if not g.get('hidden')])
         self._sync_selection()
         self._sync_pins()
@@ -769,8 +776,14 @@ class LibraryMixin:
         self._rebuild_smart_filter()
         q = self.search.text().strip().lower()
         status = self.filter.currentData() or 'all'
+        if status == PICK_FRIENDS:                    # never a filter (_filter_changed reverts)
+            status = 'all'
+        self._filter_last = status
+        together = status.startswith(smart.FRIENDS_KEY)
         self.btn_clear_filter.setVisible(status != 'all')
-        self.btn_edit_shelf.setVisible(smart.is_user(status))
+        self.btn_edit_shelf.setVisible(smart.is_user(status) or together)
+        self.btn_edit_shelf.setToolTip("Change who you play with" if together
+                                       else "Edit this shelf")
         if status.startswith(smart.KEY_PREFIXES):
             hit = {g['slug'] for g in self._smart_games(
                 status, [g for g in self._games if not g.get('hidden')])}
@@ -840,7 +853,7 @@ class LibraryMixin:
                                     and in_own(g)])
         self.count_label.setText(f"{n} of {total}" if n != total else
                                  f"{n} game{'s' if n != 1 else ''}")
-        badge = chip == 'friends'                   # avatars on tiles only while filtering
+        badge = chip == 'friends' or together       # avatars on tiles only while filtering
         self.library.set_friends_badge(badge)
         self.home.set_friends_badge(badge)
         if isinstance(target, HomeView):            # shelves are rebuilt: keep the place
@@ -870,6 +883,7 @@ class LibraryMixin:
             FRIENDS.reset()
             if self._chip == 'friends':
                 self._set_chip('all')
+            self._drop_together()
             self._sync_presence()
             return
         self._friends_loading = True          # before: a memo answers right here
@@ -895,9 +909,20 @@ class LibraryMixin:
         self._friends_loading = False
         if not self._older_answer(data):
             FRIENDS.set_answer(data)          # None (it failed): the last answer stays
-        if self._chip == 'friends' and data is not None and not FRIENDS.usable():
-            self._set_chip('all')
+        if data is not None and not FRIENDS.usable():
+            if self._chip == 'friends':
+                self._set_chip('all')
+            self._drop_together()
         self._sync_presence()
+
+    def _drop_together(self):
+        """Friends are off or unusable: a Play together filter (in use, or
+        restored and waiting) goes back to Any status."""
+        if str(self._smart_want or '').startswith(smart.FRIENDS_KEY):
+            self._smart_want = None
+            self._save_library_state()
+        if str(self.filter.currentData() or '').startswith(smart.FRIENDS_KEY):
+            self._clear_filter()
 
     def _friends_changed(self):
         """New friends data: who owns what, the chip, badges and tooltips,
@@ -1021,8 +1046,10 @@ class LibraryMixin:
         shelves first (shown even when empty), then the automatic ones."""
         hidden = set(self.prefs.smart_hidden)
         facts = self._smart_facts()
+        friends, names = FRIENDS.public_ids(), FRIENDS.names()
         mine = [{'key': smart.USER + s['id'], 'title': smart.title_of(s),
-                 'tip': smart.describe(s), 'games': smart.user_games(s, games, facts)}
+                 'tip': smart.describe(s, names=names),
+                 'games': smart.user_games(s, games, facts, friends=friends)}
                 for s in self.prefs.user_shelves() if smart.USER + s['id'] not in hidden]
         auto = smart.shelves(games, facts, hidden=hidden, linux=has('proton'))
         return mine + auto, self._smart_note(games), len(self._hidden_keys()), True
@@ -1038,16 +1065,26 @@ class LibraryMixin:
         """The games under any smart key, yours included."""
         if smart.is_user(key):
             shelf = smart.find_user(self.prefs.smart_shelves, key)
-            return smart.user_games(shelf, games, self._smart_facts()) if shelf else []
-        return smart.games_for(key, games, self._smart_facts(), linux=has('proton'))
+            return smart.user_games(shelf, games, self._smart_facts(),
+                                    friends=FRIENDS.public_ids()) if shelf else []
+        return smart.games_for(key, games, self._smart_facts(), linux=has('proton'),
+                               friends=FRIENDS.public_ids())
 
     def _smart_label(self, key: str) -> str:
+        together = smart.parse_friends_key(key)
+        if together is not None:                      # w-83: 'Play together: Ana and Ben'
+            return "Play together: " + smart.people_text(together[0], FRIENDS.names())
         shelf = smart.find_user(self.prefs.smart_shelves, key)
         return smart.title_of(shelf) if shelf else smart.label(key)
 
     def _smart_tip(self, key: str) -> str:
+        together = smart.parse_friends_key(key)
+        if together is not None:
+            ids, multi = together
+            return smart.describe_rule({'field': 'friends', 'op': 'all_multi' if multi else 'all',
+                                        'value': ids}, FRIENDS.names())
         shelf = smart.find_user(self.prefs.smart_shelves, key)
-        return smart.describe(shelf) if shelf else smart.tip(key)
+        return smart.describe(shelf, names=FRIENDS.names()) if shelf else smart.tip(key)
 
     def _rebuild_smart_filter(self, want: str | None = None):
         """The status filter's Smart group: a separator, a "Smart" header,
@@ -1063,11 +1100,13 @@ class LibraryMixin:
             smart.filter_keys(pool, self._smart_facts(), linux=has('proton'))
         if self._smart_temp and self._smart_temp != cur:
             self._smart_temp = None
-        if cur and cur.startswith(('smart:', 'genre:')) and cur not in keys:
+        if cur and cur.startswith(('smart:', 'genre:', smart.FRIENDS_KEY)) and cur not in keys:
             self._smart_temp = cur
         if self._smart_temp:
             keys.append(self._smart_temp)
-        sig = (tuple((k, self._smart_label(k)) for k in keys), cur)
+        # "Play together…" (w-83): only with a public friend to pick.
+        pick = bool(FRIENDS.public())
+        sig = (tuple((k, self._smart_label(k)) for k in keys), cur, pick)
         if sig == self._smart_sig:
             return
         self._smart_sig = sig
@@ -1075,13 +1114,17 @@ class LibraryMixin:
         box.blockSignals(True)
         while box.count() > self._smart_from:
             box.removeItem(box.count() - 1)
-        if keys:
+        if keys or pick:
             box.insertSeparator(box.count())
             box.addItem("Smart")
             box.model().item(box.count() - 1).setEnabled(False)
             for key in keys:
                 box.addItem(f"  {self._smart_label(key)}", key)
                 box.setItemData(box.count() - 1, self._smart_tip(key),
+                                Qt.ItemDataRole.ToolTipRole)
+            if pick:
+                box.addItem("  Play together…", PICK_FRIENDS)
+                box.setItemData(box.count() - 1, "Pick friends to see the games you all own",
                                 Qt.ItemDataRole.ToolTipRole)
         i = box.findData(cur)
         box.setCurrentIndex(i if i >= 0 else 0)
@@ -1118,6 +1161,85 @@ class LibraryMixin:
         the Shelves view)."""
         self._smart_want = None
         self.filter.setCurrentIndex(0)
+
+    # ---- Play together (w-83, friends.PlayTogetherForm) ----
+    def _filter_changed(self, *_):
+        """The status filter moved. "Play together…" is an action, not a
+        filter: the combo goes back to what it showed (quietly) and the
+        picker opens once the popup has closed."""
+        if self.filter.currentData() == PICK_FRIENDS:
+            box = self.filter
+            i = box.findData(self._filter_last)
+            box.blockSignals(True)
+            box.setCurrentIndex(i if i >= 0 else 0)
+            box.blockSignals(False)
+            QTimer.singleShot(0, self._play_together)
+            return
+        self._filter_last = self.filter.currentData() or 'all'
+        self.apply_filter()
+
+    def _edit_current_filter(self):
+        """The pencil by the filter: your shelf's rules, or Play together
+        on the friends it is showing."""
+        status = str(self.filter.currentData() or '')
+        if smart.is_user(status):
+            self._edit_shelf(status[len(smart.USER):])
+        elif status.startswith(smart.FRIENDS_KEY):
+            self._play_together(status)
+
+    def _play_together(self, key: str | None = None, theatre: bool = False):
+        """The Play together modal: pick friends, see how many games you all
+        own. Show N games sets the filter `friends:<ids>[:multi]` (Theatre:
+        its Library's Show); Save as shelf (desktop only) makes a shelf with
+        a "Friends own (all of)" rule. `key` starts it on those friends."""
+        if not alive(self) or not FRIENDS.public():
+            return
+        parsed = smart.parse_friends_key(key) if key else None
+        picked, multi = parsed if parsed else ([], True)
+        m = self._modal()
+        if theatre:
+            pool = list(self.theatre.everything)          # what its Library shows for it
+        else:
+            in_own = self._in_own()
+            pool = [g for g in self._shelf_pool() if in_own(g)]
+        note = ("Not installed ones are in it too. " if any(not is_installed(g) for g in pool)
+                else '') + "Games Nexus can't match to Steam can't be compared."
+        form = PlayTogetherForm(FRIENDS.friends(), pool, self._smart_facts(), picked, multi,
+                                note=note, scale=m.scale)
+        self.open_modal(
+            "Play together", form, form.primary_text,
+            lambda: self._show_together(form.key(), theatre),
+            glyph=G['friends'], sub="Pick friends to see the games you all own.", width=600,
+            can_submit=form.can_show, focus=form.first_row(),
+            extra=None if theatre else ("Save as shelf", G['sparkles'],
+                                        lambda: self._save_together(form.shelf_draft())),
+            extra_danger=False)
+        m.btn_extra.setEnabled(bool(form.chosen()))
+        # The form dies with the modal's body, first: bound methods on the
+        # modal (and the hints), nothing that holds the form.
+        form.primary.connect(m.set_primary)
+        form.picked.connect(m.btn_extra.setEnabled)
+        form.touched.connect(m.touched)
+        form.relayout.connect(m.relayout)
+        form.changed.connect(self._update_hints)
+
+    def _show_together(self, key: str, theatre: bool = False):
+        if not key:
+            return
+        if theatre:
+            self.theatre.use_show(key)
+            return
+        self._show_filter(key, from_page=True)        # the whole library: the count's pool
+
+    def _save_together(self, draft: dict):
+        """Save as shelf: a shelf of yours with one friends rule."""
+        if not draft['rules'][0]['value']:
+            return
+        if len(self.prefs.smart_shelves) >= smart.MAX_USER_SHELVES:
+            self.toast(f"That's {smart.MAX_USER_SHELVES} shelves, the most Nexus keeps. "
+                       "Remove one first.", 'warn', None, 5000)
+            return
+        self._save_shelf(draft, new=True)
 
     def _smart_menu(self, key: str, pos: QPoint):
         """A smart shelf's ⋮: See all, Save as collection, Hide this shelf;
@@ -1227,7 +1349,8 @@ class LibraryMixin:
         in_own = self._in_own()
         pool = self._shelf_pool()
         form = ShelfForm(shelf, pool, [g for g in pool if in_own(g)], self._smart_facts(),
-                         fields, new=new, scale=m.scale)
+                         fields, new=new, scale=m.scale, friends=FRIENDS.public_ids(),
+                         names=FRIENDS.names())
         sid = shelf.get('id')
         self.open_modal(
             "New shelf" if new else "Edit shelf", form,
@@ -1312,6 +1435,7 @@ class LibraryMixin:
         self._home_sig = sig
         if self._theatre:
             with KeepPlace(self.theatre):
+                self.theatre.set_facts(self._smart_facts())   # Play together's modes (w-83)
                 self.theatre.set_games(everything)
         with KeepPlace(self.homeview):
             self.homeview.set_games(visible, empty if not visible else None, pending)
@@ -1372,8 +1496,8 @@ from .actions import build_game_menu, game_actions  # noqa: E402
 from .art import ART  # noqa: E402
 from .dashboard import _game_store_id, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
-from .friends import (_ts, FRIENDS, FRIENDS_ARGS, playing_now, PRESENCE_AGE,  # noqa: E402
-    PRESENCE_ARGS)
+from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,  # noqa: E402
+    PRESENCE_AGE, PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,

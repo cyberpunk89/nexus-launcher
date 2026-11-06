@@ -129,13 +129,15 @@ class LibraryPrefs:
         self.library_state = lib if isinstance(lib, dict) else {}
         # Theatre's Library as it was left (its own: the desktop's is above):
         # {'sort': 'name'|'played'|'most'|'added'|'collection',
-        #  'show': 'installed'|'missing'|'all'|'friends' (w-82: Friends own)}
+        #  'show': 'installed'|'missing'|'all'|'friends' (w-82: Friends own)
+        #          or a Play together key 'friends:<ids>[:multi]' (w-83)}
         tl = self._data.get('theatre_library')
+        show = tl.get('show') if isinstance(tl, dict) else None
         self.theatre_library = {
             'sort': tl.get('sort') if isinstance(tl, dict) and tl.get('sort') in (
                 'name', 'played', 'most', 'added', 'collection') else 'name',
-            'show': tl.get('show') if isinstance(tl, dict) and tl.get('show') in (
-                'installed', 'missing', 'all', 'friends') else 'installed'}
+            'show': show if show in ('installed', 'missing', 'all', 'friends')
+            or smart.parse_friends_key(show) is not None else 'installed'}
         # Theatre's Discover: the Game-db setup card, hidden with X.
         self.theatre_hide_gamedb = bool(self._data.get('theatre_hide_gamedb', False))
         # Smart shelves you hid (keys like 'smart:never', 'genre:RPG', 'user:<id>').

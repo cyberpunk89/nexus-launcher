@@ -96,16 +96,19 @@ class Modal(Overlay):
     # ---- open ----
     def open(self, title: str, body: QWidget | None, primary: str, on_primary, *,
              glyph: str = '', sub: str = '', danger: bool = False, can_submit=None,
-             width: int = 440, text: str = '', extra: tuple | None = None):
+             width: int = 440, text: str = '', extra: tuple | None = None,
+             extra_danger: bool = True, focus: QWidget | None = None):
         """Show the modal. `body` (any widget, or None) becomes the modal's
         and is deleted when it closes; `text`, plain, explains above it.
         `on_primary()` runs once the modal has closed, so it may open
         another overlay. `can_submit()` says whether the primary is allowed
         (refresh() asks again; any QLineEdit in the body does on each edit).
         `extra` = (text, glyph, fn) puts a danger button at the footer's
-        left: it cancels the modal, then runs `fn()`.
-        Focus starts on Cancel when `danger`, else on the first text field,
-        else on the primary."""
+        left (a plain Ghost one with `extra_danger=False`, such as Play
+        together's Save as shelf): it cancels the modal, then runs `fn()`.
+        Focus starts on Cancel when `danger`, else on `focus` (a widget in
+        the body, when it is shown and enabled), else on the first text
+        field, else on the primary."""
         if self.isVisible():
             self._drop_keyboard()                # replaced: the first one is cancelled
         else:
@@ -115,8 +118,15 @@ class Modal(Overlay):
         self._extra = extra[2] if extra else None
         if extra:
             self.btn_extra.setText(amp(extra[0]))
-            set_glyph_icon(self.btn_extra, extra[1], 15, 'danger', hover_role='on_accent')
+            self.btn_extra.setObjectName("Danger" if extra_danger else "Ghost")
+            self.btn_extra.style().unpolish(self.btn_extra)
+            self.btn_extra.style().polish(self.btn_extra)
+            if extra_danger:
+                set_glyph_icon(self.btn_extra, extra[1], 15, 'danger', hover_role='on_accent')
+            else:
+                set_glyph_icon(self.btn_extra, extra[1], 15, 'subtext', hover_role='text')
         self.btn_extra.setVisible(bool(extra))
+        self.btn_extra.setEnabled(True)          # a body may turn it off while open
         clear_layout(self.body)
         self.title.setText(title)
         self.sub.setText(sub)
@@ -142,7 +152,9 @@ class Modal(Overlay):
         self.primary.style().unpolish(self.primary)
         self.primary.style().polish(self.primary)
         self.refresh()
-        self._start = self.btn_cancel if danger else self.field or self.primary
+        chosen = focus if alive(focus) and focus.isEnabled() and not focus.isHidden() \
+            else None
+        self._start = self.btn_cancel if danger else chosen or self.field or self.primary
         self.setGeometry(self.parentWidget().rect())
         self.ensurePolished()                    # the theme's sizes, before measuring
         self._place()
@@ -168,6 +180,12 @@ class Modal(Overlay):
 
     def refresh(self, *_):
         self.primary.setEnabled(self._allowed())
+
+    def set_primary(self, text: str):
+        """A new label for the primary while open (Play together's "Show 3
+        games"), and whether it is allowed now."""
+        self.primary.setText(amp(text))
+        self.refresh()
 
     def _allowed(self) -> bool:
         return self._can_submit is None or bool(self._can_submit())

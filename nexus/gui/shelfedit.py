@@ -24,10 +24,11 @@ class RuleRow(QWidget):
     remove = pyqtSignal(object)
 
     def __init__(self, rule: dict, fields: list[str], games: list[dict], facts: dict,
-                 scale: float = 1.0):
+                 scale: float = 1.0, names: dict | None = None):
         super().__init__()
         self.rule = dict(rule)
         self._games, self._facts = games, facts
+        self._names = names or {}
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(int(SP['2'] * scale))
@@ -68,6 +69,17 @@ class RuleRow(QWidget):
         kind = smart.value_kind(self.rule['field'], self.rule['op'])
         self.value.blockSignals(True)
         self.value.clear()
+        if kind == 'people':
+            # Play together's friends (w-83): shown, not edited here (the
+            # picker made them); a list can't be found with findData.
+            ids = self.rule['value'] or []
+            self.value.addItem(smart.people_text(ids, self._names), None)
+            self.value.setToolTip(", ".join(self._names.get(i, i) for i in ids))
+            self.value.setCurrentIndex(0)
+            self.value.setVisible(True)
+            self.value.setEnabled(False)
+            self.value.blockSignals(False)
+            return
         for v, text in smart.values_for(kind, self._games, self._facts, self.rule['value']) \
                 if kind else ():
             self.value.addItem(text, v)
@@ -111,8 +123,10 @@ class ShelfForm(QWidget):
     COVERS = 6
 
     def __init__(self, shelf: dict, games: list[dict], pool: list[dict], facts: dict,
-                 fields: list[str], new: bool = False, scale: float = 1.0):
+                 fields: list[str], new: bool = False, scale: float = 1.0,
+                 friends: set | None = None, names: dict | None = None):
         super().__init__()
+        self._friends, self._names = friends, names or {}
         sc = self._sc = lambda v: int(v * scale)        # noqa: E731
         self.scale = scale
         self.shelf = {**shelf, 'rules': [dict(r) for r in shelf.get('rules') or ()]}
@@ -215,11 +229,11 @@ class ShelfForm(QWidget):
                 'rules': [dict(r.rule) for r in self.rows], 'removed': False}
 
     def matches(self) -> list[dict]:
-        return smart.user_games(self.draft(), self._pool, self._facts)
+        return smart.user_games(self.draft(), self._pool, self._facts, friends=self._friends)
 
     # ---- rows ----
     def _append(self, rule: dict) -> 'RuleRow':
-        row = RuleRow(rule, self._fields, self._games, self._facts, self.scale)
+        row = RuleRow(rule, self._fields, self._games, self._facts, self.scale, self._names)
         row.changed.connect(self._rules_changed)
         row.remove.connect(self._remove_rule)
         self.rules_box.addWidget(row)
@@ -318,7 +332,7 @@ class ShelfForm(QWidget):
         self._strip_slugs = slugs
         clear_layout(self.strip)
         sc = self._sc
-        made = [self._cover(g, sc(56), sc(84)) for g in hit[:self.COVERS]]
+        made = [cover_thumb(g, sc(56), sc(84)) for g in hit[:self.COVERS]]
         if not hit:
             made.append(label("Pick rules that some of your games meet.", "Muted"))
         self._more = label(more, "Muted")
@@ -328,19 +342,19 @@ class ShelfForm(QWidget):
             w.show()                             # it has its parent now: never a window
         self.strip.addStretch()
 
-    def _cover(self, g: dict, w: int, h: int) -> QLabel:
-        """One cover, from the disk only (never fetched here); a stand-in
-        until it is decoded, or when the game has none."""
-        lab = QLabel()
-        lab.setFixedSize(w, h)
-        name = g.get('display_name') or g.get('slug') or ''
-        lab.setToolTip(name)
-        # Two initials, not three: a third doesn't fit this narrow.
-        lab.setPixmap(placeholder_pixmap(' '.join(name.split()[:2]), w, h))
-        path, _url, _kind = art_lookup(g, COVER_KINDS)
-        if path:
-            ART.pixmap_async(path, w, h, R['sm'],
-                             lambda pm, lab=lab: alive(lab) and lab.setPixmap(pm))
-        return lab
 
-
+def cover_thumb(g: dict, w: int, h: int) -> QLabel:
+    """One cover, from the disk only (never fetched here); a stand-in
+    until it is decoded, or when the game has none. The shelf modal's well
+    and Play together's (w-83)."""
+    lab = QLabel()
+    lab.setFixedSize(w, h)
+    name = g.get('display_name') or g.get('slug') or ''
+    lab.setToolTip(name)
+    # Two initials, not three: a third doesn't fit this narrow.
+    lab.setPixmap(placeholder_pixmap(' '.join(name.split()[:2]), w, h))
+    path, _url, _kind = art_lookup(g, COVER_KINDS)
+    if path:
+        ART.pixmap_async(path, w, h, R['sm'],
+                         lambda pm, lab=lab: alive(lab) and lab.setPixmap(pm))
+    return lab

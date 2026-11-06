@@ -51,6 +51,19 @@ class Prefs(unittest.TestCase):
         self.assertEqual(data['future_key'], {'x': 1})
         self.assertEqual(data['collection_look'], {})
 
+    def test_theatre_library_accepts_friends_key(self):
+        """Play together (w-83) in Theatre: a good friends key is kept, a
+        broken one reads as Installed."""
+        key = 'friends:76561190000000101,76561190000000102:multi'
+        self.path.write_text(json.dumps({'theatre_library': {'sort': 'most', 'show': key}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.theatre_library, {'sort': 'most', 'show': key})
+        p.save()
+        self.assertEqual(nx.LibraryPrefs().theatre_library['show'], key)
+        for bad in ('friends:', 'friends:abc', 'friends:1:solo', ['friends:1'], 7):
+            self.path.write_text(json.dumps({'theatre_library': {'show': bad}}))
+            self.assertEqual(nx.LibraryPrefs().theatre_library['show'], 'installed', bad)
+
     def test_theatre_library_defaults_bad_values_and_round_trip(self):
         self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'name', 'show': 'installed'})
         self.assertFalse(nx.LibraryPrefs().theatre_hide_gamedb)

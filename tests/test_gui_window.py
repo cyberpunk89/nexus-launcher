@@ -2490,6 +2490,45 @@ class Window(unittest.TestCase):
         self.assertNotIn(m.btn_extra, m._focusables())
         m.cancel()
 
+    def test_modal_focus_argument_and_set_primary(self):
+        """open(focus=...) starts on that body widget (default_focus answers
+        with it) when it can take focus; extra_danger=False makes a plain
+        footer button; set_primary relabels and re-asks can_submit."""
+        from PyQt6.QtWidgets import QLineEdit, QVBoxLayout
+        w = self.win
+        w.activateWindow()
+        QApplication.processEvents()
+        m, ok = w.modal, [False]
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        ed, first, second = QLineEdit(), QPushButton("One"), QPushButton("Two")
+        for x in (ed, first, second):
+            lay.addWidget(x)
+        w.open_modal("Pick", body, "Show", lambda: None, focus=second,
+                     can_submit=lambda: ok[0],
+                     extra=("Save it", nx.G['sparkles'], lambda: None), extra_danger=False)
+        self.assertIs(QApplication.focusWidget(), second)          # not the text field
+        self.assertIs(m.default_focus(), second)
+        self.assertEqual(m.btn_extra.objectName(), "Ghost")
+        self.assertFalse(m.primary.isEnabled())
+        ok[0] = True
+        m.set_primary("Show 3 games")
+        self.assertEqual(m.primary.text(), "Show 3 games")
+        self.assertTrue(m.primary.isEnabled())
+        m.cancel()
+        # A disabled (or missing) focus widget: the usual start, the field
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        ed, off = QLineEdit(), QPushButton("Off")
+        off.setEnabled(False)
+        lay.addWidget(ed)
+        lay.addWidget(off)
+        w.open_modal("Pick", body, "Show", lambda: None, focus=off,
+                     extra=("Remove", nx.G['trash'], lambda: None))
+        self.assertIs(QApplication.focusWidget(), ed)
+        self.assertEqual(m.btn_extra.objectName(), "Danger")       # the default
+        m.cancel()
+
     def test_collection_modal_name_and_look_apply_on_save(self):
         from nexus.gui.topbar import CollectionLookPicker
         w = self.win

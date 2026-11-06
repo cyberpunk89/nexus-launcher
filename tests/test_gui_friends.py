@@ -939,3 +939,247 @@ class TheatreFriends(_FriendsWindow):
         f.write_text(json.dumps({'theatre_library': {'show': 'bogus'}}))
         with mock.patch.object(nx.LibraryPrefs, 'PATH', f):
             self.assertEqual(nx.LibraryPrefs().theatre_library['show'], 'installed')
+
+
+# ---- w-83 ----
+def together_crowd():
+    """Ana in app 10 now, owns 10, 20, 30; Ben owns 10 and 20; Cy owns 30;
+    Dee owns nothing of yours; Fay is private."""
+    return [playing(1, "Ana", 10, 80, {10: 600, 20: 100, 30: 5}),
+            friend(2, "Ben", {10: 300, 20: 50}), friend(3, "Cy", {30: 10}), friend(4, "Dee"),
+            friend(5, "Fay", visible=False)]
+
+
+class _Together(_FriendsWindow):
+    """Play together (w-83) on the friends window: steam-30 is single-player
+    only, steam-10 has co-op, steam-20 (not installed) has no modes known."""
+
+    def setUp(self):
+        super().setUp()
+        self.win.prefs.library_state = {}
+        self.win._facts_idx = {'games': {'steam-10': {'modes': ['single', 'coop']},
+                                         'steam-30': {'modes': ['single']}}}
+        self.reply = answer(together_crowd())
+        self.win._reload_friends()
+        QApplication.processEvents()
+
+    def form(self, modal=None):
+        from nexus.gui.friends import PlayTogetherForm
+        m = modal or self.win.modal
+        self.assertTrue(m.isVisible())
+        return next(f for f in m.findChildren(PlayTogetherForm) if not f.isHidden())
+
+    def row(self, form, name):
+        return next(r for r in form.rows if r.name == name)
+
+    def pick_index(self):
+        from nexus.gui.win_library import PICK_FRIENDS
+        return self.win.filter.findData(PICK_FRIENDS)
+
+
+class PlayTogether(_Together):
+    def test_form_order_private_last_summary_count(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        w._play_together()
+        m, f = w.modal, self.form()
+        self.assertEqual(m.title.text(), "Play together")
+        self.assertLessEqual(m.card.width(), 600)
+        self.assertEqual([r.name for r in f.rows], ["Ana", "Ben", "Cy", "Dee", "Fay"])
+        self.assertEqual(self.row(f, "Ana").sub.text(), "Playing Steam 10")
+        self.assertEqual(self.row(f, "Ben").sub.text(), "1 game in common with you")
+        self.assertEqual(self.row(f, "Dee").sub.text(), "0 games in common with you")
+        fay = self.row(f, "Fay")
+        self.assertFalse(fay.isEnabled())
+        self.assertIn("private", [lab.text() for lab in fay.findChildren(QLabel)])
+        self.assertIsNone(f.find)                                    # five friends
+        self.assertIs(QApplication.focusWidget(), f.rows[0])         # the first friend
+        self.assertIs(m.default_focus(), f.rows[0])
+        self.assertEqual(f.mode.current(), 'multi')                  # the default
+        self.assertEqual(m.primary.text(), "Show games")
+        self.assertFalse(m.primary.isEnabled())
+        self.assertFalse(m.btn_extra.isEnabled())
+        self.assertEqual(m.btn_extra.text(), "Save as shelf")
+        self.row(f, "Ana").click()
+        # Installed only (the pool is what the grid shows): 10 and 30, and
+        # 30 is single-player only
+        self.assertEqual(f.count.text(), "1 game you and Ana both own")
+        self.assertEqual(m.primary.text(), "Show 1 game")
+        self.assertTrue(m.primary.isEnabled())
+        self.assertTrue(m.btn_extra.isEnabled())
+        f.mode.set_current('any', emit=True)
+        self.assertEqual(f.count.text(), "2 games you and Ana both own")
+        self.row(f, "Ben").click()
+        self.assertEqual(f.count.text(), "1 game you, Ana and Ben all own")
+        self.assertEqual(f.key(), f"friends:{sid(1)},{sid(2)}")
+        self.assertEqual(len([c for c in f.strip_host.findChildren(QLabel)
+                              if c.isVisibleTo(f)]), 1)              # one cover
+        self.row(f, "Cy").click()
+        self.assertEqual(f.count.text(), "No games you, Ana, Ben and Cy all own")
+        self.assertFalse(m.primary.isEnabled())
+        m.cancel()
+
+    def test_find_field_only_above_twelve(self):
+        w = self.win
+        self.reply = answer([friend(i, f"P{i:02d}", {10: i + 1}) for i in range(13)])
+        w._reload_friends()
+        w.go(w.LIBRARY)
+        w._play_together()
+        f = self.form()
+        self.assertIsNotNone(f.find)
+        self.assertIs(QApplication.focusWidget(), f.rows[0])        # a friend, not the field
+        f.find.setText("p1")
+        self.assertEqual([r.name for r in f.rows if not r.isHidden()],
+                         ["P10", "P11", "P12"])
+        f.find.setText("zz")
+        self.assertFalse(f.empty.isHidden())
+        f.find.setText("")
+        self.assertEqual(len([r for r in f.rows if not r.isHidden()]), 13)
+        w.modal.cancel()
+
+    def test_entry_opens_picker_and_combo_reverts(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        QApplication.processEvents()
+        i = self.pick_index()
+        self.assertGreater(i, 0)
+        self.assertEqual(w.filter.itemText(i).strip(), "Play together…")
+        w.filter.setCurrentIndex(i)
+        self.assertEqual(w.filter.currentData(), 'all')              # back at once
+        self.assertNotEqual(w.prefs.library_state.get('status'), w.filter.itemData(i))
+        self.assertFalse(w.modal.isVisible())
+        QApplication.processEvents()                                 # opens after the popup
+        self.assertTrue(w.modal.isVisible())
+        self.form()
+        w.modal.cancel()
+        # Nobody public: no entry
+        self.reply = answer([friend(5, "Fay", visible=False)])
+        w._reload_friends()
+        w.apply_filter()
+        self.assertEqual(self.pick_index(), -1)
+
+    def test_show_sets_filter_badge_pencil_reopens(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        w.set_view('grid', save=False)
+        w._set_chip('steam')
+        w._play_together()
+        f = self.form()
+        for name in ("Ana", "Ben"):
+            self.row(f, name).click()
+        key = f.key()
+        self.assertEqual(key, f"friends:{sid(1)},{sid(2)}:multi")
+        w.modal.primary.click()
+        QApplication.processEvents()
+        self.assertFalse(w.modal.isVisible())
+        self.assertEqual(w.filter.currentData(), key)
+        self.assertEqual(w.filter.currentText().strip(), "Play together: Ana and Ben")
+        self.assertEqual(w._chip, 'all')                             # the whole library
+        self.assertEqual(sorted(g['slug'] for g in w._shown_games), ['steam-10'])
+        self.assertTrue(w.library.friends_badge)
+        self.assertEqual(w.prefs.library_state['status'], key)
+        self.assertFalse(w.btn_edit_shelf.isHidden())
+        self.assertEqual(w.btn_edit_shelf.toolTip(), "Change who you play with")
+        w.btn_edit_shelf.click()
+        f = self.form()
+        self.assertEqual([r.name for r in f.rows if r.isChecked()], ["Ana", "Ben"])
+        self.assertEqual(f.mode.current(), 'multi')
+        self.assertEqual(w.modal.primary.text(), "Show 1 game")
+        w.modal.cancel()
+        w._clear_filter()
+        self.assertFalse(w.library.friends_badge)
+        self.assertTrue(w.btn_edit_shelf.isHidden())
+
+    def test_save_as_shelf_adds_rule(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        w._play_together()
+        f = self.form()
+        self.row(f, "Ana").click()
+        w.modal.btn_extra.click()
+        self.assertFalse(w.modal.isVisible())
+        shelf = w.prefs.user_shelves()[-1]
+        self.assertEqual(shelf['name'], "Play with Ana")
+        self.assertEqual(shelf['rules'], [{'field': 'friends', 'op': 'all_multi',
+                                          'value': [sid(1)]}])
+        key = 'user:' + shelf['id']
+        self.assertEqual([g['slug'] for g in w._smart_games(key, w._smart_pool())],
+                         ['steam-10'])
+        self.assertIn("Ana", w._smart_tip(key))
+        # Ana unfriended: the rule has nobody left and is skipped, nothing raises
+        self.reply = answer([r for r in together_crowd() if r['name'] != "Ana"])
+        w._reload_friends()
+        w.apply_filter()
+        self.assertEqual(w._smart_games(key, w._shelf_pool()), [])
+        self.assertEqual(w._smart_tip(key),
+                         "Friends own (all of) 1 friend, more than one player")
+
+    def test_filter_falls_back_when_friends_off(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        key = f"friends:{sid(2)}"
+        w._show_filter(key)
+        self.assertEqual(w.filter.currentData(), key)
+        self.assertEqual(sorted(g['slug'] for g in w._shown_games), ['steam-10'])
+        w.config['friends_enabled'] = False
+        w._load_friends()
+        self.assertEqual(w.filter.currentData(), 'all')
+        self.assertEqual(self.pick_index(), -1)
+        w.config['friends_enabled'] = True
+        w._reload_friends()
+        w._show_filter(key)
+        self.assertEqual(w.filter.currentData(), key)
+        w._friends_done(answer(together_crowd(), {'kind': 'no-key', 'message': 'x'}), '')
+        self.assertEqual(w.filter.currentData(), 'all')
+        self.assertNotEqual(w.prefs.library_state.get('status'), key)
+
+
+class TheatreTogether(_Together):
+    def test_theatre_modal_focus_on_first_row_a_and_b(self):
+        from PyQt6.QtTest import QTest
+        w = self.win
+        w.set_theatre(True)
+        QApplication.processEvents()
+        th = w.theatre
+        th.tabs.set_current('library', emit=True)
+        QApplication.processEvents()
+        chosen = []
+        with mock.patch.object(w.theatre_sheet, 'choose',
+                               lambda t, items, **k: chosen.extend(items)):
+            th.open_library_sheet(w.theatre_sheet)
+        row = next(i for i in chosen if isinstance(i, tuple) and i[0] == "Play together…")
+        row[2]()                                             # A on it
+        QApplication.processEvents()
+        m = w.theatre_modal
+        f = self.form(m)
+        self.assertEqual(f.scale, nx.THEATRE_SCALE)
+        self.assertTrue(m.btn_extra.isHidden())              # no Save as shelf on the TV
+        first = f.rows[0]
+        self.assertIs(QApplication.focusWidget(), first)
+        w._update_hints()
+        self.assertEqual(w.hints._shown[1][0], ('a', 'Add'))
+        QTest.keyClick(first, Qt.Key.Key_Space)              # the pad's A
+        self.assertTrue(first.isChecked())
+        self.assertEqual(w.hints._shown[1][0], ('a', 'Remove'))
+        # Everything counts in Theatre's Library: 10 and 20 (unknown modes stay)
+        self.assertEqual(f.count.text(), "2 games you and Ana both own")
+        m.primary.click()
+        QApplication.processEvents()
+        self.assertEqual(th.lib_state['show'], f"friends:{sid(1)}:multi")
+        self.assertEqual(w.prefs.theatre_library['show'], f"friends:{sid(1)}:multi")
+        self.assertEqual(sorted(g['slug'] for g in th._lib_games()), ['steam-10', 'steam-20'])
+        self.assertIn("Play together", th.lib_chip.text())
+        self.assertEqual(w.filter.currentData(), 'all')      # the desktop filter is untouched
+        # Again, then B cancels
+        th._ask_together()
+        QApplication.processEvents()
+        f = self.form(m)
+        self.assertEqual([r.name for r in f.rows if r.isChecked()], ["Ana"])
+        QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+        self.assertFalse(m.isVisible())
+        # Without friends data the show falls back to Installed
+        FRIENDS.set_answer(answer(together_crowd(), {'kind': 'no-key', 'message': 'x'}))
+        QApplication.processEvents()
+        self.assertIn("Installed", th.lib_chip.text())
+        w.set_theatre(False)
+        QApplication.processEvents()
