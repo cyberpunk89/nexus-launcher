@@ -1422,15 +1422,18 @@ class LibraryMixin:
             return
         if self._home_sig is not None and self._home_sig[0] == struct:
             # Only "playing" / "starting" moved (a game launched or quit): the
-            # tiles show it on their next paint and the hero re-picks; nothing
-            # is rebuilt (Theatre included — its rows don't depend on it).
+            # tiles show it on their next paint, the Stage and Theatre's
+            # spotlight re-pick (a running game is pinned); nothing is rebuilt
+            # (Theatre included — its rows don't depend on it).
             self._home_sig = sig
             views = (self.homeview, self.theatre) if self._theatre else (self.homeview,)
             for view in views:
                 for t in view.findChildren(GameTile):
                     t._sync_buttons()
                     t.update()
-                view.hero.set_games(featured_games(visible))
+            if self._theatre:
+                self.theatre.hero.set_games(featured_games(visible))
+            self.dashboard.refresh(['stage'])
             return
         self._home_sig = sig
         if self._theatre:

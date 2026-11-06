@@ -449,7 +449,7 @@ class Followups(unittest.TestCase):
         w._refresh_home()
         after = {id(t) for t in w.homeview.findChildren(nx.GameTile)}
         self.assertEqual(before, after)
-        self.assertEqual(w.homeview.hero.game.get('slug'), 'alpha')   # playing leads
+        self.assertEqual(w.dashboard.stage.art.game.get('slug'), 'alpha')   # playing leads
         w._playing = set()
         w._mark_states()
 

@@ -15,7 +15,7 @@ from .common import alive, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, SP
 # The spotlight subclasses Home's carousel, so this one is needed up front
 # (library.py imports nothing from here).
-from .library import HeroCarousel
+from .library import FollowHero
 
 
 THEATRE_SCALE = 1.4
@@ -395,7 +395,7 @@ class AttractOverlay(QWidget):
         return False
 
 
-class TheatreSpotlight(HeroCarousel):
+class TheatreSpotlight(FollowHero):
     """Theatre Home's spotlight: one game, full screen behind the top bar
     (kicker, logo, its line of facts, Play and Details). It follows focus
     in the first shelf, "Jump back in": no arrows, no dots, no rotation.
@@ -410,11 +410,8 @@ class TheatreSpotlight(HeroCarousel):
 
     def __init__(self):
         super().__init__(scale=THEATRE_SCALE)
-        self.timer.stop()
-        self.pinned: dict | None = None          # the running game, while there is one
-        for w in (self.btn_prev, self.btn_next, self.dots, self.btn_more):
-            w.hide()
-            w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_more.hide()                     # X opens the options sheet instead
+        self.btn_more.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.layout().setContentsMargins(0, 0, 0, SP['2'])
         self.kicker.setTextFormat(Qt.TextFormat.RichText)
         self.fact = fact_line()
@@ -430,29 +427,6 @@ class TheatreSpotlight(HeroCarousel):
         self.btn_details.clicked.disconnect()
         self.btn_details.clicked.connect(self._secondary)
 
-    def set_games(self, games: list[dict]):
-        """The game to show first: the one running or starting (pinned),
-        else the fresh copy of the one shown, if it's still there; focus
-        in "Jump back in" moves it from then on, unless one is pinned."""
-        self.pinned = now_playing(games)
-        keep = self.game.get('slug')
-        cur = self.pinned or next((g for g in games if g.get('slug') == keep), None) or \
-            (games[0] if games else None)
-        moved = cur is not None and cur.get('slug') != keep and self._cur is not None
-        self.games, self.i = ([cur] if cur else []), 0
-        if self.games:
-            self._show(animate=moved)
-
-    def show_game(self, g: dict):
-        if self.pinned is not None:
-            return                               # the running game stays
-        if g.get('slug') != self.game.get('slug'):
-            self.games, self.i = [g], 0
-            self._show(animate=True)
-
-    def is_pinned(self) -> bool:
-        return self.pinned is not None and self.pinned.get('slug') == self.game.get('slug')
-
     def _primary(self):
         (self.resume if self.is_pinned() else self.play).emit(self.game)
 
@@ -464,12 +438,6 @@ class TheatreSpotlight(HeroCarousel):
         if self.is_pinned():
             self.kicker.setText(live_kicker(self.game))
             self._fill_facts(self.game)
-
-    def step(self, d: int):
-        pass                                     # no rotation
-
-    def wheelEvent(self, ev):
-        ev.ignore()
 
     def _fill_facts(self, g: dict):
         t0 = g.get('session_start') if self.is_pinned() else None
@@ -769,10 +737,7 @@ class TheatreView(QWidget):
         self.hero.art_changed.connect(self.update)
         self.home.verticalScrollBar().valueChanged.connect(self._home_scrolled)
         # Focus in "Jump back in" moves the spotlight (once it settles there).
-        self._spot_next: dict | None = None
-        self._spot_timer = QTimer(self)
-        self._spot_timer.setSingleShot(True)
-        self._spot_timer.timeout.connect(self._spot_follow)
+        self._spot = Dwell(140, self._spot_follow, self)
         self.home_lay.addWidget(self.hero)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['6'])
@@ -879,10 +844,8 @@ class TheatreView(QWidget):
         # The background's tint follows the focused game once focus rests
         # there (w-65): holding the D-pad doesn't strobe the colour.
         self._tint_slug: str | None = None
-        self._tint_next: dict | None = None
-        self._tint_timer = QTimer(self)
-        self._tint_timer.setSingleShot(True)
-        self._tint_timer.timeout.connect(self._tint_settle)
+        self._tint = Dwell(self.TINT_DWELL, self._tint_settle, self)
+        self._tint_timer = self._tint.timer
         self._masks: dict = {}                    # spotlight frame -> it faded out (paintEvent)
         QApplication.instance().focusChanged.connect(self._focus_changed)
 
@@ -1257,11 +1220,9 @@ class TheatreView(QWidget):
 
     # ---- the spotlight ----
     def _spot_focus(self, tile):
-        self._spot_next = tile.game
-        self._spot_timer.start(anim_ms(140))
+        self._spot.push(tile.game)
 
-    def _spot_follow(self):
-        g = self._spot_next
+    def _spot_follow(self, g):
         if g is not None and not self.hero.isHidden():
             self.hero.show_game(g)
 
@@ -1360,15 +1321,10 @@ class TheatreView(QWidget):
         g = self._game_at(new)
         if g is None:
             return                               # a tab, a news card: the colour stays
-        self._tint_next = g
-        ms = anim_ms(self.TINT_DWELL)
-        if ms:
-            self._tint_timer.start(ms)
-        else:
-            self._tint_settle()
+        self._tint.push(g)
 
-    def _tint_settle(self):
-        g = self._tint_next
+    def _tint_settle(self, g=None):
+        g = g if g is not None else self._tint.value
         if g is None or g.get('slug') == self._tint_slug or not alive(self):
             return
         self._tint_slug = g.get('slug')
@@ -1377,7 +1333,7 @@ class TheatreView(QWidget):
     def refresh_tint(self):
         """Entering Theatre or a new look: the tint of the game in focus,
         else the spotlight's, at once."""
-        self._tint_timer.stop()
+        self._tint.cancel()
         f = QApplication.focusWidget()
         g = self._game_at(f) if f is not None and self.isAncestorOf(f) else None
         if g is None and self.hero.games:
@@ -1672,13 +1628,13 @@ class CursorHider(QObject):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .art import anim_ms, ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
+from .art import ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
 from .fmt import fmt_hours  # noqa: E402
-from .gameinfo import (can_quick_play, is_installed, live_kicker, now_playing,  # noqa: E402
+from .gameinfo import (can_quick_play, is_installed, live_kicker,  # noqa: E402
     played_minutes)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
-from .library import featured_games, ShelfRow, surprise_pick  # noqa: E402
+from .library import Dwell, featured_games, ShelfRow, surprise_pick  # noqa: E402
 from .actions import TrailerOverlay  # noqa: E402
 from .friends import FRIENDS, who_text  # noqa: E402
 from nexus import smart  # noqa: E402

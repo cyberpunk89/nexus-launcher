@@ -4,9 +4,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QRectF, Qt, QTimer, QUrl
+from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
-    QPainterPath, QRadialGradient)
+    QPainterPath, QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
@@ -15,14 +15,15 @@ from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
+from .library import Dwell, FollowHero
 from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, SP
 from .theme import collection_look
 
 
-DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99}
+DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
 # (id, sizes it allows, default size, hidden by default)
 DASH_KINDS = [                       # default order packs evenly in 3 columns
-    ('jump',       ('full',),                  'full',  False),
+    ('stage',      ('cinematic', 'wide', 'banner'), 'cinematic', False),
     ('friends',    ('wide', 'full'),           'full',  False),
     ('surprise',   ('full',),                  'full',  False),
     ('system',     ('small', 'wide'),          'wide',  False),
@@ -43,10 +44,16 @@ DASH_DEFAULT_SIZE = {k: d for k, _s, d, _h in DASH_KINDS}
 # Widgets folded into another: a saved layout's first one becomes the new
 # widget in its place (so it doesn't jump to the end).
 DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
-               'proton': 'system'}
+               'proton': 'system', 'jump': 'stage'}
+# Merged widgets that are shown even when the old one was hidden: the Stage
+# takes the hero's place, which was always there (w-85).
+DASH_MERGED_SHOWN = {'stage'}
 # Widgets added later that belong next to a related one rather than last.
-DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'jump', 'collections': 'favourites',
-                    'smart': 'installed', 'friends': 'jump'}
+DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'stage', 'collections': 'favourites',
+                    'smart': 'installed', 'friends': 'stage'}
+# Per-widget options checked like sizes: the first value is the default and
+# a bad one falls back to it (w-85; more styles and backgrounds in w-90).
+DASH_OPTIONS = {'stage': {'style': ('row',), 'bg': ('art',)}}
 
 
 def _dash_shelf(value) -> str:
@@ -71,10 +78,26 @@ def dash_shelf_label(hub, value) -> str:
     return smart.label(f'smart:{smart.WIDGET_DEFAULT if smart.is_user(rule) else rule}')
 
 
+def _dash_options(wid: str, it: dict) -> dict:
+    """The widget's DASH_OPTIONS keys from a saved item, each checked."""
+    return {key: (it.get(key) if it.get(key) in ok else ok[0])
+            for key, ok in DASH_OPTIONS.get(wid, {}).items()}
+
+
 def dash_default() -> list[dict]:
     return [{'id': k, 'size': d, 'hidden': h, **({'shelf': _dash_shelf(None)} if k == 'smart'
-                                                 else {})}
+                                                 else {}), **_dash_options(k, {})}
             for k, _s, d, h in DASH_KINDS]
+
+
+def stage_height(size: str, viewport_h: int) -> int:
+    """The Stage's height for a size in a Home viewport this tall: tall but
+    never the whole screen, so the next row always peeks."""
+    if size == 'banner':
+        return 250
+    if size == 'wide':
+        return max(320, min(420, viewport_h - 360))
+    return max(480, min(610, viewport_h - 290))
 
 
 def dash_normalize(items) -> list[dict]:
@@ -95,7 +118,8 @@ def dash_normalize(items) -> list[dict]:
             if wid in seen:
                 continue
             olds = legacy[wid]
-            it = {'id': wid, 'size': None, 'hidden': all(o.get('hidden') for o in olds)}
+            it = {'id': wid, 'size': None, 'hidden': wid not in DASH_MERGED_SHOWN
+                  and all(o.get('hidden') for o in olds)}
         if wid not in DASH_SIZES or wid in seen:
             continue
         seen.add(wid)
@@ -105,6 +129,7 @@ def dash_normalize(items) -> list[dict]:
                     'hidden': bool(it.get('hidden'))})
         if wid == 'smart':
             out[-1]['shelf'] = _dash_shelf(it.get('shelf'))
+        out[-1].update(_dash_options(wid, it))
     last: dict[str, str] = {}             # anchor -> the newest widget put after it
     for d in dash_default():
         if d['id'] in seen:
@@ -270,7 +295,7 @@ def dash_move(items, wid: str, direction: str, cols: int, skip=()) -> list[dict]
 
 
 # --------------------------------------------------------------------------
-# Dashboard — glanceable widgets under the Home hero, laid out by the user
+# Dashboard — the Stage and glanceable widgets on Home, laid out by the user
 # --------------------------------------------------------------------------
 
 class ClickRow(QFrame):
@@ -403,10 +428,15 @@ class DashWidget(QFrame):
         self.btn_shelf.setVisible(shelf is not None)
         if shelf is not None:
             self.btn_shelf.setText(f"Shelf: {shelf}")
-        self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width"}[size])
+        self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width",
+                               'cinematic': "Cinematic", 'banner': "Banner"}[size])
         self.setProperty('editing', on)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def bind(self, hub):
+        """Wire to the window once, when the dashboard is built (the Stage
+        hooks into Home's view); most widgets need nothing."""
 
     def has_content(self, hub) -> bool:
         """Shelf widgets with nothing to show stay out of the layout."""
@@ -474,7 +504,7 @@ class DashWidget(QFrame):
 
 
 class ShelfWidget(DashWidget):
-    """A row of game tiles (Jump back in, Recently installed, …)."""
+    """A row of game tiles (Recently installed, Favourites, …)."""
     FRAMED = False
     KIND_TILE = 'cover'
     LINK_CHIP = None                      # (chip, sort) for "See all"
@@ -564,12 +594,182 @@ def mark_duplicates(games: list[dict], enabled: bool = True) -> None:
             m['dup_of'] = keep['slug']
 
 
-class JumpWidget(ShelfWidget):
-    KIND, TITLE, KIND_TILE = 'jump', "Jump back in", 'wide'
+class StageArt(FollowHero):
+    """The Stage's art (w-85): one game's art, its logo, facts and Play,
+    moved only by the Continue row (focus, or the mouse resting on a tile).
+    A running or starting game is pinned with "Now playing". Its size sets
+    the logo's height; Banner has no fact pills."""
+    LOGO_H = {'cinematic': 96, 'wide': 96, 'banner': 80}
 
-    def games(self, hub):
-        return sorted((g for g in _visible_games(hub) if g.get('last_played')),
-                      key=lambda g: g['last_played'], reverse=True)[:10]
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("StageArt")
+        self.setMinimumHeight(0)
+        # Cinematic holds the Continue row too: less air above, so it all
+        # fits the 480 px floor (stage_height) without squeezing the row.
+        m = self.layout().contentsMargins()
+        self.layout().setContentsMargins(m.left(), SP['5'], m.right(), SP['5'])
+        self.size_ = 'cinematic'
+        self.kicker.setTextFormat(Qt.TextFormat.RichText)   # live_kicker's &nbsp;
+
+    def set_size(self, size: str):
+        if size == self.size_:
+            return
+        self.size_ = size
+        if self.games:
+            self._show(animate=False)
+
+    def _show(self, animate: bool):
+        g = self.game
+        # Disabling the focused Play (its game just started) would throw focus
+        # somewhere else on the page: Details takes it first.
+        if self.btn.hasFocus() and not play_enabled(g):
+            self.btn_details.setFocus(Qt.FocusReason.OtherFocusReason)
+        super()._show(animate)
+        if self.is_pinned():
+            self.kicker.setText(live_kicker(g))
+
+    def tick(self):
+        """The minute changed: "NOW PLAYING · 42 MIN" moves on."""
+        if self.is_pinned():
+            self.kicker.setText(live_kicker(self.game))
+
+    def _fill_facts(self, g: dict):
+        if self.size_ == 'banner':
+            clear_layout(self.facts)
+            return
+        super()._fill_facts(g)
+
+    def _logo(self, path):
+        h = self.LOGO_H.get(self.size_, 96)
+        try:
+            key = (path, Path(path).stat().st_mtime, self.scale, h)
+        except OSError:
+            return QPixmap()
+        if key not in self._logos:
+            pm = QPixmap(path)
+            if not pm.isNull():
+                pm = pm.scaled(h * 3, h, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            if len(self._logos) > 8:
+                self._logos.clear()
+            self._logos[key] = pm
+        return self._logos[key]
+
+
+class StageWidget(DashWidget):
+    """The top of Home (w-85): one game's art at Cinematic, Wide or Banner
+    size, and a Continue row of the most recently played games. Focus on a
+    tile (pad, keyboard) or the mouse resting on one moves the stage there;
+    nothing moves on its own. The row lies on the art at Cinematic and under
+    it otherwise. It's kept across fills, so moving the stage only repaints
+    the art and never takes focus off the row."""
+    KIND, TITLE = 'stage', "Stage"
+    FRAMED = False
+    FOCUS_DWELL, HOVER_DWELL = 140, 350
+    RECENT = 8
+
+    def __init__(self):
+        super().__init__()
+        self.art = StageArt()
+        self.body.addWidget(self.art)
+        self.row: 'ShelfRow | None' = None
+        self._view = None
+        self._vh = 850                           # the Home viewport's height
+        self._placed = None                      # the size the parts are laid out for
+        self._dwell = Dwell(self.FOCUS_DWELL, self._follow, self)
+        self._clock = QTimer(self)               # Now playing's minutes, while pinned
+        self._clock.setInterval(20000)
+        self._clock.timeout.connect(self.art.tick)
+
+    def bind(self, hub):
+        view = self._view = hub.homeview
+        self.art.play.connect(view.play)
+        self.art.open.connect(view.activated)
+        self.art.menu.connect(view.menu)
+        row = self.row = view.make_shelf("Continue", [], 'wide')
+        self.art.layout().addWidget(row)         # parented before anything shows it
+        row.focused.connect(self._row_focus)
+        row.hovered.connect(self._row_hover)
+        row.unhovered.connect(self._row_unhover)
+        view.viewport().installEventFilter(self)
+        self._place(self.size_ if self.size_ in DASH_SIZES['stage'] else 'cinematic')
+
+    def has_content(self, hub):
+        return bool(_visible_games(hub))
+
+    def fill(self, hub):
+        games = _visible_games(hub)
+        self._place(self.size_)
+        self.art.set_games(featured_games(games, max(1, len(games))))
+        self.art.setVisible(bool(self.art.games))
+        if self.art.is_pinned():
+            if not self._clock.isActive():
+                self._clock.start()
+        else:
+            self._clock.stop()
+        if self.row is None:
+            return
+        recent = sorted((g for g in games if g.get('last_played')),
+                        key=lambda g: g['last_played'], reverse=True)[:self.RECENT]
+        view, row = hub.homeview, self.row
+        view._untrack(row)
+        row.set_games(recent, lambda g: view._tile(g, row.tile_w, row.kind))
+        view._track(row)
+        row.setVisible(bool(recent))
+
+    def set_editing(self, on: bool, size: str, shelf: str | None = None):
+        super().set_editing(on, size, shelf)
+        self._place(size)
+
+    # ---- size ----
+    def _place(self, size: str):
+        """The row on the art (Cinematic) or under it; the art's height."""
+        self.size_ = size
+        if size != self._placed and self.row is not None:
+            self._placed = size
+            row, on_art = self.row, size == 'cinematic'
+            f = QApplication.focusWidget()
+            had = f if f is not None and row.isAncestorOf(f) else None
+            if row.parentWidget() is not (self.art if on_art else self):
+                (self.body if on_art else self.art.layout()).removeWidget(row)
+                (self.art.layout() if on_art else self.body).addWidget(row)
+            row.layout().setContentsMargins(0, SP['3'] if on_art else SP['2'], 0, 0)
+            for fade in row.fades.values():
+                fade.role = 'scrim' if on_art else 'bg'
+            for lab in (row.name_label, row.count_label):
+                if lab is not None:
+                    lab.style().unpolish(lab)
+                    lab.style().polish(lab)
+            if had is not None and alive(had):
+                had.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.art.set_size(size)
+        self._sync_height()
+
+    def _sync_height(self):
+        self.art.setFixedHeight(stage_height(self.size_, self._vh))
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Resize and self._view is not None \
+                and obj is self._view.viewport():
+            self._vh = ev.size().height()
+            self._sync_height()
+        return False
+
+    # ---- the row moves the stage ----
+    def _row_focus(self, tile):
+        self._dwell.push(tile.game, self.FOCUS_DWELL)
+
+    def _row_hover(self, tile):
+        self._dwell.push(tile.game, self.HOVER_DWELL)
+
+    def _row_unhover(self, tile):
+        if self._dwell.timer.isActive() and self._dwell.value is tile.game:
+            self._dwell.cancel()
+
+    def _follow(self, g):
+        if g is not None and alive(self):
+            self.art.show_game(g)
 
 
 class InstalledWidget(ShelfWidget):
@@ -1486,14 +1686,14 @@ class AchievementsWidget(DashWidget):
 
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
-    JumpWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
+    StageWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
     DealsWidget,
     UpcomingWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget, PlaytimeWidget,
     AchievementsWidget, OwnedWidget)}
 
 
 class Dashboard(QWidget):
-    """The widget grid under the hero. Columns follow the window width;
+    """Home's widget grid, the Stage first. Columns follow the window width;
     "Customise" turns on per-widget edit bars (move ←↑↓→, size, hide) and an
     "Add widgets" row for hidden ones — all buttons, so a controller can do
     it too. The layout is saved in library.json."""
@@ -1506,22 +1706,21 @@ class Dashboard(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['3'])
-        head = QHBoxLayout()
-        self.title = label("At a glance", "ShelfTitle")
-        head.addWidget(self.title)
-        head.addStretch()
+        # Customise and Reset sit in a slim row under the grid (w-85): the
+        # Stage is the top of Home, with no title above it.
+        foot = QHBoxLayout()
+        foot.addStretch()
         self.btn_reset = QPushButton("Reset layout")
         self.btn_reset.setObjectName("Ghost")
         self.btn_reset.clicked.connect(self._reset)
         self.btn_reset.setVisible(False)
-        head.addWidget(self.btn_reset)
+        foot.addWidget(self.btn_reset)
         self.btn_edit = QPushButton("Customise")
         self.btn_edit.setObjectName("Ghost")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
         set_glyph_icon(self.btn_edit, G['customise'], 16)
         self.btn_edit.clicked.connect(lambda: self.set_editing(not self.editing))
-        head.addWidget(self.btn_edit)
-        lay.addLayout(head)
+        foot.addWidget(self.btn_edit)
         self.add_row_host = QFrame()
         self.add_row_host.setObjectName("DashAdd")
         self.add_row = FlowLayout(self.add_row_host, margin=SP['3'], spacing=SP['1_5'])
@@ -1531,6 +1730,7 @@ class Dashboard(QWidget):
         self.grid.setHorizontalSpacing(SP['4'])
         self.grid.setVerticalSpacing(SP['5'])
         lay.addLayout(self.grid)
+        lay.addLayout(foot)
         self._cols = 0
         self._skipped: set | None = None          # what the last relayout left out
         for kind, cls in DASH_WIDGETS.items():
@@ -1540,6 +1740,12 @@ class Dashboard(QWidget):
             w.go.connect(hub.go)
             w.edit.connect(self._edit)
             self.widgets[kind] = w
+        for w in self.widgets.values():
+            w.bind(hub)
+
+    @property
+    def stage(self) -> StageWidget:
+        return self.widgets['stage']
 
     @property
     def items(self):
@@ -1560,12 +1766,13 @@ class Dashboard(QWidget):
                 w.size_ = it['size'] if it else 'small'
                 if it and not it['hidden']:
                     w.fill(self.hub)
-        if kinds is not None and set(kinds) <= {'friends'}:
+        if kinds is not None and set(kinds) <= {'friends', 'stage'}:
             # Presence ticks and every page or focus change ask for Friends
-            # playing now: lay out again only when it comes or goes.
+            # playing now, a game starting or quitting for the Stage: lay
+            # out again only when one comes or goes.
             if self._skip() != self._skipped:
                 self.relayout(force=True)
-        elif kinds is None or {'jump', 'friends', 'installed', 'smart', 'favourites',
+        elif kinds is None or {'stage', 'friends', 'installed', 'smart', 'favourites',
                                'collections', 'updates', 'upcoming', 'owned'} & set(kinds):
             self.relayout(force=True)
 
@@ -1673,9 +1880,10 @@ from .deals import _pill, DealArt, dim  # noqa: E402
 from .friends import (_ts, AvatarStack, FRIENDS, MAX_CARDS, playing_now,  # noqa: E402
     who_text)
 from .details import ElideLabel  # noqa: E402
-from .gameinfo import is_installed  # noqa: E402
+from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
+from .library import featured_games, ShelfRow  # noqa: E402
 from .newspage import news_style, NewsArt  # noqa: E402
 from .system import MinuteBars, WeekBars  # noqa: E402
 from .theatre import _search_norm  # noqa: E402

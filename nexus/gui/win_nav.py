@@ -299,10 +299,11 @@ class NavigationMixin:
             return self.theatre.default_focus()
         cur = self.current()
         if cur == self.HOME:
-            hero = self.homeview.hero
-            if not hero.isHidden() and hero.btn.isEnabled():
-                return hero.btn
-            return self._first_tile() or hero.btn_details
+            stage = self.dashboard.stage
+            shown = not stage.isHidden() and not stage.art.isHidden()
+            if shown and stage.art.btn.isEnabled():
+                return stage.art.btn
+            return self._first_tile() or (stage.art.btn_details if shown else self.tabs.item(cur))
         if cur == self.LIBRARY:
             return self._first_tile() or self.search
         page = self.stack.currentWidget()
@@ -325,7 +326,7 @@ class NavigationMixin:
         # isHidden, not isVisible: tiles added a moment ago aren't "visible"
         # until the event loop shows them; replaced ones were hide()-ed.
         for w in view.findChildren(GameTile):
-            if not w.isHidden() and not w.pending:
+            if not w.isHidden() and not w.pending and not _hidden_between(w, view):
                 return w
         return None
 
@@ -335,6 +336,17 @@ class NavigationMixin:
             focus_and_reveal(t)
             if isinstance(t, ListView) and slug:
                 t.reveal(slug)
+
+
+def _hidden_between(w, top) -> bool:
+    """A widget between `w` and `top` was hidden (a Home widget left out of
+    the layout, the Stage hidden in Customise): `w` can't be seen."""
+    p = w.parentWidget()
+    while p is not None and p is not top:
+        if p.isHidden():
+            return True
+        p = p.parentWidget()
+    return False
 
 
 # Siblings, imported last: they import this module too, and every use

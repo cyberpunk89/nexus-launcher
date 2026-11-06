@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QItemSelection,
-    QItemSelectionModel, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer,
+    QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer,
     QVariantAnimation)
 from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QImageReader, QLinearGradient,
     QPainter, QPainterPath, QPixmap)
@@ -426,13 +426,14 @@ class _EdgeFade(QWidget):
     def __init__(self, parent, side: str):
         super().__init__(parent)
         self.side = side
+        self.role = 'bg'              # the colour it fades into; 'scrim' over art (the Stage)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def paintEvent(self, ev):
         pt = QPainter(self)
         g = QLinearGradient(0.0, 0.0, float(self.width()), 0.0)
-        solid = QColor(P['bg']); solid.setAlphaF(0.85)
-        clear = QColor(P['bg']); clear.setAlphaF(0.0)
+        solid = QColor(P[self.role]); solid.setAlphaF(0.85)
+        clear = QColor(P[self.role]); clear.setAlphaF(0.0)
         g.setColorAt(0.0, solid if self.side == 'left' else clear)
         g.setColorAt(1.0, clear if self.side == 'left' else solid)
         pt.fillRect(self.rect(), QBrush(g))
@@ -464,6 +465,8 @@ class ShelfRow(QWidget):
     see_all = pyqtSignal()
     menu_asked = pyqtSignal(QPoint)
     focused = pyqtSignal(object)              # a tile of this row got focus
+    hovered = pyqtSignal(object)              # the mouse came onto a tile
+    unhovered = pyqtSignal(object)            # ... and left it
 
     def __init__(self, title: str, tile_w: int, kind: str = 'cover', count: int | None = None,
                  see_all: bool = False, menu: bool = False, tip: str = '',
@@ -627,6 +630,10 @@ class ShelfRow(QWidget):
         elif ev.type() == QEvent.Type.FocusIn and obj in self.tiles:
             self._reveal(obj)
             self.focused.emit(obj)
+        elif ev.type() == QEvent.Type.Enter and obj in self.tiles:
+            self.hovered.emit(obj)
+        elif ev.type() == QEvent.Type.Leave and obj in self.tiles:
+            self.unhovered.emit(obj)
         return False
 
     def _reveal(self, tile):
@@ -1063,6 +1070,83 @@ class HeroCarousel(QWidget):
             self.timer.start()
 
 
+class Dwell(QObject):
+    """Act on a value once it has rested for a while: focus moving along a
+    row (or a mouse resting on a tile) only counts where it stops, so
+    holding the D-pad doesn't strobe the stage or a tint. `push(value)`
+    restarts the wait; `settle(value)` runs when it ends. With Motion off
+    (read at push time) it settles at once."""
+
+    def __init__(self, ms: int, settle, parent=None):
+        super().__init__(parent)
+        self.ms = ms
+        self.settle = settle
+        self.value = None
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._fire)
+
+    def push(self, value, ms: int | None = None):
+        self.value = value
+        wait = anim_ms(self.ms if ms is None else ms)
+        if wait:
+            self.timer.start(wait)
+        else:
+            self.timer.stop()
+            self._fire()
+
+    def cancel(self):
+        self.timer.stop()
+        self.value = None
+
+    def _fire(self):
+        self.settle(self.value)
+
+
+class FollowHero(HeroCarousel):
+    """A hero that shows one game and moves only when told (`show_game`):
+    no timer, no arrows or dots, no swipes. A running or starting game is
+    pinned and stays until it ends. Theatre's spotlight and the desk Home's
+    Stage build on it."""
+
+    def __init__(self, scale: float = 1.0):
+        super().__init__(scale=scale)
+        self.timer.stop()
+        self.pinned: dict | None = None          # the running game, while there is one
+        for w in (self.btn_prev, self.btn_next, self.dots):
+            w.hide()
+            w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def set_games(self, games: list[dict]):
+        """The game to show first: the one running or starting (pinned),
+        else the fresh copy of the one shown, if it's still there; `show_game`
+        moves it from then on, unless one is pinned."""
+        self.pinned = now_playing(games)
+        keep = self.game.get('slug')
+        cur = self.pinned or next((g for g in games if g.get('slug') == keep), None) or \
+            (games[0] if games else None)
+        moved = cur is not None and cur.get('slug') != keep and self._cur is not None
+        self.games, self.i = ([cur] if cur else []), 0
+        if self.games:
+            self._show(animate=moved)
+
+    def show_game(self, g: dict):
+        if self.pinned is not None:
+            return                               # the running game stays
+        if g.get('slug') != self.game.get('slug'):
+            self.games, self.i = [g], 0
+            self._show(animate=True)
+
+    def is_pinned(self) -> bool:
+        return self.pinned is not None and self.pinned.get('slug') == self.game.get('slug')
+
+    def step(self, d: int):
+        pass                                     # no rotation
+
+    def wheelEvent(self, ev):
+        ev.ignore()
+
+
 def surprise_pick(games: list[dict], rng, recent=(), now: datetime | None = None):
     """"Surprise me": one installed, visible game that isn't running, picked
     at random — weighted toward games never played (×3) or not played for a
@@ -1121,8 +1205,8 @@ def featured_games(games: list[dict], n: int = 5) -> list[dict]:
 class HomeView(QScrollArea, _TileSignals):
     """Rows of games that page sideways.
 
-    mode='home'    — the Home page: the hero carousel, then the dashboard
-                     widgets (shelves like Jump back in, and cards).
+    mode='home'    — the Home page: the dashboard widgets (the Stage,
+                     shelves and cards).
     mode='shelves' — the Library's shelf view: one row per source."""
     clicked = pyqtSignal(dict, object)
     play = pyqtSignal(dict)
@@ -1135,7 +1219,6 @@ class HomeView(QScrollArea, _TileSignals):
     shelf_menu = pyqtSignal(str, QPoint)   # a smart shelf's ⋮ (key, where)
     hidden_menu = pyqtSignal(QPoint)       # the divider's "N hidden"
     new_shelf = pyqtSignal()               # the divider's "New shelf"
-    tint = pyqtSignal(object)
 
     SHELF_TILE = 150
     WIDE_TILE = 300
@@ -1149,13 +1232,6 @@ class HomeView(QScrollArea, _TileSignals):
         self.lay = QVBoxLayout(host)
         self.lay.setContentsMargins(SP['5'], SP['4'], SP['5'], SP['6'])
         self.lay.setSpacing(SP['5'])
-        self.hero = HeroCarousel()
-        self.hero.play.connect(self.play)
-        self.hero.open.connect(self.activated)
-        self.hero.menu.connect(self.menu)
-        self.hero.tint.connect(self.tint)
-        self.hero.setVisible(False)
-        self.lay.addWidget(self.hero)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['5'])
         self.lay.addLayout(self.rows)
@@ -1171,22 +1247,13 @@ class HomeView(QScrollArea, _TileSignals):
         self._kept: dict[str, ShelfRow] = {}   # Shelves: the source rows, by title
         FRIENDS.avatar_ready.connect(self._friend_avatars)
 
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        h = self.viewport().height()
-        self.hero.setFixedHeight(int(max(320, min(560, h * 0.52))))
-
     def set_games(self, games, empty_text=None, pending_jobs=()):
         self.tiles = {}             # the dashboard re-adds its shelves' tiles after this
         if self.mode == 'home':
-            feat = featured_games(games)
-            self.hero.setVisible(bool(feat))
-            self.hero.set_games(feat)
-            # Everything else on Home is a dashboard widget (MainWindow fills
-            # it); only an install in progress gets a row of its own.
+            # Everything on Home is a dashboard widget (MainWindow fills it,
+            # the Stage first); only an install in progress gets a row of its own.
             shelves = [("Installing", [], pending_jobs, 'cover', None)]
         else:
-            self.hero.setVisible(False)
             shelves = [("Installing", [], pending_jobs, 'cover', None)]
             for src, name in (('nexus', "Repacks"), ('steam', "Steam"),
                               *((('heroic', "Heroic"),) if has('heroic') else ()),
@@ -1564,7 +1631,8 @@ class ListView(QTableWidget):
 from .art import (anim_ms, ART, art_source, cover_pixmap, dominant_color, HERO_KINDS,
     LOGO_KINDS, MOTION, placeholder_pixmap, rounded_pixmap)  # noqa: E402
 from .friends import FRIENDS  # noqa: E402
-from .gameinfo import (is_installed, play_enabled, play_label, SOURCE_LABEL, TIER_COLORS)  # noqa: E402
+from .gameinfo import (is_installed, now_playing, play_enabled, play_label, SOURCE_LABEL,  # noqa: E402
+    TIER_COLORS)
 from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
 from .tiles import GameTile  # noqa: E402

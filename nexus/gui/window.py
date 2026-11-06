@@ -285,9 +285,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.homeview = HomeView('home')
         self._wire_view(self.homeview)
         self.homeview.see_all.connect(self._see_all)
-        self.homeview.tint.connect(self._desk_tint)
         self.dashboard = Dashboard(self)
         self.homeview.extra.addWidget(self.dashboard)
+        self.dashboard.stage.art.tint.connect(self._desk_tint)
         self._dash_pending: set[str] = set()
         self._dash_timer = QTimer(self)
         self._dash_timer.setSingleShot(True)
@@ -749,7 +749,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if self._theatre:
             self.hints.setStyleSheet(build_stylesheet(THEATRE_SCALE))
         refresh_icons()
-        for hero in (self.homeview.hero, self.theatre.hero):
+        for hero in (self.dashboard.stage.art, self.theatre.hero):
             hero._frames.clear()
             if hero.games:
                 hero._show(animate=False)

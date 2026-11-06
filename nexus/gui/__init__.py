@@ -73,14 +73,16 @@ from .actions import (
 from .overlay import Overlay  # noqa: F401
 from .modal import Modal  # noqa: F401
 from .library import (
-    _EdgeFade, _ShelfScroll, _TileSignals, featured_games, HeroCarousel, HomeView, KeepPlace,
+    _EdgeFade, _ShelfScroll, _TileSignals, Dwell, featured_games, FollowHero, HeroCarousel,
+    HomeView, KeepPlace,
     LibraryView, ListView, shelf_page_target, ShelfRow, surprise_pick)  # noqa: F401
 from .dashboard import (
     _game_store_id, _visible_games, AchievementsWidget, ClickRow, CollectionsWidget,
     dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_KINDS, DASH_MERGED, dash_move,
-    dash_normalize, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
+    dash_normalize, DASH_OPTIONS, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
-    InstalledWidget, job_facts, JumpWidget, mark_duplicates, NewsWidget, OwnedWidget,
+    InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget, stage_height,
+    StageArt, StageWidget,
     PlaytimeWidget, ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
     SysTile, UpcomingWidget, UpdatesWidget)  # noqa: F401
 from .details import (

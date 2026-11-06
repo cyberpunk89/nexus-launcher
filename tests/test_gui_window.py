@@ -248,7 +248,7 @@ class Collections(unittest.TestCase):
         old = [{'id': k, 'size': d, 'hidden': h} for k, _s, d, h in nx.DASH_KINDS
                if k not in ('surprise', 'collections')]
         ids = [it['id'] for it in nx.dash_normalize(old)]
-        self.assertEqual(ids[ids.index('jump') + 1], 'surprise')
+        self.assertEqual(ids[ids.index('stage') + 1], 'surprise')
         self.assertEqual(ids[ids.index('favourites') + 1], 'collections')
         self.assertEqual([i for i in ids if i not in ('surprise', 'collections')],
                          [it['id'] for it in old])
@@ -1314,7 +1314,9 @@ class Window(unittest.TestCase):
     def test_starts_on_home(self):
         self.assertEqual(self.win.current(), self.win.HOME)
         self.assertEqual(self.win.tabs.current(), self.win.HOME)
-        self.assertFalse(self.win.homeview.hero.isHidden())
+        self.assertFalse(self.win.dashboard.stage.art.isHidden())
+        self.assertFalse(self.win.dashboard.stage.isHidden())        # the top of Home
+        self.assertFalse(hasattr(self.win.homeview, 'hero'))
 
     def test_every_page(self):
         for key in self.win.pages:
@@ -1408,9 +1410,158 @@ class Window(unittest.TestCase):
 
     def test_dashboard_widgets_fill(self):
         d = self.win.dashboard
-        self.assertTrue(d.widgets['jump'].isVisibleTo(d))            # has played games
+        self.assertTrue(d.widgets['stage'].isVisibleTo(d))           # has games
         self.assertFalse(d.widgets['favourites'].isVisibleTo(d))     # none: stays out
         self.assertIn('alpha', self.win.homeview.tiles)
+
+    # ---- w-85: the Stage ----
+    def _stage(self):
+        w = self.win
+        w.prefs.dashboard = nx.dash_default()     # not the user's own layout
+        w.dashboard.refresh()
+        QApplication.processEvents()
+        return w, w.dashboard.stage
+
+    def test_stage_follows_the_continue_row(self):
+        w, stage = self._stage()
+        w.activateWindow()
+        art, row = stage.art, stage.row
+        self.assertEqual(row.title, "Continue")
+        self.assertEqual([t.game['slug'] for t in row.tiles], ['alpha', 'steam-1'])
+        self.assertEqual(art.game['slug'], 'alpha')                 # the last played
+        self.assertFalse(art.timer.isActive())                      # nothing moves on its own
+        for x in (art.btn_prev, art.btn_next, art.dots):
+            self.assertTrue(x.isHidden())
+        self.assertIs(row.parentWidget(), art)                      # Cinematic: on the art
+        tiles = [id(t) for t in row.tiles]
+        tile = row.tiles[1]
+        tile.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not tile:                  # offscreen lost activation
+            row.focused.emit(tile)
+        self.assertEqual(art.game['slug'], 'steam-1')               # follows focus
+        self.assertEqual([id(t) for t in row.tiles], tiles)         # the row isn't rebuilt
+        had = QApplication.focusWidget()
+        w._home_sig = None
+        w.apply_filter()                                            # a full refresh
+        QApplication.processEvents()
+        self.assertEqual([id(t) for t in row.tiles], tiles)
+        self.assertEqual(art.game['slug'], 'steam-1')               # the stage stays
+        self.assertIs(QApplication.focusWidget(), had)
+        other = next(t for t in w.homeview.findChildren(nx.GameTile)
+                     if not stage.isAncestorOf(t) and not t.pending
+                     and t.game['slug'] != 'steam-1')
+        other.setFocus()
+        QApplication.processEvents()
+        self.assertEqual(art.game['slug'], 'steam-1')               # another shelf: stays
+        self.assertFalse(art.timer.isActive())
+
+    def test_stage_hover_dwell(self):
+        from PyQt6.QtCore import QEvent, QPointF
+        from PyQt6.QtGui import QEnterEvent
+        from nexus.gui import art as art_mod
+        w, stage = self._stage()
+        art, row = stage.art, stage.row
+        tile = row.tiles[1]
+
+        def enter():
+            QApplication.sendEvent(tile, QEnterEvent(QPointF(5, 5), QPointF(5, 5), QPointF(5, 5)))
+        with mock.patch.object(art_mod, 'MOTION', True):
+            enter()
+            self.assertTrue(stage._dwell.timer.isActive())
+            self.assertEqual(stage._dwell.timer.interval(), 350)     # a resting mouse
+            self.assertEqual(art.game['slug'], 'alpha')             # not yet
+            QApplication.sendEvent(tile, QEvent(QEvent.Type.Leave))
+            self.assertFalse(stage._dwell.timer.isActive())         # passed over: nothing
+            enter()
+            stage._dwell.timer.stop()
+            stage._dwell._fire()
+            self.assertEqual(art.game['slug'], 'steam-1')
+            row.focused.emit(row.tiles[0])
+            self.assertEqual(stage._dwell.timer.interval(), 140)     # the pad is quicker
+            stage._dwell.cancel()
+            self.assertEqual(art.game['slug'], 'steam-1')
+
+    def test_stage_pins_the_running_game(self):
+        w, stage = self._stage()
+        art, row = stage.art, stage.row
+        tiles = [id(t) for t in row.tiles]
+        g = w.game('steam-1')
+        rebuilt = []
+        real = w.homeview.set_games
+        with mock.patch.object(w, 'run', lambda *a, **k: None), \
+                mock.patch.object(w.homeview, 'set_games',
+                                  lambda *a, **k: (rebuilt.append(1), real(*a, **k))):
+            self._play(w, g)
+            QApplication.processEvents()
+        self.assertEqual(rebuilt, [])                               # the fast path
+        self.assertTrue(art.is_pinned())
+        self.assertEqual(art.game['slug'], 'steam-1')
+        self.assertIn("NOW PLAYING", art.kicker.text())
+        self.assertTrue(stage._clock.isActive())                    # the minutes move on
+        art.tick()
+        self.assertIn("42 MIN", art.kicker.text())
+        self.assertFalse(art.btn.isEnabled())                       # it runs already
+        row.focused.emit(row.tiles[0])                              # alpha
+        self.assertEqual(art.game['slug'], 'steam-1')               # pinned: focus doesn't move it
+        self.assertEqual([id(t) for t in row.tiles], tiles)
+
+    def test_stage_keeps_focus_when_its_game_starts(self):
+        w, stage = self._stage()
+        w.activateWindow()
+        art = stage.art
+        art.btn.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not art.btn:
+            self.skipTest("offscreen gave no focus")
+        with mock.patch.object(w, 'run', lambda *a, **k: None):
+            self._play(w, w.game('alpha'))
+        self.assertFalse(art.btn.isEnabled())
+        self.assertIs(QApplication.focusWidget(), art.btn_details)  # moved before disabling
+
+    def test_stage_sizes_and_hide(self):
+        w, stage = self._stage()
+        d = w.dashboard
+        row = stage.row
+        tiles = [id(t) for t in row.tiles]
+        vh = w.homeview.viewport().height()
+
+        def item():
+            return next(i for i in w.prefs.dashboard if i['id'] == 'stage')
+        d.set_editing(True)
+        self.assertEqual(stage.btn_size.text(), "Cinematic")
+        self.assertEqual(stage.art.maximumHeight(), nx.stage_height('cinematic', vh))
+        self.assertTrue(all(f.role == 'scrim' for f in row.fades.values()))
+        stage.btn_size.click()
+        self.assertEqual(item()['size'], 'wide')
+        self.assertEqual(stage.btn_size.text(), "Wide")
+        self.assertIs(row.parentWidget(), stage)                    # under the art
+        self.assertEqual(stage.art.maximumHeight(), nx.stage_height('wide', vh))
+        self.assertTrue(all(f.role == 'bg' for f in row.fades.values()))
+        self.assertEqual([k for k, *_ in nx.dash_pack(d.items, 3)][:1], ['stage'])
+        stage.btn_size.click()
+        self.assertEqual(item()['size'], 'banner')
+        self.assertEqual(stage.btn_size.text(), "Banner")
+        self.assertEqual(stage.art.maximumHeight(), 250)
+        self.assertEqual(stage.art.facts.count(), 0)                # no fact pills
+        stage.btn_size.click()
+        self.assertEqual(item()['size'], 'cinematic')
+        self.assertIs(row.parentWidget(), stage.art)                # back on the art
+        self.assertGreater(stage.art.facts.count(), 0)
+        self.assertEqual([id(t) for t in row.tiles], tiles)         # same row all along
+        d._edit('stage', 'hide')
+        self.assertTrue(item()['hidden'])
+        self.assertTrue(stage.isHidden())
+        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
+        self.assertTrue(any("Stage" in t for t in chips))
+        d.set_editing(False)
+        w.go(w.HOME)
+        f = w.default_focus()
+        self.assertIsInstance(f, nx.GameTile)                       # the first tile, not the stage
+        self.assertFalse(stage.isAncestorOf(f))
+        d._edit('stage', 'show')
+        self.assertFalse(stage.isHidden())
+        self.assertIs(w.default_focus(), stage.art.btn)
 
     def test_artwork_page_round_trip(self):
         game = self.win._games[1]
@@ -1586,7 +1737,7 @@ class Window(unittest.TestCase):
     def test_focus_ring_only_for_keyboard(self):
         from PyQt6.QtCore import QEvent, Qt
         from PyQt6.QtGui import QKeyEvent
-        ring, btn = self.win.focus_ring, self.win.homeview.hero.btn_details
+        ring, btn = self.win.focus_ring, self.win.dashboard.stage.art.btn_details
         self.win.activateWindow()
         btn.setFocus()
         QApplication.processEvents()

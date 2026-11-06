@@ -158,10 +158,10 @@ class DashboardModel(unittest.TestCase):
         return [{'id': i, 'size': s, 'hidden': False} for i, s in spec]
 
     def test_pack_flows_rows(self):
-        items = self.items(('jump', 'full'), ('activity', 'small'), ('storage', 'small'),
+        items = self.items(('stage', 'cinematic'), ('activity', 'small'), ('storage', 'small'),
                            ('health', 'small'), ('deals', 'wide'), ('proton', 'small'))
         got = nx.dash_pack(items, 3)
-        self.assertEqual(got, [('jump', 0, 0, 3), ('activity', 1, 0, 1), ('storage', 1, 1, 1),
+        self.assertEqual(got, [('stage', 0, 0, 3), ('activity', 1, 0, 1), ('storage', 1, 1, 1),
                                ('health', 1, 2, 1), ('deals', 2, 0, 2), ('proton', 2, 2, 1)])
 
     def test_pack_wraps_and_clamps(self):
@@ -194,10 +194,10 @@ class DashboardModel(unittest.TestCase):
 
     def test_normalize(self):
         saved = [{'id': 'news', 'size': 'huge'}, {'id': 'bogus'}, {'id': 'news'},
-                 {'id': 'jump', 'size': 'full', 'hidden': True}]
+                 {'id': 'deals', 'size': 'wide', 'hidden': True}]
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:2], ['news', 'jump'])
+        self.assertEqual(ids[:2], ['news', 'deals'])
         self.assertEqual(out[0]['size'], nx.DASH_DEFAULT_SIZE['news'])   # bad size -> default
         self.assertTrue(out[1]['hidden'])
         self.assertEqual(sorted(ids), sorted(k for k, *_ in nx.DASH_KINDS))
@@ -210,8 +210,9 @@ class DashboardModel(unittest.TestCase):
         saved[2]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:5], ['jump', 'friends', 'surprise', 'system', 'installed'])
-        # system is where activity was (friends and surprise, added later, sit after jump)
+        self.assertEqual(ids[:5], ['stage', 'friends', 'surprise', 'system', 'installed'])
+        # system is where activity was (friends and surprise, added later, sit after the
+        # stage, which took jump's place)
         for gone in ('activity', 'storage', 'health', 'proton', 'unplayed'):
             self.assertNotIn(gone, ids)
         self.assertEqual(out[3], {'id': 'system', 'size': 'wide', 'hidden': False})
@@ -223,13 +224,67 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:5], ['deals', 'upcoming', 'jump', 'friends', 'surprise'])
-        # A layout from before w-82 gains Friends playing now right after Jump back in
+        self.assertEqual(ids[:5], ['deals', 'upcoming', 'stage', 'friends', 'surprise'])
+        # A layout from before w-82 gains Friends playing now right after the Stage
         old = [i for i in nx.dash_default() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
-        self.assertEqual(ids[:3], ['jump', 'friends', 'surprise'])
+        self.assertEqual(ids[:3], ['stage', 'friends', 'surprise'])
         self.assertEqual(nx.DASH_SIZES['friends'], ('wide', 'full'))
         self.assertEqual(nx.DASH_DEFAULT_SIZE['friends'], 'full')
+
+    def test_normalize_turns_jump_into_the_stage(self):
+        """w-85: Jump back in becomes the Stage in place, at Cinematic and
+        shown even when Jump back in was hidden (the hero always was);
+        Friends and Surprise, added later, go after it."""
+        saved = self.items(('system', 'wide'), ('jump', 'full'), ('installed', 'full'))
+        saved[1]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[:5], ['system', 'stage', 'friends', 'surprise', 'installed'])
+        self.assertNotIn('jump', ids)
+        stage = out[1]
+        self.assertEqual(stage, {'id': 'stage', 'size': 'cinematic', 'hidden': False,
+                                 'style': 'row', 'bg': 'art'})
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        self.assertEqual(nx.DASH_KINDS[0][:3], ('stage', ('cinematic', 'wide', 'banner'),
+                                                'cinematic'))
+        self.assertEqual(nx.dash_default()[0]['id'], 'stage')
+        both = self.items(('jump', 'full'), ('stage', 'banner'))  # one stage, the first
+        self.assertEqual([i['id'] for i in nx.dash_normalize(both)].count('stage'), 1)
+        self.assertNotIn('jump', nx.DASH_WIDGETS)
+
+    def test_normalize_checks_stage_options(self):
+        out = nx.dash_normalize([{'id': 'stage', 'size': 'wide', 'style': 'clean',
+                                  'bg': 42, 'hidden': True}])
+        stage = next(i for i in out if i['id'] == 'stage')
+        self.assertEqual((stage['size'], stage['style'], stage['bg'], stage['hidden']),
+                         ('wide', 'row', 'art', True))               # bad options fall back
+        stage = next(i for i in nx.dash_normalize([{'id': 'stage', 'size': 'huge'}])
+                     if i['id'] == 'stage')
+        self.assertEqual((stage['size'], stage['style'], stage['bg']), ('cinematic', 'row', 'art'))
+        self.assertEqual(nx.DASH_OPTIONS['stage'], {'style': ('row',), 'bg': ('art',)})
+        news = next(i for i in out if i['id'] == 'news')
+        self.assertNotIn('style', news)                              # only the stage has them
+
+    def test_pack_spans_stage_sizes(self):
+        for size, span in (('cinematic', 3), ('banner', 3), ('wide', 2)):
+            items = self.items(('stage', size), ('system', 'small'))
+            self.assertEqual(nx.dash_pack(items, 3)[0], ('stage', 0, 0, span))
+        self.assertEqual(nx.dash_pack(self.items(('stage', 'wide'), ('system', 'small')), 3),
+                         [('stage', 0, 0, 2), ('system', 0, 2, 1)])   # Wide leaves a column
+        self.assertEqual(nx.dash_pack(self.items(('stage', 'cinematic')), 1),
+                         [('stage', 0, 0, 1)])
+
+    def test_stage_height(self):
+        h = nx.stage_height
+        self.assertEqual(h('cinematic', 850), 560)                   # vh - 290
+        self.assertEqual(h('cinematic', 1400), 610)                  # capped
+        self.assertEqual(h('cinematic', 600), 480)                   # at least
+        self.assertEqual(h('wide', 850), 420)
+        self.assertEqual(h('wide', 700), 340)
+        self.assertEqual(h('wide', 500), 320)
+        self.assertEqual(h('banner', 850), 250)
+        self.assertEqual(h('banner', 400), 250)
 
     def test_full_size_for_playtime_and_achievements(self):
         for k in ('playtime', 'achievements'):
@@ -317,6 +372,58 @@ class DashboardModel(unittest.TestCase):
             self.assertEqual(data['dashboard']['version'], 1)
             self.assertTrue(again.dashboard[0]['hidden'])
             self.assertEqual(again.favorites, {'a'})
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Dwell(unittest.TestCase):
+    """w-85: the focus-to-stage helper shared by the desk Stage and Theatre."""
+
+    def setUp(self):
+        from unittest import mock
+        from nexus.gui import art
+        p = mock.patch.object(art, 'MOTION', True)
+        p.start()
+        self.addCleanup(p.stop)
+        self.got = []
+        self.d = nx.Dwell(140, self.got.append)
+
+    def tearDown(self):
+        self.d.cancel()
+        self.d.deleteLater()
+
+    def test_settles_once_after_the_wait(self):
+        self.d.push('a')
+        self.assertEqual(self.got, [])
+        self.assertTrue(self.d.timer.isActive())
+        self.assertEqual(self.d.timer.interval(), 140)
+        self.d.timer.stop()
+        self.d._fire()
+        self.assertEqual(self.got, ['a'])
+        self.d.push('b', 350)                                    # its own wait
+        self.assertEqual(self.d.timer.interval(), 350)
+
+    def test_new_push_restarts(self):
+        from PyQt6.QtTest import QTest
+        self.d.ms = 30
+        self.d.push('a')
+        self.d.push('b')
+        QTest.qWait(120)
+        self.assertEqual(self.got, ['b'])                         # only where it stopped
+
+    def test_instant_without_motion(self):
+        from unittest import mock
+        from nexus.gui import art
+        with mock.patch.object(art, 'MOTION', False):
+            self.d.push('a')
+            self.assertEqual(self.got, ['a'])                     # read at push time
+            self.assertFalse(self.d.timer.isActive())
+
+    def test_cancel(self):
+        self.d.push('a')
+        self.d.cancel()
+        self.assertFalse(self.d.timer.isActive())
+        self.assertIsNone(self.d.value)
+        self.assertEqual(self.got, [])
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
