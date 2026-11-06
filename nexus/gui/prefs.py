@@ -3,15 +3,18 @@
 import json
 import sys
 import uuid
+from datetime import datetime
 
 from nexus import net, paths as NX, smart
 from nexus.icons import COLLECTION_ICONS
 
+from .moments import is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key, snooze_until
 from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, THEATRE_STARTS,
     VOLUME_STEPS)
 from .theme import ACCENTS, normalize_appearance, TILE_W
 
 MAX_PINNED = 3                    # collections pinned to the top bar (w-52)
+MAX_KINDS_OFF = 20                # For you now kinds switched off (w-88)
 
 
 def clean_collection_name(name) -> str:
@@ -32,6 +35,27 @@ def clean_collection_look(look) -> dict:
     if look.get('pinned') is True:
         out['pinned'] = True
     return out
+
+
+def _snoozes(raw, now: datetime) -> dict:
+    """For you now's Not now snoozes {'kind:key': 'YYYY-MM-DD'}: the ones
+    still running, the newest SNOOZE_MAX (a bad entry is dropped)."""
+    if not isinstance(raw, dict):
+        return {}
+    live = [(k, v) for k, v in raw.items()
+            if isinstance(k, str) and ':' in k and is_snoozed(raw, k, now)]
+    return dict(live[-SNOOZE_MAX:])
+
+
+def _quiet_until(raw, now: datetime) -> datetime | None:
+    """When Quiet until tomorrow ends (a local ISO time), or None once past."""
+    try:
+        t = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    if t is not None and t.tzinfo:
+        t = t.astimezone().replace(tzinfo=None)
+    return t if t is not None and t > now else None
 
 
 def _volume(v) -> int:
@@ -83,6 +107,14 @@ class LibraryPrefs:
         self.dashboard_version = ver if isinstance(ver, int) and not isinstance(ver, bool) \
             and ver >= 1 else 1
         self.dashboard = dash_normalize(raw, self.dashboard_version)
+        # For you now's dismiss state (w-88), next to the layout.
+        opts = dash if isinstance(dash, dict) else {}
+        now = datetime.now()
+        self.snoozes = _snoozes(opts.get('snoozes'), now)
+        self.quiet_until = _quiet_until(opts.get('quiet_until'), now)
+        ko = opts.get('kinds_off')
+        self.kinds_off = list(dict.fromkeys(k for k in ko if isinstance(k, str)))[:MAX_KINDS_OFF] \
+            if isinstance(ko, list) else []
         # The layout as saved by an older Nexus, kept once before the first save
         # writes the new format (w-86); Customise can offer it back later.
         self._dashboard_v1 = raw if isinstance(raw, list) and raw \
@@ -183,8 +215,14 @@ class LibraryPrefs:
             out['dashboard_v1'] = self._dashboard_v1
         out.update({'favorites': sorted(self.favorites), 'hidden': sorted(self.hidden),
                     'view': self.view, 'tile': self.tile,
-                    'dashboard': {'version': max(self.dashboard_version, DASH_VERSION),
-                                  'items': self.dashboard},
+                    # Merged, so keys a newer Nexus keeps here (layouts, active) stay.
+                    'dashboard': {**(self._data.get('dashboard')
+                                     if isinstance(self._data.get('dashboard'), dict) else {}),
+                                  'version': max(self.dashboard_version, DASH_VERSION),
+                                  'items': self.dashboard, 'snoozes': self.snoozes,
+                                  'quiet_until': self.quiet_until.isoformat()
+                                  if self.quiet_until else None,
+                                  'kinds_off': self.kinds_off},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
@@ -209,6 +247,26 @@ class LibraryPrefs:
             net.write_atomic(self.PATH, json.dumps(out, indent=2))
         except OSError as e:                 # a full disk: keep running, say so
             sys.stderr.write(f"nexus: couldn't save {self.PATH}: {e}\n")
+
+    # ---- For you now (w-88) ----
+    def snooze(self, kind: str, key: str, now: datetime):
+        """Not now: hide `kind` (a moment's kind or alert kind) for the game
+        `key` for SNOOZE_DAYS, and save."""
+        k = snooze_key(kind, key)
+        self.snoozes.pop(k, None)                 # snoozed again: the newest once more
+        self.snoozes[k] = snooze_until(now)
+        self.snoozes = _snoozes(self.snoozes, now)
+        self.save()
+
+    def quiet_tomorrow(self, now: datetime):
+        """Quiet until tomorrow: until the next 04:00 local time."""
+        self.quiet_until = quiet_until_next(now)
+        self.save()
+
+    def clear_quiet(self):
+        if self.quiet_until is not None:
+            self.quiet_until = None
+            self.save()
 
     def toggle(self, which: str, slug: str) -> bool:
         s = self.favorites if which == 'favorite' else self.hidden

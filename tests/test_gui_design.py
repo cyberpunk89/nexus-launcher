@@ -527,6 +527,104 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(data['dashboard']['items'][0]['size'], 'cinematic')
         self.assertEqual(data['dashboard_v1'], v1)
 
+    # ---- For you now's dismiss state (w-88) ----
+    def test_moments_state_round_trips_with_other_dashboard_keys(self):
+        """Snoozes, Quiet and Kinds survive save/load in a v2 file, and keys
+        a newer Nexus put in `dashboard` (layouts, active) are kept."""
+        import json
+        from datetime import datetime, timedelta
+        from nexus.gui import moments as M
+        v2 = self.items(('stage', 'cinematic'), ('system', 'wide'))
+        path = self._prefs({'dashboard': {'version': 2, 'items': v2, 'layouts': [{'n': 1}],
+                                          'active': 'Evening', 'density': 'compact'},
+                            'dashboard_v1': [{'id': 'jump'}]})
+        pr = nx.LibraryPrefs()
+        self.assertEqual((pr.snoozes, pr.quiet_until, pr.kinds_off), ({}, None, []))
+        now = datetime.now()
+        pr.snooze('friends', 'steam-1', now)
+        pr.quiet_tomorrow(now)
+        pr.kinds_off = ['store', 'proton']
+        pr.save()
+        data = json.loads(path.read_text())
+        dash = data['dashboard']
+        self.assertEqual((dash['layouts'], dash['active'], dash['density']),
+                         ([{'n': 1}], 'Evening', 'compact'))
+        self.assertEqual(dash['version'], 2)
+        self.assertEqual(data['dashboard_v1'], [{'id': 'jump'}])
+        until = (now.date() + timedelta(days=M.SNOOZE_DAYS)).isoformat()
+        self.assertEqual(dash['snoozes'], {'friends:steam-1': until})
+        self.assertEqual(dash['quiet_until'], M.quiet_until_next(now).isoformat())
+        self.assertEqual(dash['kinds_off'], ['store', 'proton'])
+        again = nx.LibraryPrefs()
+        self.assertEqual(again.snoozes, {'friends:steam-1': until})
+        self.assertEqual(again.quiet_until, M.quiet_until_next(now))
+        self.assertEqual(again.kinds_off, ['store', 'proton'])
+        self.assertTrue(M.is_snoozed(again.snoozes, 'friends:steam-1', now))
+        again.clear_quiet()
+        self.assertIsNone(nx.LibraryPrefs().quiet_until)
+        self.assertEqual(json.loads(path.read_text())['dashboard']['layouts'], [{'n': 1}])
+
+    def test_moments_state_from_a_v1_file_keeps_the_backup(self):
+        import json
+        from datetime import datetime
+        v1 = self.items(('jump', 'full'), ('system', 'wide'))
+        path = self._prefs({'dashboard': {'version': 1, 'items': v1}})
+        pr = nx.LibraryPrefs()
+        pr.snooze('atl', 'steam-5', datetime.now())
+        data = json.loads(path.read_text())
+        self.assertEqual(data['dashboard_v1'], v1)
+        self.assertEqual(data['dashboard']['version'], 2)
+        self.assertIn('atl:steam-5', data['dashboard']['snoozes'])
+
+    def test_bad_or_expired_moments_state_is_ignored(self):
+        import json
+        from datetime import datetime, timedelta
+        today = datetime.now().date()
+        good = (today + timedelta(days=3)).isoformat()
+        cases = [
+            {'snoozes': ['x'], 'quiet_until': 5, 'kinds_off': 'store'},
+            {'snoozes': {'a:b': 'soon', 'c:d': 7, 'e:f': (today - timedelta(days=1)).isoformat(),
+                         'g:h': today.isoformat(), 5: good, 'ok:1': good},
+             'quiet_until': '2000-01-01T04:00:00', 'kinds_off': ['store', 3, None, 'store']},
+            {'snoozes': None, 'quiet_until': 'tomorrow', 'kinds_off': {'store': True}},
+        ]
+        for extra in cases:
+            items = self.items(('stage', 'cinematic'))
+            self._prefs({'dashboard': {'version': 2, 'items': items, **extra}})
+            pr = nx.LibraryPrefs()                     # never raises
+            self.assertIsNone(pr.quiet_until, extra)
+            self.assertIsInstance(pr.snoozes, dict)
+            self.assertTrue(all(isinstance(k, str) and isinstance(v, str)
+                                for k, v in pr.snoozes.items()))
+            self.assertIsInstance(pr.kinds_off, list)
+            pr.save()
+        self.assertEqual(pr.snoozes, {})
+        pr = None
+        self._prefs({'dashboard': cases[1] | {'version': 2, 'items': self.items(
+            ('stage', 'cinematic'))}})
+        pr = nx.LibraryPrefs()
+        self.assertEqual(pr.snoozes, {'ok:1': good})          # expired, today, bad: dropped
+        self.assertEqual(pr.kinds_off, ['store'])
+        self._prefs({'dashboard': 'not a dict'})
+        self.assertEqual(nx.LibraryPrefs().snoozes, {})
+        future = (datetime.now() + timedelta(hours=3)).replace(microsecond=0)
+        self._prefs({'dashboard': {'version': 2, 'quiet_until': future.isoformat()}})
+        self.assertEqual(nx.LibraryPrefs().quiet_until, future)
+
+    def test_snoozes_are_capped(self):
+        import json
+        from datetime import datetime
+        from nexus.gui import moments as M
+        path = self._prefs(None)
+        pr = nx.LibraryPrefs()
+        now = datetime.now()
+        for i in range(M.SNOOZE_MAX + 20):
+            pr.snooze('friends', f'g{i}', now)
+        self.assertEqual(len(pr.snoozes), M.SNOOZE_MAX)
+        self.assertIn(f'friends:g{M.SNOOZE_MAX + 19}', pr.snoozes)       # the newest kept
+        self.assertEqual(len(json.loads(path.read_text())['dashboard']['snoozes']),
+                         M.SNOOZE_MAX)
+
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Dwell(unittest.TestCase):

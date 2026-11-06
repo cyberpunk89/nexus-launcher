@@ -16,6 +16,7 @@ from nexus.features import has
 from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import Dwell, FollowHero
+from .moments import DISK_FULL
 from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, SP
 from .theme import collection_look
 
@@ -192,7 +193,7 @@ def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict]
         name = Path(fullest.get('path') or '/').name or fullest.get('path') or '/'
         tiles.append(('storage', 'storage', f"{fmt_size(fullest['free'])} free",
                       f"{name} · {int(used * 100)}% used",
-                      'danger' if used > 0.9 else 'warning' if used > 0.8 else 'text'))
+                      'danger' if used > 0.9 else 'warning' if used > DISK_FULL else 'text'))
     else:
         tiles.append(('storage', 'storage', "Measuring…", "Disk space", 'muted'))
     if not checks:
