@@ -303,6 +303,15 @@ class Rules(unittest.TestCase):
         self.assertEqual([m['sub'] for m in rank(inputs, kinds_off=['friends', 'atl'])],
                          ['sale'])
 
+    def test_kinds_off_never_hides_a_problem(self):
+        """w-89: Customise's Storage chip is kind 'disk'; a nearly full drive
+        is kind 'broken' with sub 'disk' and must still show."""
+        inputs = {'disks': [{'path': '/a', 'total': 100, 'free': 2},
+                            {'path': '/b', 'total': 100, 'free': 10}],
+                  'checks': [{'id': 'c', 'title': 'Bad', 'status': 'fail'}]}
+        out = rank(inputs, kinds_off=['disk', 'broken', 'health'])
+        self.assertEqual(sorted(m['kind'] for m in out), ['broken', 'broken'])
+
 
 class Dismiss(unittest.TestCase):
     def test_snooze_key_and_is_snoozed(self):

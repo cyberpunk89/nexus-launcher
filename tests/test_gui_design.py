@@ -210,12 +210,13 @@ class DashboardModel(unittest.TestCase):
         saved[2]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:5], ['stage', 'friends', 'surprise', 'system', 'installed'])
-        # system is where activity was (friends and surprise, added later, sit after the
-        # stage, which took jump's place)
+        self.assertEqual(ids[:6], ['stage', 'foryou', 'friends', 'surprise', 'system',
+                                   'installed'])
+        # system is where activity was (For you now, friends and surprise, added later,
+        # sit after the stage, which took jump's place)
         for gone in ('activity', 'storage', 'health', 'proton', 'unplayed'):
             self.assertNotIn(gone, ids)
-        self.assertEqual(out[3], {'id': 'system', 'size': 'wide', 'hidden': False})
+        self.assertEqual(out[4], {'id': 'system', 'size': 'wide', 'hidden': False})
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
         all_hidden = [dict(i, hidden=True) for i in saved]
         sysw = next(i for i in nx.dash_normalize(all_hidden) if i['id'] == 'system')
@@ -224,11 +225,12 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:6], ['deals', 'upcoming', 'week', 'stage', 'friends', 'surprise'])
+        self.assertEqual(ids[:7], ['deals', 'upcoming', 'week', 'stage', 'foryou', 'friends',
+                                   'surprise'])
         # A layout from before w-82 gains Friends playing now right after the Stage
         old = [i for i in nx.dash_default() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
-        self.assertEqual(ids[:3], ['stage', 'friends', 'surprise'])
+        self.assertEqual(ids[:4], ['stage', 'friends', 'foryou', 'surprise'])
         self.assertEqual(nx.DASH_SIZES['friends'], ('wide', 'full'))
         self.assertEqual(nx.DASH_DEFAULT_SIZE['friends'], 'full')
 
@@ -240,7 +242,8 @@ class DashboardModel(unittest.TestCase):
         saved[1]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:5], ['system', 'stage', 'friends', 'surprise', 'installed'])
+        self.assertEqual(ids[:6], ['system', 'stage', 'foryou', 'friends', 'surprise',
+                                   'installed'])
         self.assertNotIn('jump', ids)
         stage = out[1]
         self.assertEqual(stage, {'id': 'stage', 'size': 'cinematic', 'hidden': False,
@@ -307,7 +310,8 @@ class DashboardModel(unittest.TestCase):
         # A layout saved without it (or Play time) gets it after Upcoming.
         saved = self.items(('stage', 'cinematic'), ('deals', 'wide'), ('upcoming', 'small'),
                            ('news', 'small'))
-        ids = [i['id'] for i in nx.dash_normalize(saved) if i['id'] not in ('friends', 'surprise')]
+        ids = [i['id'] for i in nx.dash_normalize(saved)
+               if i['id'] not in ('foryou', 'friends', 'surprise')]
         self.assertEqual(ids[:5], ['stage', 'deals', 'upcoming', 'week', 'news'])
         self.assertEqual(nx.DASH_PLACE_AFTER['week'], 'upcoming')
 
@@ -316,7 +320,7 @@ class DashboardModel(unittest.TestCase):
                            ('deals', 'wide'), ('achievements', 'wide'), ('news', 'small'))
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual([i for i in ids if i not in ('friends', 'surprise')][:4],
+        self.assertEqual([i for i in ids if i not in ('foryou', 'friends', 'surprise')][:4],
                          ['stage', 'system', 'week', 'deals'])
         self.assertNotIn('achievements', ids)
         self.assertNotIn('playtime', ids)
@@ -464,6 +468,102 @@ class DashboardModel(unittest.TestCase):
         for old, new in nx.DASH_MERGED.items():
             self.assertNotIn(old, nx.DASH_SIZES, old)
             self.assertIn(new, nx.DASH_SIZES, new)
+
+    # ---- For you now (w-89) ----
+    def test_foryou_kind_and_options(self):
+        row = next(r for r in nx.DASH_KINDS if r[0] == 'foryou')
+        self.assertEqual(row, ('foryou', ('full',), 'full', False))
+        ids = [r[0] for r in nx.DASH_KINDS]
+        self.assertEqual(ids.index('foryou'), ids.index('stage') + 1)
+        self.assertEqual(nx.DASH_PLACE_AFTER['foryou'], 'stage')
+        self.assertEqual(nx.DASH_OPTIONS['foryou'], {'style': ('stage', 'strip')})
+        self.assertNotIn('foryou', nx.DASH_MERGED)
+        self.assertNotIn('foryou', nx.DASH_MERGED.values())
+        self.assertIn('foryou', nx.DASH_WIDGETS)
+        d = nx.dash_default()
+        self.assertEqual(d, nx.dash_normalize(None))
+        self.assertEqual(d[1], {'id': 'foryou', 'size': 'full', 'hidden': False,
+                                'style': 'stage'})
+
+    def test_foryou_normalize_round_trip(self):
+        # A layout saved before w-89 gets For you now right after the Stage.
+        saved = [i for i in nx.dash_default() if i['id'] != 'foryou']
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[:3], ['stage', 'foryou', 'friends'])
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        moved = [dict(i) for i in out]
+        fy = next(i for i in moved if i['id'] == 'foryou')
+        fy.update(style='strip', hidden=True)
+        moved.append(moved.pop(moved.index(fy)))                     # moved to the end
+        again = nx.dash_normalize(moved)
+        self.assertEqual(again[-1], {'id': 'foryou', 'size': 'full', 'hidden': True,
+                                     'style': 'strip'})
+        bad = nx.dash_normalize([{'id': 'foryou', 'style': 'posters', 'size': 'small'}])
+        fy = next(i for i in bad if i['id'] == 'foryou')
+        self.assertEqual((fy['style'], fy['size']), ('stage', 'full'))
+
+    def test_foryou_mode(self):
+        from nexus.gui.foryou import foryou_mode
+        d = nx.dash_default()
+
+        def with_(**kw):
+            out = [dict(i) for i in d]
+            for kind, changes in kw.items():
+                next(i for i in out if i['id'] == kind).update(changes)
+            return out
+        self.assertEqual(foryou_mode(d, False, True), 'pill')
+        self.assertEqual(foryou_mode(d, True, True), 'placeholder')   # Customise
+        self.assertEqual(foryou_mode(d, False, False), 'strip')       # no Stage to sit on
+        self.assertEqual(foryou_mode(with_(stage={'size': 'wide'}), False, True), 'pill')
+        self.assertEqual(foryou_mode(with_(stage={'size': 'banner'}), False, True), 'strip')
+        self.assertEqual(foryou_mode(with_(stage={'hidden': True}), False, True), 'strip')
+        self.assertEqual(foryou_mode(with_(foryou={'style': 'strip'}), False, True), 'strip')
+        self.assertEqual(foryou_mode(with_(foryou={'style': 'strip'}), True, True), 'strip')
+        self.assertEqual(foryou_mode(with_(foryou={'hidden': True}), False, True), 'off')
+        self.assertEqual(foryou_mode([i for i in d if i['id'] != 'foryou'], False, True),
+                         'off')
+
+    def test_foryou_signature_and_sizes(self):
+        from unittest import mock
+        from nexus.gui import foryou as F
+        from nexus.gui.theme import LOOK
+        a = {'id': 'running:x', 'kind': 'running', 'title': 'X', 'why': '10%',
+             'action': {'id': 'open_job', 'label': 'View', 'arg': 'x'}, 'badge': ('download',
+                                                                                  'accent')}
+        b = dict(a, why='11%')
+        c = dict(a, id='friends:y')
+        self.assertEqual(F.moments_sig([a]), F.moments_sig([b]))      # only the text moved
+        self.assertNotEqual(F.moments_text([a]), F.moments_text([b]))
+        self.assertNotEqual(F.moments_sig([a]), F.moments_sig([a, c]))
+        self.assertNotEqual(F.moments_sig([a, c]), F.moments_sig([c, a]))
+        self.assertEqual(F.split_snooze('friends:steam-1'), ('friends', 'steam-1'))
+        self.assertEqual(F.split_snooze('proton:GE-Proton10-25'), ('proton', 'GE-Proton10-25'))
+        self.assertEqual(F.split_snooze('repack_updates:'), ('repack_updates', ''))
+        with mock.patch.dict(LOOK, scale=1.0):
+            self.assertEqual(F.strip_count(1366 - 64), 3)
+            self.assertEqual(F.strip_count(960), 2)
+            self.assertEqual(F.strip_count(500), 1)
+            self.assertEqual(F.strip_count(100), 1)
+            self.assertEqual(F.strip_count(5000), 3)
+            self.assertEqual(F.list_width(3, 1200), 440)
+            self.assertEqual(F.list_width(2, 900), 400)
+            self.assertEqual(F.list_width(1, 600), 600)
+        with mock.patch.dict(LOOK, scale=1.5):
+            self.assertEqual(F.list_width(3, 1200), 660)
+        self.assertEqual([k for k, _t in F.KIND_CHIPS],
+                         ['running', 'friends', 'store', 'update', 'achievements', 'idle',
+                          'disk'])
+
+    def test_foryou_kinds_off_are_checked(self):
+        from nexus.gui import moments as M
+        self.assertEqual(M.clean_kinds_off(['store', 'broken', 'bogus', 3, 'store', 'proton',
+                                            'idle']), ['store', 'proton', 'idle'])
+        self.assertEqual(M.clean_kinds_off('store'), [])
+        self.assertEqual(M.clean_kinds_off(None), [])
+        self._prefs({'dashboard': {'version': 2, 'items': self.items(('stage', 'cinematic')),
+                                   'kinds_off': ['broken', 'disk', 'nope']}})
+        self.assertEqual(nx.LibraryPrefs().kinds_off, ['disk'])
 
     def _prefs(self, saved):
         import json

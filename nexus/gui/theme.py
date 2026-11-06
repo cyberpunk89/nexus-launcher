@@ -424,6 +424,7 @@ def pill(h: int) -> int:
 
 # Heights of the fixed-height capsules, so their radius can be derived.
 PILL_H = 18      # status pills / badges
+STAGE_BTN_H = 44  # the Stage's Play row: Play, Details, More and For you now (w-89)
 CHIP_H = 28      # filter chips
 GLYPH_H = 22     # controller hint glyphs
 PERSON_H = 30    # a friend's chip on the game page (friends.PersonChip)
@@ -711,6 +712,38 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#HeroKicker { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
     QLabel#HeroKicker[live="true"] { color: $live_on_art; }
     QLabel#HeroTitle { color: $on_art; font-weight: 600; }
+    /* ---- For you now (w-89): the pill and its list lie on the Stage's
+       art, so they are on_art in every theme; the list sits on tile_scrim
+       (Dawn's glass is too thin over bright art). The strip is on the page. */
+    #FynPill { background: $glass_hi; border: 1px solid $glass; }
+    #FynPillBody { background: transparent; border: none; }
+    #FynPillBody:hover { background: $on_art_16; }
+    QLabel#FynKicker { color: $on_art_72; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#FynTitle { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    QLabel#FynWhy { color: $on_art_72; font-size: ${fs_xs_plus}px; }
+    #FynList { background: $tile_scrim; border: 1px solid $glass_hi;
+               border-radius: ${r_card}px; }
+    #FynList[cover="true"] { background: $scrim; }
+    #FynList QScrollArea, #FynList #FynRows { background: transparent; border: none; }
+    #FynRow { background: transparent; border-radius: ${r_control}px; }
+    #FynRow:hover { background: $on_art_10; }
+    QPushButton#MomentAct { background: transparent; color: $on_art; border: 1px solid $on_art_35;
+        border-radius: ${r_control}px; padding: 0 ${sp_3}px; font-size: ${fs_xs}px;
+        font-weight: 600; }
+    QPushButton#MomentAct:hover { background: $on_art_16; border-color: $on_art_72; }
+    QPushButton#MomentAct:pressed { background: $on_art_10; }
+    QToolButton#MomentX { background: transparent; color: $on_art_72; border: none;
+        padding: 0; font-size: ${fs_xs}px; }
+    QToolButton#MomentX:hover { background: $on_art_16; color: $on_art; }
+    QPushButton#MomentFoot { background: transparent; color: $on_art_72; border: none;
+        border-radius: ${r_control}px; padding: 0 ${sp_2_5}px; font-size: ${fs_xs}px;
+        font-weight: 500; }
+    QPushButton#MomentFoot:hover { background: $on_art_16; color: $on_art; }
+    #FynStrip QLabel#FynTitle { color: $text; }
+    #FynStrip QLabel#FynWhy { color: $muted; }
+    #FynStrip #FynRow:hover { background: $accent_09; }
+    #FynSep { background: $border; border: none; }
+    QLabel#FynNote { color: $muted; font-size: ${fs_xs}px; }
     QLabel#TheatreClock { color: $subtext; font-size: ${fs_lg}px; font-weight: 500; }
     #StatTile { background: $surface_1; border: 1px solid $border_card;
                 border-radius: ${r_control}px; }
@@ -997,6 +1030,9 @@ def build_stylesheet(scale: float = 1.0) -> str:
     return tpl.substitute(
         ui=FONTS.ui, mono=FONTS.mono, icon=FONTS.icon,
         accent_hover=_shade(P['accent'], 0.88),
+        # Over the Stage's art (For you now, w-89): on_art at a few strengths.
+        on_art_10=_rgba(P['on_art'], 0.10), on_art_16=_rgba(P['on_art'], 0.16),
+        on_art_35=_rgba(P['on_art'], 0.35), on_art_72=_rgba(P['on_art'], 0.72),
         check_icon=_check_icon_path(),
         grad_dusk=qss_grad('dusk'), grad_dusk_hi=qss_grad('dusk', lighten=1.12),
         grad_dusk_diag=qss_grad('dusk', 1.0, 1.0),

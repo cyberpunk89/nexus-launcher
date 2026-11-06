@@ -644,7 +644,7 @@ class _FriendsWindow(unittest.TestCase):
 class HomeFriends(_FriendsWindow):
     def test_widget_only_while_a_friend_plays_after_jump(self):
         ids = [i['id'] for i in self.win.prefs.dashboard]
-        self.assertEqual(ids[ids.index('stage') + 1], 'friends')
+        self.assertEqual(ids[ids.index('stage') + 1:][:2], ['foryou', 'friends'])  # w-89
         fw = self.widget()
         self.assertTrue(self.placed())
         self.assertEqual(fw.state, 'live')

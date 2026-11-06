@@ -86,6 +86,9 @@ from .dashboard import (
     StageArt, StageWidget,
     ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
     SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
+from .foryou import (
+    ForYouList, ForYouModel, ForYouPill, ForYouWidget, foryou_mode, MomentRow,  # noqa: F401
+    StripItem)
 from .details import (
     _hero_art, AchievementRow, DetailsPanel, Disclosure, ElideLabel, HeroBanner, PerfPanel,
     StatChip, StatTile, BATCH_ACTIONS)  # noqa: F401

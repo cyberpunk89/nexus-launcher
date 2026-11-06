@@ -110,6 +110,19 @@ def quiet_until_next(now: datetime) -> datetime:
     return at
 
 
+# What Kinds… (and "Don't show") can switch off: every kind but broken, and
+# the alert kinds inside them. Something broken always shows.
+KINDS_OFF_OK = tuple(k for k in KINDS if k != 'broken') + STORE_SUBS + ('repack_updates',
+                                                                         'proton')
+
+
+def clean_kinds_off(raw) -> list[str]:
+    """A saved kinds_off list made safe: known kinds only, once each, in order."""
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(k for k in raw if isinstance(k, str) and k in KINDS_OFF_OK))
+
+
 def _quiet(quiet_until, now: datetime) -> bool:
     if isinstance(quiet_until, str):
         try:
@@ -365,7 +378,8 @@ def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
     quiet = _quiet(quiet_until, now)
 
     def shown(m):
-        return not (m['kind'] in off or m['sub'] in off
+        # Something broken always shows: kinds_off can't hide it (w-89).
+        return not ((m['kind'] != 'broken' and (m['kind'] in off or m['sub'] in off))
                     or (quiet and m['kind'] != 'broken')
                     or is_snoozed(snoozes, m['snooze_key'], now))
 

@@ -65,6 +65,7 @@ class NavigationMixin:
         page, section = self.PAGE_ALIASES.get(page, (page, None))
         if page not in self.pages:
             return
+        self._close_foryou()                     # collapsed on leaving Home and on every show
         cur = self.current()
         if _history and cur is not None and cur != page:
             # Back / Forward (mouse buttons, Alt+←/→, Esc on a side page).
@@ -196,6 +197,9 @@ class NavigationMixin:
             sheet.close_sheet()
             self.sounds.play('back')          # Theatre only (UiSounds checks)
             return
+        if self._foryou_open():
+            self.dashboard.foryou.close_list(refocus=True)   # back to the pill
+            return
         focus = QApplication.focusWidget()
         in_details = focus is not None and self.details.isAncestorOf(focus)
         if self._theatre:
@@ -257,6 +261,8 @@ class NavigationMixin:
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet
+        if self._foryou_open():
+            return self.dashboard.foryou.list
         if not self._theatre and self.desk_search.isVisible():
             return self.desk_search
         if self._theatre:
@@ -266,6 +272,16 @@ class NavigationMixin:
                 return self.theatre.search
             return self.theatre.details if self.theatre.details.isVisible() else self.theatre
         return self
+
+    def _foryou_open(self) -> bool:
+        """For you now's list is open on Home's Stage (w-89)."""
+        dash = getattr(self, 'dashboard', None)
+        return not self._theatre and dash is not None and dash.foryou.list_open()
+
+    def _close_foryou(self):
+        dash = getattr(self, 'dashboard', None)
+        if dash is not None:
+            dash.foryou.close_list()
 
     def _open_sheet(self) -> 'ActionSheet | None':
         """The sheet that's up: in Theatre its settings first (w-63), then
@@ -293,6 +309,8 @@ class NavigationMixin:
         sheet = self._open_sheet()
         if sheet is not None:
             return sheet.default_focus()
+        if self._foryou_open():
+            return self.dashboard.foryou.list.default_focus()
         if not self._theatre and self.desk_search.isVisible():
             return self.desk_search.default_focus()
         if self._theatre:

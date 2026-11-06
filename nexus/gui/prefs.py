@@ -8,7 +8,8 @@ from datetime import datetime
 from nexus import net, paths as NX, smart
 from nexus.icons import COLLECTION_ICONS
 
-from .moments import is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key, snooze_until
+from .moments import (clean_kinds_off, is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key,
+    snooze_until)
 from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, THEATRE_STARTS,
     VOLUME_STEPS)
 from .theme import ACCENTS, normalize_appearance, TILE_W
@@ -112,9 +113,7 @@ class LibraryPrefs:
         now = datetime.now()
         self.snoozes = _snoozes(opts.get('snoozes'), now)
         self.quiet_until = _quiet_until(opts.get('quiet_until'), now)
-        ko = opts.get('kinds_off')
-        self.kinds_off = list(dict.fromkeys(k for k in ko if isinstance(k, str)))[:MAX_KINDS_OFF] \
-            if isinstance(ko, list) else []
+        self.kinds_off = clean_kinds_off(opts.get('kinds_off'))[:MAX_KINDS_OFF]
         # The layout as saved by an older Nexus, kept once before the first save
         # writes the new format (w-86); Customise can offer it back later.
         self._dashboard_v1 = raw if isinstance(raw, list) and raw \

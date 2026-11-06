@@ -25,6 +25,7 @@ DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
 # (id, sizes it allows, default size, hidden by default)
 DASH_KINDS = [                       # default order packs evenly in 3 columns
     ('stage',      ('cinematic', 'wide', 'banner'), 'cinematic', False),
+    ('foryou',     ('full',),                  'full',  False),   # on the Stage by default
     ('friends',    ('wide', 'full'),           'full',  False),
     ('surprise',   ('full',),                  'full',  False),
     ('system',     ('small', 'wide'),          'wide',  False),
@@ -50,11 +51,18 @@ DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
 DASH_MERGED_SHOWN = {'stage'}
 # Widgets added later that belong next to a related one rather than last.
 DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'stage', 'collections': 'favourites',
-                    'smart': 'installed', 'friends': 'stage', 'week': 'upcoming'}
+                    'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
+                    'foryou': 'stage'}
 # Per-widget options checked like sizes: the first value is the default and
 # a bad one falls back to it (w-85; more styles and backgrounds in w-90).
 DASH_OPTIONS = {'stage': {'style': ('row',), 'bg': ('art',)},
-                'week': {'style': ('bars', 'number')}}
+                'week': {'style': ('bars', 'number')},
+                'foryou': {'style': ('stage', 'strip')}}
+# The edit bar's "Style:" button names (a kind listed here gets the button;
+# w-90 adds the Stage's and Your week's).
+DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"}}
+# Refreshes of these mean For you now's moments may have moved too.
+FORYOU_FEEDS = {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'}
 
 
 def _dash_shelf(value) -> str:
@@ -364,6 +372,7 @@ class DashWidget(QFrame):
     Shelf widgets are unframed rows of tiles instead of cards."""
     KIND, TITLE, GLYPH, GRAD, LINK = '', '', '', 'dusk', None
     FRAMED = True
+    HEAD = True                           # a framed card's badge and title row
     go = pyqtSignal(str)                  # open a page
     edit = pyqtSignal(str, str)           # (kind, action) from the edit bar
 
@@ -379,7 +388,7 @@ class DashWidget(QFrame):
         self.editbar = self._edit_bar()
         self.editbar.setVisible(False)
         lay.addWidget(self.editbar)
-        if self.FRAMED:
+        if self.FRAMED and self.HEAD:
             head = QHBoxLayout()
             head.setSpacing(SP['2'])
             head.addWidget(GlyphBadge(self.GLYPH, self.GRAD))
@@ -425,6 +434,12 @@ class DashWidget(QFrame):
         self.btn_shelf.clicked.connect(lambda: self.edit.emit(self.KIND, 'shelf'))
         self.btn_shelf.setVisible(False)
         bl.addWidget(self.btn_shelf)
+        self.btn_style = QPushButton()            # Style: … (DASH_STYLE_LABELS)
+        self.btn_style.setObjectName("Ghost")
+        self.btn_style.setToolTip("Change how this shows")
+        self.btn_style.clicked.connect(lambda: self.edit.emit(self.KIND, 'style'))
+        self.btn_style.setVisible(False)
+        bl.addWidget(self.btn_style)
         hide = icon_button(G['eye_off'], "Hide this widget", 28, "Ghost", round_=True)
         hide.clicked.connect(lambda: self.edit.emit(self.KIND, 'hide'))
         bl.addWidget(hide)
@@ -438,6 +453,11 @@ class DashWidget(QFrame):
         self.btn_shelf.setVisible(shelf is not None)
         if shelf is not None:
             self.btn_shelf.setText(f"Shelf: {shelf}")
+        styles = DASH_STYLE_LABELS.get(self.KIND)
+        self.btn_style.setVisible(styles is not None)
+        if styles is not None:
+            cur = self.options.get('style') or DASH_OPTIONS[self.KIND]['style'][0]
+            self.btn_style.setText(f"Style: {styles.get(cur, cur)}")
         self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width",
                                'cinematic': "Cinematic", 'banner': "Banner"}[size])
         self.setProperty('editing', on)
@@ -676,6 +696,7 @@ class StageWidget(DashWidget):
     the art and never takes focus off the row."""
     KIND, TITLE = 'stage', "Stage"
     FRAMED = False
+    moved = pyqtSignal()                  # the stage shows another game (For you now asks again)
     FOCUS_DWELL, HOVER_DWELL = 140, 350
     RECENT = 8
 
@@ -779,7 +800,10 @@ class StageWidget(DashWidget):
 
     def _follow(self, g):
         if g is not None and alive(self):
+            before = self.art.game.get('slug')
             self.art.show_game(g)
+            if self.art.game.get('slug') != before:
+                self.moved.emit()
 
 
 class InstalledWidget(ShelfWidget):
@@ -1476,8 +1500,10 @@ class WeekWidget(DashWidget):
             _bar_rows(right, play_rows([], hist)['week'][:3])
 
 
+from .foryou import ForYouWidget  # noqa: E402  (it builds on DashWidget)
+
 DASH_WIDGETS = {cls.KIND: cls for cls in (
-    StageWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
+    StageWidget, ForYouWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
     DealsWidget,
     UpcomingWidget, WeekWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget,
     OwnedWidget)}
@@ -1533,10 +1559,22 @@ class Dashboard(QWidget):
             self.widgets[kind] = w
         for w in self.widgets.values():
             w.bind(hub)
+        self.foryou.attach(self, self.stage)
+        self.stage.moved.connect(self._stage_moved)
 
     @property
     def stage(self) -> StageWidget:
         return self.widgets['stage']
+
+    @property
+    def foryou(self) -> 'ForYouWidget':
+        return self.widgets['foryou']
+
+    def _stage_moved(self):
+        """For you now never shows the Stage's game: ask again."""
+        update = getattr(self.hub, 'dash_update', None)
+        if update is not None:
+            update('foryou')
 
     @property
     def items(self):
@@ -1551,6 +1589,8 @@ class Dashboard(QWidget):
 
     # ---- data ----
     def refresh(self, kinds=None):
+        if kinds is not None and set(kinds) & FORYOU_FEEDS:
+            kinds = set(kinds) | {'foryou'}      # what For you now reads moved
         for k, w in self.widgets.items():
             if kinds is None or k in kinds:
                 it = next((i for i in self.items if i['id'] == k), None)
@@ -1558,7 +1598,7 @@ class Dashboard(QWidget):
                 w.options = _dash_options(k, it or {})
                 if it and not it['hidden']:
                     w.fill(self.hub)
-        if kinds is not None and set(kinds) <= {'friends', 'stage'}:
+        if kinds is not None and set(kinds) <= {'friends', 'stage', 'foryou'}:
             # Presence ticks and every page or focus change ask for Friends
             # playing now, a game starting or quitting for the Stage: lay
             # out again only when one comes or goes.
@@ -1567,6 +1607,9 @@ class Dashboard(QWidget):
         elif kinds is None or {'stage', 'friends', 'installed', 'smart', 'favourites',
                                'collections', 'updates', 'upcoming', 'owned'} & set(kinds):
             self.relayout(force=True)
+        elif 'foryou' in kinds and self._skip() != self._skipped:
+            self.relayout(force=True)            # the Strip came or went
+        self.foryou.sync_pill()
 
     # ---- layout ----
     def resizeEvent(self, ev):
@@ -1586,6 +1629,7 @@ class Dashboard(QWidget):
         on = {k for k, *_ in placed}
         for k, r, c, span in placed:
             it = next(i for i in self.items if i['id'] == k)
+            self.widgets[k].options = _dash_options(k, it)
             self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
                                         else dash_shelf_label(self.hub, it['shelf']))
             self.grid.addWidget(self.widgets[k], r, c, 1, span)
@@ -1594,6 +1638,7 @@ class Dashboard(QWidget):
         for c in range(cols):
             self.grid.setColumnStretch(c, 1)
         self._fill_add_row()
+        self.foryou.sync_pill(cols)
 
     def _fill_add_row(self):
         while self.add_row.count():
@@ -1616,6 +1661,7 @@ class Dashboard(QWidget):
 
     # ---- editing ----
     def set_editing(self, on: bool):
+        self.foryou.close_list()
         self.editing = on
         self.btn_edit.setText("Done" if on else "Customise")
         self.btn_edit.setObjectName("Primary" if on else "Ghost")
@@ -1644,16 +1690,22 @@ class Dashboard(QWidget):
                 cur = _dash_shelf(it.get('shelf'))
                 it['shelf'] = rules[(rules.index(cur) + 1) % len(rules)] if cur in rules \
                     else rules[0]
+            elif action == 'style':
+                styles = DASH_OPTIONS[kind]['style']
+                cur = it.get('style') if it.get('style') in styles else styles[0]
+                it['style'] = styles[(styles.index(cur) + 1) % len(styles)]
             elif action == 'hide':
                 it['hidden'] = True
             elif action == 'show':
                 it['hidden'] = False
         self.hub.prefs.dashboard = new
-        self.refresh([kind]) if action in ('size', 'show', 'shelf') else None
+        self.refresh([kind]) if action in ('size', 'show', 'shelf', 'style') else None
         self.relayout(force=True)
         self.hub.prefs.save()
         # Keep the controller's focus on the widget that moved.
         w = self.widgets.get(kind)
+        if w is not None and action == 'style' and w.btn_style.isVisibleTo(w):
+            QTimer.singleShot(0, lambda: alive(w) and focus_and_reveal(w.btn_style))
         if w is not None and w.isVisible() and action in ('left', 'right', 'up', 'down'):
             btn = next((b for b in w.editbar.findChildren(QToolButton)
                         if b.toolTip().lower().endswith(action)), None)

@@ -495,6 +495,7 @@ class ControllerMixin:
             return
         for m in (self.modal, self.theatre_modal):      # a question stays with its shell
             m.cancel(restore=False)
+        self._close_foryou()                            # Home's For you now list (w-89)
         self._theatre = on
         if not on:
             ctrl = getattr(self, 'ctrl', None)

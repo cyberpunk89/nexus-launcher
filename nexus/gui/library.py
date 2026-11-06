@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLa
 
 from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
-from .theme import FS, G, GRAD, P, pill_qss, R, SP, TILE_LIFT, TILE_W
+from .theme import FS, G, GRAD, P, pill_qss, R, SP, STAGE_BTN_H, TILE_LIFT, TILE_W
 
 
 class _TileSignals:
@@ -753,18 +753,20 @@ class HeroCarousel(QWidget):
         self.facts.setSpacing(SP['1_5'])
         lay.addLayout(self.facts)
         lay.addSpacing(int(SP['2'] * scale))
-        row = QHBoxLayout()
+        # The Play row; the Stage adds For you now's pill at its end (w-89).
+        row = self.actions = QHBoxLayout()
         row.setSpacing(SP['2'])
+        btn_h = int(STAGE_BTN_H * scale)
         self.btn = QPushButton("Play")
         self.btn.setObjectName("PlayBig")
         set_glyph_icon(self.btn, G['play'], int(20 * scale), 'on_accent', hover_role=None)
-        self.btn.setMinimumSize(int(150 * scale), int(44 * scale))
+        self.btn.setMinimumSize(int(150 * scale), btn_h)
         self.btn.clicked.connect(lambda: self.play.emit(self.game))
         self.btn_details = QPushButton("Details")
         self.btn_details.setObjectName("Glass")
-        self.btn_details.setMinimumHeight(int(44 * scale))
+        self.btn_details.setMinimumHeight(btn_h)
         self.btn_details.clicked.connect(lambda: self.open.emit(self.game))
-        self.btn_more = icon_button(G['more'], "More actions", int(44 * scale), "GlassIcon")
+        self.btn_more = icon_button(G['more'], "More actions", btn_h, "GlassIcon")
         self.btn_more.clicked.connect(lambda: self.menu.emit(
             self.game, self.btn_more.mapToGlobal(QPoint(0, self.btn_more.height()))))
         row.addWidget(self.btn)

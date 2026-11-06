@@ -144,6 +144,13 @@ class SpatialNav(QObject):
         return QRectF(tl.x(), tl.y(), w.width(), w.height())
 
     def move(self, cur: QWidget, key) -> QWidget | None:
+        # A control may name its neighbour when geometry would pick another
+        # (For you now's pill sits far right of More, the Continue row is
+        # nearer; w-89): `nav_jump(key)` returns it or None.
+        jump = getattr(cur, 'nav_jump', None)
+        t = jump(key) if callable(jump) else None
+        if t is not None and alive(t) and t.isVisible() and t.isEnabled():
+            return t
         r0 = self._rect(cur)
         c0 = r0.center()
         best, best_score = None, None

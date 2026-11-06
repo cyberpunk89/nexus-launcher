@@ -62,6 +62,71 @@ class ActionsMixin:
         self.go(self.ACTIVITY)
         self.activity.focus_job(job)
 
+    # ---- For you now (w-89) ----
+    def moment_action(self, m: dict):
+        """A For you now moment's one action (moments.LABELS): never a bare
+        Play; each goes where that thing is handled already."""
+        a = m.get('action') or {}
+        aid, arg = a.get('id'), a.get('arg')
+        if aid == 'open_job':
+            job = next((j for j in reversed(self.jobs.jobs)
+                        if j.slug == arg and j.kind == 'install'), None)
+            if job is not None:
+                self._open_job(job)
+            elif str(arg).startswith('torrent-') and self.DOWNLOADS in self.pages:
+                self.go(self.DOWNLOADS)          # a torrent has no job: its own page
+            else:
+                self.go(self.ACTIVITY)           # Steam / Heroic downloads
+        elif aid in ('launch', 'resume'):
+            g = self.game(arg)
+            if g is not None:
+                self.on_game_action('launch', g)
+        elif aid == 'open_deals':
+            if m.get('sub') == 'fitgirl':
+                self._show_fitgirl_deals()
+            else:
+                self.dealspage.show_section('deals')
+                self.go(self.DEALS)
+        elif aid == 'update':
+            slug = arg[0] if isinstance(arg, list) and arg else arg
+            g = self.game(slug) if isinstance(slug, str) else None
+            if g is None:
+                return
+            if g.get('repack_update') and not isinstance(arg, list):
+                self.on_game_action('install-update', g)
+            else:
+                self._reveal_game(g['slug'])     # a store update, or several: its page
+        elif aid == 'install_ge':
+            if has('proton') and arg:
+                self.run(['--proton-install', arg], f"Installing {arg}", None,
+                         'install-proton')
+        elif aid == 'open_storage':
+            self.go(self.STORAGE)
+        elif aid == 'open_health':
+            self.go(self.HEALTH)
+
+    def _moment_menu(self, m: dict, pos):
+        """A moment's context menu: Not now, and Don't show <kind> (the same
+        switch as Customise → Kinds…). Problems can't be switched off."""
+        from PyQt6.QtGui import QCursor
+        from PyQt6.QtWidgets import QMenu
+        fy = self.dashboard.foryou
+        items = [("Not now", G['close'], lambda: fy._not_now(m))]
+        name = fy.kind_name(m)
+        if name:
+            items.append((f"Don't show {name}", G['eye_off'],
+                          lambda: fy.dont_show(m['kind'])))
+        if self.input.mode == 'pad':
+            fy.close_list()
+            self.sheet.choose(m['title'], items, sub=m.get('why') or '')
+            self._update_hints()
+            return
+        menu = QMenu(self)
+        for text, _glyph, fn in items:
+            menu.addAction(text).triggered.connect(lambda _=False, fn=fn: fn())
+        menu.exec(pos if pos is not None and not pos.isNull() else QCursor.pos())
+        menu.deleteLater()
+
     # ---- actions ----
     def run(self, args, title, slug=None, kind='task', steam=False, name=None, on_skip=None):
         """Queue a CLI job. With steam=True it waits (via the banner) until

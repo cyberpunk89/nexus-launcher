@@ -18,6 +18,8 @@ from tests.oskind import linux_only  # noqa: E402
 
 if nx is not None:
     from PyQt6.QtCore import Qt, QPoint
+    from nexus.gui.foryou import strip_count
+    from nexus.gui.theme import scaled, SP, STAGE_BTN_H
     from PyQt6.QtGui import QFont, QFontMetrics, QShortcut
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
@@ -4550,6 +4552,481 @@ class Window(unittest.TestCase):
         tiles = {t.game['slug']: t.mark_new for t in w.dashboard.widgets['installed']._tiles}
         self.assertEqual((tiles['alpha'], tiles['gamma']), (False, True))
 
+
+
+GE = {'update': True, 'latest': 'GE-Proton10-25'}
+ONE_FRIEND = {'friends_now': [{'slug': 'steam-1', 'title': 'Beta', 'people': [{'name': 'Ana'}],
+                                'minutes': 40}]}
+
+
+def fyn_inputs(games, n=7):
+    """For you now's inputs for a test window: a drive nearly out of space,
+    a running install, a friend in Beta, two wishlist deals, Gamma's update
+    and a failing health check (7 moments, the same with or without the
+    Proton feature; `n` keeps the first n sources). Without 'games', the
+    window's games come without Gamma's update."""
+    sources = [
+        ('disks', [{'path': '/mnt/games', 'total': 1000, 'free': 20}]),
+        ('jobs', [{'kind': 'install', 'slug': 'hk', 'title': 'Hollow', 'active': True,
+                   'progress': 62, 'step': 'Unpacking'}]),
+        ('friends_now', [{'slug': 'steam-1', 'title': 'Beta', 'people': [{'name': 'Ana'}],
+                          'minutes': 40}]),
+        ('deals', [{'appid': 901, 'title': 'Wish A',
+                    'price': {'currentStr': '9.99', 'cutPct': 60, 'onSale': True,
+                              'atHistoricalLow': True}},
+                   {'appid': 902, 'title': 'Wish B',
+                    'price': {'currentStr': '19.99', 'cutPct': 30, 'onSale': True,
+                              'atHistoricalLow': False}}]),
+        ('games', games),
+        ('checks', [{'id': 'prefix', 'title': 'A prefix is broken', 'status': 'fail'}]),
+    ]
+    out = {'alert_settings': {'sale': True, 'sale_min_cut': 10, 'atl': True,
+                                              'fitgirl': True}}
+    for key, value in sources[:n]:
+        out[key] = value
+    return out
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class ForYou(unittest.TestCase):
+    """For you now on Home (w-89): the pill on the Stage, its list, the
+    Strip, Customise, and the pad path. Moments come from the real ranking
+    over fake inputs (moments_inputs is the only thing faked)."""
+    setUpClass = classmethod(Window.setUpClass.__func__)
+    tearDownClass = classmethod(Window.tearDownClass.__func__)
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+
+    def _fyn(self, n=7, style='stage', stage=None, inputs=None):
+        w = self.win
+        w.prefs.dashboard = nx.dash_default()                    # not the user's own layout
+        next(i for i in w.prefs.dashboard if i['id'] == 'foryou')['style'] = style
+        if stage:
+            next(i for i in w.prefs.dashboard if i['id'] == 'stage').update(stage)
+        w.prefs.snoozes, w.prefs.quiet_until, w.prefs.kinds_off = {}, None, []
+        self._inputs = inputs if inputs is not None else fyn_inputs(w._games, n)
+        p = mock.patch('nexus.gui.foryou.moments_inputs', lambda hub: {
+            'games': [dict(g, update_pending=False) for g in hub._games], **self._inputs})
+        p.start()
+        self.addCleanup(p.stop)
+        w.go(w.HOME)
+        w.dashboard.refresh()
+        QApplication.processEvents()
+        return w, w.dashboard.foryou
+
+    def _focus(self, widget):
+        self.win.activateWindow()
+        widget.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not widget:
+            self.skipTest("offscreen gave no focus")
+
+    @staticmethod
+    def _flush():
+        from PyQt6.QtCore import QEvent
+        QApplication.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+    def _key(self, widget, key):
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        widget.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+        QApplication.processEvents()
+
+    def _move(self, key):
+        cur = QApplication.focusWidget()
+        nxt = self.win.spatial.move(cur, key)
+        self.assertIsNotNone(nxt, f"nothing {key} of {cur}")
+        nxt.setFocus()
+        QApplication.processEvents()
+        return nxt
+
+    # ---- states ----
+    def test_no_moments_no_pill_and_play_row_as_today(self):
+        w, fy = self._fyn(inputs={})
+        art = w.dashboard.stage.art
+        self.assertEqual(fy.moments, [])
+        self.assertTrue(fy.pill.isHidden())
+        self.assertFalse(fy.isVisibleTo(w.dashboard))            # On stage takes no cell
+        self.assertGreaterEqual(art.actions.indexOf(fy.pill), 0)  # kept in the row, hidden
+        fy.open_list()
+        self.assertFalse(fy.list_open())
+
+    def test_one_moment_pill_has_not_now_and_no_list(self):
+        w, fy = self._fyn(inputs=ONE_FRIEND)
+        pill = fy.pill
+        self.assertEqual(len(fy.moments), 1)
+        self.assertFalse(pill.isHidden())
+        self.assertEqual(pill.kicker.text(), "FOR YOU NOW")
+        self.assertEqual(pill.title.text(), "Ana in Beta")
+        self.assertEqual(pill.act.text(), "Launch")              # never a bare Play
+        self.assertFalse(pill.x.isHidden())
+        self.assertTrue(pill.chevron.isHidden())
+        self.assertEqual(pill.body.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        fy.toggle_list()
+        self.assertFalse(fy.list_open())
+
+    def test_many_moments_pill(self):
+        w, fy = self._fyn()
+        art, pill = w.dashboard.stage.art, fy.pill
+        ms = fy.moments
+        self.assertEqual(len(ms), 7)
+        self.assertEqual(ms[0]['kind'], 'broken')
+        self.assertFalse(pill.isHidden())
+        self.assertIs(pill.parentWidget(), art)
+        self.assertEqual(art.actions.indexOf(pill), art.actions.count() - 1)   # at the end
+        self.assertEqual(pill.kicker.text(), "FOR YOU NOW  ·  7")
+        self.assertEqual(pill.title.text(), ms[0]['title'])
+        self.assertEqual(pill.act.text(), "Open")
+        self.assertTrue(pill.x.isHidden())
+        self.assertFalse(pill.chevron.isHidden())
+        self.assertEqual(pill.height(), max(STAGE_BTN_H, art.btn.sizeHint().height()))
+        self.assertLessEqual(pill.maximumWidth(), 440)
+        self.assertNotIn("Play", [m['action']['label'] for m in ms])
+        self.assertFalse(fy.isVisibleTo(w.dashboard))
+        self.assertFalse(fy.list_open())                         # never opens on its own
+
+    def test_list_grows_up_out_of_the_pill(self):
+        w, fy = self._fyn()
+        art, pill = w.dashboard.stage.art, fy.pill
+        corner = pill.mapTo(art, pill.rect().bottomRight())
+        fy.open_list()
+        QApplication.processEvents()
+        lst = fy.list
+        self.assertTrue(fy.list_open())
+        self.assertTrue(pill.isHidden())                          # the list takes its place
+        self.assertIs(lst.parentWidget(), art)
+        self.assertFalse(lst.isWindow())
+        self.assertEqual(lst.geometry().bottomRight(), corner)
+        self.assertGreaterEqual(lst.y(), SP['3'])
+        self.assertEqual(lst.width(), 440)
+        self.assertEqual(len(lst.order), 5)
+        self.assertEqual(lst.btn_more.text(), "2 more")
+        self.assertEqual(lst.kicker.text(), "FOR YOU NOW  ·  7")
+        self.assertIs(w.nav_scope(), lst)
+        lst.show_more()
+        self.assertEqual(len(lst.order), 7)
+        self.assertTrue(lst.btn_more.isHidden())
+        self.assertEqual(lst.geometry().bottomRight(), corner)
+        w._escape()
+        self.assertFalse(fy.list_open())
+        self.assertFalse(pill.isHidden())
+        self.assertIs(w.nav_scope(), w)
+
+    def test_pad_path(self):
+        from nexus.gui.moments import is_snoozed
+        w, fy = self._fyn()
+        art, pill = w.dashboard.stage.art, fy.pill
+        self._focus(art.btn_more)
+        self.assertIs(self._move(Qt.Key.Key_Right), pill.body)   # Right from More: the pill
+        self.assertIs(self._move(Qt.Key.Key_Right), pill.act)
+        self.assertIs(self._move(Qt.Key.Key_Left), pill.body)
+        self.assertIs(self._move(Qt.Key.Key_Left), art.btn_more)  # not the Continue row
+        pill.body.setFocus()
+        self._key(pill.body, Qt.Key.Key_Return)                   # A
+        lst = fy.list
+        self.assertTrue(fy.list_open())
+        rows = [lst.rows[i] for i in lst.order]
+        self.assertIs(QApplication.focusWidget(), rows[0].act)    # on row 0's action
+        self.assertIs(w.default_focus(), rows[0].act)
+        self.assertIs(self._move(Qt.Key.Key_Down), rows[1].act)
+        self.assertIs(self._move(Qt.Key.Key_Right), rows[1].x)
+        self.assertIs(self._move(Qt.Key.Key_Left), rows[1].act)
+        self.assertIs(self._move(Qt.Key.Key_Up), rows[0].act)
+        self._move(Qt.Key.Key_Down)
+        gone = rows[1].m
+        rows[1].x.setFocus()
+        rows[1].x.click()                                         # Not now
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), rows[2].act)    # moved before it hid
+        self.assertNotIn(gone['id'], lst.order)
+        self.assertTrue(is_snoozed(w.prefs.snoozes, gone['snooze_key'], datetime.now()))
+        self.assertEqual(len(fy.moments), 6)
+        self.assertTrue(fy.list_open())
+        w._escape()                                               # B
+        self.assertFalse(fy.list_open())
+        self.assertIs(QApplication.focusWidget(), pill.body)      # back on the pill
+
+    def test_not_now_on_the_last_row_and_until_one_is_left(self):
+        w, fy = self._fyn(n=3)                    # broken, running, friends
+        fy.open_list()
+        lst = fy.list
+        self._focus(lst.rows[lst.order[-1]].act)
+        lst.rows[lst.order[-1]].x.click()
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), lst.rows[lst.order[-1]].act)  # the one before
+        lst.rows[lst.order[-1]].x.click()
+        QApplication.processEvents()
+        self.assertEqual(len(fy.moments), 1)
+        self.assertFalse(fy.list_open())                          # one left: no list
+        self.assertFalse(fy.pill.isHidden())
+        self.assertIs(QApplication.focusWidget(), fy.pill.act)
+        fy.pill.x.click()
+        QApplication.processEvents()
+        self.assertEqual(fy.moments, [])
+        self.assertTrue(fy.pill.isHidden())
+        self.assertIs(QApplication.focusWidget(), w.dashboard.stage.art.btn_more)
+
+    def test_collapsed_on_home_show_and_leaving_home(self):
+        w, fy = self._fyn()
+        fy.open_list()
+        w.go(w.LIBRARY)
+        self.assertFalse(fy.list_open())
+        w.go(w.HOME)
+        fy.open_list()
+        w.go(w.HOME)                                              # shown again: collapsed
+        self.assertFalse(fy.list_open())
+        fy.open_list()
+        w.dashboard.set_editing(True)
+        self.assertFalse(fy.list_open())
+        w.dashboard.set_editing(False)
+        w.dashboard.refresh()
+        self.assertFalse(fy.list_open())
+
+    def test_click_outside_closes(self):
+        from PyQt6.QtCore import QEvent, QPointF
+        from PyQt6.QtGui import QMouseEvent
+        w, fy = self._fyn()
+        fy.open_list()
+        btn = w.dashboard.stage.art.btn_details
+        pos = QPointF(5, 5)
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos, btn.mapToGlobal(pos),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier)
+        fy.list.eventFilter(btn, ev)
+        QApplication.processEvents()
+        self.assertFalse(fy.list_open())
+        fy.open_list()
+        row = fy.list.rows[fy.list.order[0]]
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos, row.mapToGlobal(pos),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier)
+        fy.list.eventFilter(row, ev)
+        QApplication.processEvents()
+        self.assertTrue(fy.list_open())                           # inside: stays
+
+    def test_live_update_keeps_rows_and_focus(self):
+        w, fy = self._fyn()
+        fy.open_list()
+        lst = fy.list
+        running = next(i for i in lst.order if i.startswith('running:'))
+        row = lst.rows[running]
+        self._focus(row.act)
+        self._inputs['jobs'] = [dict(self._inputs['jobs'][0], progress=70)]
+        w.dashboard.refresh(['system'])                           # job output
+        self.assertIs(lst.rows[running], row)                     # same row, new text
+        self.assertIn("70%", row.why.text())
+        self.assertIs(QApplication.focusWidget(), row.act)
+        self.assertTrue(fy.list_open())
+
+    def test_moving_the_stage_asks_again(self):
+        w, fy = self._fyn(inputs={'friends_now': [
+            {'slug': 'alpha', 'title': 'Alpha', 'people': [{'name': 'Ana'}], 'minutes': 5},
+            {'slug': 'steam-1', 'title': 'Beta', 'people': [{'name': 'Ben'}], 'minutes': 5}]})
+        stage = w.dashboard.stage
+        self.assertEqual(stage.art.game['slug'], 'alpha')
+        self.assertEqual([m['key'] for m in fy.moments], ['steam-1'])   # never the Stage's game
+        stage._follow(w.game('steam-1'))
+        w._flush_dashboard()
+        self.assertEqual([m['key'] for m in fy.moments], ['alpha'])
+
+    def test_quiet_and_snoozes_survive_a_new_window(self):
+        path = nx.LibraryPrefs.PATH
+        before = path.read_bytes() if path.exists() else None
+        self.addCleanup(lambda: path.write_bytes(before) if before is not None
+                        else path.unlink(missing_ok=True))
+        with mock.patch.object(nx.LibraryPrefs, 'save', type(self)._saved[1]):
+            w, fy = self._fyn()
+            first = next(m for m in fy.moments if m['kind'] == 'running')
+            fy.model.not_now(first)
+            self.assertNotIn(first['id'], [m['id'] for m in fy.moments])
+            fy.list.quiet.emit()
+            self.assertEqual([m['kind'] for m in fy.moments], ['broken'] * 2)  # problems show
+            w2 = nx.MainWindow()
+            self.addCleanup(w2.deleteLater)
+            self.assertIn(first['snooze_key'], w2.prefs.snoozes)
+            self.assertIsNotNone(w2.prefs.quiet_until)
+            w2.prefs.dashboard = nx.dash_default()
+            w2._on_library({'games': fake_games(), 'disks': []}, '')
+            w2.dashboard.refresh()
+            self.assertEqual([m['kind'] for m in w2.dashboard.foryou.moments], ['broken'] * 2)
+            w2.prefs.clear_quiet()
+            w2.dashboard.refresh(['foryou'])
+            ids = [m['id'] for m in w2.dashboard.foryou.moments]
+            self.assertNotIn(first['id'], ids)                    # still snoozed
+            self.assertGreater(len(ids), 1)
+            w2.close()
+            stop_leftovers(w2.jobs)
+
+    @linux_features
+    def test_actions_go_where_they_are_handled(self):
+        w, fy = self._fyn(inputs=dict(fyn_inputs(self.win._games), proton=GE))
+        calls = []
+        rec = (lambda name: lambda *a, **k: calls.append((name, a)))
+        with mock.patch.object(w, 'go', rec('go')), \
+                mock.patch.object(w, '_open_job', rec('job')), \
+                mock.patch.object(w, 'on_game_action', rec('game')), \
+                mock.patch.object(w, '_show_fitgirl_deals', rec('fitgirl')), \
+                mock.patch.object(w, 'run', rec('run')), \
+                mock.patch.object(w, '_reveal_game', rec('reveal')), \
+                mock.patch.object(w.dealspage, 'show_section', rec('section')):
+            by = {m['kind'] + ':' + (m['sub'] or ''): m for m in fy.moments}
+            w.moment_action(by['broken:disk'])
+            w.moment_action(by['broken:health'])
+            w.moment_action(by['running:'])                       # no Job: Activity
+            w.moment_action(by['friends:'])
+            w.moment_action(by['store:atl'])
+            w.moment_action(by['update:proton'])
+            w.moment_action(by['update:'])                        # Gamma: a store update
+            w.moment_action({'action': {'id': 'open_health', 'arg': None}})
+            w.moment_action({'action': {'id': 'open_deals', 'arg': 7}, 'sub': 'fitgirl'})
+            w.moment_action({'action': {'id': 'open_job', 'arg': 'torrent-abc'}})
+        self.assertEqual(calls, [
+            ('go', (w.STORAGE,)), ('go', (w.HEALTH,)), ('go', (w.ACTIVITY,)), ('game', ('launch', w.game('steam-1'))),
+            ('section', ('deals',)), ('go', (w.DEALS,)),
+            ('run', (['--proton-install', 'GE-Proton10-25'], "Installing GE-Proton10-25", None,
+                     'install-proton')),
+            ('reveal', ('gamma',)), ('go', (w.HEALTH,)), ('fitgirl', ()),
+            ('go', (w.DOWNLOADS,))])
+        job = nx.Job(['nexus-cli', 'x'], 'Hollow', 'hk', 'install')
+        w.jobs.jobs.append(job)
+        self.addCleanup(lambda: job in w.jobs.jobs and w.jobs.jobs.remove(job))
+        with mock.patch.object(w, '_open_job', rec('job')):
+            w.moment_action(next(m for m in fy.moments if m['kind'] == 'running'))
+        self.assertEqual(calls[-1], ('job', (job,)))
+
+    @linux_features
+    def test_no_ge_moment_without_proton(self):
+        from nexus import features
+        w, fy = self._fyn(inputs=dict(fyn_inputs(self.win._games), proton=GE))
+        self.assertIn('install_ge', [m['action']['id'] for m in fy.moments])
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            fy.model.refresh()
+            self.assertNotIn('install_ge', [m['action']['id'] for m in fy.moments])
+
+    # ---- the Strip ----
+    def test_strip_falls_back_on_banner_and_a_hidden_stage(self):
+        w, fy = self._fyn(stage={'size': 'banner'})
+        d = w.dashboard
+        self.assertTrue(fy.pill.isHidden())
+        self.assertTrue(fy.isVisibleTo(d))
+        placed = {k: (r, c, s) for k, r, c, s in nx.dash_pack(d.items, d._cols, d._skipped)}
+        self.assertEqual(placed['foryou'], (1, 0, d._cols))         # right after the stage
+        items = [i for i in fy.findChildren(nx.StripItem) if not i.isHidden()]
+        self.assertEqual(len(items), strip_count(fy.width()))
+        more = next(b for b in fy.findChildren(QPushButton) if b.text().endswith(" more"))
+        self.assertEqual(more.text(), f"{7 - len(items)} more")
+        more.click()
+        self._flush()
+        self.assertEqual(len(fy.findChildren(nx.MomentRow)), 7)
+        less = next(b for b in fy.findChildren(QPushButton) if b.text() == "Show less")
+        less.click()
+        self._flush()
+        self.assertEqual(fy.findChildren(nx.MomentRow), [])
+        self.assertEqual(len([i for i in fy.findChildren(nx.StripItem) if not i.isHidden()]),
+                         len(items))
+        next(i for i in w.prefs.dashboard if i['id'] == 'stage').update(size='cinematic',
+                                                                         hidden=True)
+        d.refresh()
+        self.assertTrue(fy.isVisibleTo(d))                       # no Stage: the Strip
+        self.assertTrue(fy.pill.isHidden())
+
+    def test_strip_style_and_its_states(self):
+        w, fy = self._fyn(style='strip')
+        d = w.dashboard
+        self.assertTrue(fy.isVisibleTo(d))
+        self.assertTrue(fy.pill.isHidden())
+        self.assertGreaterEqual(fy.minimumHeight(), 0)
+        self._inputs = {}
+        d.refresh(['foryou'])
+        self.assertFalse(fy.isVisibleTo(d))                       # nothing: out of the layout
+        self._inputs = ONE_FRIEND
+        d.refresh(['foryou'])
+        self.assertTrue(fy.isVisibleTo(d))
+        self._flush()
+        items = [i for i in fy.findChildren(nx.StripItem) if not i.isHidden()]
+        self.assertEqual(len(items), 1)
+        self.assertLessEqual(items[0].maximumWidth(), scaled(480))
+        self.assertEqual(len([b for b in items[0].findChildren(QWidget)
+                              if b.toolTip() == "Not now"]), 1)
+
+    # ---- Customise ----
+    def test_customise_placeholder_style_and_kinds(self):
+        w, fy = self._fyn()
+        d = w.dashboard
+        d.set_editing(True)
+        QApplication.processEvents()
+        self.assertTrue(fy.isVisibleTo(d))                       # findable in Customise
+        notes = [lab.text() for lab in fy.findChildren(QLabel) if lab.objectName() == "FynNote"]
+        self.assertIn("Shown on the Stage, beside Play", notes)
+        self.assertEqual(fy.btn_style.text(), "Style: On stage")
+        self.assertTrue(fy.btn_style.isVisibleTo(fy))
+        self.assertFalse(d.widgets['news'].btn_style.isVisibleTo(d.widgets['news']))
+        fy.btn_style.click()
+        self.assertEqual(next(i for i in w.prefs.dashboard if i['id'] == 'foryou')['style'],
+                         'strip')
+        self.assertEqual(fy.btn_style.text(), "Style: Strip")
+        self.assertTrue([i for i in fy.findChildren(nx.StripItem) if not i.isHidden()])
+        fy.btn_style.click()
+        self.assertEqual(fy.btn_style.text(), "Style: On stage")
+        fy.btn_kinds.setChecked(True)
+        chips = {b.text(): b for b in fy.findChildren(QPushButton) if b.objectName() == "Chip"}
+        self.assertEqual(list(chips), ["Downloads", "Friends playing", "Deals", "Updates",
+                                       "Achievements", "Pick up again", "Storage"])
+        self.assertTrue(all(b.isChecked() for b in chips.values()))
+        self.assertIn("always show", chips['Storage'].toolTip())
+        chips['Deals'].setChecked(False)
+        chips = {b.text(): b for b in fy.findChildren(QPushButton) if b.objectName() == "Chip"}
+        self.assertEqual(w.prefs.kinds_off, ['store'])
+        self.assertNotIn('store', [m['kind'] for m in fy.moments])
+        chips['Storage'].setChecked(False)
+        self.assertIn('broken', [m['kind'] for m in fy.moments])  # a problem still shows
+        d.set_editing(False)
+        self.assertFalse(fy.isVisibleTo(d))                      # on the Stage again
+
+    def test_kinds_chip_keeps_focus_when_the_strip_rebuilds(self):
+        w, fy = self._fyn(style='strip')
+        w.dashboard.set_editing(True)
+        fy.btn_kinds.setChecked(True)
+        QApplication.processEvents()
+        chip = next(b for b in fy.findChildren(QPushButton) if b.text() == "Deals")
+        self._focus(chip)
+        chip.click()                                              # the moments change
+        self._flush()
+        self.assertEqual(w.prefs.kinds_off, ['store'])
+        f = QApplication.focusWidget()
+        self.assertEqual((f.objectName(), f.text(), f.isChecked()), ("Chip", "Deals", False))
+
+    def test_dont_show_from_the_menu(self):
+        w, fy = self._fyn()
+        m = next(m for m in fy.moments if m['kind'] == 'store')
+        self.assertEqual(fy.kind_name(m), "Deals")
+        self.assertIsNone(fy.kind_name(fy.moments[0]))           # broken: no switch
+        fy.dont_show('store')
+        self.assertEqual(w.prefs.kinds_off, ['store'])
+        self.assertNotIn('store', [x['kind'] for x in fy.moments])
+
+    def test_one_column_pill_line_and_cover_list(self):
+        w, fy = self._fyn()
+        w.resize(720, 850)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        d, art = w.dashboard, w.dashboard.stage.art
+        self.assertEqual(d._cols, 1)
+        self.assertGreaterEqual(fy.line.indexOf(fy.pill), 0)      # its own line under Play
+        self.assertLess(art.actions.indexOf(fy.pill), 0)
+        fy.open_list()
+        QApplication.processEvents()
+        lst = fy.list
+        self.assertEqual(lst.property('cover'), True)
+        m = art.layout().contentsMargins()
+        self.assertEqual(lst.width(), art.width() - m.left() - m.right())
+        self.assertGreaterEqual(lst.y(), SP['3'])
+        fy.close_list()
+        w.resize(1300, 850)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        self.assertGreaterEqual(art.actions.indexOf(fy.pill), 0)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
