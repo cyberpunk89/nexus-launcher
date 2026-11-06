@@ -100,11 +100,15 @@ def stage_height(size: str, viewport_h: int) -> int:
     return max(480, min(610, viewport_h - 290))
 
 
-def dash_normalize(items) -> list[dict]:
+DASH_VERSION = 2   # 2: the Stage moved to the top (w-86); renames to new kinds are not gated
+
+
+def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
     """A saved layout made safe: unknown widgets dropped, bad sizes fixed,
     merged widgets (DASH_MERGED) replaced in place by the one they became,
     and widgets added since it was saved put in (next to their DASH_PLACE_AFTER
-    anchor, else at the end) with their defaults."""
+    anchor, else at the end) with their defaults. A layout saved before version 2
+    also gets the Stage moved to the top; every other widget keeps its place."""
     items = [it for it in (items if isinstance(items, list) else []) if isinstance(it, dict)]
     legacy: dict[str, list[dict]] = {}
     for it in items:
@@ -145,6 +149,10 @@ def dash_normalize(items) -> list[dict]:
             out.insert(at + 1, d)
             last[anchor] = d['id']
         seen.add(d['id'])
+    if version < 2:
+        at = next((i for i, o in enumerate(out) if o['id'] == 'stage'), None)
+        if at:
+            out.insert(0, out.pop(at))
     return out
 
 

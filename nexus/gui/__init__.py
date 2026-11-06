@@ -79,7 +79,7 @@ from .library import (
 from .dashboard import (
     _game_store_id, _visible_games, AchievementsWidget, ClickRow, CollectionsWidget,
     dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_KINDS, DASH_MERGED, dash_move,
-    dash_normalize, DASH_OPTIONS, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
+    dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
     InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget, stage_height,
     StageArt, StageWidget,

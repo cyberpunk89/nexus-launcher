@@ -369,9 +369,121 @@ class DashboardModel(unittest.TestCase):
                 again = nx.LibraryPrefs()
             data = json.loads(path.read_text())
             self.assertEqual(data['future_key'], 1)
-            self.assertEqual(data['dashboard']['version'], 1)
+            self.assertEqual(data['dashboard']['version'], nx.DASH_VERSION)
+            self.assertNotIn('dashboard_v1', data)         # nothing saved before: nothing to keep
             self.assertTrue(again.dashboard[0]['hidden'])
             self.assertEqual(again.favorites, {'a'})
+
+    V1 = [('jump', 'full'), ('friends', 'full'), ('surprise', 'wide'), ('playtime', 'full'),
+          ('system', 'wide'), ('achievements', 'wide'), ('installed', 'full'),
+          ('smart', 'full'), ('upcoming', 'full'), ('deals', 'full'), ('news', 'full'),
+          ('favourites', 'full'), ('collections', 'full'), ('updates', 'full'),
+          ('owned', 'full')]
+
+    def test_v1_layout_opens_with_the_stage_first(self):
+        """w-86: a saved version 1 layout shaped like a real one keeps every
+        widget's order, size and hidden flag; only the Stage moves to the top."""
+        saved = self.items(*self.V1)
+        saved[-1]['hidden'] = True
+        saved[7]['shelf'] = 'unfinished'
+        out = nx.dash_normalize(saved, version=1)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[0], 'stage')
+        rest = [i for i in ids if i != 'stage']
+        want = [i for i in nx.dash_normalize(saved) if i['id'] != 'stage']
+        self.assertEqual(rest, [i['id'] for i in want])
+        self.assertEqual(rest.index('system') > rest.index('friends'), True)
+        owned = next(i for i in out if i['id'] == 'owned')
+        self.assertTrue(owned['hidden'])
+        smart = next(i for i in out if i['id'] == 'smart')
+        self.assertEqual(smart['shelf'], 'unfinished')
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+
+    def test_v1_layout_with_the_stage_mid_page_or_hidden(self):
+        saved = self.items(('system', 'wide'), ('jump', 'full'), ('installed', 'full'))
+        out = nx.dash_normalize(saved, version=1)
+        self.assertEqual([i['id'] for i in out][:2], ['stage', 'system'])
+        saved[1]['hidden'] = True
+        out = nx.dash_normalize(saved, version=1)
+        self.assertEqual(out[0]['id'], 'stage')
+        self.assertFalse(out[0]['hidden'])                           # shown, as w-85
+
+    def test_a_current_layout_is_not_reordered(self):
+        saved = self.items(('system', 'wide'), ('stage', 'wide'), ('installed', 'full'))
+        out = nx.dash_normalize(saved)               # the default version is current
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids[:2], ['system', 'stage'])     # not moved to the top
+        self.assertLess(ids.index('stage'), ids.index('installed'))
+        self.assertEqual(nx.DASH_VERSION, 2)
+
+    def test_merged_widgets_never_shadow_a_live_kind(self):
+        """A rename registered before its new kind exists (or while the old one
+        still does) would silently drop or merge a widget."""
+        for old, new in nx.DASH_MERGED.items():
+            self.assertNotIn(old, nx.DASH_SIZES, old)
+            self.assertIn(new, nx.DASH_SIZES, new)
+
+    def _prefs(self, saved):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / 'library.json'
+        if saved is not None:
+            path.write_text(json.dumps(saved))
+        p = mock.patch.object(nx.LibraryPrefs, 'PATH', path)
+        p.start()
+        self.addCleanup(p.stop)
+        return path
+
+    def test_prefs_keep_the_v1_list_once_and_write_version_2(self):
+        import json
+        v1 = self.items(('system', 'wide'), ('jump', 'full'), ('installed', 'full'))
+        path = self._prefs({'dashboard': {'version': 1, 'items': v1}, 'future_key': 1})
+        pr = nx.LibraryPrefs()
+        self.assertEqual(pr.dashboard[0]['id'], 'stage')
+        pr.save()
+        data = json.loads(path.read_text())
+        self.assertEqual(data['dashboard']['version'], 2)
+        self.assertEqual(data['dashboard_v1'], v1)
+        self.assertEqual(data['dashboard']['items'][0]['id'], 'stage')
+        self.assertEqual(data['future_key'], 1)
+        pr2 = nx.LibraryPrefs()                      # a second load and save change nothing
+        pr2.dashboard[0]['hidden'] = True
+        pr2.save()
+        again = json.loads(path.read_text())
+        self.assertEqual(again['dashboard_v1'], v1)
+        self.assertEqual(again['dashboard']['version'], 2)
+        self.assertTrue(again['dashboard']['items'][0]['hidden'])
+
+    def test_prefs_without_a_saved_layout_or_from_a_newer_nexus(self):
+        import json
+        path = self._prefs(None)
+        nx.LibraryPrefs().save()
+        self.assertNotIn('dashboard_v1', json.loads(path.read_text()))
+        newer = self.items(('system', 'wide'), ('stage', 'wide'), ('installed', 'full'))
+        path = self._prefs({'dashboard': {'version': 5, 'items': newer}})
+        pr = nx.LibraryPrefs()
+        self.assertEqual([i['id'] for i in pr.dashboard][:2], ['system', 'stage'])
+        pr.save()
+        data = json.loads(path.read_text())
+        self.assertEqual(data['dashboard']['version'], 5)           # never lowered
+        self.assertNotIn('dashboard_v1', data)
+
+    def test_reset_gives_the_cinematic_layout_and_keeps_the_backup(self):
+        import json
+        v1 = self.items(('jump', 'full'))
+        path = self._prefs({'dashboard': {'version': 1, 'items': v1}})
+        pr = nx.LibraryPrefs()
+        pr.save()
+        pr.dashboard = nx.dash_default()
+        pr.save()
+        data = json.loads(path.read_text())
+        self.assertEqual(data['dashboard']['items'], nx.dash_default())
+        self.assertEqual(data['dashboard']['items'][0]['size'], 'cinematic')
+        self.assertEqual(data['dashboard_v1'], v1)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

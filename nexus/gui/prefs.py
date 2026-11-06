@@ -78,7 +78,16 @@ class LibraryPrefs:
         except (TypeError, ValueError):
             self.tile = TILE_W
         dash = self._data.get('dashboard') or {}
-        self.dashboard = dash_normalize(dash.get('items') if isinstance(dash, dict) else None)
+        raw = dash.get('items') if isinstance(dash, dict) else None
+        ver = dash.get('version') if isinstance(dash, dict) else None
+        self.dashboard_version = ver if isinstance(ver, int) and not isinstance(ver, bool) \
+            and ver >= 1 else 1
+        self.dashboard = dash_normalize(raw, self.dashboard_version)
+        # The layout as saved by an older Nexus, kept once before the first save
+        # writes the new format (w-86); Customise can offer it back later.
+        self._dashboard_v1 = raw if isinstance(raw, list) and raw \
+            and self.dashboard_version < DASH_VERSION \
+            and 'dashboard_v1' not in self._data else None
         self.appearance = normalize_appearance(self._data.get('appearance'))
         # Games you own but haven't installed: shown at all (Settings), and
         # which of installed / not installed / all the Library lists.
@@ -170,9 +179,12 @@ class LibraryPrefs:
     def save(self):
         # Keys this version doesn't know about are kept, not dropped.
         out = dict(self._data)
+        if self._dashboard_v1 is not None:
+            out['dashboard_v1'] = self._dashboard_v1
         out.update({'favorites': sorted(self.favorites), 'hidden': sorted(self.hidden),
                     'view': self.view, 'tile': self.tile,
-                    'dashboard': {'version': 1, 'items': self.dashboard},
+                    'dashboard': {'version': max(self.dashboard_version, DASH_VERSION),
+                                  'items': self.dashboard},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
@@ -341,4 +353,4 @@ class LibraryPrefs:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .dashboard import dash_normalize  # noqa: E402
+from .dashboard import DASH_VERSION, dash_normalize  # noqa: E402
