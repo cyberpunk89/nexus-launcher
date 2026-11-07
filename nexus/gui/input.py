@@ -511,7 +511,9 @@ class HintGlyph(QLabel):
 
     def sizeHint(self):
         s = super().sizeHint()
-        s.setWidth(max(s.width(), s.height()))
+        # One character is a circle, whatever the font's advance plus padding
+        # says (Windows came out a pixel wider); longer text, a capsule.
+        s.setWidth(s.height() if len(self.text()) <= 1 else max(s.width(), s.height()))
         return s
 
     def minimumSizeHint(self):

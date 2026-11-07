@@ -5497,23 +5497,45 @@ class ForYou(unittest.TestCase):
         self.assertEqual(w.prefs.kinds_off, ['store'])
         self.assertNotIn('store', [x['kind'] for x in fy.moments])
 
+    @staticmethod
+    def _settle(w, passes=10):
+        """Until Home's width stops changing: a one-column relayout takes
+        Windows a few more event passes than Linux (wider fonts)."""
+        last = None
+        for _ in range(passes):
+            QApplication.processEvents()
+            now = (w.dashboard.width(), w.dashboard.stage.art.width())
+            if now == last:
+                return
+            last = now
+
     def test_one_column_pill_line_and_cover_list(self):
         w, fy = self._fyn()
+        # One column, whatever the platform's frame and scroll bar leave of the
+        # window's 720 px minimum (Windows kept just over 700: two columns).
+        p = mock.patch('nexus.gui.dashboard.dash_cols', lambda width: 1)
+        p.start()
+        self.addCleanup(p.stop)
         w.resize(720, 850)
-        QApplication.processEvents()
-        QApplication.processEvents()
+        w.dashboard.relayout()
+        self._settle(w)
         d, art = w.dashboard, w.dashboard.stage.art
         self.assertEqual(d._cols, 1)
         self.assertGreaterEqual(fy.line.indexOf(fy.pill), 0)      # its own line under Play
         self.assertLess(art.actions.indexOf(fy.pill), 0)
         fy.open_list()
-        QApplication.processEvents()
+        self._settle(w)
         lst = fy.list
         self.assertEqual(lst.property('cover'), True)
         m = art.layout().contentsMargins()
         self.assertEqual(lst.width(), art.width() - m.left() - m.right())
         self.assertGreaterEqual(lst.y(), SP['3'])
+        w.resize(1000, 850)                     # resized while open: the list follows the art
+        self._settle(w)
+        m = art.layout().contentsMargins()
+        self.assertEqual(lst.width(), art.width() - m.left() - m.right())
         fy.close_list()
+        p.stop()
         w.resize(1300, 850)
         QApplication.processEvents()
         QApplication.processEvents()

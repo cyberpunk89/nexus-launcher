@@ -575,7 +575,7 @@ class PlayingNow(unittest.TestCase):
         self.assertIsNone(nx.playing_now(hidden)[0]['slug'])
         # ISO times work as well as epoch seconds
         rows = live_crowd()
-        rows[0]['playing']['since'] = iso(80 * 60)
+        rows[0]['playing']['since'] = iso(80 * 60 + 1)   # Windows' clock may not tick before playing_now
         FRIENDS.set_answer(answer(rows))
         self.assertEqual(nx.playing_now(GAMES)[0]['minutes'], 80)
         # Stale presence, friends off: nothing

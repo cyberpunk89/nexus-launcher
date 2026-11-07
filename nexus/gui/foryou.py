@@ -393,6 +393,7 @@ class ForYouList(QFrame):
         self.limit = LIST_ROWS
         self.start: str | None = None          # the row it opened on (default_focus)
         self._width = scaled(440)
+        self._width_fn = None          # the host's current width, asked on every place()
         v = QVBoxLayout(self)
         v.setContentsMargins(SP['2'], SP['2'], SP['2'], SP['2'])
         v.setSpacing(SP['1'])
@@ -524,11 +525,14 @@ class ForYouList(QFrame):
             _focus(self.rows[self.order[-1]].act)
 
     # ---- open / close ----
-    def open(self, anchor: QWidget, moments: list[dict], width: int, cover: bool,
+    def open(self, anchor: QWidget, moments: list[dict], width, cover: bool,
              focus_row: int = 0):
+        """width: px, or a callable giving the width for the art as it is now,
+        so a resize while open (or a window still settling) follows."""
         self.pill = anchor
         self.limit = LIST_ROWS
-        self._width = width
+        self._width_fn = width if callable(width) else None
+        self._width = width() if callable(width) else width
         self.set_cover(cover)
         for i in list(self.order):              # fresh rows: Appearance → Size may have moved
             r = self.rows.pop(i)
@@ -580,6 +584,8 @@ class ForYouList(QFrame):
         pill = self.pill
         if pill is None or not alive(pill):
             return
+        if self._width_fn is not None:
+            self._width = self._width_fn()
         self.setFixedWidth(min(self._width, self.art.width()))
         br = pill.mapTo(self.art, pill.rect().bottomRight())
         self.ensurePolished()
@@ -814,7 +820,7 @@ class ForYouWidget(DashWidget):
         if self.list is None or len(self.moments) <= 1 or self.pill.isHidden():
             return
         self._retain(True)
-        self.list.open(self.pill, self.moments, self._list_width(), self._cols <= 1,
+        self.list.open(self.pill, self.moments, self._list_width, self._cols <= 1,
                        focus_row)
         self.pill.hide()                         # focus is in the list already
 

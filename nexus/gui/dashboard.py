@@ -2531,7 +2531,7 @@ class Dashboard(QWidget):
         self.hub.prefs.save()
 
     # ---- presets and saved layouts (w-92) ----
-    def layouts_view(self, note: str = '') -> LayoutsView:
+    def layouts_view(self, note: str = '') -> 'LayoutsView':
         pr = self.hub.prefs
         names = [lt['name'] for lt in pr.layouts]
         return LayoutsView([dict(lt) for lt in pr.layouts],
