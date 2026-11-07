@@ -21,7 +21,7 @@ from nexus.features import has
 
 from .common import alive
 from .fmt import fmt_duration, fmt_hours, fmt_relative, fmt_size
-from .theme import G, P, R, SP
+from .theme import G, P, pill, R, SP
 
 
 SECTIONS = (('overview', "Overview"), ('friends', "Friends"), ('media', "Media"),
@@ -558,8 +558,9 @@ class TheatreDetails(QWidget):
         fav = bool(g.get('favorite'))
         self.btn_fav.setText(G['star'] if fav else G['star_outline'])
         self.btn_fav.setToolTip("Favourite" if fav else "Add to favourites")
-        self.btn_fav.setStyleSheet(f"border-radius: 40px; color: {P['warning']};" if fav
-                                   else "border-radius: 40px;")
+        r = pill(self.btn_fav.height())
+        self.btn_fav.setStyleSheet(f"border-radius: {r}px; color: {P['warning']};" if fav
+                                   else f"border-radius: {r}px;")
         if not same:
             self.clear_session()
             self.tips, self.launch, self.store, self.news = None, None, None, []

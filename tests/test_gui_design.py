@@ -42,6 +42,95 @@ class Stylesheet(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Radii(unittest.TestCase):
+    """Qt draws a box square once two radii on a side add up to more than
+    the side, so no rounded widget may be narrower or shorter than 2r."""
+
+    def tearDown(self):
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+
+    def test_hint_glyphs_are_circles_or_capsules_in_theatre(self):
+        from nexus.gui.input import HintBar
+        from nexus.gui.theatre import THEATRE_SCALE
+        for scale in (1.0, 1.5):
+            nx.apply_appearance({'scale': scale})
+            bar = HintBar()
+            self.addCleanup(bar.deleteLater)
+            bar.setStyleSheet(nx.build_stylesheet(THEATRE_SCALE))
+            bar.resize(2400, 80)
+            bar.show()
+            bar.show_hints([('a', 'Play'), ('y', 'Search'), ('lb rb', 'Tabs'), ('Menu', 'Quick')])
+            QApplication.processEvents()
+            glyphs = bar.findChildren(QLabel, "HintGlyph")
+            self.assertEqual(len(glyphs), 4)
+            for g in glyphs:
+                with self.subTest(scale=scale, glyph=g.text()):
+                    self.assertGreaterEqual(g.width(), g.height())        # square-cornered otherwise
+                    self.assertGreaterEqual(g.width(), g.sizeHint().width())   # text not clipped
+            one = glyphs[0]
+            self.assertEqual(one.width(), one.height())                    # one letter: a circle
+
+    def test_for_you_pill_is_concentric(self):
+        """The action and ✕ are capsules inset evenly from the pill's edge, and
+        the round badge sits as far from the left as from the top."""
+        from nexus.gui.foryou import ForYouPill
+        m = {'title': 'Frostpunk 2', 'why': '', 'action': {'label': 'Launch'},
+             'badge': ('check', 'accent')}
+        for scale in (1.0, 1.25):
+            nx.apply_appearance({'scale': scale, 'corners': 'round'})
+            QApplication.instance().setStyleSheet(nx.build_stylesheet())
+            for moments in ([m, m], [m]):
+                p = ForYouPill()
+                self.addCleanup(p.deleteLater)
+                p.set_height(int(44 * scale))
+                p.set_moments(moments)
+                p.show()
+                QApplication.processEvents()
+                with self.subTest(scale=scale, many=len(moments) > 1):
+                    last = p.act if len(moments) > 1 else p.x
+                    top = last.y()
+                    self.assertEqual(p.width() - last.geometry().right() - 1, top)
+                    self.assertEqual(p.height() - last.geometry().bottom() - 1, top)
+                    b = p.badge.mapTo(p, p.badge.rect().topLeft())
+                    self.assertEqual(b.x(), b.y())
+                    self.assertTrue(p.badge.round)
+                    self.assertIn(f"QPushButton#MomentAct {{ border-radius: {nx.pill(p.act.height())}px",
+                                  p.styleSheet())
+
+    def test_inline_radii_fit_their_widgets(self):
+        """Every visible widget that sets its own border-radius, on Home,
+        Library and Settings, under each Corners."""
+        from unittest import mock
+        from tests.patching import set_gui
+        saved = (nx.cli_json, nx.CliQuery)
+        set_gui('cli_json', lambda *a, **k: None)
+        set_gui('CliQuery', lambda *a, **k: None)
+        self.addCleanup(set_gui, 'cli_json', saved[0])
+        self.addCleanup(set_gui, 'CliQuery', saved[1])
+        with mock.patch.object(nx.LibraryPrefs, 'save', lambda self: None):
+            win = nx.MainWindow()
+            self.addCleanup(win.deleteLater)
+            win.resize(1400, 850)
+            win.show()
+            win._on_library({'games': [{'slug': s, 'display_name': s.title(), 'source': 'nexus',
+                                        'launcher': f'/{s}'} for s in ('alpha', 'beta')],
+                             'disks': []}, '')
+            base = dict(win.prefs.appearance)
+            for corners in nx.CORNERS:
+                win.set_appearance({**base, 'corners': corners}, save=False)
+                for page in ('home', 'library', 'settings'):
+                    win.go(page)
+                    QApplication.processEvents()
+                    for w in QApplication.allWidgets():
+                        m = re.search(r'border-radius:\s*(\d+)px', w.styleSheet() or '')
+                        if not m or not w.isVisible() or min(w.width(), w.height()) <= 2:
+                            continue
+                        with self.subTest(corners=corners, page=page, widget=w.objectName()
+                                          or type(w).__name__):
+                            self.assertLessEqual(2 * int(m.group(1)), min(w.width(), w.height()))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class Popups(unittest.TestCase):
     def test_rounded_popups_drop_a_square_system_shadow(self):
         """Menus go translucent for their rounded corners; where the system

@@ -8,8 +8,8 @@ from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QObject, QPoint, QPo
     QRectF, QSizeF, Qt, QTimer, QVariantAnimation)
 from PyQt6.QtGui import QBrush, QColor, QKeyEvent, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QAbstractScrollArea,
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea,
-    QScrollBar, QSlider, QTabBar, QTextEdit, QWidget)
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QScrollArea,
+    QScrollBar, QSizePolicy, QSlider, QTabBar, QTextEdit, QWidget)
 
 from .common import alive
 from .theme import GLYPHS, GRAD, pill, R, SP, TILE_LIFT
@@ -497,6 +497,27 @@ class ControllerInput(QObject):
 
 # Hint strip helpers ---------------------------------------------------------
 
+class HintGlyph(QLabel):
+    """A controller button in the hint strip: a capsule, a circle for one
+    letter. Its QSS radius is half its height, so it is never narrower than
+    tall (Qt draws the box square once two radii outgrow a side), and the
+    strip may not squeeze it below its text."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setObjectName("HintGlyph")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        s = super().sizeHint()
+        s.setWidth(max(s.width(), s.height()))
+        return s
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+
 class HintBar(QFrame):
     """Controller button hints along the bottom, shown while a controller is
     connected: what A/B/X/Y do right now."""
@@ -527,9 +548,7 @@ class HintBar(QFrame):
         g = GLYPHS.get(self.kind, GLYPHS['xbox'])
         for btn, text in hints:
             glyph = g.get(btn, btn.upper() if len(btn) <= 2 else btn)
-            pill = label(glyph, "HintGlyph")
-            pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pill.setMinimumWidth(22)
+            pill = HintGlyph(glyph)
             row = QHBoxLayout()
             row.setSpacing(SP['1_5'])
             row.addWidget(pill)

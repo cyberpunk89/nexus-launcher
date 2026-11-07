@@ -146,7 +146,7 @@ class TopIcon(QToolButton):
             rect = QRectF(self.width() - w, 0.0, w, 16.0)
             pt.setPen(Qt.PenStyle.NoPen)
             pt.setBrush(QColor(P.get(self._role, P['accent'])))
-            pt.drawRoundedRect(rect, 8.0, 8.0)
+            pt.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
             pt.setPen(QColor(P['on_accent']))
             pt.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._badge)
         pt.end()

@@ -255,12 +255,13 @@ class ForYouPill(QFrame):
         self.moments: list[dict] = []
         self.H = 0
         lay = QHBoxLayout(self)
+        lay.setContentsMargins(SP['1'], SP['1'], SP['1'], SP['1'])
         lay.setSpacing(SP['1_5'])
         self.body = PillBody()
         bl = QHBoxLayout(self.body)
         bl.setContentsMargins(SP['1'], 0, SP['2'], 0)
         bl.setSpacing(SP['2'])
-        self.badge = GlyphBadge(G['sparkles'], 'dusk', 28)
+        self.badge = GlyphBadge(G['sparkles'], 'dusk', 28, round_=True)
         bl.addWidget(self.badge)
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
@@ -287,7 +288,10 @@ class ForYouPill(QFrame):
 
     def set_height(self, h: int):
         """As tall as the Play row (Play grows with Appearance → Size); the
-        radius follows, as icon_button(round_=True) does."""
+        radius follows, as icon_button(round_=True) does. Everything inside
+        is concentric with the capsule: the action and ✕ are capsules inset
+        by the same margin on every side, and the round badge sits as far
+        from the left as from the top."""
         h = max(STAGE_BTN_H, h)
         if h == self.H:
             return
@@ -295,12 +299,14 @@ class ForYouPill(QFrame):
         inner = h - 2 * SP['1'] - 2
         self.setFixedHeight(h)
         self.setStyleSheet(f"#FynPill {{ border-radius: {pill(h)}px; }}"
-                           f" #FynPillBody {{ border-radius: {pill(h - 2 * SP['1'])}px; }}")
+                           f" #FynPillBody {{ border-radius: {pill(inner)}px; }}"
+                           f" #FynPill QPushButton#MomentAct {{ border-radius: {pill(inner)}px; }}")
         self.act.setFixedHeight(inner)
         self.x.setFixedSize(inner, inner)
         self.x.setStyleSheet(f"border-radius: {pill(inner)}px;")
-        b = min(scaled(28), h - 2 * SP['1'] - 4)
+        b = min(scaled(28), inner - 4)
         self.badge.setFixedSize(b, b)
+        self.body.layout().setContentsMargins((inner - b) // 2, 0, SP['2'], 0)
 
     def set_moments(self, moments: list[dict]):
         self.moments = list(moments)
@@ -312,8 +318,6 @@ class ForYouPill(QFrame):
             self.act.setFocus(Qt.FocusReason.OtherFocusReason)
         if not many and self.body.hasFocus():
             self.act.setFocus(Qt.FocusReason.OtherFocusReason)
-        lay = self.layout()
-        lay.setContentsMargins(SP['1'], SP['1'], SP['1_5'] if many else SP['1'], SP['1'])
         self.kicker.setText(f"FOR YOU NOW  ·  {len(moments)}" if many else "FOR YOU NOW")
         self.title.setText(m['title'])
         self.body.setToolTip(f"{m['title']}\n{m['why']}"

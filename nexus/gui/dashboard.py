@@ -448,11 +448,12 @@ class ClickRow(QFrame):
 
 
 class GlyphBadge(QWidget):
-    """A widget's icon on a small gradient tile."""
+    """A widget's icon on a small gradient tile; round_ makes it a disc, for
+    a capsule (For you now's pill) whose corners it must follow."""
 
-    def __init__(self, glyph: str, grad: str, size: int = 28):
+    def __init__(self, glyph: str, grad: str, size: int = 28, round_: bool = False):
         super().__init__()
-        self.glyph, self.grad = glyph, grad
+        self.glyph, self.grad, self.round = glyph, grad, round_
         self.setFixedSize(size, size)
 
     def paintEvent(self, ev):
@@ -465,7 +466,8 @@ class GlyphBadge(QWidget):
         g.setColorAt(1.0, b)
         pt.setPen(Qt.PenStyle.NoPen)
         pt.setBrush(QBrush(g))
-        pt.drawRoundedRect(r, R['sm'] + 2, R['sm'] + 2)
+        rad = r.height() / 2 if self.round else min(float(R['control']), r.height() / 2)
+        pt.drawRoundedRect(r, rad, rad)
         f = QFont(FONTS.icon)
         f.setPixelSize(int(self.height() * 0.5))
         pt.setFont(f)
@@ -1742,7 +1744,7 @@ def game_row(g: dict, right: list, on_click, sub: str = '') -> ClickRow:
     lay.setSpacing(SP['2_5'])
     thumb = QLabel()
     thumb.setFixedSize(64, 30)
-    thumb.setStyleSheet(f"background: {P['surface_2']}; border-radius: {R['sm'] - 2}px;")
+    thumb.setStyleSheet(f"background: {P['surface_2']}; border-radius: {R['sm']}px;")
     url = gamedb.safe_url(g.get('headerImage'))
 
     def show(pm, thumb=thumb):
@@ -1753,7 +1755,7 @@ def game_row(g: dict, right: list, on_click, sub: str = '') -> ClickRow:
             pass
 
     def put(path):
-        ART.pixmap_async(path, 64, 30, R['sm'] - 2, show)
+        ART.pixmap_async(path, 64, 30, R['sm'], show)
     if url:
         cached = ART.cached(url)
         if cached:

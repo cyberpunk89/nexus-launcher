@@ -51,7 +51,9 @@ class Swatch(QAbstractButton):
         self.setFixedSize(*size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        rad = R['control'] if kind in ('theme', 'preset') else pill(size[1])
+        # Theme and preset previews paint at R_BASE (they show a look, not the
+        # current one); the focus ring reads this radius, so it matches.
+        rad = R_BASE['control'] if kind in ('theme', 'preset') else pill(size[1])
         self.setStyleSheet(f"border-radius: {rad}px;")
 
     def paintEvent(self, ev):

@@ -516,7 +516,7 @@ class GameTile(QFrame):
         r = QRectF(body.left() + SP['2'], body.top() + SP['2'], w, 20)
         pt.setPen(Qt.PenStyle.NoPen)
         pt.setBrush(QColor(P['accent']))
-        pt.drawRoundedRect(r, 10, 10)
+        pt.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         pt.setPen(QColor(P['on_accent']))
         pt.drawText(r, Qt.AlignmentFlag.AlignCenter, "New")
 
