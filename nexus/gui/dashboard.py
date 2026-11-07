@@ -1,5 +1,6 @@
 """The Home dashboard: its layout model and widgets."""
 
+import html
 import time
 from datetime import datetime
 from pathlib import Path
@@ -7,17 +8,18 @@ from pathlib import Path
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
     QPainterPath, QPen, QPixmap, QRadialGradient)
-from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from nexus import gamedb, smart, storeinfo
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
-from .library import Dwell, FollowHero
+from .library import (_pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, VIBES,
+    vibe_pools)
 from .moments import DISK_FULL
-from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, scaled, SP, STAGE_FACT_H
+from .theme import FONTS, FS, G, GLYPH_H, GRAD, P, PERSON_H, PILL_H, R, scaled, SP, STAGE_FACT_H
 from .theme import collection_look
 
 
@@ -25,9 +27,10 @@ DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
 # (id, sizes it allows, default size, hidden by default)
 DASH_KINDS = [                       # default order packs evenly in 3 columns
     ('stage',      ('cinematic', 'wide', 'banner'), 'cinematic', False),
+    ('save',       ('small',),                 'small', True),    # beside a Wide Stage (w-91)
     ('foryou',     ('full',),                  'full',  False),   # on the Stage by default
-    ('friends',    ('wide', 'full'),           'full',  False),
-    ('surprise',   ('full',),                  'full',  False),
+    ('friends',    ('small', 'wide', 'full'),  'full',  False),
+    ('pick',       ('small',),                 'small', False),   # was Surprise me (w-91)
     ('system',     ('small', 'wide'),          'wide',  False),
     ('news',       ('small', 'wide', 'full'),  'small', False),
     ('installed',  ('full',),                  'full',  False),
@@ -45,21 +48,22 @@ DASH_DEFAULT_SIZE = {k: d for k, _s, d, _h in DASH_KINDS}
 # Widgets folded into another: a saved layout's first one becomes the new
 # widget in its place (so it doesn't jump to the end).
 DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
-               'proton': 'system', 'jump': 'stage', 'playtime': 'week'}
+               'proton': 'system', 'jump': 'stage', 'playtime': 'week', 'surprise': 'pick'}
 # Merged widgets that are shown even when the old one was hidden: the Stage
 # takes the hero's place, which was always there (w-85).
 DASH_MERGED_SHOWN = {'stage'}
 # Widgets added later that belong next to a related one rather than last.
-DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'stage', 'collections': 'favourites',
+DASH_PLACE_AFTER = {'upcoming': 'deals', 'pick': 'stage', 'collections': 'favourites',
                     'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
-                    'foryou': 'stage'}
+                    'foryou': 'stage', 'save': 'stage'}
 # Per-widget options checked like sizes: the first value is the default and
 # a bad one falls back to it (w-85, w-90). The Stage's Pinned art also keeps
 # a `pin` (the game's slug) on its item, checked in dash_normalize.
 DASH_OPTIONS = {'stage': {'style': ('row', 'clean'),
                           'bg': ('art', 'pinned', 'gradient', 'surface')},
                 'week': {'style': ('bars', 'number')},
-                'foryou': {'style': ('stage', 'strip')}}
+                'foryou': {'style': ('stage', 'strip')},
+                'pick': {'vibe': tuple(k for k, _label in VIBES)}}
 # The edit bar's "Style:" button names (a kind listed here gets the button).
 DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"},
                      'stage': {'row': "Row on art", 'clean': "Clean"},
@@ -67,7 +71,8 @@ DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"},
 # The edit bar's "Background:" button names (w-90); 'surface' is shown as Plain.
 DASH_BG_LABELS = {'stage': {'art': "Game art", 'pinned': "Pinned art",
                             'gradient': "Accent gradient", 'surface': "Plain"}}
-PIN_MAX = 80                          # a pinned game's slug, at most this long
+QWIDGETSIZE_MAX = (1 << 24) - 1          # Qt's "no maximum"
+PIN_MAX = 80                         # a pinned game's slug, at most this long
 # Home's spacing (Customise → Density, w-90): Home only, on top of Appearance →
 # Size. Comfortable is how Home always looked.
 DASH_DENSITY = {
@@ -139,6 +144,60 @@ def stage_pin(value) -> str | None:
             and value.strip() == value:
         return value
     return None
+
+
+SAVE_EMPTY = "Nothing recorded for this game yet."
+
+
+def save_rows(g: dict, facts: dict | None, sessions: int | None = None, owners=(),
+              last: dict | None = None) -> list[tuple]:
+    """Your save's rows for one game (w-91), each left out when it has
+    nothing to say: ('big', play time), ('sub', 'Hades · 24 sessions'),
+    ('bar', caption, value, share, tooltip) for Steam achievements and the
+    HowLongToBeat main story (the bar is your play time against it, at most
+    full), ('owners', friends, 'Ana, Ben +1 own it too') and ('last', 'Last
+    unlock: … · 3 days ago') from an achievement {title, time}. With none of
+    them: ('sub', name) and ('empty', SAVE_EMPTY)."""
+    name = g.get('display_name') or g.get('slug') or ''
+    minutes = g.get('playtime_minutes') or 0
+    ach = g.get('achievements') if g.get('source') == 'steam' else None
+    ach = ach if isinstance(ach, (list, tuple)) and len(ach) == 2 and ach[1] else None
+    main = smart.main_hours((facts or {}).get(g.get('slug')))
+    owners = list(owners or ())
+    last_text = None
+    if isinstance(last, dict) and last.get('title'):
+        when = fmt_ago(last.get('time')) if last.get('time') else ''
+        last_text = f"Last unlock: {last['title']}" + (f" · {when}" if when else '')
+    sessions = sessions if isinstance(sessions, int) and sessions > 0 else None
+    if not (minutes or sessions or ach or main or owners or last_text):
+        return [('sub', name), ('empty', SAVE_EMPTY)]
+    rows: list[tuple] = []
+    if minutes:
+        rows.append(('big', fmt_hours(minutes)))
+    rows.append(('sub', " · ".join(
+        [name] + ([f"{sessions} session{'s' if sessions != 1 else ''}"] if sessions else []))))
+    if ach:
+        rows.append(('bar', "Achievements", f"{ach[0]} of {ach[1]}",
+                     max(0.0, min(1.0, ach[0] / ach[1])), "Unlocked on Steam"))
+    if main:
+        rows.append(('bar', "Main story", f"{main:g} h", min(1.0, minutes / 60 / main),
+                     "HowLongToBeat's main story; the bar is your play time"))
+    if owners:
+        n = len(owners)
+        rows.append(('owners', owners, f"{names_text([o.get('name') or '' for o in owners])} "
+                                       f"own{'s' if n == 1 else ''} it too"))
+    if last_text:
+        rows.append(('last', last_text))
+    return rows
+
+
+def last_unlock(data) -> dict | None:
+    """The newest unlocked achievement in an `--achievements <id> --json`
+    answer (items carry unlocked and time), or None."""
+    items = (data or {}).get('items') if isinstance(data, dict) else None
+    got = [a for a in items or () if isinstance(a, dict) and a.get('unlocked')
+           and isinstance(a.get('time'), (int, float)) and a.get('title')]
+    return max(got, key=lambda a: a['time']) if got else None
 
 
 DASH_VERSION = 2   # 2: the Stage moved to the top (w-86); renames to new kinds are not gated
@@ -409,6 +468,7 @@ class DashWidget(QFrame):
     `self.body` in fill(hub); `hub` is the main window (games, jobs, pages).
     Shelf widgets are unframed rows of tiles instead of cards."""
     KIND, TITLE, GLYPH, GRAD, LINK = '', '', '', 'dusk', None
+    TITLES: dict = {}                     # a title of its own at some sizes (Friends at Small)
     FRAMED = True
     HEAD = True                           # a framed card's badge and title row
     go = pyqtSignal(str)                  # open a page
@@ -426,11 +486,12 @@ class DashWidget(QFrame):
         self.editbar = self._edit_bar()
         self.editbar.setVisible(False)
         lay.addWidget(self.editbar)
+        self.title_label: QLabel | None = None
         if self.FRAMED and self.HEAD:
             head = QHBoxLayout()
             head.setSpacing(SP['2'])
             head.addWidget(GlyphBadge(self.GLYPH, self.GRAD))
-            t = label(self.TITLE, "DashTitle")
+            t = self.title_label = label(self.TITLE, "DashTitle")
             head.addWidget(t)
             head.addStretch()
             if self.LINK:
@@ -492,6 +553,10 @@ class DashWidget(QFrame):
     def set_editing(self, on: bool, size: str, shelf: str | None = None):
         self.size_ = size
         self.editbar.setVisible(on)
+        title = self.TITLES.get(size, self.TITLE)
+        self.edit_name.setText(title)
+        if self.title_label is not None:
+            self.title_label.setText(title)
         sizes = DASH_SIZES.get(self.KIND, ('small',))
         self.btn_size.setVisible(len(sizes) > 1)
         self.btn_shelf.setVisible(shelf is not None)
@@ -700,6 +765,8 @@ class StageArt(FollowHero):
         self.layout().setContentsMargins(m.left(), SP['5'], m.right(), SP['5'])
         self.size_ = 'cinematic'
         self.pin_slug: str | None = None         # Pinned art's game (its kicker says so)
+        self.pick_slug: str | None = None        # Pick for me's game (w-91) and its kicker
+        self.pick_text = ''
         self.kicker.setTextFormat(Qt.TextFormat.RichText)   # live_kicker's &nbsp;
 
     def set_size(self, size: str):
@@ -738,6 +805,8 @@ class StageArt(FollowHero):
         super()._show(animate)
         if self.is_pinned():
             self.kicker.setText(live_kicker(g))
+        elif self.pick_slug and g.get('slug') == self.pick_slug:
+            self.kicker.setText(html.escape(self.pick_text))     # rich text: a title may hold <
         elif self.pin_slug and g.get('slug') == self.pin_slug:
             self.kicker.setText(f"PINNED  ·  {self.kicker.text()}")
         if not self.on_art():
@@ -836,6 +905,9 @@ class StageWidget(DashWidget):
         self.style_, self.bg = 'row', 'art'
         self.pin_slug: str | None = None         # Pinned art's slug, as saved
         self._pin_game: dict | None = None       # ... while that game is in the library
+        self.picked: dict | None = None          # Pick for me's game, while it's on the stage
+        self.pick_vibe = 'any'
+        self.on_height = None                    # called when the art's height changes
         self.density = DASH_DENSITY['comfortable']
         self._dwell = Dwell(self.FOCUS_DWELL, self._follow, self)
         self._clock = QTimer(self)               # Now playing's minutes, while pinned
@@ -873,11 +945,19 @@ class StageWidget(DashWidget):
         self._place(self.size_)
         self.art.set_bg(self.bg)
         shown = featured_games(games, max(1, len(games)))
-        if self._pin_game is not None:
-            shown = [self._pin_game] + [g for g in shown if g is not self._pin_game]
+        if self.picked is not None:
+            # A live pick stays (and beats the pin) until it starts or is gone.
+            fresh = next((g for g in games if g.get('slug') == self.picked.get('slug')), None)
+            if fresh is None or fresh.get('playing') or fresh.get('launching'):
+                self._drop_pick()
+            else:
+                self.picked = fresh
+        top = self.picked or self._pin_game
+        if top is not None:
+            shown = [top] + [g for g in shown if g is not top]
         self.art.set_games(shown)
-        if self._pin_game is not None:
-            self.art.show_game(self._pin_game)   # nothing while a game runs (Now playing)
+        if top is not None:
+            self.art.show_game(top)              # nothing while a game runs (Now playing)
         self.art.setVisible(bool(self.art.games))
         if self.art.is_pinned():
             if not self._clock.isActive():
@@ -904,6 +984,47 @@ class StageWidget(DashWidget):
                                              d['art_tb'])
         self._placed = None
         self._place(self.size_)
+
+    # ---- Pick for me (w-91) ----
+    def show_pick(self, g: dict, vibe: str = 'any') -> bool:
+        """Spin: the pick takes the stage, even over Pinned art (whose pin
+        is never written and comes back when you leave Home); a running game
+        still wins. It launches nothing. False when it can't show."""
+        if not g.get('slug') or self.art.pinned is not None:
+            return False
+        before = self.art.game.get('slug')
+        self.picked, self.pick_vibe = g, vibe if vibe in VIBE_LABELS else 'any'
+        pin = self._pin_game
+        self.art.pick_slug = g['slug']
+        self.art.pick_text = pick_kicker(self.pick_vibe, (pin.get('display_name') or pin['slug'])
+                                         if pin is not None else None)
+        if g['slug'] == before:
+            self.art._show(animate=False)        # the kicker says it's a pick now
+        else:
+            self.art.show_game(g)
+        self.moved.emit()                        # For you now drops it; Your save follows
+        return True
+
+    def pin_title(self) -> str | None:
+        """The pinned game's title while a pick covers it."""
+        pin = self._pin_game
+        return (pin.get('display_name') or pin['slug']) if pin is not None and self.picked \
+            else None
+
+    def _drop_pick(self) -> bool:
+        had = self.picked is not None
+        self.picked, self.art.pick_slug, self.art.pick_text = None, None, ''
+        return had
+
+    def clear_pick(self):
+        """The pick ends (leaving Home): the stage goes back to what it
+        showed, a pin included."""
+        if not self._drop_pick():
+            return
+        if self._hub is not None:
+            self.art.games, self.art.i = [], 0   # not "keep the game shown": start over
+            self.fill(self._hub)
+        self.moved.emit()
 
     # ---- pinned art (w-90) ----
     def pinned(self) -> bool:
@@ -993,7 +1114,11 @@ class StageWidget(DashWidget):
     def _sync_height(self):
         h = stage_height(self.size_, self._vh, self.style_, self.bg)
         lay = self.art.layout()
-        self.art.setFixedHeight(max(h, lay.minimumSize().height()))
+        h = max(h, lay.minimumSize().height())
+        if h != self.art.minimumHeight() or h != self.art.maximumHeight():
+            self.art.setFixedHeight(h)
+            if self.on_height is not None:
+                self.on_height()
 
     def eventFilter(self, obj, ev):
         if ev.type() == QEvent.Type.Resize and self._view is not None \
@@ -1022,8 +1147,11 @@ class StageWidget(DashWidget):
     def _follow(self, g):
         if g is not None and alive(self) and not self.pinned():
             before = self.art.game.get('slug')
+            picked = self._drop_pick()           # the row moving the stage ends a pick
             self.art.show_game(g)
-            if self.art.game.get('slug') != before:
+            if picked and self.art.game.get('slug') == before:
+                self.art._show(animate=False)    # same game: just its kicker
+            if picked or self.art.game.get('slug') != before:
                 self.moved.emit()
 
 
@@ -1117,27 +1245,285 @@ class SmartShelfWidget(ShelfWidget):
             self.body.addWidget(row)
 
 
-class SurpriseWidget(DashWidget):
-    """"Can't decide?" — one button that picks a game for you."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'surprise', "Surprise me", G['dice'], 'dawn', None
+class PickWidget(DashWidget):
+    """Pick for me (w-91, replaced Surprise me): vibe chips (only the vibes
+    that have games; Any alone hides the row) and Spin, which puts a pick on
+    the Stage with a "PICKED FOR YOU" kicker, so Play is one more press. The
+    chip is the item's `vibe`. Without the Stage, Spin opens a game page as
+    Surprise me did (MainWindow.spin)."""
+    KIND, TITLE, GLYPH, GRAD, LINK = 'pick', "Pick for me", G['dice'], 'dawn', None
+    spun = pyqtSignal(str)                # the vibe to spin
 
-    def has_content(self, hub):
-        return bool(_visible_games(hub))
-
-    def fill(self, hub):
-        self.clear()
+    def __init__(self):
+        super().__init__()
+        self._hub = None
+        self.chips = QWidget()
+        self.chips.setObjectName("PickVibes")
+        self.flow = FlowLayout(self.chips, margin=0, spacing=SP['1_5'])
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.body.addWidget(self.chips)
+        self.body.addSpacing(SP['1'])
         row = QHBoxLayout()
         row.setSpacing(SP['3'])
-        t = label("Can't decide? Nexus picks one of your games — ones you haven't played "
-                  "in a while and favourites come up more often.", "Muted", wrap=True)
-        row.addWidget(t, 1)
-        b = QPushButton("Pick a game")
-        b.setObjectName("Primary")
-        set_glyph_icon(b, G['dice'], 16, 'on_accent', hover_role=None)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.clicked.connect(lambda: hub.surprise())
-        row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.btn = QPushButton("Spin")
+        self.btn.setObjectName("Primary")
+        self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_glyph_icon(self.btn, G['dice'], 16, 'on_accent', hover_role=None)
+        self.btn.clicked.connect(self._spin)
+        row.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.note = plain_label("", "Muted", wrap=True)
+        row.addWidget(self.note, 1, Qt.AlignmentFlag.AlignVCenter)
         self.body.addLayout(row)
+        self.vibe = 'any'
+        self.pools: dict[str, list[dict]] = {}
+        self._sig = None                  # the chips drawn (the vibes that have games)
+
+    def bind(self, hub):
+        self._hub = hub
+        spin = getattr(hub, 'spin', None)
+        if spin is not None:
+            self.spun.connect(spin)
+
+    @staticmethod
+    def pools_of(hub) -> dict[str, list[dict]]:
+        get = getattr(hub, '_smart_facts', None)
+        return vibe_pools(_visible_games(hub), get() if get else {}, linux=has('proton'))
+
+    def has_content(self, hub):
+        return bool(_pickable(_visible_games(hub)))     # cheap: asked on every layout
+
+    def chip(self, vibe: str) -> QPushButton | None:
+        return next((b for b in self.group.buttons() if b.property('vibe') == vibe), None)
+
+    def fill(self, hub):
+        self.pools = pools = self.pools_of(hub)
+        vibe = self.options.get('vibe', 'any')
+        self.vibe = vibe if vibe in pools else 'any'
+        sig = tuple(pools)
+        if sig != self._sig:              # same vibes: keep the chips (and pad focus)
+            self._sig = sig
+            f = QApplication.focusWidget()
+            had = f.property('vibe') if f is not None and self.chips.isAncestorOf(f) else None
+            if had is not None:
+                self.btn.setFocus(Qt.FocusReason.OtherFocusReason)   # before the chip goes
+            while self.flow.count():
+                w = self.flow.takeAt(0).widget()
+                if w is not None:
+                    self.group.removeButton(w)
+                    w.hide()
+                    w.deleteLater()
+            for v in pools:
+                c = QPushButton(VIBE_LABELS[v])
+                c.setObjectName("Chip")
+                c.setCheckable(True)
+                c.setCursor(Qt.CursorShape.PointingHandCursor)
+                c.setProperty('vibe', v)
+                c.setToolTip("Any game you have installed" if v == 'any'
+                             else smart.tip(f'smart:{v}'))
+                c.clicked.connect(lambda _=False, v=v: self._choose(v))
+                self.group.addButton(c)
+                self.flow.addWidget(c)
+                c.show()
+            self.chips.setVisible(len(pools) > 1)
+            back = self.chip(had) if had is not None else None
+            if back is not None:
+                back.setFocus(Qt.FocusReason.OtherFocusReason)
+        for b in self.group.buttons():
+            b.setChecked(b.property('vibe') == self.vibe)
+        stage = getattr(getattr(hub, 'dashboard', None), 'stage', None)
+        picked = stage.picked if stage is not None else None
+        run = next((g for g in getattr(hub, '_games', ()) if g.get('playing')
+                    or g.get('launching')), None)
+        if run is not None:
+            name = run.get('display_name') or run.get('slug') or ''
+            # A pad can't focus a disabled button, so the note says it too.
+            text = f"Spin is back when {name} closes."
+            if self.btn.hasFocus():
+                (self.chip(self.vibe) or self.btn).setFocus(Qt.FocusReason.OtherFocusReason)
+            self.btn.setEnabled(False)
+            self.btn.setToolTip(text)
+            self.btn.setText("Spin")
+            self.note.setText(text)
+            return
+        self.btn.setEnabled(bool(pools))
+        self.btn.setToolTip("Put a game on the Stage")
+        self.btn.setText("Spin again" if picked else "Spin")
+        if picked:
+            text = f"On the Stage: {picked.get('display_name') or picked.get('slug')}"
+            pin = stage.pin_title()
+            self.note.setText(text + (f". {pin} is back when you leave Home." if pin else ''))
+        else:
+            self.note.setText(pick_note(self.vibe, len(pools.get(self.vibe, ()))))
+
+    def _choose(self, vibe: str):
+        """A chip: remember the vibe (the item's `vibe`) and say how many."""
+        hub = self._hub
+        if hub is None:
+            return
+        items = [dict(i) for i in hub.prefs.dashboard]
+        it = next((i for i in items if i.get('id') == self.KIND), None)
+        if it is None or it.get('vibe') == vibe:
+            return
+        it['vibe'] = vibe
+        hub.prefs.dashboard = items
+        hub.prefs.save()
+        hub.dashboard.refresh([self.KIND])
+
+    def _spin(self):
+        self.spun.emit(self.vibe)
+
+    def keyPressEvent(self, ev):
+        """Enter on a chip or Spin (a button outside a dialog ignores it)."""
+        f = QApplication.focusWidget()
+        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and isinstance(f, QPushButton) \
+                and (f is self.btn or self.chips.isAncestorOf(f)) and f.isEnabled():
+            f.click()
+            return
+        super().keyPressEvent(ev)
+
+
+# How Pick for me's note names a pool: (one, many).
+PICK_NOUNS = {'any': ("game", "games"), 'short': ("quick game", "quick games"),
+              'coop': ("co-op game", "co-op games"),
+              'unfinished': ("unfinished game", "unfinished games"),
+              'almost': ("game almost done", "games almost done"),
+              'never': ("game never played", "games never played")}
+
+
+def pick_note(vibe: str, n: int) -> str:
+    """'From 21 games', 'From 7 co-op games', 'From 1 game almost done'."""
+    one, many = PICK_NOUNS.get(vibe, PICK_NOUNS['any'])
+    return f"From {n} {one if n == 1 else many}"
+
+
+class SaveWidget(DashWidget):
+    """Your save (w-91, hidden by default): the Stage's game as numbers.
+    Play time, sessions (--history's by_game), Steam achievements, the
+    HowLongToBeat main story, friends who own it and the last unlock; each
+    row left out when missing (save_rows). Follows the Stage (moved, a
+    pick). Beside a Wide Stage it is as tall as the art (Dashboard.relayout)."""
+    KIND, TITLE, GLYPH, GRAD, LINK = 'save', "Your save", G['save'], 'tide', None
+    ASK_AGAIN = 300                          # s: history and last unlocks asked again
+
+    def __init__(self):
+        super().__init__()
+        self._filling = False
+        self._hist: dict | None = None
+        self._asked = None                   # monotonic; None: never
+        self._last: dict = {}                # appid -> newest unlock (None: none)
+        self._ach_asked: dict = {}           # appid -> monotonic
+        self._sig = None
+
+    @staticmethod
+    def game_of(hub) -> dict:
+        """The Stage's game, while the Stage is shown and has one."""
+        stage = getattr(getattr(hub, 'dashboard', None), 'stage', None)
+        if stage is None or not stage.art.games:
+            return {}
+        it = next((i for i in hub.prefs.dashboard if i.get('id') == 'stage'), None)
+        return {} if it is None or it.get('hidden') else stage.art.game
+
+    def has_content(self, hub):
+        return bool(self.game_of(hub).get('slug'))
+
+    def fill(self, hub):
+        if self._filling:
+            return
+        self._filling = True
+        try:
+            g = self.game_of(hub)
+            now = time.monotonic()
+            # Ask first: a cached answer comes back right here, inside fill,
+            # and the callbacks only store while a fill runs.
+            if self._hist is None or now - self._asked > self.ASK_AGAIN:
+                self._asked = now
+                cli_json(['--history', '--json'],
+                         lambda d, _e, hub=hub: self._got_history(hub, d), 30000, ttl=60)
+            appid = str(g['appid']) if g.get('source') == 'steam' and \
+                str(g.get('appid') or '').isdigit() else None
+            if appid and now - self._ach_asked.get(appid, -1e9) > self.ASK_AGAIN:
+                self._ach_asked[appid] = now
+                cli_json(['--achievements', appid, '--json'],
+                         lambda d, _e, hub=hub, a=appid: self._got_unlock(hub, a, d),
+                         30000, ttl=120)
+            self._draw(hub, g, appid)
+        finally:
+            self._filling = False
+
+    def _got_history(self, hub, data):
+        if data is None and self._hist is not None:
+            return
+        self._hist = data or {}
+        if not self._filling and alive(self):
+            self.fill(hub)
+
+    def _got_unlock(self, hub, appid, data):
+        self._last[appid] = last_unlock(data)
+        if not self._filling and alive(self):
+            self.fill(hub)
+
+    def _draw(self, hub, g: dict, appid: str | None):
+        if not g.get('slug'):
+            self._sig = None
+            self.clear()
+            return
+        n = (((self._hist or {}).get('by_game') or {}).get(g['slug']) or {}).get('sessions')
+        owners = FRIENDS.owners_of(g) if hub.config.get('friends_enabled') else []
+        rows = save_rows(g, hub._smart_facts(), n, owners,
+                         self._last.get(appid) if appid else None)
+        sig = (g['slug'], repr([r if r[0] != 'owners' else
+                                (r[0], [(o.get('steamid'), o.get('name'), o.get('avatar'))
+                                        for o in r[1]], r[2]) for r in rows]))
+        if sig == self._sig and self.body.count():
+            return                           # nothing new: keep the rows
+        self._sig = sig
+        self.clear()
+        spaced = False
+        d = scaled(GLYPH_H)
+        for row in rows:
+            kind = row[0]
+            if kind == 'big':
+                self.body.addWidget(label(row[1], "DashBig"))
+            elif kind == 'sub':
+                self.body.addWidget(ElideLabel(row[1], "Muted"))
+            elif kind == 'empty':
+                self.body.addWidget(label(row[1], "Muted", wrap=True))
+            elif kind == 'bar':
+                if not spaced:
+                    self.body.addSpacing(SP['1'])
+                    spaced = True
+                # As Play history's bar rows: caption, muted value, a 4 px bar.
+                line = QHBoxLayout()
+                cap = plain_label(row[1], "DashSub")
+                cap.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                line.addWidget(cap, 1)
+                line.addWidget(label(row[2], "Muted"))
+                self.body.addLayout(line)
+                bar = QProgressBar()
+                bar.setObjectName("CardProgress")
+                bar.setTextVisible(False)
+                bar.setFixedHeight(4)
+                bar.setRange(0, 1000)
+                bar.setValue(int(1000 * row[3]))
+                bar.setToolTip(row[4])
+                self.body.addWidget(bar)
+            else:                            # owners, last unlock: a line with a mark
+                if spaced is not None:
+                    self.body.addSpacing(SP['1'])
+                    spaced = None
+                line = QHBoxLayout()
+                line.setSpacing(SP['2'])
+                if kind == 'owners':
+                    line.addWidget(AvatarStack(row[1], d, 3, ring='surface'))
+                    text = row[2]
+                else:
+                    ic = icon_label(G['trophy'], 13, P['muted'])
+                    ic.setFixedWidth(d)
+                    line.addWidget(ic)
+                    text = row[1]
+                line.addWidget(ElideLabel(text, "DashSub"), 1)
+                self.body.addLayout(line)
 
 
 class UpdatesWidget(ShelfWidget):
@@ -1437,7 +1823,9 @@ class FriendsWidget(DashWidget):
     private. Presence is asked by the window (_sync_presence); this only
     reads FRIENDS."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'friends', "Friends playing now", G['friends'], 'aurora', None
+    TITLES = {'small': "Friends"}
     WIDE_ROWS = 4
+    SMALL_ROWS = 2
     PRIVATE_TIP = ("Private: their game details aren't public on Steam. “Friends only” "
                    "counts as private for apps.")
 
@@ -1459,6 +1847,8 @@ class FriendsWidget(DashWidget):
     def has_content(self, hub):
         if not hub.config.get('friends_enabled') or not FRIENDS.usable():
             return False
+        if self.size_ == 'small':                # who's online: shown with any public friend
+            return FRIENDS.error_kind() == 'bad-key' or bool(FRIENDS.public())
         return FRIENDS.error_kind() == 'bad-key' or bool(self._entries(hub))
 
     def _state_of(self, hub) -> str:
@@ -1486,6 +1876,9 @@ class FriendsWidget(DashWidget):
 
     def _fill(self, hub):
         state = self._state_of(hub)
+        if self.size_ == 'small':
+            self._fill_small(hub, state)
+            return
         entries = self._entries(hub, None if self.size_ == 'wide' else MAX_CARDS) \
             if state == 'live' else []
         sig = (self.size_, state, len(FRIENDS.private()),
@@ -1567,6 +1960,101 @@ class FriendsWidget(DashWidget):
             if focus_appid is not None else None
         if card is not None:
             QTimer.singleShot(0, lambda c=card: alive(c) and focus_and_reveal(c))
+
+    def _fill_small(self, hub, state: str):
+        """Small (w-91): who's online as an avatar stack, "3 online · 2 in a
+        game", and the first two in a game as rows (an owned game opens its
+        page, another its Steam page). The other states as wide and full."""
+        entries = self._entries(hub, None) if state == 'live' else []
+        playing = [(r, e) for e in entries for r in e['people']]
+        online = FRIENDS.online() if state == 'live' else []
+        pub = FRIENDS.public() if state == 'live' else []
+        first = [r for r, _e in playing] + [r for r in online
+                                           if all(r is not p for p, _e in playing)]
+        stack = first + [r for r in pub if all(r is not o for o in first)]
+        err = FRIENDS.error_kind()
+        err = err if err in ('offline', 'rate-limited', 'private-list') else None
+        fresh = FRIENDS.fresh()
+        t = _ts((FRIENDS.data or {}).get('updated'))
+        sig = ('small', state, err, fresh, len(FRIENDS.private()),
+               tuple((r.get('steamid'), r.get('name'), r.get('avatar')) for r in stack),
+               tuple(r.get('steamid') for r in online),
+               tuple((r.get('steamid'), e['appid'], e['slug'], e['title']) for r, e in playing),
+               datetime.fromtimestamp(t).strftime('%H:%M') if err and t else None)
+        if sig == self._sig:
+            return                              # nothing new: keep the rows (and pad focus)
+        self._sig = sig
+        f = QApplication.focusWidget()
+        focus_sid = next((getattr(c, 'steamid', None) for c in self.cards if c is f), None)
+        self.clear()
+        self.cards, self._subs, self.footer, self.state = [], {}, None, state
+        if state == 'setup':
+            self.body.addWidget(label("See what your Steam friends play.", "Muted", wrap=True))
+            b = QPushButton("Set up in Settings")
+            b.clicked.connect(lambda: hub._open_settings('accounts', 'friends'))
+            self.body.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+            return
+        if state == 'loading':
+            self.body.addWidget(label("Looking for your friends…", "Muted"))
+            return
+        if state == 'bad-key':
+            self._error("Steam refused the key", hub._reload_friends)
+            return
+        if state == 'none':
+            self.body.addWidget(label("No friends on this Steam account.", "Muted", wrap=True))
+            return
+        d = scaled(PERSON_H)
+        if state == 'private':
+            private = FRIENDS.private()
+            n = len(private)
+            self.body.addWidget(AvatarStack(private, d, 5, dim=True, ring='surface'))
+            self.body.addWidget(label(
+                f"All {n} friends keep their game details private." if n != 1 else
+                "Your friend keeps their game details private.", "Muted", wrap=True))
+            return
+        live = bool(online) and fresh and not err
+        stack_w = AvatarStack(stack, d, 5, dim=not live, ring='surface')
+        if FRIENDS.private():
+            stack_w.setToolTip(self.footer_text())
+        self.body.addWidget(stack_w)
+        if err:
+            head = "Steam isn't answering"
+        elif not fresh:
+            head = "Checking who's online…"
+        elif not online:
+            head = "No friends online"
+        else:
+            n = len({r.get('steamid') for r, _e in playing})
+            head = f"{len(online)} online" + (f" · {n} in a game" if n else '')
+        self.body.addWidget(label(head, "StatValue"))
+        if err:
+            if t is not None:
+                self.body.addWidget(label(
+                    f"As of {datetime.fromtimestamp(t).strftime('%H:%M')}", "Muted"))
+            return
+        for r, e in playing[:self.SMALL_ROWS] if live else ():
+            row = ClickRow()
+            row.steamid, row.appid = r.get('steamid'), e['appid']
+            row.clicked.connect(lambda e=e: self._open(hub, e))
+            row.setToolTip("Open its page" if e['slug'] else
+                           "Not in your library · opens its Steam page ↗")
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(SP['1'], SP['1'], SP['1'], SP['1'])
+            lay.setSpacing(SP['2'])
+            lay.addWidget(Avatar(r, scaled(GLYPH_H), live=True), 0,
+                          Qt.AlignmentFlag.AlignVCenter)
+            text = ElideLabel(f"{r.get('name') or ''} in {e['title']}", "DashSub")
+            text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            lay.addWidget(text, 1)
+            self.body.addWidget(row)
+            self.cards.append(row)
+        if live and len(playing) > self.SMALL_ROWS:
+            self.body.addWidget(label(f"+{len(playing) - self.SMALL_ROWS} more in a game",
+                                      "Muted"))
+        row = next((c for c in self.cards if c.steamid == focus_sid), None) \
+            if focus_sid is not None else None
+        if row is not None:
+            QTimer.singleShot(0, lambda c=row: alive(c) and focus_and_reveal(c))
 
     def footer_text(self) -> str:
         """'3 friends are private on Steam · updated 1 min ago'; 'as of
@@ -1724,7 +2212,8 @@ class WeekWidget(DashWidget):
 from .foryou import ForYouWidget  # noqa: E402  (it builds on DashWidget)
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
-    StageWidget, ForYouWidget, FriendsWidget, SurpriseWidget, SystemWidget, NewsWidget, InstalledWidget, SmartShelfWidget,
+    StageWidget, SaveWidget, ForYouWidget, FriendsWidget, PickWidget, SystemWidget, NewsWidget,
+    InstalledWidget, SmartShelfWidget,
     DealsWidget,
     UpcomingWidget, WeekWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget,
     OwnedWidget)}
@@ -1789,6 +2278,8 @@ class Dashboard(QWidget):
             w.bind(hub)
         self.foryou.attach(self, self.stage)
         self.stage.moved.connect(self._stage_moved)
+        self._beside: set = set()             # widgets in a Wide Stage's row (as tall as its art)
+        self.stage.on_height = self._fit_beside
         self.set_density(getattr(hub.prefs, 'density', 'comfortable'))
 
     @property
@@ -1800,10 +2291,12 @@ class Dashboard(QWidget):
         return self.widgets['foryou']
 
     def _stage_moved(self):
-        """For you now never shows the Stage's game: ask again."""
+        """For you now never shows the Stage's game: ask again. Your save
+        follows the Stage; Pick for me says what's on it (w-91)."""
         update = getattr(self.hub, 'dash_update', None)
         if update is not None:
             update('foryou')
+        self.refresh(['save', 'pick'])
 
     @property
     def items(self):
@@ -1827,7 +2320,7 @@ class Dashboard(QWidget):
                 w.options = _dash_options(k, it or {})
                 if it and not it['hidden']:
                     w.fill(self.hub)
-        if kinds is not None and set(kinds) <= {'friends', 'stage', 'foryou'}:
+        if kinds is not None and set(kinds) <= {'friends', 'stage', 'foryou', 'save', 'pick'}:
             # Presence ticks and every page or focus change ask for Friends
             # playing now, a game starting or quitting for the Stage: lay
             # out again only when one comes or goes.
@@ -1856,18 +2349,43 @@ class Dashboard(QWidget):
         self._skipped = self._skip()
         placed = dash_pack(self.items, cols, self._skipped)
         on = {k for k, *_ in placed}
+        # Beside a Wide Stage (3 columns): a widget as tall as the art, at the
+        # top, not stretched to the art and its Continue row (w-91).
+        srow = next((r for k, r, _c, _s in placed if k == 'stage'), None)
+        wide = cols == 3 and srow is not None and self.stage.size_ == 'wide'
+        beside = {k for k, r, _c, _s in placed if wide and r == srow and k != 'stage'}
         for k, r, c, span in placed:
             it = next(i for i in self.items if i['id'] == k)
             self.widgets[k].options = _dash_options(k, it)
             self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
                                         else dash_shelf_label(self.hub, it['shelf']))
-            self.grid.addWidget(self.widgets[k], r, c, 1, span)
+            if k in beside:
+                self.grid.addWidget(self.widgets[k], r, c, 1, span, Qt.AlignmentFlag.AlignTop)
+            else:
+                self.grid.addWidget(self.widgets[k], r, c, 1, span)
+        for k in self._beside - beside:
+            self.widgets[k].setMinimumHeight(0)
+            self.widgets[k].setMaximumHeight(QWIDGETSIZE_MAX)
+        self._beside = beside
+        self._fit_beside()
         for k, w in self.widgets.items():
             w.setVisible(k in on)
         for c in range(cols):
             self.grid.setColumnStretch(c, 1)
         self._fill_add_row()
         self.foryou.sync_pill(cols)
+
+    def _fit_beside(self):
+        """Widgets beside a Wide Stage are as tall as its art (Customise
+        lets them grow, for the edit bars)."""
+        h = self.stage.art.minimumHeight()
+        for k in self._beside:
+            w = self.widgets[k]
+            if self.editing:
+                w.setMinimumHeight(0)
+                w.setMaximumHeight(QWIDGETSIZE_MAX)
+            else:
+                w.setFixedHeight(h)
 
     def _fill_add_row(self):
         while self.add_row.count():
@@ -1985,8 +2503,8 @@ class Dashboard(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART  # noqa: E402
 from .deals import _pill, DealArt, dim  # noqa: E402
-from .friends import (_ts, AvatarStack, FRIENDS, MAX_CARDS, playing_now,  # noqa: E402
-    who_text)
+from .friends import (_ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text,  # noqa: E402
+    playing_now, who_text)
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

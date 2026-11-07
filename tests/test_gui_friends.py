@@ -289,6 +289,30 @@ class FriendsStore(unittest.TestCase):
     def _seen(self):
         self.seen.append(1)
 
+    def test_online_needs_fresh_presence_and_a_status(self):
+        """w-91: online = public friends with personastate 1-6 or in a game;
+        nothing once stale; a status change alone is no `changed`."""
+        rows = [friend(1, "Ana"), friend(2, "Ben", playing=10), friend(3, "Cy"),
+                friend(4, "Dee", visible=False), friend(5, "Eve"), friend(6, "Fox")]
+        for r, st in zip(rows, (1, 0, 0, 1, 7, 3)):
+            r['evidence'] = {'personastate': st}
+        rows[2]['evidence'] = {}
+        FRIENDS.set_answer(answer(rows))
+        self.assertEqual([r['name'] for r in FRIENDS.online()], ["Ana", "Ben", "Fox"])
+        self.assertEqual(FRIENDS.online(now=time.time() + 11 * 60), [])
+        seen = []
+        FRIENDS.changed.connect(self._seen)
+        self.addCleanup(FRIENDS.changed.disconnect, self._seen)
+        self.seen = seen
+        rows[2]['evidence'] = {'personastate': 1}
+        FRIENDS.set_answer(answer(rows))
+        self.assertEqual(seen, [])                       # the Library doesn't rebuild
+        self.assertIn("Cy", [r['name'] for r in FRIENDS.online()])
+        FRIENDS.set_answer(answer(rows, updated=iso(11 * 60)))
+        self.assertEqual(FRIENDS.online(), [])
+        FRIENDS.set_answer(answer(rows, {'kind': 'no-key', 'message': 'x'}))
+        self.assertEqual(FRIENDS.online(), [])
+
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class GamePageFriends(unittest.TestCase):
@@ -644,7 +668,7 @@ class _FriendsWindow(unittest.TestCase):
 class HomeFriends(_FriendsWindow):
     def test_widget_only_while_a_friend_plays_after_jump(self):
         ids = [i['id'] for i in self.win.prefs.dashboard]
-        self.assertEqual(ids[ids.index('stage') + 1:][:2], ['foryou', 'friends'])  # w-89
+        self.assertEqual(ids[ids.index('stage') + 1:][:3], ['save', 'foryou', 'friends'])
         fw = self.widget()
         self.assertTrue(self.placed())
         self.assertEqual(fw.state, 'live')
@@ -737,6 +761,106 @@ class HomeFriends(_FriendsWindow):
         QApplication.processEvents()
         self.assertIs(QApplication.focusWidget(), fw.cards[0])  # the same game keeps focus
         self.assertEqual(fw.cards[0].appid, 10)
+
+
+class HomeFriendsSmall(_FriendsWindow):
+    """w-91: Friends at Small: who's online, the first two in a game."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_size('small')
+        self.rows = live_crowd()
+        for r in self.rows:
+            r['evidence'] = {'personastate': 0}
+        self.rows[6]['evidence'] = {'personastate': 1}          # Gus: online, not in a game
+        FRIENDS.set_answer(answer(self.rows))
+
+    def texts(self, fw):
+        return [lb.text() for lb in fw.findChildren(QLabel) if lb.text() and lb.isVisibleTo(fw)]
+
+    def test_small_live(self):
+        self.assertEqual(nx.DASH_SIZES['friends'], ('small', 'wide', 'full'))
+        self.win.dashboard.relayout(force=True)
+        fw = self.widget()
+        self.assertTrue(self.placed())
+        self.assertEqual(fw.title_label.text(), "Friends")
+        self.assertEqual(fw.edit_name.text(), "Friends")
+        t = self.texts(fw)
+        # Ana, Ben, Cy and Dee in a game, Eve in a mod, Gus online: 6 online, 4 in a game
+        self.assertIn("6 online · 4 in a game", t)
+        self.assertEqual([c.toolTip() for c in fw.cards],
+                         ["Open its page", "Open its page"])
+        lines = [c.findChild(nx.ElideLabel).text() for c in fw.cards]
+        self.assertEqual(lines, ["Ana in Ten", "Ben in Ten"])
+        self.assertIn("+2 more in a game", t)
+        fw.cards[0].clicked.emit()
+        QApplication.processEvents()
+        self.assertEqual(self.win.selected, ['steam-10'])
+        # Back at Full width the title is the old one again.
+        self.set_size('full')
+        self.win.dashboard.refresh(['friends'])
+        self.win.dashboard.relayout(force=True)
+        self.assertEqual(fw.title_label.text(), "Friends playing now")
+
+    def test_small_shows_with_nobody_online_and_says_so(self):
+        rows = [dict(r, playing=None, evidence={'personastate': 0}) for r in self.rows]
+        FRIENDS.set_answer(answer(rows))
+        fw = self.widget()
+        self.assertTrue(self.placed())                         # any public friend: shown
+        self.assertIn("No friends online", self.texts(fw))
+        self.assertEqual(fw.cards, [])
+        stack = fw.findChild(nx.AvatarStack)
+        self.assertTrue(stack.dim)
+        # Stale, no error: checking
+        FRIENDS.set_answer(answer(self.rows, updated=iso(11 * 60)))
+        self.assertIn("Checking who's online…", self.texts(self.widget()))
+        # Steam not answering: the last time, dimmed
+        FRIENDS.reset()
+        FRIENDS.set_answer(answer(self.rows, {'kind': 'offline', 'message': 'x'},
+                                  updated=iso(3 * 3600)))
+        fw = self.widget()
+        t = self.texts(fw)
+        self.assertIn("Steam isn't answering", t)
+        self.assertTrue(any(x.startswith("As of ") for x in t))
+        self.assertTrue(fw.findChild(nx.AvatarStack).dim)
+
+    def test_small_states(self):
+        w = self.win
+        FRIENDS.reset()
+        FRIENDS.set_answer(answer([friend(1, "Ana", visible=False),
+                                   friend(2, "Ben", visible=False)]))
+        fw = self.widget()
+        self.assertEqual(fw.state, 'private')
+        self.assertFalse(self.placed())                        # Customise only
+        self.assertIn("All 2 friends keep their game details private.", self.texts(fw))
+        FRIENDS.set_answer(answer([]))
+        self.assertIn("No friends on this Steam account.", self.texts(self.widget()))
+        w.config['friends_enabled'] = False
+        w._load_friends()
+        fw = self.widget()
+        self.assertEqual(fw.state, 'setup')
+        self.assertIn("See what your Steam friends play.", self.texts(fw))
+        self.assertFalse(self.placed())
+        w.dashboard.set_editing(True)
+        self.assertTrue(self.placed())
+        w.dashboard.set_editing(False)
+
+    def test_small_refill_keeps_rows_and_focus(self):
+        fw = self.widget()
+        row = fw.cards[0]
+        row.setFocus()
+        QApplication.processEvents()
+        rows = [dict(r) for r in self.rows]
+        rows[0]['playing'] = dict(rows[0]['playing'], since=rows[0]['playing']['since'] - 60)
+        FRIENDS.set_answer(answer(rows))                       # a minute later: no rebuild
+        self.assertIs(self.widget().cards[0], row)
+        rows[6] = dict(rows[6], evidence={'personastate': 0})  # Gus went offline: rebuilt
+        FRIENDS.set_answer(answer(rows))
+        fw = self.widget()
+        self.assertIsNot(fw.cards[0], row)
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), fw.cards[0])
+        self.assertIn("5 online · 4 in a game", self.texts(fw))
 
 
 class Presence(_FriendsWindow):

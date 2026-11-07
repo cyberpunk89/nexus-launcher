@@ -468,7 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     g5.add_argument('--clamav', action='store_true',
                     help='With --check-repack: scan the small files with ClamAV')
     g5.add_argument('--history', action='store_true',
-                    help='Play sessions: the last 12 weeks and this year in review')
+                    help='Play sessions: the last 12 weeks, this year in review and (--json) '
+                         'sessions per game')
     g5.add_argument('--notify-test', action='store_true', dest='notify_test',
                     help='Send a test push to the phone targets in config [notify]')
     g5.add_argument('--apply-recipe', nargs=2, metavar=('SLUG', 'RECIPE'), dest='apply_recipe',

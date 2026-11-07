@@ -66,6 +66,8 @@ class NavigationMixin:
         if page not in self.pages:
             return
         self._close_foryou()                     # collapsed on leaving Home and on every show
+        if page != self.HOME:
+            self._clear_stage_pick()             # Pick for me's pick lasts while Home shows
         cur = self.current()
         if _history and cur is not None and cur != page:
             # Back / Forward (mouse buttons, Alt+←/→, Esc on a side page).
@@ -282,6 +284,11 @@ class NavigationMixin:
         dash = getattr(self, 'dashboard', None)
         if dash is not None:
             dash.foryou.close_list()
+
+    def _clear_stage_pick(self):
+        dash = getattr(self, 'dashboard', None)
+        if dash is not None:
+            dash.stage.clear_pick()
 
     def _open_sheet(self) -> 'ActionSheet | None':
         """The sheet that's up: in Theatre its settings first (w-63), then

@@ -248,11 +248,11 @@ class Collections(unittest.TestCase):
 
     def test_dashboard_gets_the_new_widgets_in_place(self):
         old = [{'id': k, 'size': d, 'hidden': h} for k, _s, d, h in nx.DASH_KINDS
-               if k not in ('surprise', 'collections')]
+               if k not in ('pick', 'collections')]
         ids = [it['id'] for it in nx.dash_normalize(old)]
-        self.assertEqual(ids[ids.index('stage') + 1], 'surprise')
+        self.assertEqual(ids[ids.index('stage') + 1], 'pick')
         self.assertEqual(ids[ids.index('favourites') + 1], 'collections')
-        self.assertEqual([i for i in ids if i not in ('surprise', 'collections')],
+        self.assertEqual([i for i in ids if i not in ('pick', 'collections')],
                          [it['id'] for it in old])
 
 
@@ -1767,6 +1767,225 @@ class Window(unittest.TestCase):
             w.sheet.close_sheet()
         finally:
             w.input.mode = 'mouse'
+
+    # ---- Pick for me, Your save (w-91) ----
+    def _pick(self, vibe=None):
+        w, stage = self._stage()
+        if vibe:
+            next(i for i in w.prefs.dashboard if i['id'] == 'pick')['vibe'] = vibe
+            w.dashboard.refresh(['pick'])
+        return w, stage, w.dashboard.widgets['pick']
+
+    def test_pick_spins_onto_the_stage(self):
+        """Spin puts a pick on the Stage with its kicker, the page at the top
+        and Play focused; nothing launches; leaving Home ends it."""
+        w, stage, pk = self._pick()
+        w.activateWindow()
+        art = stage.art
+        self.assertEqual(pk.KIND, 'pick')
+        self.assertEqual(pk.title_label.text(), "Pick for me")
+        self.assertFalse(pk.isHidden())
+        # Fake games, no facts: Any and Never played (Gamma) have games.
+        self.assertEqual([b.property('vibe') for b in pk.group.buttons()], ['any', 'never'])
+        self.assertTrue(pk.chip('any').isChecked())
+        self.assertEqual(pk.note.text(), "From 3 games")
+        self.assertEqual(pk.btn.text(), "Spin")
+        self.assertEqual(art.game['slug'], 'alpha')
+        pk.chip('never').click()
+        self.assertEqual(next(i for i in w.prefs.dashboard if i['id'] == 'pick')['vibe'],
+                         'never')
+        self.assertEqual(pk.note.text(), "From 1 game never played")
+        w.homeview.verticalScrollBar().setValue(w.homeview.verticalScrollBar().maximum())
+        with mock.patch.object(w, 'on_game_action') as act:
+            pk.btn.click()
+            QApplication.processEvents()
+        act.assert_not_called()                                    # it launches nothing
+        self.assertEqual(stage.picked['slug'], 'gamma')
+        self.assertEqual(art.game['slug'], 'gamma')
+        self.assertEqual(art.kicker.text(), "PICKED FOR YOU  ·  NEVER PLAYED")
+        self.assertIs(QApplication.focusWidget(), art.btn)           # Play is one press away
+        self.assertEqual(w.homeview.verticalScrollBar().value(), 0)  # Motion off: at once
+        self.assertEqual(pk.btn.text(), "Spin again")
+        self.assertEqual(pk.note.text(), "On the Stage: Gamma")
+        self.assertNotIn('pin', self._stage_item())                 # never writes a pin
+        self.assertEqual(w._surprise_recent[-1], 'gamma')
+        # A refresh keeps the pick (and the kicker)
+        w._home_sig = None
+        w.apply_filter()
+        QApplication.processEvents()
+        self.assertEqual(art.game['slug'], 'gamma')
+        self.assertIn("PICKED FOR YOU", art.kicker.text())
+        # Leaving Home ends it: the Stage is back on the last played
+        w.go(w.LIBRARY)
+        self.assertIsNone(stage.picked)
+        w.go(w.HOME)
+        QApplication.processEvents()
+        self.assertEqual(art.game['slug'], 'alpha')
+        self.assertNotIn("PICKED", art.kicker.text())
+        self.assertEqual(pk.btn.text(), "Spin")
+
+    def test_spin_again_never_repeats_the_stage_game(self):
+        w, stage, pk = self._pick()
+        seen = set()
+        for _ in range(6):
+            before = stage.art.game['slug']
+            pk.btn.click()
+            self.assertNotEqual(stage.art.game['slug'], before)
+            seen.add(stage.art.game['slug'])
+        self.assertLessEqual(seen, {'alpha', 'steam-1', 'gamma'})
+
+    def test_pick_ends_when_the_row_moves_or_the_pick_starts(self):
+        w, stage, pk = self._pick('never')
+        pk.btn.click()
+        self.assertEqual(stage.art.game['slug'], 'gamma')
+        stage._follow(w.game('steam-1'))                            # the Continue row (Game art)
+        self.assertIsNone(stage.picked)
+        self.assertEqual(stage.art.game['slug'], 'steam-1')
+        self.assertNotIn("PICKED", stage.art.kicker.text())
+        self.assertEqual(pk.btn.text(), "Spin")
+        pk.btn.click()
+        self.assertEqual(stage.picked['slug'], 'gamma')
+        with mock.patch.object(w, 'run', lambda *a, **k: None):
+            self._play(w, w.game('gamma'))
+        self.assertIsNone(stage.picked)                              # the pick started
+        self.assertEqual(stage.art.game['slug'], 'gamma')
+        self.assertIn("NOW PLAYING", stage.art.kicker.text())
+
+    def test_spin_is_off_while_a_game_runs(self):
+        w, stage, pk = self._pick()
+        with mock.patch.object(w, 'run', lambda *a, **k: None):
+            self._play(w, w.game('alpha'))
+        w.dashboard.refresh(['pick'])
+        self.assertFalse(pk.btn.isEnabled())
+        self.assertEqual(pk.note.text(), "Spin is back when Alpha closes.")
+        self.assertEqual(pk.btn.toolTip(), "Spin is back when Alpha closes.")
+        w.spin('any')                                                # a running game still wins
+        self.assertIsNone(stage.picked)
+        self.assertEqual(stage.art.game['slug'], 'alpha')
+        w._apply_running(set())
+        w._mark_states()
+        QApplication.processEvents()
+        w.dashboard.refresh(['pick'])
+        self.assertTrue(pk.btn.isEnabled())
+        self.assertEqual(pk.note.text(), "From 3 games")
+
+    def test_pick_over_a_pin_and_the_pin_back_after_leaving(self):
+        w, stage, pk = self._pick('never')
+        w.on_game_action('stage-pin', w.game('steam-1'))
+        self.assertEqual(stage.art.game['slug'], 'steam-1')
+        pk.btn.click()
+        self.assertEqual(stage.art.game['slug'], 'gamma')            # the pick beats the pin
+        self.assertEqual(stage.art.kicker.text(), "PICKED FOR YOU  ·  BETA STAYS PINNED")
+        self.assertEqual(pk.note.text(),
+                         "On the Stage: Gamma. Beta is back when you leave Home.")
+        self.assertEqual(self._stage_item()['pin'], 'steam-1')       # the pin is untouched
+        stage._follow(w.game('alpha'))                               # Pinned: the row can't move it
+        self.assertEqual(stage.art.game['slug'], 'gamma')
+        w.go(w.LIBRARY)
+        self.assertEqual(stage.art.game['slug'], 'steam-1')
+        self.assertTrue(stage.art.kicker.text().startswith("PINNED"))
+
+    def test_spin_without_the_stage_opens_a_game_page(self):
+        w, stage, pk = self._pick()
+        w.dashboard._edit('stage', 'hide')
+        self.assertTrue(pk.isVisible())
+        pk.btn.click()
+        QApplication.processEvents()
+        self.assertIsNone(stage.picked)
+        self.assertEqual(len(w.selected), 1)                         # Surprise me's game page
+        self.assertTrue(w.details.isVisible())
+
+    def test_pick_chips_keep_focus_on_a_refresh(self):
+        w, stage, pk = self._pick()
+        w.activateWindow()
+        chip = pk.chip('never')
+        chip.setFocus()
+        QApplication.processEvents()
+        w.dashboard.refresh()
+        QApplication.processEvents()
+        self.assertIs(pk.chip('never'), chip)                       # same vibes: same chips
+        self.assertIs(QApplication.focusWidget(), chip)
+        # Enter on a chip picks it (a button outside a dialog ignores Return)
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        pk.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                   Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(pk.vibe, 'never')
+        # Only Any left: no chip row
+        w._on_library({'games': [g for g in fake_games() if g['slug'] != 'gamma'],
+                       'disks': []}, '')
+        QApplication.processEvents()
+        self.assertTrue(pk.chips.isHidden())
+        self.assertEqual(pk.vibe, 'any')                             # a vibe without games: Any
+        # Nothing to pick: out of the layout
+        w._on_library({'games': [], 'disks': []}, '')
+        QApplication.processEvents()
+        self.assertNotIn('pick', {k for k, *_ in nx.dash_pack(w.dashboard.items, 3,
+                                                               w.dashboard._skip())})
+
+    def test_your_save_follows_the_stage(self):
+        w = self.win
+        hist = {'by_game': {'alpha': {'sessions': 24}, 'steam-1': {'sessions': 1}}}
+        unlocks = {'items': [{'title': 'Cash Flow', 'unlocked': True,
+                              'time': time.time() - 3 * 86400}]}
+        asked = []
+
+        def cli(args, cb, *_a, **_k):
+            asked.append(list(args))
+            if args[0] == '--history':
+                cb(hist, '')
+            elif args[0] == '--achievements':
+                cb(unlocks, '')
+        p = patch_gui('cli_json', cli)
+        p.start()
+        self.addCleanup(p.stop)
+        items = nx.dash_default()
+        for it in items:
+            if it['id'] == 'save':
+                it['hidden'] = False
+            if it['id'] == 'stage':
+                it['size'] = 'wide'
+        w.prefs.dashboard = items
+        w.resize(1366, 850)
+        w.dashboard.refresh()
+        QApplication.processEvents()
+        d, stage, sv = w.dashboard, w.dashboard.stage, w.dashboard.widgets['save']
+        self.assertEqual(d._cols, 3)
+        self.assertTrue(sv.isVisible())
+        def texts():
+            QApplication.processEvents()          # rows added to a shown card show a pass later
+            return [lb.text() for lb in sv.findChildren(QLabel) if lb.text() and lb.isVisible()]
+        self.assertEqual(stage.art.game['slug'], 'alpha')
+        self.assertIn("Alpha · 24 sessions", texts())
+        self.assertIn("2.0 h", texts())
+        # Beside a Wide Stage: as tall as the art, at the top of the row
+        self.assertIn('save', d._beside)
+        self.assertEqual(sv.maximumHeight(), stage.art.minimumHeight())
+        idx = d.grid.indexOf(sv)
+        self.assertEqual(d.grid.itemAt(idx).alignment(), Qt.AlignmentFlag.AlignTop)
+        stage._follow(w.game('steam-1'))                             # the row moved the stage
+        self.assertIn("Beta · 1 session", texts())
+        self.assertTrue(any(t.startswith("Last unlock: Cash Flow · 3 days ago")
+                            for t in texts()))
+        self.assertIn(['--achievements', '1', '--json'], asked)
+        before = set(sv.findChildren(QLabel))
+        d.refresh(['save'])                                           # nothing new: kept
+        self.assertEqual(set(sv.findChildren(QLabel)), before)
+        w.spin('never')                                               # follows a pick too
+        self.assertIn("Nothing recorded for this game yet.", texts())
+        self.assertIn("Gamma", texts())
+        # Banner: the full-width Stage has nothing beside it
+        d._edit('stage', 'size')
+        self.assertEqual(self._stage_item()['size'], 'banner')
+        self.assertNotIn('save', d._beside)
+        self.assertGreater(sv.maximumHeight(), 10000)
+        # Customise lists Your save under Add widgets when hidden, and Pick for me shows
+        d._edit('save', 'hide')
+        d.set_editing(True)
+        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
+        self.assertIn("＋  Your save", chips)
+        self.assertTrue(d.widgets['pick'].isVisible())
+        d.set_editing(False)
 
     def test_week_style_button(self):
         w, _stage = self._stage()

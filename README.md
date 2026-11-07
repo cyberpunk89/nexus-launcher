@@ -44,7 +44,8 @@ once. Games you own but haven't installed are there too, with an Install button.
   all own, multiplayer ones by default; save the pick as a shelf. Nexus only reads what
   Steam already shows; nothing about you is sent anywhere.
 - **Home** starts with a *Continue playing* banner, then widgets you can move, resize or hide:
-  Jump back in, Surprise me (it picks a game for you), News, Upcoming releases and more.
+  Jump back in, Pick for me (choose a vibe, Spin, and the pick lands on the Stage), Friends
+  (who's online), Your save (the Stage's game in numbers), News, Upcoming releases and more.
 
 ### Install and manage games
 

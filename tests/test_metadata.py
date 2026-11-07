@@ -118,6 +118,9 @@ class History(unittest.TestCase):
         self.assertEqual(sm['weeks'][-1]['minutes'], 210)       # this week: 15th–17th
         self.assertEqual(len(sm['weeks']), 12)
         self.assertEqual(sm['since'], '2026-10-01')
+        # w-91: every session ever, per game (Home's Your save)
+        self.assertEqual(sm['by_game'], {'celeste': {'sessions': 1}, 'hades': {'sessions': 3}})
+        self.assertEqual(history.summary([], today)['by_game'], {})
 
 
     def test_is_session_threshold(self):

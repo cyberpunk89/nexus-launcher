@@ -5,7 +5,7 @@ import json
 import random
 import time
 
-from PyQt6.QtCore import QPoint, Qt, QTimer
+from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QMenu, QPushButton, QSlider,
     QStackedWidget, QVBoxLayout, QWidget)
@@ -620,6 +620,38 @@ class LibraryMixin:
             self._open_on_play(g)
         self.toast(f"How about {g.get('display_name') or g['slug']}?", 'info',
                    ("Pick again", lambda p=pool: self.surprise(p)), 6000)
+
+    def spin(self, vibe: str = 'any'):
+        """Pick for me's Spin (w-91): a pick from the vibe's pool (never a
+        recent pick or the game already on the Stage, while there's anything
+        else) goes on the Stage, the page goes to the top and Play takes
+        focus. It launches nothing. Without the Stage: Surprise me."""
+        dash = self.dashboard
+        stage = dash.stage
+        it = next((i for i in self.prefs.dashboard if i.get('id') == 'stage'), None)
+        pools = vibe_pools(_visible_games(self), self._smart_facts(), linux=has('proton'))
+        pool = pools.get(vibe) or pools.get('any') or []
+        if it is None or it.get('hidden') or not stage.art.games:
+            self.surprise(pool)
+            return
+        on_stage = stage.art.game.get('slug')
+        g = surprise_pick([x for x in pool if x.get('slug') != on_stage] or pool, random,
+                          tuple(self._surprise_recent))
+        if g is None or not stage.show_pick(g, vibe):
+            return
+        self._surprise_recent = [*self._surprise_recent, g['slug']][-3:]
+        view = self.homeview
+        focus_and_reveal(stage.art.btn)
+        bar = view.verticalScrollBar()
+        if anim_ms(300) and bar.value():
+            anim = QPropertyAnimation(bar, b'value', view)
+            anim.setDuration(anim_ms(300))
+            anim.setStartValue(bar.value())
+            anim.setEndValue(0)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        else:
+            bar.setValue(0)
 
     def refresh_library(self):
         """The Refresh button / Ctrl+R: rescan, and retry art that failed."""
@@ -1499,15 +1531,15 @@ class LibraryMixin:
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
 from .actions import build_game_menu, game_actions  # noqa: E402
-from .art import ART  # noqa: E402
-from .dashboard import _game_store_id, mark_duplicates  # noqa: E402
+from .art import anim_ms, ART  # noqa: E402
+from .dashboard import _game_store_id, _visible_games, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
 from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,  # noqa: E402
     PRESENCE_AGE, PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
-    ShelfRow, surprise_pick)  # noqa: E402
+    ShelfRow, surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402

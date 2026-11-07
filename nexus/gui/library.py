@@ -13,6 +13,7 @@ from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QImageReader, QLinearGra
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from .. import smart
 from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
 from .theme import FS, G, GRAD, P, pill_qss, R, SP, STAGE_BTN_H, TILE_LIFT, TILE_W
@@ -1162,14 +1163,59 @@ class FollowHero(HeroCarousel):
         ev.ignore()
 
 
+def _pickable(games: list[dict]) -> list[dict]:
+    """What a random pick may land on: installed, visible, finished, and
+    not running or starting."""
+    return [g for g in games if is_installed(g) and not g.get('hidden')
+            and not g.get('incomplete') and not g.get('playing') and not g.get('launching')]
+
+
+# Pick for me's vibe chips (w-91): (key, chip label). Every key but 'any' is
+# a smart rule (nexus/smart.py), so a chip only shows when that rule has games.
+VIBES = (('any', "Any"), ('short', "Quick session"), ('coop', "Co-op"),
+         ('unfinished', "Unfinished"), ('almost', "Almost done"), ('never', "Never played"))
+VIBE_LABELS = dict(VIBES)
+
+
+def vibe_pools(games: list[dict], facts: dict | None, now: datetime | None = None,
+               linux: bool = True) -> dict[str, list[dict]]:
+    """{vibe: [games]} over what surprise_pick may pick, only the vibes with
+    at least one game, 'any' first. Without facts (HowLongToBeat, store
+    modes) there is no short, co-op or almost-done pool."""
+    base = _pickable(games)
+    if not base:
+        return {}
+    out = {'any': base}
+    for key, _label in VIBES[1:]:
+        hit = smart.games_for(f'smart:{key}', base, facts or {}, now, linux=linux)
+        if hit:
+            out[key] = hit
+    return out
+
+
+KICKER_TITLE_MAX = 24
+
+
+def pick_kicker(vibe: str = 'any', pin_title: str | None = None) -> str:
+    """The Stage's kicker over a pick: 'PICKED FOR YOU', plus the vibe
+    ('PICKED FOR YOU · CO-OP'); over Pinned art it says the pin stays
+    ('PICKED FOR YOU · HADES STAYS PINNED', the title cut at 24)."""
+    if pin_title:
+        t = pin_title if len(pin_title) <= KICKER_TITLE_MAX \
+            else pin_title[:KICKER_TITLE_MAX - 1].rstrip() + "…"
+        return f"PICKED FOR YOU  ·  {t.upper()} STAYS PINNED"
+    if vibe in VIBE_LABELS and vibe != 'any':
+        return f"PICKED FOR YOU  ·  {VIBE_LABELS[vibe].upper()}"
+    return "PICKED FOR YOU"
+
+
 def surprise_pick(games: list[dict], rng, recent=(), now: datetime | None = None):
     """"Surprise me": one installed, visible game that isn't running, picked
     at random — weighted toward games never played (×3) or not played for a
     month (×2) and favourites (×1.5), and never one of the `recent` picks
     while there's anything else. None when there's nothing to pick."""
     now = now or datetime.now()
-    cands = [g for g in games if is_installed(g) and not g.get('hidden')
-             and not g.get('incomplete') and not g.get('playing') and not g.get('launching')]
+    cands = _pickable(games)
     fresh = [g for g in cands if g.get('slug') not in recent] or cands
     if not fresh:
         return None

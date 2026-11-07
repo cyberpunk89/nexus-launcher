@@ -3,8 +3,8 @@
 launch tracker; Steam and Heroic games by the GUI while it's open (it sees
 them start and stop). Lines are appended with O_APPEND, so the two never
 interleave. summary() turns them into the play-history page: the last
-weeks, and a year in review; periods() into its month by day and Home's
-Your week."""
+weeks, a year in review and sessions per game; periods() into its month
+by day and Home's Your week."""
 
 import json
 import os
@@ -167,6 +167,9 @@ def summary(sessions: list[dict] | None = None, today: date | None = None,
         },
         'periods': periods(sessions, today),
         'since': min((s['start'][:10] for s in sessions), default=None),
+        # Every session ever, per game (Home's Your save, w-91).
+        'by_game': {k: {'sessions': n} for k, n in sorted(
+            Counter(s['slug'] for s in sessions).items())},
         'recent': [{'slug': s['slug'], 'name': names[s['slug']], 'start': s['start'],
                     'minutes': s['minutes']}
                    for s in sorted(sessions, key=lambda s: s['start'], reverse=True)[:8]],

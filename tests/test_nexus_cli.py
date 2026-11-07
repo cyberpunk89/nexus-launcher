@@ -662,6 +662,18 @@ class Sandbox(unittest.TestCase):
         return json.loads((tests.sandbox.data_dir(self.home) / 'games.json')
                           .read_text())['games']['test-game']
 
+    def test_history_json_counts_sessions_per_game(self):
+        """w-91: --history --json carries by_game, Your save's sessions."""
+        lines = [{'slug': 'test-game', 'source': 'nexus', 'name': 'Test Game',
+                  'start': f'2026-10-{d:02}T20:00:00', 'end': f'2026-10-{d:02}T21:00:00',
+                  'minutes': 60.0} for d in (1, 2, 3)]
+        lines.append(dict(lines[0], slug='steam-5', name='Five'))
+        (tests.sandbox.data_dir(self.home) / 'sessions.jsonl').write_text(
+            ''.join(json.dumps(x) + '\n' for x in lines))
+        out = json.loads(self.cli('--history', '--json').stdout)
+        self.assertEqual(out['by_game'], {'steam-5': {'sessions': 1},
+                                          'test-game': {'sessions': 3}})
+
     def test_corrupt_shortcuts_is_never_overwritten(self):
         if steam_running():
             self.skipTest("Steam is running")

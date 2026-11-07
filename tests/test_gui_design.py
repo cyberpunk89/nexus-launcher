@@ -210,13 +210,13 @@ class DashboardModel(unittest.TestCase):
         saved[2]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:6], ['stage', 'foryou', 'friends', 'surprise', 'system',
+        self.assertEqual(ids[:7], ['stage', 'save', 'foryou', 'friends', 'pick', 'system',
                                    'installed'])
-        # system is where activity was (For you now, friends and surprise, added later,
-        # sit after the stage, which took jump's place)
+        # system is where activity was (Your save, For you now, friends and Pick for
+        # me, added later, sit after the stage, which took jump's place)
         for gone in ('activity', 'storage', 'health', 'proton', 'unplayed'):
             self.assertNotIn(gone, ids)
-        self.assertEqual(out[4], {'id': 'system', 'size': 'wide', 'hidden': False})
+        self.assertEqual(out[5], {'id': 'system', 'size': 'wide', 'hidden': False})
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
         all_hidden = [dict(i, hidden=True) for i in saved]
         sysw = next(i for i in nx.dash_normalize(all_hidden) if i['id'] == 'system')
@@ -225,13 +225,13 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:7], ['deals', 'upcoming', 'week', 'stage', 'foryou', 'friends',
-                                   'surprise'])
+        self.assertEqual(ids[:8], ['deals', 'upcoming', 'week', 'stage', 'save', 'foryou',
+                                   'friends', 'pick'])
         # A layout from before w-82 gains Friends playing now right after the Stage
         old = [i for i in nx.dash_default() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
-        self.assertEqual(ids[:4], ['stage', 'friends', 'foryou', 'surprise'])
-        self.assertEqual(nx.DASH_SIZES['friends'], ('wide', 'full'))
+        self.assertEqual(ids[:5], ['stage', 'friends', 'save', 'foryou', 'pick'])
+        self.assertEqual(nx.DASH_SIZES['friends'], ('small', 'wide', 'full'))   # w-91
         self.assertEqual(nx.DASH_DEFAULT_SIZE['friends'], 'full')
 
     def test_normalize_turns_jump_into_the_stage(self):
@@ -242,7 +242,7 @@ class DashboardModel(unittest.TestCase):
         saved[1]['hidden'] = True
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:6], ['system', 'stage', 'foryou', 'friends', 'surprise',
+        self.assertEqual(ids[:7], ['system', 'stage', 'save', 'foryou', 'friends', 'pick',
                                    'installed'])
         self.assertNotIn('jump', ids)
         stage = out[1]
@@ -443,7 +443,7 @@ class DashboardModel(unittest.TestCase):
         saved = self.items(('stage', 'cinematic'), ('deals', 'wide'), ('upcoming', 'small'),
                            ('news', 'small'))
         ids = [i['id'] for i in nx.dash_normalize(saved)
-               if i['id'] not in ('foryou', 'friends', 'surprise')]
+               if i['id'] not in ('foryou', 'friends', 'pick', 'save')]
         self.assertEqual(ids[:5], ['stage', 'deals', 'upcoming', 'week', 'news'])
         self.assertEqual(nx.DASH_PLACE_AFTER['week'], 'upcoming')
 
@@ -452,7 +452,7 @@ class DashboardModel(unittest.TestCase):
                            ('deals', 'wide'), ('achievements', 'wide'), ('news', 'small'))
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual([i for i in ids if i not in ('foryou', 'friends', 'surprise')][:4],
+        self.assertEqual([i for i in ids if i not in ('foryou', 'friends', 'pick', 'save')][:4],
                          ['stage', 'system', 'week', 'deals'])
         self.assertNotIn('achievements', ids)
         self.assertNotIn('playtime', ids)
@@ -572,7 +572,7 @@ class DashboardModel(unittest.TestCase):
         smart = next(i for i in out if i['id'] == 'smart')
         self.assertEqual(smart['shelf'], 'unfinished')
         # w-87: Play time (full) is Your week (small) in its place; Achievements left.
-        self.assertEqual(rest[rest.index('surprise') + 1], 'week')
+        self.assertEqual(rest[rest.index('pick') + 1], 'week')       # w-91: in place
         self.assertEqual(next(i for i in out if i['id'] == 'week')['size'], 'small')
         self.assertNotIn('achievements', ids)
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
@@ -601,12 +601,68 @@ class DashboardModel(unittest.TestCase):
             self.assertNotIn(old, nx.DASH_SIZES, old)
             self.assertIn(new, nx.DASH_SIZES, new)
 
+    # ---- Pick for me, Friends small, Your save (w-91) ----
+    def test_surprise_becomes_pick_in_place(self):
+        saved = self.items(('stage', 'cinematic'), ('system', 'wide'), ('surprise', 'full'),
+                           ('news', 'small'))
+        saved[2]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        rest = [i for i in ids if i not in ('save', 'foryou', 'friends', 'week')]
+        self.assertEqual(rest[:4], ['stage', 'system', 'pick', 'news'])
+        self.assertNotIn('surprise', ids)
+        pick = out[ids.index('pick')]
+        self.assertEqual(pick, {'id': 'pick', 'size': 'small', 'hidden': True, 'vibe': 'any'})
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        saved[2]['hidden'] = False
+        self.assertFalse(next(i for i in nx.dash_normalize(saved) if i['id'] == 'pick')['hidden'])
+        self.assertEqual(nx.DASH_MERGED['surprise'], 'pick')
+        self.assertNotIn('surprise', nx.DASH_WIDGETS)
+        self.assertNotIn('surprise', nx.DASH_OPTIONS)
+        self.assertNotIn('pick', nx.DASH_MERGED_SHOWN)
+        self.assertEqual(nx.dash_normalize(None), nx.dash_default())
+
+    def test_pick_vibe_is_checked(self):
+        self.assertEqual(nx.DASH_OPTIONS['pick'],
+                         {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never')})
+        for bad in ('chill', ['coop'], {'a': 1}, None, 3):
+            out = nx.dash_normalize([{'id': 'pick', 'size': 'wide', 'vibe': bad}])
+            pick = next(i for i in out if i['id'] == 'pick')
+            self.assertEqual((pick['vibe'], pick['size']), ('any', 'small'), bad)
+        out = nx.dash_normalize([{'id': 'pick', 'vibe': 'coop'}])
+        self.assertEqual(next(i for i in out if i['id'] == 'pick')['vibe'], 'coop')
+
+    def test_new_kinds_and_default_order(self):
+        rows = {r[0]: r[1:] for r in nx.DASH_KINDS}
+        self.assertEqual(rows['pick'], (('small',), 'small', False))
+        self.assertEqual(rows['save'], (('small',), 'small', True))         # hidden by default
+        self.assertEqual(rows['friends'], (('small', 'wide', 'full'), 'full', False))
+        ids = [i['id'] for i in nx.dash_default()]
+        self.assertEqual(ids[:5], ['stage', 'save', 'foryou', 'friends', 'pick'])
+        self.assertEqual((nx.DASH_PLACE_AFTER['pick'], nx.DASH_PLACE_AFTER['save']),
+                         ('stage', 'stage'))
+        # A saved layout from before w-91 gains Your save (hidden) right after the Stage.
+        old = [i for i in nx.dash_default() if i['id'] != 'save']
+        out = nx.dash_normalize(old)
+        self.assertEqual([i['id'] for i in out][:2], ['stage', 'save'])
+        self.assertTrue(out[1]['hidden'])
+        # Default packing at 3 columns: Pick for me and System share a row.
+        packed = nx.dash_pack(nx.dash_default(), 3, skip={'foryou', 'friends'})
+        where = {k: (r, c) for k, r, c, _s in packed}
+        self.assertEqual(where['pick'][0], where['system'][0])
+        # Your save beside a Wide Stage.
+        items = [dict(i, size='wide') if i['id'] == 'stage' else
+                 dict(i, hidden=False) if i['id'] == 'save' else i for i in nx.dash_default()]
+        packed = nx.dash_pack(items, 3, skip={'foryou'})
+        self.assertEqual([(k, r, c) for k, r, c, _s in packed[:2]],
+                         [('stage', 0, 0), ('save', 0, 2)])
+
     # ---- For you now (w-89) ----
     def test_foryou_kind_and_options(self):
         row = next(r for r in nx.DASH_KINDS if r[0] == 'foryou')
         self.assertEqual(row, ('foryou', ('full',), 'full', False))
         ids = [r[0] for r in nx.DASH_KINDS]
-        self.assertEqual(ids.index('foryou'), ids.index('stage') + 1)
+        self.assertEqual(ids.index('foryou'), ids.index('stage') + 2)    # Your save between
         self.assertEqual(nx.DASH_PLACE_AFTER['foryou'], 'stage')
         self.assertEqual(nx.DASH_OPTIONS['foryou'], {'style': ('stage', 'strip')})
         self.assertNotIn('foryou', nx.DASH_MERGED)
@@ -614,7 +670,7 @@ class DashboardModel(unittest.TestCase):
         self.assertIn('foryou', nx.DASH_WIDGETS)
         d = nx.dash_default()
         self.assertEqual(d, nx.dash_normalize(None))
-        self.assertEqual(d[1], {'id': 'foryou', 'size': 'full', 'hidden': False,
+        self.assertEqual(d[2], {'id': 'foryou', 'size': 'full', 'hidden': False,
                                 'style': 'stage'})
 
     def test_foryou_normalize_round_trip(self):
@@ -622,7 +678,7 @@ class DashboardModel(unittest.TestCase):
         saved = [i for i in nx.dash_default() if i['id'] != 'foryou']
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
-        self.assertEqual(ids[:3], ['stage', 'foryou', 'friends'])
+        self.assertEqual(ids[:4], ['stage', 'foryou', 'save', 'friends'])
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
         moved = [dict(i) for i in out]
         fy = next(i for i in moved if i['id'] == 'foryou')
@@ -856,6 +912,96 @@ class DashboardModel(unittest.TestCase):
         self.assertIn(f'friends:g{M.SNOOZE_MAX + 19}', pr.snoozes)       # the newest kept
         self.assertEqual(len(json.loads(path.read_text())['dashboard']['snoozes']),
                          M.SNOOZE_MAX)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class PickAndSave(unittest.TestCase):
+    """w-91's pure parts: vibe_pools, pick_kicker, pick_note, save_rows."""
+    FACTS = {'short': {'length': {'main': 3.0}},
+             'coop': {'modes': ['single', 'coop'], 'length': {'main': 20.0}},
+             'half': {'length': {'main': 10.0}}}
+
+    def games(self):
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(days=60)).isoformat(timespec='seconds')
+        return [{'slug': 'short', 'launcher': '/s', 'playtime_minutes': 30, 'last_played': old},
+                {'slug': 'coop', 'launcher': '/c', 'playtime_minutes': 600, 'last_played': old},
+                {'slug': 'half', 'launcher': '/h', 'playtime_minutes': 300, 'last_played': old},
+                {'slug': 'new', 'launcher': '/n'},
+                {'slug': 'running', 'launcher': '/r', 'playing': True},
+                {'slug': 'hidden', 'launcher': '/x', 'hidden': True},
+                {'slug': 'owned', 'source': 'steam', 'installed': False}]
+
+    def test_vibe_pools(self):
+        pools = nx.vibe_pools(self.games(), self.FACTS)
+        self.assertEqual(list(pools), ['any', 'short', 'coop', 'unfinished', 'never'])
+        self.assertEqual([g['slug'] for g in pools['any']], ['short', 'coop', 'half', 'new'])
+        self.assertEqual([g['slug'] for g in pools['short']], ['short'])
+        self.assertEqual([g['slug'] for g in pools['never']], ['new'])
+        self.assertNotIn('almost', pools)                          # nothing almost done: no chip
+        self.assertEqual({g['slug'] for g in pools['unfinished']}, {'coop', 'half'})
+        # The running game is never in a pool, not even Never played.
+        running = [dict(g, playing=True) if g['slug'] == 'new' else g for g in self.games()]
+        self.assertNotIn('never', nx.vibe_pools(running, self.FACTS))
+        # From memory alone (no facts): no short, co-op or almost done.
+        self.assertEqual(list(nx.vibe_pools(self.games(), {})), ['any', 'never'])
+        self.assertEqual(nx.vibe_pools([], self.FACTS), {})
+        self.assertEqual(nx.vibe_pools(self.games()[4:], self.FACTS), {})
+        self.assertEqual([k for k, _l in nx.VIBES],
+                         ['any', 'short', 'coop', 'unfinished', 'almost', 'never'])
+
+    def test_pick_kicker_and_note(self):
+        from nexus.gui.dashboard import pick_note
+        self.assertEqual(nx.pick_kicker(), "PICKED FOR YOU")
+        self.assertEqual(nx.pick_kicker('any'), "PICKED FOR YOU")
+        self.assertEqual(nx.pick_kicker('coop'), "PICKED FOR YOU  ·  CO-OP")
+        self.assertEqual(nx.pick_kicker('short'), "PICKED FOR YOU  ·  QUICK SESSION")
+        self.assertEqual(nx.pick_kicker('bogus'), "PICKED FOR YOU")
+        self.assertEqual(nx.pick_kicker('coop', "Hades"), "PICKED FOR YOU  ·  HADES STAYS PINNED")
+        long = nx.pick_kicker('any', "The Elder Scrolls V: Skyrim Special Edition")
+        self.assertEqual(long, "PICKED FOR YOU  ·  THE ELDER SCROLLS V: SK… STAYS PINNED")
+        self.assertEqual(len("THE ELDER SCROLLS V: SK…"), 24)
+        self.assertEqual(pick_note('any', 21), "From 21 games")
+        self.assertEqual(pick_note('coop', 7), "From 7 co-op games")
+        self.assertEqual(pick_note('any', 1), "From 1 game")
+        self.assertEqual(pick_note('almost', 2), "From 2 games almost done")
+
+    def test_save_rows_leave_out_what_is_missing(self):
+        from nexus.gui.dashboard import last_unlock, save_rows, SAVE_EMPTY
+        g = {'slug': 'coop', 'display_name': 'Co Op', 'source': 'steam', 'appid': 5,
+             'playtime_minutes': 600, 'achievements': [6, 13]}
+        owners = [{'steamid': '1', 'name': 'Ana'}, {'steamid': '2', 'name': 'Ben'},
+                  {'steamid': '3', 'name': 'Cy'}]
+        rows = save_rows(g, self.FACTS, 24, owners, {'title': 'Cash Flow', 'time': 1})
+        kinds = [r[0] for r in rows]
+        self.assertEqual(kinds, ['big', 'sub', 'bar', 'bar', 'owners', 'last'])
+        self.assertEqual(rows[0][1], '10.0 h')
+        self.assertEqual(rows[1][1], "Co Op · 24 sessions")
+        self.assertEqual(rows[2][1:4], ("Achievements", "6 of 13", 6 / 13))
+        self.assertEqual(rows[3][1:4], ("Main story", "20 h", 0.5))
+        self.assertEqual(rows[4][2], "Ana, Ben +1 own it too")
+        self.assertTrue(rows[5][1].startswith("Last unlock: Cash Flow · "))
+        # Past the main story: the bar stays full.
+        self.assertEqual(save_rows(dict(g, playtime_minutes=6000), self.FACTS)[3][3], 1.0)
+        # A repack: no Steam achievements; one owner; one session; no HLTB.
+        thin = save_rows({'slug': 'x', 'display_name': 'X', 'source': 'nexus',
+                          'achievements': [1, 2], 'playtime_minutes': 90}, {}, 1,
+                         owners[:1], None)
+        self.assertEqual([r[0] for r in thin], ['big', 'sub', 'owners'])
+        self.assertEqual(thin[1][1], "X · 1 session")
+        self.assertEqual(thin[2][2], "Ana owns it too")
+        self.assertEqual(save_rows({'slug': 'x', 'playtime_minutes': 5}, {}, None, [
+            {'name': 'Ana'}, {'name': 'Ben'}])[-1][2], "Ana and Ben own it too")
+        # Nothing at all: the name and a line saying so.
+        self.assertEqual(save_rows({'slug': 'z', 'display_name': 'Zed'}, {}, 0, [], None),
+                         [('sub', 'Zed'), ('empty', SAVE_EMPTY)])
+        # The newest unlocked achievement of an --achievements answer.
+        data = {'items': [{'title': 'A', 'unlocked': True, 'time': 5},
+                          {'title': 'B', 'unlocked': True, 'time': 9},
+                          {'title': 'C', 'unlocked': False, 'time': None}]}
+        self.assertEqual(last_unlock(data)['title'], 'B')
+        self.assertIsNone(last_unlock({'items': []}))
+        self.assertIsNone(last_unlock(None))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

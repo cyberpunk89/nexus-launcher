@@ -190,8 +190,12 @@ health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dia
   favourite, an update, something new) with the game's logo, a few facts and Play; it
   cross-fades every few seconds unless you're pointing at it, and the window's glow takes on
   the art's colour. Under it, a **dashboard** of widgets: Jump back in (wide banners),
-  **Surprise me** (picks a game for you — never-played ones and ones you haven't touched in
-  a month come up more, favourites a little more; *Pick again* in the toast),
+  **Pick for me** (vibe chips — Any, Quick session, Co-op, Unfinished, Almost done, Never
+  played, only the ones with games — and **Spin**, which puts a pick on the Stage with Play
+  focused; never-played ones and ones you haven't touched in a month come up more, favourites
+  a little more; Ctrl+D still opens a random game's page), **Friends** at Small (who's online
+  and the first two in a game), **Your save** (hidden by default: the Stage's game — play
+  time, sessions, achievements, HowLongToBeat, friends who own it, the last unlock),
   **System** (four tiles — jobs, disk free, health, Proton — each opening its page; wide adds
   the one thing that needs you, such as a GE-Proton update with Install), News (with
   thumbnails), Recently installed (never-played games get a **New** pill), Wishlist deals,
@@ -248,7 +252,8 @@ health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dia
   - **Play history** — this year in review (hours, sessions, games, best streak, longest
     session, busiest day), hours per week for the last 12 weeks, and your most played. Sessions
     are recorded from now on (`~/.local/share/nexus/sessions.jsonl`): repacks by their launch
-    tracker, Steam and Heroic games while Nexus is open. `nexus-cli --history`.
+    tracker, Steam and Heroic games while Nexus is open. `nexus-cli --history` (`--json`
+    adds `by_game`: sessions per game, which Home's Your save shows).
   - **Storage** — one bar per drive (every game as a segment), a table, and **Clean up**:
     stray Steam prefixes (all libraries), shader caches of removed games, Mesa cache,
     repacks you've already installed, old `--force` installs, old logs and save backups,

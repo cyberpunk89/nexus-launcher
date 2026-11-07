@@ -75,7 +75,8 @@ from .modal import Modal  # noqa: F401
 from .library import (
     _EdgeFade, _ShelfScroll, _TileSignals, Dwell, featured_games, FollowHero, HeroCarousel,
     HomeView, KeepPlace,
-    LibraryView, ListView, shelf_page_target, ShelfRow, surprise_pick)  # noqa: F401
+    LibraryView, ListView, pick_kicker, shelf_page_target, ShelfRow, surprise_pick, VIBES,
+    vibe_pools)  # noqa: F401
 from .dashboard import (
     _game_store_id, _visible_games, ClickRow, CollectionsWidget,
     DASH_BG_LABELS, dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_DENSITY, DASH_KINDS,
@@ -85,7 +86,8 @@ from .dashboard import (
     DASH_STYLE_LABELS, InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget,
     stage_height, stage_pin,
     StageArt, StageWidget,
-    ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
+    last_unlock, PickWidget, pick_note, save_rows, SaveWidget,
+    ShelfWidget, system_badge, system_status, SystemWidget,
     SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
 from .foryou import (
     ForYouList, ForYouModel, ForYouPill, ForYouWidget, foryou_mode, MomentRow,  # noqa: F401

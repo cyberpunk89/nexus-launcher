@@ -878,6 +878,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #DashAdd { background: $surface_1; border: 1px dashed $border; border-radius: ${r_card}px; }
     QLabel#DashTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
     QLabel#DashBig { color: $text; font-size: ${fs_big}px; font-weight: 600; }
+    QLabel#DashSub { color: $subtext; font-size: ${fs_xs}px; }
     #DashRow { background: transparent; border: 1px solid transparent;
                border-radius: ${r_sm}px; }
     #DashRow:hover { background: $accent_09; }

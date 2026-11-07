@@ -179,6 +179,21 @@ class FriendsData(QObject):
         return [r for r in self.public()
                 if str((r.get('playing') or {}).get('appid') or '') == str(appid)]
 
+    def online(self, now: float | None = None) -> list[dict]:
+        """Public friends online now (Steam's personastate 1-6: online, busy,
+        away, snooze, trading, looking to play) or in a game; nothing once
+        presence is stale. Not part of the signature: a status change alone
+        never rebuilds the Library (w-91)."""
+        if not self.usable() or not self.fresh(now):
+            return []
+        out = []
+        for r in self.public():
+            st = (r.get('evidence') or {}).get('personastate')
+            st = st if isinstance(st, int) and not isinstance(st, bool) else 0
+            if 1 <= st <= 6 or r.get('playing'):
+                out.append(r)
+        return out
+
     def has_owners(self) -> bool:
         return self.usable() and any(self.owner_ids(a) for a in self.data.get('by_app') or {})
 
