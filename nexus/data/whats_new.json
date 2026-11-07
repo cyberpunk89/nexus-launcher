@@ -1,4 +1,42 @@
 {
+  "0.5.4": [
+    {
+      "kind": "new",
+      "icon": "home",
+      "title": "A new Home, starting with the Stage",
+      "text": "The game you're on fills the top in Cinematic, Wide or Banner style, over its art, a gradient or a plain card. Pin any game to it."
+    },
+    {
+      "kind": "new",
+      "icon": "sparkles",
+      "title": "For you now",
+      "text": "Beside Play, Nexus suggests what to do next: a finished download, a game a friend is playing, a deal or a game to pick up again."
+    },
+    {
+      "kind": "new",
+      "icon": "customise",
+      "title": "Presets and saved layouts",
+      "text": "Start Home from a preset, save your own layouts and let Nexus switch between them by time of day. Big charts moved to Play history."
+    },
+    {
+      "kind": "new",
+      "icon": "friends",
+      "title": "Steam friends",
+      "text": "With your Steam Web API key: who owns a game, who is playing now, a Friends own filter, and Play together to find games you all own."
+    },
+    {
+      "kind": "new",
+      "icon": "shield_alert",
+      "title": "Report a problem",
+      "text": "After a crash Nexus keeps a crash file and drafts a report without your personal paths. Open it on GitHub or send it without an account."
+    },
+    {
+      "kind": "fixed",
+      "icon": "palette",
+      "title": "Round corners stay round",
+      "text": "Small buttons, controller hints and the For you now pill keep their shape under every Corners and Size setting."
+    }
+  ],
   "0.5.3": [
     {
       "kind": "new",

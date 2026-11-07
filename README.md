@@ -8,7 +8,7 @@ for playing from the couch with a controller.
 It runs on **Linux** (the main platform) and **Windows** (a newer edition, called
 *nexus-launcher* there). [Linux vs Windows](#linux-vs-windows) below says what each one has.
 
-![Nexus Home page on Linux: a Continue playing banner, recent games and a Surprise me card](docs/screenshots/home.jpg)
+![Nexus Home page on Linux: the Stage with the game you're playing, recent games and Home widgets](docs/screenshots/home.jpg)
 
 > Nexus is an unofficial hobby project, not affiliated with Valve, Epic, Heroic or any
 > store. It never downloads games by itself. Only install software you are allowed to use.
@@ -43,9 +43,13 @@ once. Games you own but haven't installed are there too, with an Install button.
   Library's status filter and Theatre's Sort & filter) picks friends and shows the games you
   all own, multiplayer ones by default; save the pick as a shelf. Nexus only reads what
   Steam already shows; nothing about you is sent anywhere.
-- **Home** starts with a *Continue playing* banner, then widgets you can move, resize or hide:
-  Jump back in, Pick for me (choose a vibe, Spin, and the pick lands on the Stage), Friends
-  (who's online), Your save (the Stage's game in numbers), News, Upcoming releases and more.
+- **Home** opens on the *Stage*: the game you're on (or one you pin) over its art, a
+  gradient or a plain card, in a Cinematic, Wide or Banner style. *For you now* sits beside
+  Play with what to do next, like a finished download or a friend in a game you own. Below
+  it are widgets you can move, resize or hide: Your week, Pick for me (choose a vibe, Spin,
+  and the pick lands on the Stage), Friends (who's online), Your save (the Stage's game in
+  numbers), News, Upcoming releases and more. Start from a preset or save your own layouts,
+  and let Nexus switch between them by time of day. The big charts live in Play history.
 
 ### Install and manage games
 
@@ -92,6 +96,9 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
 - **News:** gaming news and patch notes for your games, as a magazine.
 - **Alerts:** a quiet background agent and tray icon tell you about sales, repack updates
   and new Proton builds; Discord status and phone notifications are optional.
+- **Report a problem:** when something breaks, Nexus keeps a crash file on your computer and
+  drafts a report with personal paths taken out. Open it as a GitHub issue, or send it
+  without an account; the page then shows your reports' status and similar known issues.
 
 ### Make it yours
 
