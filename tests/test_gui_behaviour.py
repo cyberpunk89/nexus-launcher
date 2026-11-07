@@ -470,6 +470,8 @@ class Behaviour(unittest.TestCase):
 
     def test_rebuilt_shelves_keep_the_focused_game(self):
         w = self.win
+        w.prefs.dashboard = nx.dash_kind_defaults()          # shelves that are rebuilt
+        w.dashboard.refresh()
         w.go(w.HOME)
         w.activateWindow()
         QApplication.processEvents()

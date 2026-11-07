@@ -626,7 +626,7 @@ class _FriendsWindow(unittest.TestCase):
             self.addCleanup(p.stop)
         w = self.win = nx.MainWindow()
         w.isActiveWindow = lambda: self.active
-        w.prefs.dashboard = nx.dash_default()
+        w.prefs.dashboard = nx.dash_kind_defaults()          # Friends at full size
         w.prefs.library_state = {}
         w.config['friends_enabled'] = True
         w.resize(1400, 900)

@@ -228,7 +228,7 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(ids[:8], ['deals', 'upcoming', 'week', 'stage', 'save', 'foryou',
                                    'friends', 'pick'])
         # A layout from before w-82 gains Friends playing now right after the Stage
-        old = [i for i in nx.dash_default() if i['id'] != 'friends']
+        old = [i for i in nx.dash_kind_defaults() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
         self.assertEqual(ids[:5], ['stage', 'friends', 'save', 'foryou', 'pick'])
         self.assertEqual(nx.DASH_SIZES['friends'], ('small', 'wide', 'full'))   # w-91
@@ -364,7 +364,7 @@ class DashboardModel(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'library.json'
             path.write_text(json.dumps({'dashboard': {'version': 2, 'density': 'tiny',
-                                                      'layouts': ['kept']}}))
+                                                      'layouts': ['bad'], 'future': 'kept'}}))
             with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
                 pr = nx.LibraryPrefs()
                 self.assertEqual(pr.density, 'comfortable')          # a bad one falls back
@@ -374,7 +374,8 @@ class DashboardModel(unittest.TestCase):
                 self.assertEqual(again.density, 'compact')
             data = json.loads(path.read_text())
             self.assertEqual(data['dashboard']['density'], 'compact')
-            self.assertEqual(data['dashboard']['layouts'], ['kept'])  # the merge keeps the rest
+            self.assertEqual(data['dashboard']['future'], 'kept')   # the merge keeps the rest
+            self.assertEqual(data['dashboard']['layouts'], [])      # a bad layout is dropped
             for raw in ({}, {'dashboard': {'density': ['compact']}},
                         {'dashboard': {'density': {'a': 1}}}):
                 path.write_text(json.dumps(raw))
@@ -434,7 +435,7 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(nx.DASH_OPTIONS['week'], {'style': ('bars', 'number')})
 
     def test_week_shown_by_default(self):
-        d = nx.dash_default()
+        d = nx.dash_kind_defaults()
         ids = [i['id'] for i in d]
         week = d[ids.index('week')]
         self.assertEqual((week['size'], week['hidden'], week['style']), ('small', False, 'bars'))
@@ -637,22 +638,23 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(rows['pick'], (('small',), 'small', False))
         self.assertEqual(rows['save'], (('small',), 'small', True))         # hidden by default
         self.assertEqual(rows['friends'], (('small', 'wide', 'full'), 'full', False))
-        ids = [i['id'] for i in nx.dash_default()]
+        ids = [i['id'] for i in nx.dash_kind_defaults()]
         self.assertEqual(ids[:5], ['stage', 'save', 'foryou', 'friends', 'pick'])
         self.assertEqual((nx.DASH_PLACE_AFTER['pick'], nx.DASH_PLACE_AFTER['save']),
                          ('stage', 'stage'))
         # A saved layout from before w-91 gains Your save (hidden) right after the Stage.
-        old = [i for i in nx.dash_default() if i['id'] != 'save']
+        old = [i for i in nx.dash_kind_defaults() if i['id'] != 'save']
         out = nx.dash_normalize(old)
         self.assertEqual([i['id'] for i in out][:2], ['stage', 'save'])
         self.assertTrue(out[1]['hidden'])
         # Default packing at 3 columns: Pick for me and System share a row.
-        packed = nx.dash_pack(nx.dash_default(), 3, skip={'foryou', 'friends'})
+        packed = nx.dash_pack(nx.dash_kind_defaults(), 3, skip={'foryou', 'friends'})
         where = {k: (r, c) for k, r, c, _s in packed}
         self.assertEqual(where['pick'][0], where['system'][0])
         # Your save beside a Wide Stage.
         items = [dict(i, size='wide') if i['id'] == 'stage' else
-                 dict(i, hidden=False) if i['id'] == 'save' else i for i in nx.dash_default()]
+                 dict(i, hidden=False) if i['id'] == 'save' else i
+                 for i in nx.dash_kind_defaults()]
         packed = nx.dash_pack(items, 3, skip={'foryou'})
         self.assertEqual([(k, r, c) for k, r, c, _s in packed[:2]],
                          [('stage', 0, 0), ('save', 0, 2)])
@@ -670,12 +672,12 @@ class DashboardModel(unittest.TestCase):
         self.assertIn('foryou', nx.DASH_WIDGETS)
         d = nx.dash_default()
         self.assertEqual(d, nx.dash_normalize(None))
-        self.assertEqual(d[2], {'id': 'foryou', 'size': 'full', 'hidden': False,
+        self.assertEqual(d[1], {'id': 'foryou', 'size': 'full', 'hidden': False,
                                 'style': 'stage'})
 
     def test_foryou_normalize_round_trip(self):
         # A layout saved before w-89 gets For you now right after the Stage.
-        saved = [i for i in nx.dash_default() if i['id'] != 'foryou']
+        saved = [i for i in nx.dash_kind_defaults() if i['id'] != 'foryou']
         out = nx.dash_normalize(saved)
         ids = [i['id'] for i in out]
         self.assertEqual(ids[:4], ['stage', 'foryou', 'save', 'friends'])
@@ -823,7 +825,8 @@ class DashboardModel(unittest.TestCase):
         from datetime import datetime, timedelta
         from nexus.gui import moments as M
         v2 = self.items(('stage', 'cinematic'), ('system', 'wide'))
-        path = self._prefs({'dashboard': {'version': 2, 'items': v2, 'layouts': [{'n': 1}],
+        path = self._prefs({'dashboard': {'version': 2, 'items': v2, 'layouts': [
+                                              {'name': 'Evening', 'items': v2, 'n': 1}],
                                           'active': 'Evening', 'density': 'compact'},
                             'dashboard_v1': [{'id': 'jump'}]})
         pr = nx.LibraryPrefs()
@@ -835,8 +838,10 @@ class DashboardModel(unittest.TestCase):
         pr.save()
         data = json.loads(path.read_text())
         dash = data['dashboard']
-        self.assertEqual((dash['layouts'], dash['active'], dash['density']),
-                         ([{'n': 1}], 'Evening', 'compact'))
+        lt = dash['layouts'][0]
+        self.assertEqual((lt['name'], lt['n'], lt['density'], dash['active'], dash['density']),
+                         ('Evening', 1, 'compact', 'Evening', 'compact'))  # unknown key kept
+        self.assertEqual(lt['items'], pr.dashboard)                  # written through
         self.assertEqual(dash['version'], 2)
         self.assertEqual(data['dashboard_v1'], [{'id': 'jump'}])
         until = (now.date() + timedelta(days=M.SNOOZE_DAYS)).isoformat()
@@ -850,7 +855,7 @@ class DashboardModel(unittest.TestCase):
         self.assertTrue(M.is_snoozed(again.snoozes, 'friends:steam-1', now))
         again.clear_quiet()
         self.assertIsNone(nx.LibraryPrefs().quiet_until)
-        self.assertEqual(json.loads(path.read_text())['dashboard']['layouts'], [{'n': 1}])
+        self.assertEqual(json.loads(path.read_text())['dashboard']['layouts'][0]['n'], 1)
 
     def test_moments_state_from_a_v1_file_keeps_the_backup(self):
         import json
@@ -1458,3 +1463,288 @@ class AppIcon(unittest.TestCase):
                 before = png.stat().st_mtime_ns
                 nx.ensure_icon()
                 self.assertEqual(png.stat().st_mtime_ns, before)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class HomeLayouts(unittest.TestCase):
+    """Presets, saved layouts and Switch by time (w-92): the pure parts."""
+
+    def setUp(self):
+        from nexus.gui import layouts as L
+        self.L = L
+
+    def shown(self, items):
+        return [(i['id'], i['size']) for i in items if not i['hidden']]
+
+    def _prefs(self, saved):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / 'library.json'
+        if saved is not None:
+            path.write_text(json.dumps(saved))
+        p = mock.patch.object(nx.LibraryPrefs, 'PATH', path)
+        p.start()
+        self.addCleanup(p.stop)
+        return path
+
+    # ---- presets ----
+    def test_presets_are_idempotent_and_complete(self):
+        every = sorted(k for k, *_ in nx.DASH_KINDS)
+        for key, _label, _tip in self.L.PRESETS:
+            items = self.L.dash_preset(key)
+            self.assertEqual(nx.dash_normalize(items), items, key)
+            self.assertEqual(sorted(i['id'] for i in items), every, key)
+            stage = next(i for i in items if i['id'] == 'stage')
+            self.assertEqual((stage['style'], stage['bg']), ('row', 'art'), key)
+            self.assertNotIn('pin', stage)
+            smart = next(i for i in items if i['id'] == 'smart')
+            self.assertIn(smart['shelf'], ('unfinished', 'continue'))     # never `linux`
+            self.assertIn(self.L.PRESET_DENSITY[key], nx.DASH_DENSITY)
+
+    def test_cinematic_is_the_default_and_calm(self):
+        d = nx.dash_default()
+        self.assertEqual(d, self.L.dash_preset('cinematic'))
+        self.assertEqual(d, nx.dash_normalize(None))
+        self.assertEqual(d, nx.dash_normalize([]))
+        self.assertEqual(self.shown(d), [('stage', 'cinematic'), ('foryou', 'full'),
+                                         ('week', 'small'), ('pick', 'small'),
+                                         ('friends', 'small'), ('smart', 'full')])
+        by = {i['id']: i for i in d}
+        self.assertEqual(by['foryou']['style'], 'stage')
+        self.assertEqual(by['smart']['shelf'], 'unfinished')
+        self.assertEqual(self.L.PRESET_DENSITY['cinematic'], 'comfortable')
+
+    def test_other_presets(self):
+        d = self.L.dash_preset('dashboard')
+        self.assertEqual(self.shown(d), [
+            ('stage', 'wide'), ('save', 'small'), ('foryou', 'full'), ('system', 'wide'),
+            ('week', 'small'), ('friends', 'small'), ('pick', 'small'), ('news', 'small'),
+            ('deals', 'wide'), ('smart', 'full')])
+        self.assertEqual(next(i for i in d if i['id'] == 'foryou')['style'], 'strip')
+        self.assertEqual(self.L.PRESET_DENSITY['dashboard'], 'compact')
+        m = self.L.dash_preset('minimal')
+        self.assertEqual(self.shown(m), [('stage', 'banner'), ('foryou', 'full'),
+                                         ('smart', 'full')])
+        self.assertEqual(next(i for i in m if i['id'] == 'smart')['shelf'], 'continue')
+        self.assertEqual(self.L.PRESET_DENSITY['minimal'], 'comfortable')
+        s = self.L.dash_preset('shelves')
+        self.assertEqual(self.shown(s), [('foryou', 'full'), ('smart', 'full'),
+                                         ('installed', 'full'), ('favourites', 'full'),
+                                         ('collections', 'full'), ('updates', 'full')])
+        stage = next(i for i in s if i['id'] == 'stage')
+        self.assertEqual((stage['hidden'], stage['size']), (True, 'cinematic'))
+        self.assertEqual(self.L.PRESET_DENSITY['shelves'], 'compact')
+
+    # ---- layouts and rules ----
+    def test_clean_layouts(self):
+        L = self.L
+        items = nx.dash_default()
+        raw = [
+            {'name': '  Couch  ', 'items': items, 'density': 'compact',
+             'rule': {'from': '20:00', 'to': '06:00', 'x': 1}, 'auto': True, 'future': [1]},
+            {'name': 'couch', 'items': items},                       # duplicate, dropped
+            {'name': 'Desk', 'items': [{'id': 'news'}], 'density': 'tiny',
+             'rule': {'from': '8:00', 'to': '09:00'}, 'auto': 'yes'},
+            {'name': '', 'items': items}, {'name': 'x' * 41, 'items': items},
+            {'name': 'Empty', 'items': []}, {'name': 'NotList', 'items': {'a': 1}},
+            {'name': 3, 'items': items}, 'junk', None,
+            {'name': 'Same', 'items': items, 'rule': {'from': '10:00', 'to': '10:00'}},
+            {'name': 'Late', 'items': items, 'rule': {'from': '24:00', 'to': '01:00'}},
+        ]
+        out = L.clean_layouts(raw)
+        self.assertEqual([lt['name'] for lt in out], ['Couch', 'Desk', 'Same', 'Late'])
+        couch = out[0]
+        self.assertEqual((couch['density'], couch['auto'], couch['future']),
+                         ('compact', True, [1]))
+        self.assertEqual(couch['rule'], {'from': '20:00', 'to': '06:00', 'x': 1})
+        desk = out[1]
+        self.assertNotIn('density', desk)
+        self.assertNotIn('rule', desk)                               # 8:00 isn't zero-padded
+        self.assertNotIn('auto', desk)
+        self.assertEqual(desk['items'], nx.dash_normalize([{'id': 'news'}]))
+        self.assertNotIn('rule', out[2])                             # from == to
+        self.assertNotIn('rule', out[3])
+        many = [{'name': f"L{i}", 'items': items} for i in range(20)]
+        self.assertEqual(len(L.clean_layouts(many)), L.MAX_LAYOUTS)
+        for bad in (None, {}, 'x', 3):
+            self.assertEqual(L.clean_layouts(bad), [])
+        self.assertEqual(L.clean_layouts(out), out)                  # idempotent
+
+    def test_layout_for(self):
+        from datetime import datetime
+        L = self.L
+
+        def at(h, m, layouts):
+            return L.layout_for(layouts, datetime(2026, 3, 29, h, m))
+
+        night = {'name': 'Couch', 'rule': {'from': '20:00', 'to': '06:00'}}
+        day = {'name': 'Desk', 'rule': {'from': '09:00', 'to': '17:00'}}
+        friends = {'name': 'Friends', 'rule': {'from': '19:00', 'to': '23:00'}}
+        none = {'name': 'Plain'}
+        ls = [night, day, none]
+        table = [((23, 59), 'Couch'), ((0, 0), 'Couch'), ((5, 59), 'Couch'), ((6, 0), None),
+                 ((19, 59), None), ((20, 0), 'Couch'), ((9, 0), 'Desk'), ((16, 59), 'Desk'),
+                 ((17, 0), None), ((8, 59), None)]
+        for (h, m), want in table:
+            self.assertEqual(at(h, m, ls), want, (h, m))
+        # Several: the one that started most recently
+        both = [friends, night]
+        self.assertEqual(at(19, 30, both), 'Friends')
+        self.assertEqual(at(21, 0, both), 'Couch')                    # 20:00 is later
+        self.assertEqual(at(23, 30, both), 'Couch')
+        cross = [{'name': 'A', 'rule': {'from': '22:00', 'to': '02:00'}},
+                 {'name': 'B', 'rule': {'from': '01:00', 'to': '03:00'}}]
+        self.assertEqual(at(0, 30, cross), 'A')
+        self.assertEqual(at(1, 30, cross), 'B')                       # A started yesterday
+        tie = [{'name': 'First', 'rule': {'from': '10:00', 'to': '12:00'}},
+               {'name': 'Second', 'rule': {'from': '10:00', 'to': '11:00'}}]
+        self.assertEqual(at(10, 30, tie), 'First')                    # tie: the earlier one
+        self.assertIsNone(L.layout_for([], datetime(2026, 1, 1, 12)))
+        self.assertIsNone(L.layout_for([none, {'name': 'Bad', 'rule': 'x'}],
+                                       datetime(2026, 1, 1, 12)))
+        # DST: wall-clock only. Fall back repeats 02:30; spring forward skips it.
+        fall = [{'name': 'Early', 'rule': {'from': '02:00', 'to': '03:00'}}]
+        self.assertEqual(L.layout_for(fall, datetime(2026, 10, 25, 2, 30)), 'Early')
+        self.assertEqual(L.layout_for(fall, datetime(2026, 10, 25, 2, 30, fold=1)), 'Early')
+        gap = [{'name': 'Gap', 'rule': {'from': '02:00', 'to': '02:45'}}]
+        self.assertIsNone(L.layout_for(gap, datetime(2026, 3, 29, 1, 59)))
+        self.assertIsNone(L.layout_for(gap, datetime(2026, 3, 29, 3, 0)))
+
+    def test_rule_text_and_overlaps(self):
+        from nexus.gui import layouts_bar as B
+        L = self.L
+        couch = {'from': '20:00', 'to': '06:00'}
+        self.assertEqual(L.rule_text(couch), "from 20:00 to 06:00")
+        self.assertEqual(L.rule_text(None), "")
+        others = [('Friends night', {'from': '19:00', 'to': '23:00'}),
+                  ('Morning', {'from': '07:00', 'to': '09:30'}),
+                  ('Dawn', {'from': '05:45', 'to': '06:15'})]
+        self.assertEqual([n for n, _r in L.overlaps(couch, others)], ['Friends night', 'Dawn'])
+        self.assertEqual(L.overlaps({'from': '06:15', 'to': '07:00'}, others), [])  # edges touch
+        self.assertEqual(L.overlaps({'from': '10:00', 'to': '10:00'}, others), [])
+        self.assertIn("the next morning", B.rule_note(couch))
+        self.assertNotIn("next morning", B.rule_note({'from': '07:00', 'to': '09:00'}))
+        self.assertEqual(B.rule_note({'from': '07:00', 'to': '07:00'}),
+                         "Pick two different times.")
+        self.assertEqual(B.overlap_note(couch, others[:1]),
+                         "Overlaps “Friends night” (19:00 to 23:00): the one that starts "
+                         "later wins.")
+        self.assertIn("and 1 more", B.overlap_note(couch, others))
+        self.assertEqual(B.rule_line({'name': 'a', 'rule': couch}), "switches from 20:00 to 06:00")
+        self.assertEqual(B.rule_line({'name': 'a', 'auto': True}), "saved for you before a preset")
+        self.assertEqual(B.rule_line({'name': 'a'}), "no time rule")
+
+    def test_names(self):
+        L = self.L
+        ls = [{'name': 'Couch'}, {'name': 'Couch 2'}]
+        self.assertEqual(L.unique_name(ls, 'couch'), 'couch 3')
+        self.assertEqual(L.unique_name(ls, 'Desk'), 'Desk')
+        self.assertEqual(L.clean_name('  a   b '), 'a b')
+        self.assertIsNone(L.clean_name('   '))
+        self.assertIsNone(L.clean_name(['x']))
+
+    # ---- prefs ----
+    def test_prefs_round_trip(self):
+        import json
+        v1 = [{'id': 'jump', 'size': 'full'}, {'id': 'news', 'size': 'wide'}]
+        items = nx.dash_default()
+        path = self._prefs({
+            'dashboard': {'version': 2, 'items': items, 'future': {'k': 1},
+                          'layouts': [{'name': 'Couch', 'items': items, 'zz': 2,
+                                       'rule': {'from': '20:00', 'to': '06:00'}},
+                                      {'name': 'Desk', 'items': items, 'density': 'compact'},
+                                      'bad'],
+                          'active': 'couch', 'base': 'Gone', 'v1_taken': 'yes'},
+            'dashboard_v1': v1})
+        pr = nx.LibraryPrefs()
+        self.assertEqual([lt['name'] for lt in pr.layouts], ['Couch', 'Desk'])
+        self.assertEqual((pr.active, pr.base, pr.v1_taken), ('Couch', None, False))
+        self.assertEqual(pr.old_home(), v1)
+        # Write-through: Home's edits go into the active layout
+        pr.dashboard = nx.dash_normalize([dict(i, hidden=True) if i['id'] == 'week' else i
+                                          for i in items])
+        pr.density = 'compact'
+        pr.save()
+        data = json.loads(path.read_text())
+        dash = data['dashboard']
+        self.assertEqual(dash['future'], {'k': 1})
+        self.assertEqual(data['dashboard_v1'], v1)
+        couch = dash['layouts'][0]
+        self.assertEqual((couch['zz'], couch['density']), (2, 'compact'))
+        self.assertTrue(next(i for i in couch['items'] if i['id'] == 'week')['hidden'])
+        self.assertEqual(dash['layouts'][1]['items'], items)          # not the active one
+        self.assertEqual((dash['active'], dash['base'], dash['v1_taken']),
+                         ('Couch', None, False))
+        again = nx.LibraryPrefs()
+        self.assertEqual(again.layouts, pr.layouts)
+
+    def test_bad_layout_values_never_stop_start_up(self):
+        for dash in ({'layouts': 'x', 'active': 3, 'base': [], 'v1_taken': 1},
+                     {'layouts': [{'name': {'a': 1}, 'items': [1]}], 'active': None},
+                     {'layouts': [None, 4, [], {'items': None}]}, []):
+            self._prefs({'dashboard': dash})
+            pr = nx.LibraryPrefs()
+            self.assertEqual((pr.layouts, pr.active, pr.base, pr.v1_taken),
+                             ([], None, None, False), dash)
+
+    def test_keep_current_and_the_cap(self):
+        L = self.L
+        self._prefs(None)
+        pr = nx.LibraryPrefs()
+        self.assertEqual(pr.keep_current("Before Minimal"), 'saved')
+        self.assertEqual(pr.layouts[0]['name'], "Before Minimal")
+        self.assertTrue(pr.layouts[0]['auto'])
+        self.assertEqual(pr.keep_current("Before Dashboard"), 'kept')  # same items, density
+        self.assertEqual(len(pr.layouts), 1)
+        for i in range(L.MAX_LAYOUTS - 1):
+            pr.dashboard = nx.dash_normalize([dict(it, hidden=it['id'] == 'week' and i % 2 == 0,
+                                                   size='wide' if it['id'] == 'news' else
+                                                   it['size']) for it in nx.dash_default()])
+            self.assertIsNotNone(pr.add_layout(f"Mine {i}", pr.dashboard))
+        self.assertEqual(len(pr.layouts), L.MAX_LAYOUTS)
+        pr.dashboard = L.dash_preset('minimal')
+        self.assertEqual(pr.keep_current("Before Shelf-first"), 'saved')   # oldest auto went
+        self.assertNotIn("Before Minimal", [lt['name'] for lt in pr.layouts])
+        self.assertEqual(pr.layouts[-1]['name'], "Before Shelf-first")
+        pr.delete_layout("Before Shelf-first")
+        pr.add_layout("Mine last", nx.dash_default())
+        pr.dashboard = L.dash_preset('shelves')
+        self.assertEqual(pr.keep_current("Before Cinematic"), 'full')     # none saved for you
+        self.assertIsNone(pr.save_as("One more"))
+        # Active layout: already saved
+        pr.active = "Mine 0"
+        self.assertEqual(pr.keep_current("Before Minimal"), 'kept')
+
+    def test_save_as_rename_delete_and_rules(self):
+        self._prefs(None)
+        pr = nx.LibraryPrefs()
+        lt = pr.save_as("Couch")
+        self.assertEqual((pr.active, pr.base), ("Couch", "Couch"))
+        self.assertEqual(lt['density'], pr.density)
+        self.assertEqual(pr.save_as("couch")['name'], "couch 2")
+        self.assertEqual(pr.rename_layout("couch 2", "Desk"), "Desk")
+        self.assertEqual((pr.active, pr.base), ("Desk", "Desk"))
+        self.assertEqual(pr.rename_layout("Desk", "COUCH"), "COUCH 2")
+        pr.set_rule("Couch", {'from': '20:00', 'to': '06:00'})
+        self.assertEqual(pr.layout("Couch")['rule'], {'from': '20:00', 'to': '06:00'})
+        pr.set_rule("Couch", {'from': '20:00', 'to': '20:00'})          # bad: removed
+        self.assertNotIn('rule', pr.layout("Couch"))
+        pr.delete_layout("COUCH 2")
+        self.assertEqual((pr.active, pr.base), (None, None))
+        self.assertEqual([x['name'] for x in pr.layouts], ["Couch"])
+
+    def test_old_home_offer(self):
+        self._prefs({'dashboard': {'version': 1, 'items': [{'id': 'jump'}, {'id': 'news'}]}})
+        pr = nx.LibraryPrefs()
+        self.assertEqual(pr.old_home(), [{'id': 'jump'}, {'id': 'news'}])  # this run's backup
+        pr.v1_taken = True
+        self.assertIsNone(pr.old_home())
+        self._prefs({'dashboard': {'version': 2, 'items': nx.dash_default(), 'layouts': [
+            {'name': 'My old Home', 'items': nx.dash_default()}]}, 'dashboard_v1': [{'id': 'x'}]})
+        self.assertIsNone(nx.LibraryPrefs().old_home())                 # a layout has the name
+        self._prefs({'dashboard': {'version': 2, 'items': nx.dash_default()}})
+        self.assertIsNone(nx.LibraryPrefs().old_home())                 # nothing to offer

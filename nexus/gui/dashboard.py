@@ -15,6 +15,8 @@ from nexus import gamedb, smart, storeinfo
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
+from .layouts import (dash_preset, layout_for, MAX_LAYOUTS, MY_HOME, OLD_HOME, PRESET_DENSITY,
+    PRESET_LABELS, PROMPT_MAX)
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import (_pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, VIBES,
     vibe_pools)
@@ -117,10 +119,17 @@ def _dash_options(wid: str, it: dict) -> dict:
             for key, ok in DASH_OPTIONS.get(wid, {}).items()}
 
 
-def dash_default() -> list[dict]:
+def dash_kind_defaults() -> list[dict]:
+    """Every widget with its DASH_KINDS size and hidden flag, in DASH_KINDS
+    order: what a saved layout gains for a widget it doesn't have yet."""
     return [{'id': k, 'size': d, 'hidden': h, **({'shelf': _dash_shelf(None)} if k == 'smart'
                                                  else {}), **_dash_options(k, {})}
             for k, _s, d, h in DASH_KINDS]
+
+
+def dash_default() -> list[dict]:
+    """Home with nothing saved, and Reset layout: the Cinematic preset (w-92)."""
+    return dash_preset('cinematic')
 
 
 def stage_height(size: str, viewport_h: int, style: str = 'row', bg: str = 'art') -> int:
@@ -210,6 +219,8 @@ def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
     anchor, else at the end) with their defaults. A layout saved before version 2
     also gets the Stage moved to the top; every other widget keeps its place."""
     items = [it for it in (items if isinstance(items, list) else []) if isinstance(it, dict)]
+    if not items:
+        return dash_default()                 # nothing saved: the Cinematic preset
     legacy: dict[str, list[dict]] = {}
     for it in items:
         if it.get('id') in DASH_MERGED:
@@ -241,7 +252,7 @@ def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
             else:
                 out[-1]['pin'] = pin
     last: dict[str, str] = {}             # anchor -> the newest widget put after it
-    for d in dash_default():
+    for d in dash_kind_defaults():
         if d['id'] in seen:
             continue
         anchor = DASH_PLACE_AFTER.get(d['id'])
@@ -2255,11 +2266,25 @@ class Dashboard(QWidget):
         set_glyph_icon(self.btn_edit, G['customise'], 16)
         self.btn_edit.clicked.connect(lambda: self.set_editing(not self.editing))
         foot.addWidget(self.btn_edit)
-        self.add_row_host = QFrame()
-        self.add_row_host.setObjectName("DashAdd")
-        self.add_row = FlowLayout(self.add_row_host, margin=SP['3'], spacing=SP['1_5'])
-        self.add_row_host.setVisible(False)
-        lay.addWidget(self.add_row_host)
+        # Customise Home (w-92): presets, your layouts, Add widgets.
+        self.layouts_bar = LayoutsBar(self)
+        lay.addWidget(self.layouts_bar)
+        self.layouts_bar.setVisible(False)
+        self.add_row_host = self.layouts_bar.add_host      # tests and _fill_add_row
+        self.add_row = self.layouts_bar.add_row
+        bar = self.layouts_bar
+        bar.preset.connect(self.pick_preset)
+        bar.switch.connect(self.switch_layout)
+        bar.save_as.connect(self._save_as)
+        bar.adopt_old.connect(self.adopt_old_home)
+        bar.rename.connect(self._rename)
+        bar.delete.connect(self._delete)
+        bar.edit_rule.connect(self._edit_rule)
+        # Switch by time: checked when Home shows (go), at most once a minute.
+        self.clock = datetime.now
+        self.mono = time.monotonic
+        self._time_at: float | None = None
+        self._last_match: str | None = None
         self.grid = QGridLayout()
         self.grid.setHorizontalSpacing(SP['4'])
         self.grid.setVerticalSpacing(SP['5'])
@@ -2394,7 +2419,6 @@ class Dashboard(QWidget):
                 it.widget().hide()             # gone now, not at the next event loop
                 it.widget().deleteLater()
         hidden = [i for i in self.items if i['hidden']]
-        self.add_row_host.setVisible(self.editing)
         if not self.editing:
             return
         if not hidden:
@@ -2409,7 +2433,13 @@ class Dashboard(QWidget):
     # ---- editing ----
     def set_editing(self, on: bool):
         self.foryou.close_list()
+        f = QApplication.focusWidget()
+        if not on and f is not None and self.layouts_bar.isAncestorOf(f):
+            self.btn_edit.setFocus(Qt.FocusReason.OtherFocusReason)   # before the panel hides
         self.editing = on
+        if on:
+            self._sync_layouts()
+        self.layouts_bar.setVisible(on)
         self.btn_edit.setText("Done" if on else "Customise")
         self.btn_edit.setObjectName("Primary" if on else "Ghost")
         set_glyph_icon(self.btn_edit, G['check'] if on else G['customise'], 16,
@@ -2498,6 +2528,207 @@ class Dashboard(QWidget):
         self.refresh()
         self.hub.prefs.save()
 
+    # ---- presets and saved layouts (w-92) ----
+    def layouts_view(self, note: str = '') -> LayoutsView:
+        pr = self.hub.prefs
+        names = [lt['name'] for lt in pr.layouts]
+        return LayoutsView([dict(lt) for lt in pr.layouts],
+                           names.index(pr.active) if pr.active in names else None,
+                           pr.old_home() is not None, note)
+
+    def _sync_layouts(self, note: str = ''):
+        if self.editing:
+            self.layouts_bar.show_view(self.layouts_view(note))
+
+    def apply_layout(self, layout, density: str | None = None):
+        """Home shows `layout` (a saved layout's name, or a list of items)
+        and its density when it has one. Every widget is already built: the
+        ones whose size, hidden flag or options changed are filled again and
+        the grid is laid out once more. Callers set prefs.active first (a
+        save writes the items through to it)."""
+        pr = self.hub.prefs
+        if isinstance(layout, str):
+            lt = pr.layout(layout)
+            if lt is None:
+                return
+            layout, density = lt['items'], lt.get('density', density)
+        new = dash_normalize([dict(i) for i in layout])
+        old = {i['id']: i for i in self.items}
+        changed = [i['id'] for i in new if old.get(i['id']) != i]
+        f = QApplication.focusWidget()
+        gone = [self.widgets[i['id']] for i in new if i['hidden'] and i['id'] in self.widgets]
+        if f is not None and any(w.isAncestorOf(f) for w in gone):
+            self.btn_edit.setFocus(Qt.FocusReason.OtherFocusReason)   # before it hides
+        self.stage.clear_pick()
+        pr.dashboard = new
+        if density in DASH_DENSITY and density != self.density:
+            pr.density = density
+            self.set_density(density)
+        if changed:
+            self.refresh(changed)
+        self.relayout(force=True)
+        pr.save()
+
+    def _note_full(self):
+        self._sync_layouts(f"{MAX_LAYOUTS} layouts saved. Delete one first, so this Home"
+                           " isn't lost.")
+
+    def _refocus(self, w):
+        QTimer.singleShot(0, lambda: alive(w) and w.isVisible() and focus_and_reveal(w))
+
+    def _chip_of(self, name):
+        names = [lt['name'] for lt in self.hub.prefs.layouts]
+        btns = self.layouts_bar.layout_btns
+        i = names.index(name) if name in names else None
+        return btns[i] if i is not None and i < len(btns) else None
+
+    def pick_preset(self, key: str):
+        """Start from a preset; what Home showed is saved first."""
+        pr = self.hub.prefs
+        if pr.keep_current(f"Before {PRESET_LABELS.get(key, key)}") == 'full':
+            self._note_full()
+            return
+        pr.active = pr.base = None
+        self.apply_layout(dash_preset(key), PRESET_DENSITY.get(key))
+        self._sync_layouts()
+        self._refocus(self.layouts_bar.preset_btns.get(key))
+
+    def switch_layout(self, index: int):
+        """A layout chip: Home shows that layout; focus stays on the chip."""
+        pr = self.hub.prefs
+        if not 0 <= index < len(pr.layouts):
+            return
+        name = pr.layouts[index]['name']
+        if name != pr.active:
+            pr.write_through()
+            pr.active = pr.base = name
+            self.apply_layout(name)
+        self._sync_layouts()
+        self._refocus(self._chip_of(name))
+
+    def _save_as(self):
+        def done(name):
+            lt = self.hub.prefs.save_as(name)
+            if lt is None:
+                self._note_full()
+                return
+            self._sync_layouts()
+            self._refocus(self._chip_of(lt['name']))
+        self.hub.modal.prompt("Save as a layout", '', "Save", done, max_len=PROMPT_MAX,
+                              text="Saves what Home shows now: widgets, sizes, styles and"
+                                   " density.")
+
+    def adopt_old_home(self):
+        """My old Home: the layout an older Nexus saved, as a layout (once)."""
+        pr = self.hub.prefs
+        raw = pr.old_home()
+        if raw is None:
+            return
+        if pr.keep_current(f"Before {OLD_HOME}") == 'full':
+            self._note_full()
+            return
+        lt = pr.add_layout(OLD_HOME, dash_normalize(raw, version=1), save=False)
+        if lt is None:
+            self._note_full()
+            return
+        pr.v1_taken = True
+        pr.active = pr.base = lt['name']
+        self.apply_layout(lt['name'])
+        self._sync_layouts()
+        self._refocus(self._chip_of(lt['name']))
+
+    def _rename(self):
+        pr = self.hub.prefs
+        name = pr.active
+        if pr.layout(name) is None:
+            return
+
+        def done(new):
+            got = pr.rename_layout(name, new)
+            self._sync_layouts()
+            if got:
+                self._refocus(self.layouts_bar.btn_rename)
+        self.hub.modal.prompt("Rename layout", name, "Rename", done, max_len=PROMPT_MAX)
+
+    def _delete(self):
+        pr = self.hub.prefs
+        lt = pr.layout(pr.active)
+        if lt is None:
+            return
+        name = lt['name']
+
+        def done():
+            pr.delete_layout(name)
+            self._sync_layouts()
+        self.hub.modal.ask(f"Delete “{name}”?",
+                           "Your Home stays as it is now; only this saved layout goes"
+                           + (", with its time rule." if lt.get('rule') else "."),
+                           "Delete", done)
+
+    def _edit_rule(self):
+        pr = self.hub.prefs
+        lt = pr.layout(pr.active)
+        if lt is None:
+            return
+        name, modal = lt['name'], self.hub.modal
+        others = [(o['name'], o['rule']) for o in pr.layouts
+                  if o is not lt and o.get('rule')]
+        body, ok = time_rule_body(lt.get('rule'), others)
+        body.changed.connect(modal.refresh)
+        body.changed.connect(modal.touched)
+
+        def done(rule):
+            pr.set_rule(name, rule)
+            self._sync_layouts()
+            self._refocus(self.layouts_bar.btn_time)
+        modal.open("Switch by time", body, "Save", lambda: done(body.rule()),
+                   glyph=G['clock'], sub=f"Home switches to “{name}”", can_submit=ok,
+                   extra=("Remove rule", G['close'], lambda: done(None))
+                   if lt.get('rule') else None, extra_danger=False, focus=body.first())
+
+    def _busy(self) -> bool:
+        """Something on top of Home: the clock waits."""
+        hub = self.hub
+        for name in ('_open_modal', '_open_sheet'):
+            fn = getattr(hub, name, None)
+            if callable(fn) and fn() is not None:
+                return True
+        return self.editing or self.foryou.list_open()
+
+    def time_check(self, now: datetime | None = None):
+        """Home is showing: switch layouts by time of day. At most once a
+        minute, never while customising or with something open on top, and
+        only when the matching rule changed since the last look (a layout
+        picked by hand sticks until then). Leaving every window goes back
+        to the layout last picked by hand (base)."""
+        if self._busy():
+            return
+        mono = self.mono()
+        if self._time_at is not None and mono - self._time_at < 60:
+            return
+        self._time_at = mono
+        pr = self.hub.prefs
+        match = layout_for(pr.layouts, now or self.clock())
+        if match == self._last_match:
+            return
+        prev, self._last_match = self._last_match, match
+        if match is not None:
+            if match == pr.active:
+                return
+            if pr.layout(pr.active) is None:
+                # An unnamed Home: keep it as a layout to come back to.
+                kept = pr.add_layout(MY_HOME, self.items, self.density, auto=True, save=False)
+                if kept is None:
+                    return
+                pr.base = kept['name']
+            pr.write_through()
+            pr.active = match
+            self.apply_layout(match)
+        elif prev is not None and pr.layout(pr.base) is not None and pr.base != pr.active:
+            pr.write_through()
+            pr.active = pr.base
+            self.apply_layout(pr.base)
+
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
@@ -2508,6 +2739,7 @@ from .friends import (_ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text, 
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
+from .layouts_bar import LayoutsBar, LayoutsView, time_rule_body  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import featured_games, ShelfRow  # noqa: E402
 from .newspage import news_style, NewsArt  # noqa: E402

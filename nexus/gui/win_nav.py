@@ -108,6 +108,12 @@ class NavigationMixin:
             self.dealspage.refresh()
         elif page == self.DOWNLOADS:
             self._poll_torrents()
+        if page == self.HOME:
+            # Switch by time (w-92): a saved layout's daily window, checked
+            # as Home shows (at most once a minute), before focus lands.
+            dash = getattr(self, 'dashboard', None)
+            if dash is not None:
+                dash.time_check()
         if self.input.mode in ('keyboard', 'pad') and not self._theatre:
             self._page_focus.start()            # keys/pad: land somewhere on the new page
         self._sync_presence()                   # friends' presence only while Home shows

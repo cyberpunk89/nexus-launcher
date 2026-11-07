@@ -122,6 +122,14 @@ class LibraryPrefs:
         self._dashboard_v1 = raw if isinstance(raw, list) and raw \
             and self.dashboard_version < DASH_VERSION \
             and 'dashboard_v1' not in self._data else None
+        # Saved layouts (w-92): named snapshots of the items and density, the
+        # one Home is on now (`active`, edits write through to it), the one
+        # last chosen by hand (`base`, where the clock goes back to), and
+        # whether "My old Home" was taken from dashboard_v1.
+        self.layouts = clean_layouts(opts.get('layouts'))
+        self.active = self._layout_name(opts.get('active'))
+        self.base = self._layout_name(opts.get('base'))
+        self.v1_taken = opts.get('v1_taken') is True
         self.appearance = normalize_appearance(self._data.get('appearance'))
         # Games you own but haven't installed: shown at all (Settings), and
         # which of installed / not installed / all the Library lists.
@@ -211,6 +219,7 @@ class LibraryPrefs:
             if isinstance(pr, list) else []
 
     def save(self):
+        self.write_through()
         # Keys this version doesn't know about are kept, not dropped.
         out = dict(self._data)
         if self._dashboard_v1 is not None:
@@ -224,7 +233,9 @@ class LibraryPrefs:
                                   'items': self.dashboard, 'snoozes': self.snoozes,
                                   'quiet_until': self.quiet_until.isoformat()
                                   if self.quiet_until else None,
-                                  'kinds_off': self.kinds_off, 'density': self.density},
+                                  'kinds_off': self.kinds_off, 'density': self.density,
+                                  'layouts': self.layouts, 'active': self.active,
+                                  'base': self.base, 'v1_taken': self.v1_taken},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
@@ -249,6 +260,119 @@ class LibraryPrefs:
             net.write_atomic(self.PATH, json.dumps(out, indent=2))
         except OSError as e:                 # a full disk: keep running, say so
             sys.stderr.write(f"nexus: couldn't save {self.PATH}: {e}\n")
+
+    # ---- saved layouts (w-92) ----
+    def _layout_name(self, name) -> str | None:
+        lt = find_layout(self.layouts, name)
+        return lt['name'] if lt else None
+
+    def layout(self, name) -> dict | None:
+        return find_layout(self.layouts, name)
+
+    def write_through(self):
+        """Home is on a saved layout: it follows what Home shows now."""
+        lt = self.layout(self.active)
+        if lt is not None:
+            lt['items'] = [dict(i) for i in self.dashboard]
+            lt['density'] = self.density
+
+    def old_home(self) -> list | None:
+        """The layout saved by an older Nexus (top-level dashboard_v1, or the
+        one this run will write there), when it can still be offered as
+        "My old Home": not taken before and no layout has that name."""
+        raw = self._data.get('dashboard_v1')
+        raw = raw if isinstance(raw, list) else self._dashboard_v1
+        if not (isinstance(raw, list) and raw) or self.v1_taken \
+                or self.layout(OLD_HOME) is not None:
+            return None
+        return raw
+
+    def _make_room(self) -> bool:
+        """A free slot for one more layout: at the cap the oldest one saved
+        for you (auto) goes. False when every layout is your own."""
+        if len(self.layouts) < MAX_LAYOUTS:
+            return True
+        old = next((lt for lt in self.layouts if lt.get('auto')), None)
+        if old is None:
+            return False
+        self.delete_layout(old['name'], save=False)
+        return True
+
+    def add_layout(self, name: str, items, density: str | None = None, auto: bool = False,
+                   save: bool = True) -> dict | None:
+        """A new layout (its name made unique) with these items; None when
+        12 are saved and none of them was saved for you."""
+        name = clean_name(name)
+        if name is None or not self._make_room():
+            return None
+        lt = {'name': unique_name(self.layouts, name),
+              'items': dash_normalize([dict(i) for i in items])}
+        if density in DASH_DENSITY:
+            lt['density'] = density
+        if auto:
+            lt['auto'] = True
+        self.layouts.append(lt)
+        if save:
+            self.save()
+        return lt
+
+    def keep_current(self, label: str) -> str:
+        """Before a preset (or My old Home) replaces Home: save what it shows.
+        'kept' when it is already a saved layout (active, or the same items
+        and density as one), 'saved' as `label` (auto), 'full' when there is
+        no room."""
+        self.write_through()
+        if self.layout(self.active) is not None or any(
+                same_layout(lt, self.dashboard, self.density) for lt in self.layouts):
+            return 'kept'
+        lt = self.add_layout(label, self.dashboard, self.density, auto=True, save=False)
+        return 'saved' if lt else 'full'
+
+    def save_as(self, name: str) -> dict | None:
+        """Save as…: a copy of Home now, which Home is then on."""
+        self.write_through()
+        lt = self.add_layout(name, self.dashboard, self.density, save=False)
+        if lt is not None:
+            self.active = self.base = lt['name']
+            self.save()
+        return lt
+
+    def rename_layout(self, old: str, new: str) -> str | None:
+        lt, new = self.layout(old), clean_name(new)
+        if lt is None or new is None:
+            return None
+        others = [o for o in self.layouts if o is not lt]
+        name = unique_name(others, new)
+        for attr in ('active', 'base'):
+            if getattr(self, attr) == lt['name']:
+                setattr(self, attr, name)
+        lt['name'] = name
+        lt.pop('auto', None)                     # named by you now
+        self.save()
+        return name
+
+    def delete_layout(self, name: str, save: bool = True):
+        lt = self.layout(name)
+        if lt is None:
+            return
+        self.layouts.remove(lt)
+        if self.active == lt['name']:
+            self.active = None
+        if self.base == lt['name']:
+            self.base = None
+        if save:
+            self.save()
+
+    def set_rule(self, name: str, rule: dict | None):
+        lt = self.layout(name)
+        if lt is None:
+            return
+        rule = clean_rule(rule)
+        if rule is None:
+            lt.pop('rule', None)
+        else:
+            lt['rule'] = rule
+        self.save()
 
     # ---- For you now (w-88) ----
     def snooze(self, kind: str, key: str, now: datetime):
@@ -414,3 +538,5 @@ class LibraryPrefs:
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .dashboard import DASH_DENSITY, DASH_VERSION, dash_normalize  # noqa: E402
+from .layouts import (clean_layouts, clean_name, clean_rule, find_layout,  # noqa: E402
+    MAX_LAYOUTS, OLD_HOME, same_layout, unique_name)

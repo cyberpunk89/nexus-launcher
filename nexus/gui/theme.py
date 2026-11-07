@@ -685,6 +685,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
                        min-height: ${chip_inner}px; max-height: ${chip_inner}px; }
     QPushButton#Chip:hover { color: $text; border-color: $overlay; }
     QPushButton#Chip:checked { background: $accent_22; color: $accent; border-color: $accent_35; }
+    QPushButton#Chip[auto="true"] { border-style: dashed; }
     /* Segmented control: the track and sliding thumb are painted; the items
        are transparent buttons on top so focus and tooltips still work. */
     QToolButton#SegItem, QPushButton#SegItem {
@@ -875,7 +876,14 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #DashCard[editing="true"], #DashShelf[editing="true"] {
         border: 1px dashed $accent_35; border-radius: ${r_card}px; }
     #DashEditBar { background: $accent_09; border-radius: ${r_control}px; }
-    #DashAdd { background: $surface_1; border: 1px dashed $border; border-radius: ${r_card}px; }
+    #DashLayouts { background: $surface_1; border: 1px solid $border_card;
+                   border-radius: ${r_card}px; }
+    QLabel#LayoutKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#LayoutName { color: $text; font-size: ${fs_xs}px; font-weight: 600; }
+    QLabel#LayoutRule { color: $muted; font-size: ${fs_xs}px; }
+    QFrame#TimeField { background: $surface_2; border: 1px solid $border;
+                       border-radius: ${r_control}px; }
+    QLabel#TimeValue { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
     QLabel#DashTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
     QLabel#DashBig { color: $text; font-size: ${fs_big}px; font-weight: 600; }
     QLabel#DashSub { color: $subtext; font-size: ${fs_xs}px; }

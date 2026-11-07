@@ -1420,7 +1420,7 @@ class Window(unittest.TestCase):
 
     def test_dashboard_edit_mode(self):
         d = self.win.dashboard
-        self.win.prefs.dashboard = nx.dash_default()     # not the user's own layout
+        self.win.prefs.dashboard = nx.dash_kind_defaults()     # not the user's own layout
         d.relayout(force=True)
         self.assertFalse(d.editing)
         d.set_editing(True)
@@ -1446,7 +1446,7 @@ class Window(unittest.TestCase):
     # ---- w-85: the Stage ----
     def _stage(self):
         w = self.win
-        w.prefs.dashboard = nx.dash_default()     # not the user's own layout
+        w.prefs.dashboard = nx.dash_kind_defaults()     # not the user's own layout
         w.dashboard.refresh()
         QApplication.processEvents()
         return w, w.dashboard.stage
@@ -1939,7 +1939,7 @@ class Window(unittest.TestCase):
         p = patch_gui('cli_json', cli)
         p.start()
         self.addCleanup(p.stop)
-        items = nx.dash_default()
+        items = nx.dash_kind_defaults()
         for it in items:
             if it['id'] == 'save':
                 it['hidden'] = False
@@ -4965,7 +4965,7 @@ class Window(unittest.TestCase):
     @linux_features
     def test_system_widget_tiles(self):
         w = self.win
-        w.prefs.dashboard = nx.dash_default()
+        w.prefs.dashboard = nx.dash_kind_defaults()
         w.dashboard.relayout(force=True)
         w.dashboard.refresh(['system'])
         sysw = w.dashboard.widgets['system']
@@ -4981,7 +4981,7 @@ class Window(unittest.TestCase):
     def test_upcoming_widget(self):
         w = self.win
         w.config['gamedb_enabled'] = True
-        w.prefs.dashboard = nx.dash_default()
+        w.prefs.dashboard = nx.dash_kind_defaults()
         price = {'currentStr': '€50', 'best': {'priceStr': '€40', 'category': 'keyshop'}}
         w.dealspage.res = {'configured': True, 'url': 'https://gdb.example', 'summary': {
             'upcoming': [{'appid': 1, 'title': 'Soon', 'releaseDate': '2099-01-02T00:00:00Z',
@@ -5015,7 +5015,7 @@ class Window(unittest.TestCase):
         games = fake_games()
         for g in games:
             g['added_at'] = '2026-09-01T10:00:00'
-        w.prefs.dashboard = nx.dash_default()
+        w.prefs.dashboard = nx.dash_kind_defaults()
         w._on_library({'games': games, 'disks': []}, '')
         w.dashboard.refresh(['installed'])
         tiles = {t.game['slug']: t.mark_new for t in w.dashboard.widgets['installed']._tiles}
@@ -5068,7 +5068,7 @@ class ForYou(unittest.TestCase):
 
     def _fyn(self, n=7, style='stage', stage=None, inputs=None):
         w = self.win
-        w.prefs.dashboard = nx.dash_default()                    # not the user's own layout
+        w.prefs.dashboard = nx.dash_kind_defaults()                    # not the user's own layout
         next(i for i in w.prefs.dashboard if i['id'] == 'foryou')['style'] = style
         if stage:
             next(i for i in w.prefs.dashboard if i['id'] == 'stage').update(stage)
@@ -5080,7 +5080,7 @@ class ForYou(unittest.TestCase):
         self.addCleanup(p.stop)
         w.go(w.HOME)
         w.dashboard.refresh()
-        QApplication.processEvents()
+        self._flush()               # the Cinematic default built its own Strip first (w-92)
         return w, w.dashboard.foryou
 
     def _focus(self, widget):
@@ -5624,3 +5624,306 @@ class News(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HomeLayouts(unittest.TestCase):
+    """Customise Home's presets and saved layouts, Switch by time (w-92)."""
+    tearDownClass = classmethod(Window.tearDownClass.__func__)
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        Window.setUpClass.__func__(cls)
+        # No file, but the write-through a save does (prefs.write_through).
+        nx.LibraryPrefs.save = lambda self: self.write_through()
+
+    def _home(self):
+        w = self.win
+        w.prefs.dashboard = nx.dash_default()                    # not the user's own layout
+        w.prefs.density = 'comfortable'
+        w.prefs.layouts, w.prefs.active, w.prefs.base = [], None, None
+        w.prefs.v1_taken = False
+        w.prefs._dashboard_v1 = None
+        w.prefs._data.pop('dashboard_v1', None)
+        d = w.dashboard
+        d.set_density('comfortable')
+        w.go(w.HOME)
+        d.refresh()
+        QApplication.processEvents()
+        return w, d
+
+    @staticmethod
+    def _flush():
+        from PyQt6.QtCore import QEvent
+        QApplication.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+    def _item(self, kind):
+        return next(i for i in self.win.prefs.dashboard if i['id'] == kind)
+
+    def _prompt(self, text):
+        m = self.win.modal
+        self.assertTrue(m.isVisible())
+        m.field.setText(text)
+        m.primary.click()
+        self._flush()
+
+    def test_customise_shows_the_panel(self):
+        w, d = self._home()
+        bar = d.layouts_bar
+        self.assertTrue(bar.isHidden())
+        d.set_editing(True)
+        self._flush()
+        self.assertTrue(bar.isVisible())
+        self.assertEqual([b.text() for b in bar.preset_btns.values()],
+                         ["Cinematic", "Dashboard", "Minimal", "Shelf-first"])
+        self.assertTrue(bar.empty_note.isVisible())
+        self.assertTrue(bar.btn_save.isVisible())
+        self.assertTrue(bar.btn_old.isHidden())                      # nothing to offer
+        self.assertTrue(bar.manage.isHidden())
+        self.assertTrue(bar.isAncestorOf(d.add_row_host))            # Add widgets row 3
+        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
+        self.assertIn("＋  System", chips)                           # hidden in Cinematic
+        d.set_editing(False)
+        self.assertTrue(bar.isHidden())
+
+    def test_picking_a_preset_saves_the_current_layout_once(self):
+        w, d = self._home()
+        d.set_editing(True)
+        bar = d.layouts_bar
+        bar.preset_btns['dashboard'].click()
+        self._flush()
+        pr = w.prefs
+        self.assertEqual([lt['name'] for lt in pr.layouts], ["Before Dashboard"])
+        self.assertTrue(pr.layouts[0]['auto'])
+        self.assertEqual(pr.layouts[0]['items'], nx.dash_default())
+        self.assertEqual((pr.active, pr.base), (None, None))
+        self.assertEqual(self._item('stage')['size'], 'wide')
+        self.assertEqual((pr.density, d.density), ('compact', 'compact'))
+        self.assertTrue(d.widgets['save'].isVisible())
+        chip = bar.layout_btns[0]
+        self.assertEqual(chip.property('auto'), 'true')
+        self.assertFalse(chip.isChecked())
+        self.assertIn("Saved for you before a preset was picked", chip.toolTip())
+        bar.preset_btns['cinematic'].click()                          # Dashboard saved first
+        bar.preset_btns['dashboard'].click()                          # Cinematic already is
+        self._flush()
+        self.assertEqual([lt['name'] for lt in pr.layouts],
+                         ["Before Dashboard", "Before Cinematic"])
+        # Reset layout: Cinematic, saved layouts untouched
+        d._reset()
+        self.assertEqual(pr.dashboard, nx.dash_default())
+        self.assertEqual(len(pr.layouts), 2)
+        d.set_editing(False)
+
+    def test_full_with_nothing_saved_for_you(self):
+        w, d = self._home()
+        pr = w.prefs
+        for i in range(12):
+            pr.add_layout(f"Mine {i}", nx.dash_preset('minimal') if i else nx.dash_default(),
+                          save=False)
+        pr.dashboard = nx.dash_preset('shelves')
+        d.set_editing(True)
+        self._flush()
+        bar = d.layouts_bar
+        self.assertFalse(bar.btn_save.isEnabled())
+        self.assertIn("12 layouts is the most", bar.btn_save.toolTip())
+        self.assertTrue(bar.full_note.isVisible())
+        bar.preset_btns['cinematic'].click()
+        self._flush()
+        self.assertEqual(pr.dashboard, nx.dash_preset('shelves'))     # nothing lost
+        self.assertIn("Delete one first", bar.preset_note.text())
+        d.set_editing(False)
+
+    def test_save_as_rename_and_delete_through_the_modal(self):
+        w, d = self._home()
+        d.set_editing(True)
+        bar = d.layouts_bar
+        bar.btn_save.click()
+        self.assertEqual(w.modal.title.text(), "Save as a layout")
+        self._prompt("Couch")
+        pr = w.prefs
+        self.assertEqual((pr.active, pr.base), ("Couch", "Couch"))
+        self.assertTrue(bar.layout_btns[0].isChecked())
+        self.assertTrue(bar.manage.isVisible())
+        self.assertEqual((bar.m_name.text(), bar.m_rule.text()), ("Couch", "no time rule"))
+        self.assertEqual(bar.btn_time.text(), "Switch by time…")
+        # Edits write through to the active layout
+        d._edit('news', 'show')
+        self.assertFalse(next(i for i in pr.layout("Couch")['items'] if i['id'] == 'news')['hidden'])
+        bar.btn_rename.click()
+        self.assertEqual(w.modal.field.text(), "Couch")
+        self._prompt("Desk & co")
+        self.assertEqual(pr.active, "Desk & co")
+        self.assertEqual(bar.layout_btns[0].text(), "Desk && co")
+        bar.btn_delete.click()
+        m = w.modal
+        self.assertEqual(m.title.text(), "Delete “Desk & co”?")
+        self.assertIs(m.default_focus(), m.btn_cancel)               # a danger question
+        m.primary.click()
+        self._flush()
+        self.assertEqual((pr.layouts, pr.active), ([], None))
+        self.assertTrue(bar.manage.isHidden())
+        self.assertTrue(bar.empty_note.isVisible())
+        self.assertFalse(self._item('news')['hidden'])                # Home stays as it is
+        d.set_editing(False)
+
+    def test_time_rule_modal(self):
+        w, d = self._home()
+        w.prefs.save_as("Couch")
+        w.prefs.add_layout("Friends night", nx.dash_default(), save=False)
+        w.prefs.set_rule("Friends night", {'from': '19:00', 'to': '23:00'})
+        d.set_editing(True)
+        bar = d.layouts_bar
+        bar.btn_time.click()
+        m = w.modal
+        self.assertEqual((m.title.text(), m.sub.text()),
+                         ("Switch by time", "Home switches to “Couch”"))
+        self.assertTrue(m.btn_extra.isHidden())                      # no rule yet
+        body = m.scroll.widget().findChild(nx.TimeRuleBody)
+        self.assertIs(m.default_focus(), body.first())
+        self.assertEqual(body.rule(), {'from': '20:00', 'to': '06:00'})
+        self.assertIn("Overlaps “Friends night”", body.warn.text())
+        f, t = body.fields
+        t.set_value('20:00')
+        body._changed()
+        self.assertFalse(m.primary.isEnabled())
+        self.assertEqual(body.note.text(), "Pick two different times.")
+        t.btns[1].click()                                             # hour 21
+        f.btns[3].click()                                             # minutes 15
+        f.btns[2].click()
+        f.btns[2].click()                                             # 45, no hour change
+        self.assertEqual(body.rule(), {'from': '20:45', 'to': '21:00'})
+        self.assertTrue(m.primary.isEnabled())
+        m.primary.click()
+        self._flush()
+        self.assertEqual(w.prefs.layout("Couch")['rule'], {'from': '20:45', 'to': '21:00'})
+        self.assertEqual(bar.m_rule.text(), "switches from 20:45 to 21:00")
+        self.assertEqual(bar.btn_time.text(), "Change time…")
+        bar.btn_time.click()
+        self.assertTrue(m.btn_extra.isVisible())
+        self.assertEqual(m.btn_extra.text(), "Remove rule")
+        m.btn_extra.click()
+        self._flush()
+        self.assertNotIn('rule', w.prefs.layout("Couch"))
+        d.set_editing(False)
+
+    def test_my_old_home_is_offered_once(self):
+        w, d = self._home()
+        v1 = [{'id': 'jump', 'size': 'full'}, {'id': 'news', 'size': 'wide'},
+              {'id': 'system', 'size': 'small', 'hidden': True}]
+        w.prefs._data['dashboard_v1'] = v1
+        d.set_editing(True)
+        self._flush()
+        bar = d.layouts_bar
+        self.assertTrue(bar.btn_old.isVisible())
+        bar.btn_old.click()
+        self._flush()
+        pr = w.prefs
+        old = pr.layout("My old Home")
+        self.assertEqual(old['items'], nx.dash_normalize(v1, version=1))
+        self.assertEqual((pr.active, pr.v1_taken), ("My old Home", True))
+        self.assertEqual(self._item('news')['size'], 'wide')
+        self.assertTrue(bar.btn_old.isHidden())
+        self.assertIn("Before My old Home", [lt['name'] for lt in pr.layouts])
+        pr.delete_layout("My old Home")
+        d._sync_layouts()
+        self.assertTrue(bar.btn_old.isHidden())                      # never offered again
+        self.assertEqual(pr._data['dashboard_v1'], v1)               # never rewritten
+        d.set_editing(False)
+
+    def test_go_home_switches_by_time(self):
+        from datetime import datetime
+        w, d = self._home()
+        pr = w.prefs
+        pr.add_layout("Couch", nx.dash_preset('minimal'), 'compact', save=False)
+        pr.set_rule("Couch", {'from': '20:00', 'to': '06:00'})
+        clock = [datetime(2026, 11, 7, 21, 0)]
+        mono = [1000.0]
+        d.clock = lambda: clock[0]
+        d.mono = lambda: mono[0]
+        d._time_at = d._last_match = None              # the real clock looked once already
+
+        def home(at=None, later=61):
+            if at is not None:
+                clock[0] = datetime(2026, 11, 7, *at)
+            mono[0] += later
+            w.go(w.LIBRARY)
+            w.go(w.HOME)
+        home()
+        self.assertEqual((pr.active, pr.base), ("Couch", "My Home"))  # Home was kept first
+        self.assertTrue(pr.layout("My Home")['auto'])
+        self.assertEqual((self._item('stage')['size'], d.density), ('banner', 'compact'))
+        home((10, 0), later=5)                                        # within the minute
+        self.assertEqual(pr.active, "Couch")
+        d._edit('news', 'show')                                       # edits stay on Couch
+        self.assertFalse(next(i for i in pr.layout("Couch")['items']
+                              if i['id'] == 'news')['hidden'])
+        home((10, 0))                                                  # window over: base
+        self.assertEqual(pr.active, "My Home")
+        self.assertEqual((self._item('stage')['size'], d.density), ('cinematic', 'comfortable'))
+        home((21, 0))
+        self.assertEqual(pr.active, "Couch")
+        d.switch_layout([lt['name'] for lt in pr.layouts].index("My Home"))   # by hand
+        home((22, 0))
+        self.assertEqual(pr.active, "My Home")                        # a manual pick sticks
+        # Skipped while customising or with a modal open
+        home((10, 0))
+        home((21, 0))
+        self.assertEqual(pr.active, "Couch")
+        d.set_editing(True)
+        home((10, 0))
+        self.assertEqual(pr.active, "Couch")
+        d.set_editing(False)
+        w.modal.ask("Q", "t", "Yes", lambda: None)
+        home((10, 0))
+        self.assertEqual(pr.active, "Couch")
+        w.modal.cancel()
+        home((10, 0))
+        self.assertEqual(pr.active, "My Home")
+
+    def test_apply_layout_is_fast_and_rebuilds_nothing(self):
+        import time as _t
+        w, d = self._home()
+        ids = {k: id(v) for k, v in d.widgets.items()}
+        art = id(d.stage.art)
+        best = 1.0
+        for name in ('dashboard', 'shelves', 'minimal', 'cinematic') * 2:
+            t0 = _t.perf_counter()
+            d.apply_layout(nx.dash_preset(name), 'compact' if name == 'dashboard' else None)
+            best = min(best, _t.perf_counter() - t0)
+            QApplication.processEvents()
+        self.assertLess(best, 0.1)
+        self.assertEqual({k: id(v) for k, v in d.widgets.items()}, ids)
+        self.assertEqual(id(d.stage.art), art)
+
+    def test_apply_layout_clears_a_stage_pick(self):
+        w, d = self._home()
+        g = w._games[0]
+        self.assertTrue(d.stage.show_pick(g, 'any'))
+        d.apply_layout(nx.dash_preset('minimal'))
+        self.assertIsNone(d.stage.picked)
+
+    def test_focus_stays_on_the_pressed_chip(self):
+        w, d = self._home()
+        pr = w.prefs
+        pr.add_layout("Couch", nx.dash_preset('minimal'), save=False)
+        pr.add_layout("Desk", nx.dash_preset('dashboard'), 'compact', save=False)
+        d.set_editing(True)
+        self._flush()
+        bar = d.layouts_bar
+        chips = list(bar.layout_btns)
+        w.activateWindow()
+        chips[1].setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not chips[1]:
+            self.skipTest("offscreen gave no focus")
+        chips[1].click()
+        self._flush()
+        self.assertEqual(pr.active, "Desk")
+        self.assertEqual(bar.layout_btns, chips)                      # kept, not rebuilt
+        self.assertTrue(chips[1].isChecked())
+        self.assertIs(QApplication.focusWidget(), chips[1])
+        self.assertEqual(self._item('stage')['size'], 'wide')
+        d.set_editing(False)

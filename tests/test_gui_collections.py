@@ -226,6 +226,8 @@ class Window(unittest.TestCase):
 
     def test_menus_and_home_use_the_look(self):
         w = self.win
+        w.prefs.dashboard = nx.dash_kind_defaults()          # the Collections shelf shown
+        w.dashboard.refresh()
         w._create_collection('Couch', 'alpha')
         w._create_collection('Short')
         w._set_collection_look('Short', 'color', 'gold')
