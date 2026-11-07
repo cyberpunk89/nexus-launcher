@@ -186,7 +186,12 @@ class ActionsMixin:
                       'steam-props': 'steam://gameproperties/{}',
                       'steam-verify': 'steam://validate/{}',
                       'steam-uninstall': 'steam://uninstall/{}'}
-        if action.startswith('col:'):
+        if action in ('stage-pin', 'stage-unpin'):       # the Stage's ⋮ (w-90)
+            if action == 'stage-pin':
+                self.dashboard.stage.pin(live)
+            else:
+                self.dashboard.stage.unpin()
+        elif action.startswith('col:'):
             cname = action[4:]
             on = self.prefs.toggle_member(cname, slug)
             self._collections_changed()

@@ -200,7 +200,10 @@ health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dia
   Updates ready, and hidden by default
   Play time, Achievements (recent unlocks, games closest to 100%) and In your library.
   **Customise** lets you move (←↑↓→), resize
-  (small/wide/full) and hide widgets — all buttons, so it works with a controller; the
+  (small/wide/full) and hide widgets, change the Stage's style (Row on art or Clean) and
+  background (Game art, Pinned art, Accent gradient or Plain; ⋮ → Pin to Stage keeps one
+  game on it), and set Home's density (Comfortable or Compact) — all buttons, so it works
+  with a controller; the
   layout is saved in `~/.config/nexus/library.json` (older layouts are migrated: the old
   Activity/Storage/Health/Proton cards become System in the same place).
 - **Library** — your Steam, Heroic and repack games together, as **Shelves** (one row per

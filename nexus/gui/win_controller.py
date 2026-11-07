@@ -536,7 +536,8 @@ class ControllerMixin:
             self.shell.setCurrentWidget(self.desk)
             self.sounds.release()                 # Theatre only: let go of the device
             self.background.set_wash(False)
-            self.background.set_tint(self._game_tint(self.dashboard.stage.art.game))
+            art = self.dashboard.stage.art
+            self.background.set_tint(self._game_tint(art.game if art.on_art() else None))
             self.hints.setStyleSheet("")
             self.focus_ring.scale = 1.0
             was = self._was_state

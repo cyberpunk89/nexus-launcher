@@ -41,7 +41,7 @@ ACTION_GLYPHS = {'launch': 'play', 'open-folder': 'folder', 'settings': 'setting
                  'rename-local': 'pencil', 'rename-reset': 'reset',
                  'artwork': 'image', 'hide': 'eye_off', 'uninstall': 'trash',
                  'steam-uninstall': 'trash', 'col-new': 'plus', 'move': 'arrow_right',
-                 'snapshots': 'history'}
+                 'snapshots': 'history', 'stage-pin': 'pin', 'stage-unpin': 'pin_off'}
 
 
 def action_glyph(a: 'GameAction') -> str:
@@ -95,7 +95,7 @@ _MAINTENANCE = {'pg-default', 'refetch-art', 'restore-saves', 'check-integrity',
                 'move', 'benchmark', 'view-log', 'steam-props', 'steam-verify', 'protongen',
                 'rename-local', 'rename-reset', 'artwork'}
 # Top-level group order: play, favourite/hidden, the submenus, uninstall last.
-_ORDER = {'play': 0, 'prefs': 1, "Collections": 2, ADD_TO: 3, MAINTENANCE: 4,
+_ORDER = {'play': 0, 'stage': 0.5, 'prefs': 1, "Collections": 2, ADD_TO: 3, MAINTENANCE: 4,
           "Wine tools": 5, 'danger': 6}
 
 
@@ -126,10 +126,23 @@ def _gate_actions(game: dict, out: list['GameAction']) -> list['GameAction']:
     return res
 
 
-def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
+def game_actions(game: dict, theatre: bool = False, stage: str | None = None) -> list[GameAction]:
     """Every action for one game. What's offered depends on who owns it:
     Nexus installs get everything; Steam/Heroic games get launcher shortcuts
-    (their launcher manages files and updates)."""
+    (their launcher manages files and updates). `stage` ('pin' or 'unpin',
+    from the desk Stage's ⋮ only, w-90) adds Pin to Stage / Unpin from Stage
+    in a section of its own after Play."""
+    out = _game_actions(game, theatre)
+    if stage in ('pin', 'unpin') and not theatre:
+        a = GameAction(f'stage-{stage}', "Pin to Stage" if stage == 'pin' else "Unpin from Stage",
+                       'stage')
+        at = next((i for i, x in enumerate(out) if _ORDER.get(x.sub or x.section, 4) > 0.5),
+                  len(out))
+        out.insert(at, a)
+    return out
+
+
+def _game_actions(game: dict, theatre: bool) -> list[GameAction]:
     src = game.get('source', 'nexus')
     A = GameAction
     if game.get('incomplete'):          # a cancelled or failed install: finish or drop it
@@ -200,14 +213,15 @@ def game_actions(game: dict, theatre: bool = False) -> list[GameAction]:
     return _gate_actions(game, _grouped([a for a in out if _supported(a.key)]))
 
 
-def build_game_menu(parent: QWidget, game: dict, act) -> QMenu:
+def build_game_menu(parent: QWidget, game: dict, act, stage: str | None = None) -> QMenu:
     """`act(name, game)` runs an action. The mouse/keyboard rendering of
     game_actions(): the tile's ⋮ button, right-click, the list view and the
-    details panel (a controller gets ActionSheet instead)."""
+    details panel (a controller gets ActionSheet instead). `stage` as in
+    game_actions (the Stage's ⋮)."""
     m = QMenu(parent)
     subs: dict[str, QMenu] = {}
     last = {}                                  # menu -> last section seen in it
-    for a in game_actions(game):
+    for a in game_actions(game, stage=stage):
         target = m
         if a.sub:
             if a.sub not in subs:

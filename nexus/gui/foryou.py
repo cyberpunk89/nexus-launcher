@@ -270,7 +270,8 @@ class ForYouPill(QFrame):
         col.addWidget(self.kicker)
         col.addWidget(self.title)
         bl.addLayout(col, 1)
-        self.chevron = icon_label(G['chevron_up'], scaled(12), P['on_art'])
+        self.ink = 'on_art'                        # muted off the art (set_ink, w-90)
+        self.chevron = icon_label(G['chevron_up'], scaled(12), P[self.ink])
         bl.addWidget(self.chevron)
         self.body.clicked.connect(self.opened)
         lay.addWidget(self.body, 1)
@@ -323,6 +324,21 @@ class ForYouPill(QFrame):
         self.x.setVisible(not many)
         self.body.setFocusPolicy(Qt.FocusPolicy.StrongFocus if many else Qt.FocusPolicy.NoFocus)
         self.updateGeometry()
+
+    def set_ink(self, role: str):
+        """The chevron's colour: on_art on the art, muted on the card surface.
+        A new label, not setStyleSheet, which would drop its glyph font (w-54)."""
+        if role == self.ink:
+            return
+        self.ink = role
+        lay = self.body.layout()
+        old = self.chevron
+        new = icon_label(G['chevron_up'], scaled(12), P[role])
+        lay.replaceWidget(old, new)
+        new.setVisible(not old.isHidden())       # in the layout first (w-54)
+        old.hide()
+        old.deleteLater()
+        self.chevron = new
 
     def first_focus(self) -> QWidget:
         """Where focus goes when the list closes: the sentence, or the action
@@ -630,6 +646,19 @@ class ForYouWidget(DashWidget):
         bar = self.editbar.layout()
         bar.insertWidget(bar.indexOf(self.btn_style) + 1, self.btn_kinds)
 
+    def set_density(self, d: dict):
+        pass                                     # its own slim margins, any density
+
+    def set_ink(self, on_art: bool):
+        """The pill's and list's glyphs: on_art on the Stage's art, muted on
+        the gradient and Plain backgrounds (their fill is the card surface)."""
+        if self.pill is None:
+            return
+        role = 'on_art' if on_art else 'muted'
+        self.pill.set_ink(role)
+        if getattr(self.list.btn_quiet, '_glyph_spec', (None,) * 3)[2] != role:
+            set_glyph_icon(self.list.btn_quiet, G['moon'], 14, role, hover_role=None)
+
     def bind(self, hub):
         self.hub = hub
         self.model = ForYouModel(hub, self)
@@ -724,6 +753,7 @@ class ForYouWidget(DashWidget):
             return
         if cols is not None:
             self._cols = cols
+        self.set_ink(self.art.on_art())
         on = self.mode() in ('pill', 'placeholder') and bool(self.moments) \
             and not self.art.isHidden()
         pill, art = self.pill, self.art

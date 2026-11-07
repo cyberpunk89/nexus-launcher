@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
-    QPainterPath, QPixmap, QRadialGradient)
+    QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
@@ -17,7 +17,7 @@ from .common import alive, COLLECTION_NAMES
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import Dwell, FollowHero
 from .moments import DISK_FULL
-from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, SP
+from .theme import FONTS, FS, G, GRAD, P, PILL_H, R, scaled, SP, STAGE_FACT_H
 from .theme import collection_look
 
 
@@ -54,13 +54,32 @@ DASH_PLACE_AFTER = {'upcoming': 'deals', 'surprise': 'stage', 'collections': 'fa
                     'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
                     'foryou': 'stage'}
 # Per-widget options checked like sizes: the first value is the default and
-# a bad one falls back to it (w-85; more styles and backgrounds in w-90).
-DASH_OPTIONS = {'stage': {'style': ('row',), 'bg': ('art',)},
+# a bad one falls back to it (w-85, w-90). The Stage's Pinned art also keeps
+# a `pin` (the game's slug) on its item, checked in dash_normalize.
+DASH_OPTIONS = {'stage': {'style': ('row', 'clean'),
+                          'bg': ('art', 'pinned', 'gradient', 'surface')},
                 'week': {'style': ('bars', 'number')},
                 'foryou': {'style': ('stage', 'strip')}}
-# The edit bar's "Style:" button names (a kind listed here gets the button;
-# w-90 adds the Stage's and Your week's).
-DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"}}
+# The edit bar's "Style:" button names (a kind listed here gets the button).
+DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"},
+                     'stage': {'row': "Row on art", 'clean': "Clean"},
+                     'week': {'bars': "Bars", 'number': "Number only"}}
+# The edit bar's "Background:" button names (w-90); 'surface' is shown as Plain.
+DASH_BG_LABELS = {'stage': {'art': "Game art", 'pinned': "Pinned art",
+                            'gradient': "Accent gradient", 'surface': "Plain"}}
+PIN_MAX = 80                          # a pinned game's slug, at most this long
+# Home's spacing (Customise → Density, w-90): Home only, on top of Appearance →
+# Size. Comfortable is how Home always looked.
+DASH_DENSITY = {
+    'comfortable': {'grid_h': SP['4'], 'grid_v': SP['5'], 'card_pad': SP['4'],
+                    'art_side': int(SP['8'] * 1.5), 'art_tb': SP['5'], 'row_gap': SP['3'],
+                    'clean_gap': SP['4'], 'home_side': SP['5'], 'home_top': SP['4']},
+    'compact': {'grid_h': SP['3'], 'grid_v': SP['3'], 'card_pad': SP['3'],
+                'art_side': SP['8'], 'art_tb': SP['4'], 'row_gap': SP['2'],
+                'clean_gap': SP['3'], 'home_side': SP['4'], 'home_top': SP['3']},
+}
+DENSITY_LABELS = {'comfortable': "Comfortable", 'compact': "Compact"}
+DENSITY_TIP = "Spacing on Home only. Appearance → Size changes text and controls everywhere."
 # Refreshes of these mean For you now's moments may have moved too.
 FORYOU_FEEDS = {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'}
 
@@ -99,14 +118,27 @@ def dash_default() -> list[dict]:
             for k, _s, d, h in DASH_KINDS]
 
 
-def stage_height(size: str, viewport_h: int) -> int:
+def stage_height(size: str, viewport_h: int, style: str = 'row', bg: str = 'art') -> int:
     """The Stage's height for a size in a Home viewport this tall: tall but
-    never the whole screen, so the next row always peeks."""
+    never the whole screen, so the next row always peeks. Clean (w-90) has
+    no row on the art: shorter, so the Continue shelf under it shows whole
+    at 850 px; off the art (gradient, Plain) shorter still (the caller keeps
+    it at least as tall as its layout needs)."""
     if size == 'banner':
         return 250
     if size == 'wide':
         return max(320, min(420, viewport_h - 360))
+    if style == 'clean':
+        return 320 if bg in ('gradient', 'surface') else max(400, min(540, viewport_h - 320))
     return max(480, min(610, viewport_h - 290))
+
+
+def stage_pin(value) -> str | None:
+    """A pinned game's slug as saved, or None when it isn't one."""
+    if isinstance(value, str) and 0 < len(value) <= PIN_MAX and value.isprintable() \
+            and value.strip() == value:
+        return value
+    return None
 
 
 DASH_VERSION = 2   # 2: the Stage moved to the top (w-86); renames to new kinds are not gated
@@ -143,6 +175,12 @@ def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
         if wid == 'smart':
             out[-1]['shelf'] = _dash_shelf(it.get('shelf'))
         out[-1].update(_dash_options(wid, it))
+        if wid == 'stage' and out[-1]['bg'] == 'pinned':
+            pin = stage_pin(it.get('pin'))
+            if pin is None:
+                out[-1]['bg'] = 'art'            # Pinned art without a game: Game art
+            else:
+                out[-1]['pin'] = pin
     last: dict[str, str] = {}             # anchor -> the newest widget put after it
     for d in dash_default():
         if d['id'] in seen:
@@ -440,6 +478,12 @@ class DashWidget(QFrame):
         self.btn_style.clicked.connect(lambda: self.edit.emit(self.KIND, 'style'))
         self.btn_style.setVisible(False)
         bl.addWidget(self.btn_style)
+        self.btn_bg = QPushButton()               # Background: … (DASH_BG_LABELS, w-90)
+        self.btn_bg.setObjectName("Ghost")
+        self.btn_bg.setToolTip("What's behind the Stage")
+        self.btn_bg.clicked.connect(lambda: self.edit.emit(self.KIND, 'bg'))
+        self.btn_bg.setVisible(False)
+        bl.addWidget(self.btn_bg)
         hide = icon_button(G['eye_off'], "Hide this widget", 28, "Ghost", round_=True)
         hide.clicked.connect(lambda: self.edit.emit(self.KIND, 'hide'))
         bl.addWidget(hide)
@@ -458,11 +502,22 @@ class DashWidget(QFrame):
         if styles is not None:
             cur = self.options.get('style') or DASH_OPTIONS[self.KIND]['style'][0]
             self.btn_style.setText(f"Style: {styles.get(cur, cur)}")
+        bgs = DASH_BG_LABELS.get(self.KIND)
+        self.btn_bg.setVisible(bgs is not None)
+        if bgs is not None:
+            cur = self.options.get('bg') or DASH_OPTIONS[self.KIND]['bg'][0]
+            self.btn_bg.setText(f"Background: {bgs.get(cur, cur)}")
         self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width",
                                'cinematic': "Cinematic", 'banner': "Banner"}[size])
         self.setProperty('editing', on)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def set_density(self, d: dict):
+        """Home's density (DASH_DENSITY): a card's padding."""
+        if self.FRAMED:
+            pad = d['card_pad']
+            self.layout().setContentsMargins(pad, pad - 2, pad, pad)
 
     def bind(self, hub):
         """Wire to the window once, when the dashboard is built (the Stage
@@ -628,18 +683,23 @@ class StageArt(FollowHero):
     """The Stage's art (w-85): one game's art, its logo, facts and Play,
     moved only by the Continue row (focus, or the mouse resting on a tile).
     A running or starting game is pinned with "Now playing". Its size sets
-    the logo's height; Banner has no fact pills."""
+    the logo's height; Banner has no fact pills. Its background (w-90) is the
+    game's art, the accent gradient or Plain (the `bgmode` property: art,
+    gradient, surface); off the art the ink follows (theme.py) and the title
+    shows in words instead of the logo."""
     LOGO_H = {'cinematic': 96, 'wide': 96, 'banner': 80}
 
     def __init__(self):
         super().__init__()
         self.setObjectName("StageArt")
+        self.setProperty('bgmode', 'art')
         self.setMinimumHeight(0)
         # Cinematic holds the Continue row too: less air above, so it all
         # fits the 480 px floor (stage_height) without squeezing the row.
         m = self.layout().contentsMargins()
         self.layout().setContentsMargins(m.left(), SP['5'], m.right(), SP['5'])
         self.size_ = 'cinematic'
+        self.pin_slug: str | None = None         # Pinned art's game (its kicker says so)
         self.kicker.setTextFormat(Qt.TextFormat.RichText)   # live_kicker's &nbsp;
 
     def set_size(self, size: str):
@@ -648,6 +708,26 @@ class StageArt(FollowHero):
         self.size_ = size
         if self.games:
             self._show(animate=False)
+
+    def on_art(self) -> bool:
+        return self.property('bgmode') == 'art'
+
+    def set_bg(self, bg: str):
+        """Game art and Pinned art paint the art; 'gradient' and 'surface'
+        paint a fill. The ink is in the stylesheet (#StageArt[bgmode=…]): an
+        ancestor property, so every child is polished again (w-55)."""
+        mode = bg if bg in ('gradient', 'surface') else 'art'
+        if self.property('bgmode') == mode:
+            return
+        self.setProperty('bgmode', mode)
+        for w in (self, *self.findChildren(QWidget)):
+            w.style().unpolish(w)
+            w.style().polish(w)
+        set_glyph_icon(self.btn, G['play'], int(20 * self.scale),
+                       'accent' if mode == 'gradient' else 'on_accent', hover_role=None)
+        if self.games:
+            self._show(animate=False)
+        self.update()
 
     def _show(self, animate: bool):
         g = self.game
@@ -658,6 +738,16 @@ class StageArt(FollowHero):
         super()._show(animate)
         if self.is_pinned():
             self.kicker.setText(live_kicker(g))
+        elif self.pin_slug and g.get('slug') == self.pin_slug:
+            self.kicker.setText(f"PINNED  ·  {self.kicker.text()}")
+        if not self.on_art():
+            # A logo is drawn for art (white, mostly): on a light Plain it
+            # would vanish, so off the art the title shows in words.
+            self.logo.setVisible(False)
+            self.title.setVisible(True)
+
+    def _tint(self, path):
+        return super()._tint(path) if self.on_art() else None
 
     def tick(self):
         """The minute changed: "NOW PLAYING · 42 MIN" moves on."""
@@ -669,6 +759,15 @@ class StageArt(FollowHero):
             clear_layout(self.facts)
             return
         super()._fill_facts(g)
+
+    def _fact(self, text: str, color: str | None) -> QLabel:
+        """A QLabel#StageFact: its colours follow the background (theme.py);
+        a coloured fact (ProtonDB tier, Update ready) sets only its text colour."""
+        lab = label(text, "StageFact")
+        if color:
+            lab.setStyleSheet(f"color: {color};")
+        lab.setFixedHeight(scaled(STAGE_FACT_H))
+        return lab
 
     def _logo(self, path):
         h = self.LOGO_H.get(self.size_, 96)
@@ -686,14 +785,39 @@ class StageArt(FollowHero):
             self._logos[key] = pm
         return self._logos[key]
 
+    def paintEvent(self, ev):
+        mode = self.property('bgmode')
+        if mode == 'art':
+            super().paintEvent(ev)
+            return
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(r, R['panel'], R['panel'])
+        if mode == 'gradient':
+            g = QLinearGradient(0.0, 0.0, r.width(), 0.0)
+            a, b = (QColor(x) for x in GRAD['dusk'])
+            g.setColorAt(0.0, a)
+            g.setColorAt(1.0, b)
+            pt.fillPath(path, QBrush(g))
+        else:
+            pt.fillPath(path, QColor(P['surface']))
+            pt.setPen(QPen(QColor(P['border_card']), 1))
+            pt.drawPath(path)
+        pt.end()
+
 
 class StageWidget(DashWidget):
     """The top of Home (w-85): one game's art at Cinematic, Wide or Banner
     size, and a Continue row of the most recently played games. Focus on a
     tile (pad, keyboard) or the mouse resting on one moves the stage there;
-    nothing moves on its own. The row lies on the art at Cinematic and under
-    it otherwise. It's kept across fills, so moving the stage only repaints
-    the art and never takes focus off the row."""
+    nothing moves on its own. The row lies on the art at Cinematic with the
+    Row on art style and under it otherwise (Clean, Wide, Banner). It's kept
+    across fills, so moving the stage only repaints the art and never takes
+    focus off the row. Pinned art (w-90) keeps one game on it: the row stops
+    moving it while that game is in the library, and a running game still
+    wins."""
     KIND, TITLE = 'stage', "Stage"
     FRAMED = False
     moved = pyqtSignal()                  # the stage shows another game (For you now asks again)
@@ -705,25 +829,32 @@ class StageWidget(DashWidget):
         self.art = StageArt()
         self.body.addWidget(self.art)
         self.row: 'ShelfRow | None' = None
+        self._hub = None
         self._view = None
         self._vh = 850                           # the Home viewport's height
-        self._placed = None                      # the size the parts are laid out for
+        self._placed = None                      # what the parts are laid out for
+        self.style_, self.bg = 'row', 'art'
+        self.pin_slug: str | None = None         # Pinned art's slug, as saved
+        self._pin_game: dict | None = None       # ... while that game is in the library
+        self.density = DASH_DENSITY['comfortable']
         self._dwell = Dwell(self.FOCUS_DWELL, self._follow, self)
         self._clock = QTimer(self)               # Now playing's minutes, while pinned
         self._clock.setInterval(20000)
         self._clock.timeout.connect(self.art.tick)
 
     def bind(self, hub):
+        self._hub = hub
         view = self._view = hub.homeview
         self.art.play.connect(view.play)
         self.art.open.connect(view.activated)
-        self.art.menu.connect(view.menu)
+        self.art.menu.connect(self._menu)
         row = self.row = view.make_shelf("Continue", [], 'wide')
         self.art.layout().addWidget(row)         # parented before anything shows it
         row.focused.connect(self._row_focus)
         row.hovered.connect(self._row_hover)
         row.unhovered.connect(self._row_unhover)
         view.viewport().installEventFilter(self)
+        self.art.installEventFilter(self)
         self._place(self.size_ if self.size_ in DASH_SIZES['stage'] else 'cinematic')
 
     def has_content(self, hub):
@@ -731,8 +862,22 @@ class StageWidget(DashWidget):
 
     def fill(self, hub):
         games = _visible_games(hub)
+        self.style_ = self.options.get('style', 'row')
+        self.bg = self.options.get('bg', 'art')
+        it = next((i for i in hub.prefs.dashboard if i.get('id') == 'stage'), {})
+        self.pin_slug = stage_pin(it.get('pin')) if self.bg == 'pinned' else None
+        self._pin_game = next((g for g in games if g.get('slug') == self.pin_slug),
+                              None) if self.pin_slug else None
+        # A pinned game that's gone keeps its pin; the row moves the stage again.
+        self.art.pin_slug = self.pin_slug if self._pin_game is not None else None
         self._place(self.size_)
-        self.art.set_games(featured_games(games, max(1, len(games))))
+        self.art.set_bg(self.bg)
+        shown = featured_games(games, max(1, len(games)))
+        if self._pin_game is not None:
+            shown = [self._pin_game] + [g for g in shown if g is not self._pin_game]
+        self.art.set_games(shown)
+        if self._pin_game is not None:
+            self.art.show_game(self._pin_game)   # nothing while a game runs (Now playing)
         self.art.setVisible(bool(self.art.games))
         if self.art.is_pinned():
             if not self._clock.isActive():
@@ -753,21 +898,89 @@ class StageWidget(DashWidget):
         super().set_editing(on, size, shelf)
         self._place(size)
 
-    # ---- size ----
+    def set_density(self, d: dict):
+        self.density = d
+        self.art.layout().setContentsMargins(d['art_side'], d['art_tb'], d['art_side'],
+                                             d['art_tb'])
+        self._placed = None
+        self._place(self.size_)
+
+    # ---- pinned art (w-90) ----
+    def pinned(self) -> bool:
+        """Pinned art and its game shown: the row doesn't move the stage."""
+        return self._pin_game is not None
+
+    def pin(self, g: dict):
+        """Pin to Stage (the ⋮ menu): Pinned art with this game."""
+        if g.get('slug'):
+            self._set_bg('pinned', g['slug'])
+
+    def unpin(self):
+        """Unpin from Stage: back to Game art, following the row."""
+        self._set_bg('art', None)
+
+    def _set_bg(self, bg: str, pin: str | None):
+        hub = self._hub
+        if hub is None:
+            return
+        items = [dict(i) for i in hub.prefs.dashboard]
+        it = next((i for i in items if i.get('id') == 'stage'), None)
+        if it is None:
+            return
+        it['bg'] = bg
+        if pin:
+            it['pin'] = pin
+        else:
+            it.pop('pin', None)
+        hub.prefs.dashboard = items
+        hub.prefs.save()
+        hub.dashboard.refresh(['stage'])
+
+    def menu_stage(self, game: dict) -> str | None:
+        """What the ⋮ menu offers for the Stage: 'unpin' while the pinned
+        game shows, else 'pin'; nothing on the gradient or Plain."""
+        if self.bg not in ('art', 'pinned') or not game.get('slug'):
+            return None
+        return 'unpin' if self.pinned() and game.get('slug') == self.pin_slug else 'pin'
+
+    def _menu(self, game: dict, pos):
+        hub = self._hub
+        if hub is not None:
+            hub._show_menu(game, pos, stage=self.menu_stage(game))
+
+    # ---- size, style ----
+    def on_art(self, size: str | None = None) -> bool:
+        """The Continue row lies on the art: Cinematic with Row on art."""
+        return (size or self.size_) == 'cinematic' and self.style_ == 'row'
+
     def _place(self, size: str):
-        """The row on the art (Cinematic) or under it; the art's height."""
+        """The row on the art or under it, its fades and title ink; the
+        art's height. Moving the row keeps pad focus on it (w-85)."""
         self.size_ = size
-        if size != self._placed and self.row is not None:
-            self._placed = size
-            row, on_art = self.row, size == 'cinematic'
+        on_art = self.on_art(size)
+        key = (size, on_art, self.style_, self.bg, id(self.density))
+        if key != self._placed and self.row is not None:
+            self._placed = key
+            row, d = self.row, self.density
             f = QApplication.focusWidget()
             had = f if f is not None and row.isAncestorOf(f) else None
             if row.parentWidget() is not (self.art if on_art else self):
                 (self.body if on_art else self.art.layout()).removeWidget(row)
                 (self.art.layout() if on_art else self.body).addWidget(row)
-            row.layout().setContentsMargins(0, SP['3'] if on_art else SP['2'], 0, 0)
-            for fade in row.fades.values():
-                fade.role = 'scrim' if on_art else 'bg'
+                row.show()                       # now, not a pass later (w-57)
+            clean = size == 'cinematic' and not on_art
+            gap = d['row_gap'] if on_art else \
+                max(0, d['clean_gap'] - self.body.spacing()) if clean else SP['2']
+            row.layout().setContentsMargins(0, gap, 0, 0)
+            for side, fade in row.fades.items():
+                fade.grad = None
+                if not on_art:
+                    fade.role = 'bg'             # a shelf on the page
+                elif self.bg == 'gradient':
+                    fade.role, fade.grad = 'accent', ('dusk', 0 if side == 'left' else 1)
+                else:
+                    fade.role = 'surface' if self.bg == 'surface' else 'scrim'
+                fade.update()
             for lab in (row.name_label, row.count_label):
                 if lab is not None:
                     lab.style().unpolish(lab)
@@ -778,28 +991,36 @@ class StageWidget(DashWidget):
         self._sync_height()
 
     def _sync_height(self):
-        self.art.setFixedHeight(stage_height(self.size_, self._vh))
+        h = stage_height(self.size_, self._vh, self.style_, self.bg)
+        lay = self.art.layout()
+        self.art.setFixedHeight(max(h, lay.minimumSize().height()))
 
     def eventFilter(self, obj, ev):
         if ev.type() == QEvent.Type.Resize and self._view is not None \
                 and obj is self._view.viewport():
             self._vh = ev.size().height()
             self._sync_height()
+        elif ev.type() == QEvent.Type.LayoutRequest and obj is self.art:
+            # A logo that arrives later (or Appearance → Size) can need more
+            # than the height it has: grow rather than squeeze the row.
+            self._sync_height()
         return False
 
     # ---- the row moves the stage ----
     def _row_focus(self, tile):
-        self._dwell.push(tile.game, self.FOCUS_DWELL)
+        if not self.pinned():
+            self._dwell.push(tile.game, self.FOCUS_DWELL)
 
     def _row_hover(self, tile):
-        self._dwell.push(tile.game, self.HOVER_DWELL)
+        if not self.pinned():
+            self._dwell.push(tile.game, self.HOVER_DWELL)
 
     def _row_unhover(self, tile):
         if self._dwell.timer.isActive() and self._dwell.value is tile.game:
             self._dwell.cancel()
 
     def _follow(self, g):
-        if g is not None and alive(self):
+        if g is not None and alive(self) and not self.pinned():
             before = self.art.game.get('slug')
             self.art.show_game(g)
             if self.art.game.get('slug') != before:
@@ -1527,6 +1748,13 @@ class Dashboard(QWidget):
         # Stage is the top of Home, with no title above it.
         foot = QHBoxLayout()
         foot.addStretch()
+        self.density = 'comfortable'
+        self.btn_density = QPushButton()          # Home's spacing, only while editing (w-90)
+        self.btn_density.setObjectName("Ghost")
+        self.btn_density.setToolTip(DENSITY_TIP)
+        self.btn_density.clicked.connect(self._toggle_density)
+        self.btn_density.setVisible(False)
+        foot.addWidget(self.btn_density)
         self.btn_reset = QPushButton("Reset layout")
         self.btn_reset.setObjectName("Ghost")
         self.btn_reset.clicked.connect(self._reset)
@@ -1561,6 +1789,7 @@ class Dashboard(QWidget):
             w.bind(hub)
         self.foryou.attach(self, self.stage)
         self.stage.moved.connect(self._stage_moved)
+        self.set_density(getattr(hub.prefs, 'density', 'comfortable'))
 
     @property
     def stage(self) -> StageWidget:
@@ -1670,6 +1899,7 @@ class Dashboard(QWidget):
         self.btn_edit.style().unpolish(self.btn_edit)
         self.btn_edit.style().polish(self.btn_edit)
         self.btn_reset.setVisible(on)
+        self.btn_density.setVisible(on)
         self.relayout(force=True)
         if not on:
             self.hub.prefs.save()
@@ -1694,22 +1924,56 @@ class Dashboard(QWidget):
                 styles = DASH_OPTIONS[kind]['style']
                 cur = it.get('style') if it.get('style') in styles else styles[0]
                 it['style'] = styles[(styles.index(cur) + 1) % len(styles)]
+            elif action == 'bg':
+                bgs = DASH_OPTIONS[kind]['bg']
+                cur = it.get('bg') if it.get('bg') in bgs else bgs[0]
+                nxt = bgs[(bgs.index(cur) + 1) % len(bgs)]
+                slug = self.stage.art.game.get('slug')
+                if nxt == 'pinned' and not slug:      # nothing shown to pin: skip it
+                    nxt = bgs[(bgs.index(nxt) + 1) % len(bgs)]
+                it['bg'] = nxt
+                if nxt == 'pinned':
+                    it['pin'] = slug                  # Pinned art pins the game shown
+                else:
+                    it.pop('pin', None)
             elif action == 'hide':
                 it['hidden'] = True
             elif action == 'show':
                 it['hidden'] = False
         self.hub.prefs.dashboard = new
-        self.refresh([kind]) if action in ('size', 'show', 'shelf', 'style') else None
+        self.refresh([kind]) if action in ('size', 'show', 'shelf', 'style', 'bg') else None
         self.relayout(force=True)
         self.hub.prefs.save()
         # Keep the controller's focus on the widget that moved.
         w = self.widgets.get(kind)
-        if w is not None and action == 'style' and w.btn_style.isVisibleTo(w):
-            QTimer.singleShot(0, lambda: alive(w) and focus_and_reveal(w.btn_style))
+        btn = {'style': getattr(w, 'btn_style', None), 'bg': getattr(w, 'btn_bg', None)}.get(action)
+        if btn is not None and btn.isVisibleTo(w):
+            QTimer.singleShot(0, lambda: alive(btn) and focus_and_reveal(btn))
         if w is not None and w.isVisible() and action in ('left', 'right', 'up', 'down'):
             btn = next((b for b in w.editbar.findChildren(QToolButton)
                         if b.toolTip().lower().endswith(action)), None)
             QTimer.singleShot(0, lambda: btn and alive(btn) and focus_and_reveal(btn))
+
+    def set_density(self, name: str):
+        """Comfortable or Compact (DASH_DENSITY): Home's grid, cards, Stage
+        and margins only; the Library's shelves and other pages keep theirs."""
+        self.density = name if name in DASH_DENSITY else 'comfortable'
+        d = DASH_DENSITY[self.density]
+        self.grid.setHorizontalSpacing(d['grid_h'])
+        self.grid.setVerticalSpacing(d['grid_v'])
+        for w in self.widgets.values():
+            w.set_density(d)
+        view = getattr(self.hub, 'homeview', None)
+        if view is not None and getattr(view, 'mode', None) == 'home':
+            view.lay.setContentsMargins(d['home_side'], d['home_top'], d['home_side'], SP['6'])
+        self.btn_density.setText(f"Density: {DENSITY_LABELS[self.density]}")
+
+    def _toggle_density(self):
+        """The footer's Density button; focus stays on it."""
+        name = 'compact' if self.density == 'comfortable' else 'comfortable'
+        self.hub.prefs.density = name
+        self.set_density(name)
+        self.hub.prefs.save()
 
     def _reset(self):
         self.hub.prefs.dashboard = dash_default()

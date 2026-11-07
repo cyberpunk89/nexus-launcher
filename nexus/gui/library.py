@@ -427,13 +427,19 @@ class _EdgeFade(QWidget):
         super().__init__(parent)
         self.side = side
         self.role = 'bg'              # the colour it fades into; 'scrim' over art (the Stage)
+        # Or one end of a GRAD pair, (name, 0 or 1): the Stage's accent
+        # gradient (w-90) is a different colour at each edge.
+        self.grad: tuple[str, int] | None = None
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def color(self) -> QColor:
+        return QColor(GRAD[self.grad[0]][self.grad[1]] if self.grad else P[self.role])
 
     def paintEvent(self, ev):
         pt = QPainter(self)
         g = QLinearGradient(0.0, 0.0, float(self.width()), 0.0)
-        solid = QColor(P[self.role]); solid.setAlphaF(0.85)
-        clear = QColor(P[self.role]); clear.setAlphaF(0.0)
+        solid = self.color(); solid.setAlphaF(0.85)
+        clear = self.color(); clear.setAlphaF(0.0)
         g.setColorAt(0.0, solid if self.side == 'left' else clear)
         g.setColorAt(1.0, clear if self.side == 'left' else solid)
         pt.fillRect(self.rect(), QBrush(g))
@@ -867,7 +873,7 @@ class HeroCarousel(QWidget):
             self._anim.start()
         else:
             self._prev, self._cur, self._fade = None, nxt, 1.0
-        self.tint.emit(dominant_color(path))
+        self.tint.emit(self._tint(path))
         self.dots.update()
         self.update()
 
@@ -884,14 +890,21 @@ class HeroCarousel(QWidget):
                  ("Update ready" if g.get('update_pending') else '', P['warning'])]
         for text, color in facts:
             if text:
-                h = int(24 * self.scale)
-                lab = label(text, None)
-                lab.setStyleSheet(pill_qss(P['glass'], color or P['on_art'], h,
-                                           int(10 * self.scale))
-                                  + f" font-size: {int(FS['xs'] * self.scale)}px;")
-                lab.setFixedHeight(h)
-                self.facts.addWidget(lab)
+                self.facts.addWidget(self._fact(text, color))
         self.facts.addStretch()
+
+    def _fact(self, text: str, color: str | None) -> QLabel:
+        """One fact pill: on glass, `color` or on_art."""
+        h = int(24 * self.scale)
+        lab = label(text, None)
+        lab.setStyleSheet(pill_qss(P['glass'], color or P['on_art'], h, int(10 * self.scale))
+                          + f" font-size: {int(FS['xs'] * self.scale)}px;")
+        lab.setFixedHeight(h)
+        return lab
+
+    def _tint(self, path):
+        """The colour the window's background takes from the art."""
+        return dominant_color(path)
 
     def _arrived(self, slug):
         try:

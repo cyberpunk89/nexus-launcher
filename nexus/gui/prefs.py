@@ -114,6 +114,9 @@ class LibraryPrefs:
         self.snoozes = _snoozes(opts.get('snoozes'), now)
         self.quiet_until = _quiet_until(opts.get('quiet_until'), now)
         self.kinds_off = clean_kinds_off(opts.get('kinds_off'))[:MAX_KINDS_OFF]
+        # Customise → Density (w-90): Home's spacing.
+        dens = opts.get('density')
+        self.density = dens if isinstance(dens, str) and dens in DASH_DENSITY else 'comfortable'
         # The layout as saved by an older Nexus, kept once before the first save
         # writes the new format (w-86); Customise can offer it back later.
         self._dashboard_v1 = raw if isinstance(raw, list) and raw \
@@ -221,7 +224,7 @@ class LibraryPrefs:
                                   'items': self.dashboard, 'snoozes': self.snoozes,
                                   'quiet_until': self.quiet_until.isoformat()
                                   if self.quiet_until else None,
-                                  'kinds_off': self.kinds_off},
+                                  'kinds_off': self.kinds_off, 'density': self.density},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
@@ -410,4 +413,4 @@ class LibraryPrefs:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .dashboard import DASH_VERSION, dash_normalize  # noqa: E402
+from .dashboard import DASH_DENSITY, DASH_VERSION, dash_normalize  # noqa: E402

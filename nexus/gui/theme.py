@@ -133,6 +133,7 @@ P.update({
     'surface_3': '#2c2942',
     'glass':     'rgba(38,35,58,0.72)',
     'glass_hi':  'rgba(57,53,82,0.82)',
+    'glass_raised': 'rgba(87,83,111,0.9)',     # apply_appearance derives it per theme
     'bar':       'rgba(38,35,58,0.72)',
 })
 
@@ -356,6 +357,9 @@ def apply_appearance(ap: dict) -> dict:
                 'scrim': '#18161f',                     # what white text over art sits on
                 # Glass sits over art with white text on it: dark in every theme.
                 'glass': 'rgba(24,22,32,0.50)', 'glass_hi': 'rgba(24,22,32,0.66)',
+                # A glass button that must stand out on glass (For you now's
+                # actions, hovers): a dark step lighter than the scrim (w-90).
+                'glass_raised': _rgba(_mix('#18161f', PAL['overlay_hi'], 0.42), 0.92),
                 'bar': _rgba(PAL['surface'], 0.88)}      # the top bar, over the page
     else:
         surf = {'surface': _mix(PAL['base'], PAL['overlay'], 0.35),
@@ -364,6 +368,7 @@ def apply_appearance(ap: dict) -> dict:
                 'border_card': _mix(PAL['base'], PAL['overlay'], 0.45),
                 'tile_scrim': _rgba(PAL['base'], 0.84), 'scrim': PAL['base'],
                 'glass': _rgba(PAL['overlay'], 0.72), 'glass_hi': _rgba(PAL['overlay_hi'], 0.82),
+                'glass_raised': _rgba(_mix(PAL['overlay_hi'], PAL['text'], 0.18), 0.90),
                 'bar': _rgba(PAL['overlay'], 0.72)}
     P.update({
         'bg': PAL['base'], 'mantle': PAL['surface'] if not light_theme else PAL['overlay'],
@@ -425,6 +430,7 @@ def pill(h: int) -> int:
 # Heights of the fixed-height capsules, so their radius can be derived.
 PILL_H = 18      # status pills / badges
 STAGE_BTN_H = 44  # the Stage's Play row: Play, Details, More and For you now (w-89)
+STAGE_FACT_H = 24  # the Stage's fact pills (QLabel#StageFact, w-90)
 CHIP_H = 28      # filter chips
 GLYPH_H = 22     # controller hint glyphs
 PERSON_H = 30    # a friend's chip on the game page (friends.PersonChip)
@@ -708,7 +714,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#Glass { background: $glass_hi; color: $on_art; border: 1px solid $glass;
                         border-radius: ${r_control}px; padding: 0 ${sp_5}px;
                         font-size: ${fs_sm}px; font-weight: 500; }
-    QPushButton#Glass:hover { background: $overlay; }
+    QPushButton#Glass:hover { background: $glass_raised; }
     QLabel#HeroKicker { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
     QLabel#HeroKicker[live="true"] { color: $live_on_art; }
     QLabel#HeroTitle { color: $on_art; font-weight: 600; }
@@ -739,6 +745,72 @@ def build_stylesheet(scale: float = 1.0) -> str:
         border-radius: ${r_control}px; padding: 0 ${sp_2_5}px; font-size: ${fs_xs}px;
         font-weight: 500; }
     QPushButton#MomentFoot:hover { background: $on_art_16; color: $on_art; }
+    /* Raised glass (w-90): the pill's and list's buttons stand out on glass
+       in every theme (Dawn's glass made them vanish). */
+    #FynPill QPushButton#MomentAct, #FynList QPushButton#MomentAct {
+        background: $glass_raised; border-color: transparent; }
+    #FynPill QPushButton#MomentAct:hover, #FynList QPushButton#MomentAct:hover {
+        background: $glass_raised; border-color: $on_art_72; }
+    #FynList QToolButton#MomentX:hover, #FynList QPushButton#MomentFoot:hover {
+        background: $glass_raised; color: $on_art; }
+    /* ---- The Stage's backgrounds (w-90). StageArt[bgmode]: art (Game art,
+       Pinned art), gradient (accent gradient, on_accent ink) or surface
+       (Plain: the card colour, page ink). Fact pills follow the ink. */
+    QLabel#StageFact { background: $glass; color: $on_art; border-radius: ${r_stage_fact}px;
+        padding: 0 ${sp_2_5}px; font-size: ${fs_xs}px; font-weight: 500; }
+    #StageArt[bgmode="gradient"] QLabel#StageFact { background: $on_accent_16; color: $on_accent; }
+    #StageArt[bgmode="surface"] QLabel#StageFact { background: $surface_2; color: $subtext; }
+    #StageArt[bgmode="gradient"] QLabel#HeroKicker { color: $on_accent_72; }
+    #StageArt[bgmode="gradient"] QLabel#HeroKicker[live="true"] { color: $on_accent; }
+    #StageArt[bgmode="gradient"] QLabel#HeroTitle,
+    #StageArt[bgmode="gradient"] #ShelfTitle { color: $on_accent; }
+    #StageArt[bgmode="gradient"] #ShelfCount { color: $on_accent_72; }
+    #StageArt[bgmode="gradient"] QPushButton#PlayBig { background: $on_accent; color: $accent; }
+    #StageArt[bgmode="gradient"] QPushButton#PlayBig:hover { background: $on_accent_86; }
+    #StageArt[bgmode="gradient"] QPushButton#PlayBig:disabled {
+        background: $on_accent_35; color: $on_accent; }
+    #StageArt[bgmode="gradient"] QPushButton#Glass,
+    #StageArt[bgmode="gradient"] QToolButton#GlassIcon {
+        background: $on_accent_16; color: $on_accent; border: 1px solid $on_accent_35; }
+    #StageArt[bgmode="gradient"] QPushButton#Glass:hover,
+    #StageArt[bgmode="gradient"] QToolButton#GlassIcon:hover {
+        background: $on_accent_28; color: $on_accent; border-color: $on_accent_35; }
+    #StageArt[bgmode="surface"] QLabel#HeroKicker { color: $muted; }
+    #StageArt[bgmode="surface"] QLabel#HeroKicker[live="true"] { color: $success; }
+    #StageArt[bgmode="surface"] QLabel#HeroTitle,
+    #StageArt[bgmode="surface"] #ShelfTitle { color: $text; }
+    #StageArt[bgmode="surface"] #ShelfCount { color: $muted; }
+    #StageArt[bgmode="surface"] QPushButton#Glass,
+    #StageArt[bgmode="surface"] QToolButton#GlassIcon {
+        background: $surface_2; color: $text; border: 1px solid $border; }
+    #StageArt[bgmode="surface"] QPushButton#Glass:hover,
+    #StageArt[bgmode="surface"] QToolButton#GlassIcon:hover {
+        background: $overlay; color: $text; border-color: $border; }
+    /* For you now off the art: the card surface, page ink. */
+    #StageArt[bgmode="gradient"] #FynPill, #StageArt[bgmode="surface"] #FynPill,
+    #StageArt[bgmode="gradient"] #FynList, #StageArt[bgmode="surface"] #FynList {
+        background: $surface_2; border: 1px solid $border; }
+    #StageArt[bgmode="gradient"] #FynPillBody:hover, #StageArt[bgmode="surface"] #FynPillBody:hover,
+    #StageArt[bgmode="gradient"] #FynRow:hover, #StageArt[bgmode="surface"] #FynRow:hover {
+        background: $accent_09; }
+    #StageArt[bgmode="gradient"] QLabel#FynKicker, #StageArt[bgmode="surface"] QLabel#FynKicker,
+    #StageArt[bgmode="gradient"] QLabel#FynWhy, #StageArt[bgmode="surface"] QLabel#FynWhy,
+    #StageArt[bgmode="gradient"] QToolButton#MomentX,
+    #StageArt[bgmode="surface"] QToolButton#MomentX,
+    #StageArt[bgmode="gradient"] QPushButton#MomentFoot,
+    #StageArt[bgmode="surface"] QPushButton#MomentFoot { color: $muted; }
+    #StageArt[bgmode="gradient"] QLabel#FynTitle, #StageArt[bgmode="surface"] QLabel#FynTitle {
+        color: $text; }
+    #StageArt[bgmode="gradient"] QPushButton#MomentAct,
+    #StageArt[bgmode="surface"] QPushButton#MomentAct {
+        background: $surface; color: $text; border: 1px solid $border; }
+    #StageArt[bgmode="gradient"] QPushButton#MomentAct:hover,
+    #StageArt[bgmode="surface"] QPushButton#MomentAct:hover,
+    #StageArt[bgmode="gradient"] QToolButton#MomentX:hover,
+    #StageArt[bgmode="surface"] QToolButton#MomentX:hover,
+    #StageArt[bgmode="gradient"] QPushButton#MomentFoot:hover,
+    #StageArt[bgmode="surface"] QPushButton#MomentFoot:hover {
+        background: $overlay; color: $text; border-color: $border; }
     #FynStrip QLabel#FynTitle { color: $text; }
     #FynStrip QLabel#FynWhy { color: $muted; }
     #FynStrip #FynRow:hover { background: $accent_09; }
@@ -1033,6 +1105,9 @@ def build_stylesheet(scale: float = 1.0) -> str:
         # Over the Stage's art (For you now, w-89): on_art at a few strengths.
         on_art_10=_rgba(P['on_art'], 0.10), on_art_16=_rgba(P['on_art'], 0.16),
         on_art_35=_rgba(P['on_art'], 0.35), on_art_72=_rgba(P['on_art'], 0.72),
+        # On the Stage's accent gradient (w-90): on_accent at a few strengths.
+        **{f'on_accent_{n}': _rgba(P['on_accent'], n / 100) for n in (16, 28, 35, 72, 86)},
+        r_stage_fact=pill(int(STAGE_FACT_H * scale)),
         check_icon=_check_icon_path(),
         grad_dusk=qss_grad('dusk'), grad_dusk_hi=qss_grad('dusk', lighten=1.12),
         grad_dusk_diag=qss_grad('dusk', 1.0, 1.0),

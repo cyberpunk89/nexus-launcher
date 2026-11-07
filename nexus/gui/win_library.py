@@ -1480,15 +1480,16 @@ class LibraryMixin:
             w = max(min(w, total - 300), d.MIN_W)
             self.split.setSizes([max(total - w, 300), w])
 
-    def _show_menu(self, game, pos):
+    def _show_menu(self, game, pos, stage=None):
         """The game menu: the desktop QMenu for mouse and keyboard; for a
-        controller (and anything in Theatre) the ActionSheet instead."""
+        controller (and anything in Theatre) the ActionSheet instead. `stage`
+        ('pin' or 'unpin') comes from the Stage's ⋮ only (w-90)."""
         if self._theatre:
             self.theatre_sheet.open(game, game_actions(game, theatre=True), theatre=True)
         elif self.input.mode == 'pad':
-            self.sheet.open(game, game_actions(game))
+            self.sheet.open(game, game_actions(game, stage=stage))
         else:
-            m = build_game_menu(self, game, self.on_game_action)
+            m = build_game_menu(self, game, self.on_game_action, stage=stage)
             m.exec(pos if not pos.isNull() else QCursor.pos())
             m.deleteLater()                      # its closures hold the game dict
             return

@@ -257,7 +257,7 @@ class DashboardModel(unittest.TestCase):
         self.assertNotIn('jump', nx.DASH_WIDGETS)
 
     def test_normalize_checks_stage_options(self):
-        out = nx.dash_normalize([{'id': 'stage', 'size': 'wide', 'style': 'clean',
+        out = nx.dash_normalize([{'id': 'stage', 'size': 'wide', 'style': 'fancy',
                                   'bg': 42, 'hidden': True}])
         stage = next(i for i in out if i['id'] == 'stage')
         self.assertEqual((stage['size'], stage['style'], stage['bg'], stage['hidden']),
@@ -265,7 +265,14 @@ class DashboardModel(unittest.TestCase):
         stage = next(i for i in nx.dash_normalize([{'id': 'stage', 'size': 'huge'}])
                      if i['id'] == 'stage')
         self.assertEqual((stage['size'], stage['style'], stage['bg']), ('cinematic', 'row', 'art'))
-        self.assertEqual(nx.DASH_OPTIONS['stage'], {'style': ('row',), 'bg': ('art',)})
+        self.assertEqual(nx.DASH_OPTIONS['stage'], {'style': ('row', 'clean'),
+                                                    'bg': ('art', 'pinned', 'gradient', 'surface')})
+        for style in ('row', 'clean'):
+            for bg in ('art', 'gradient', 'surface'):
+                st = nx.dash_normalize([{'id': 'stage', 'size': 'cinematic', 'style': style,
+                                         'bg': bg}])[0]
+                self.assertEqual((st['style'], st['bg']), (style, bg))
+                self.assertNotIn('pin', st)
         news = next(i for i in out if i['id'] == 'news')
         self.assertNotIn('style', news)                              # only the stage has them
 
@@ -288,6 +295,131 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(h('wide', 500), 320)
         self.assertEqual(h('banner', 850), 250)
         self.assertEqual(h('banner', 400), 250)
+
+    def test_stage_height_styles(self):
+        """w-90: Clean is shorter (the Continue shelf under it shows whole at
+        850 high); off the art (gradient, Plain) shorter still; the Row on
+        art style is as tall on every background, so cycling never jumps."""
+        h = nx.stage_height
+        for bg in ('art', 'pinned', 'gradient', 'surface'):
+            self.assertEqual(h('cinematic', 850, 'row', bg), 560)
+            self.assertEqual(h('wide', 850, 'clean', bg), 420)        # only Cinematic changes
+            self.assertEqual(h('banner', 850, 'clean', bg), 250)
+        for bg in ('art', 'pinned'):
+            self.assertEqual(h('cinematic', 850, 'clean', bg), 530)   # vh - 320
+            self.assertEqual(h('cinematic', 1400, 'clean', bg), 540)
+            self.assertEqual(h('cinematic', 600, 'clean', bg), 400)
+        for bg in ('gradient', 'surface'):
+            self.assertEqual(h('cinematic', 850, 'clean', bg), 320)
+            self.assertEqual(h('cinematic', 1400, 'clean', bg), 320)
+
+    def test_normalize_keeps_a_valid_pin_only_on_pinned_art(self):
+        """w-90: Pinned art keeps its game's slug; any other background drops
+        it; a bad pin makes Pinned art plain Game art."""
+        def stage(**kw):
+            return nx.dash_normalize([{'id': 'stage', 'size': 'cinematic', **kw}])[0]
+        st = stage(bg='pinned', pin='steam-323190')
+        self.assertEqual((st['bg'], st['pin']), ('pinned', 'steam-323190'))
+        self.assertEqual(nx.dash_normalize([st])[0], st)               # idempotent
+        for bg in ('art', 'gradient', 'surface'):
+            self.assertNotIn('pin', stage(bg=bg, pin='steam-323190'))
+        for bad in (None, 42, '', ' x', 'x\n', 'a' * 81, ['x'], {'slug': 'x'}):
+            st = stage(bg='pinned', pin=bad)
+            self.assertEqual(st['bg'], 'art', bad)
+            self.assertNotIn('pin', st)
+        self.assertEqual(stage(bg='pinned', pin='a' * 80)['pin'], 'a' * 80)
+        news = next(i for i in nx.dash_normalize([{'id': 'news', 'pin': 'x'}]) if i['id'] == 'news')
+        self.assertNotIn('pin', news)
+        self.assertNotIn('pin', nx.DASH_OPTIONS['stage'])            # a key, not an option
+
+    def test_stage_and_week_labels(self):
+        self.assertEqual(nx.DASH_STYLE_LABELS['stage'], {'row': "Row on art", 'clean': "Clean"})
+        self.assertEqual(nx.DASH_STYLE_LABELS['week'], {'bars': "Bars", 'number': "Number only"})
+        self.assertEqual(nx.DASH_BG_LABELS['stage'], {'art': "Game art", 'pinned': "Pinned art",
+                                                      'gradient': "Accent gradient",
+                                                      'surface': "Plain"})
+        for kind, labels in list(nx.DASH_STYLE_LABELS.items()) + list(nx.DASH_BG_LABELS.items()):
+            key = 'style' if labels in nx.DASH_STYLE_LABELS.values() else 'bg'
+            self.assertEqual(tuple(labels), nx.DASH_OPTIONS[kind][key], kind)
+
+    def test_density_values(self):
+        """Comfortable is Home as it always was; Compact tightens it (w-90)."""
+        sp = nx.SP
+        self.assertEqual(set(nx.DASH_DENSITY), {'comfortable', 'compact'})
+        c, k = nx.DASH_DENSITY['comfortable'], nx.DASH_DENSITY['compact']
+        self.assertEqual(set(c), set(k))
+        self.assertEqual((c['grid_h'], c['grid_v'], c['card_pad']), (sp['4'], sp['5'], sp['4']))
+        self.assertEqual((k['grid_h'], k['grid_v'], k['card_pad']), (sp['3'], sp['3'], sp['3']))
+        self.assertEqual((c['art_side'], c['art_tb'], c['row_gap']), (48, sp['5'], sp['3']))
+        self.assertEqual((k['art_side'], k['art_tb'], k['row_gap']), (sp['8'], sp['4'], sp['2']))
+        self.assertEqual((c['home_side'], c['home_top']), (sp['5'], sp['4']))
+        self.assertEqual((k['home_side'], k['home_top']), (sp['4'], sp['3']))
+        self.assertTrue(all(k[x] <= c[x] for x in c))
+
+    def test_density_prefs_round_trip(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'dashboard': {'version': 2, 'density': 'tiny',
+                                                      'layouts': ['kept']}}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                pr = nx.LibraryPrefs()
+                self.assertEqual(pr.density, 'comfortable')          # a bad one falls back
+                pr.density = 'compact'
+                pr.save()
+                again = nx.LibraryPrefs()
+                self.assertEqual(again.density, 'compact')
+            data = json.loads(path.read_text())
+            self.assertEqual(data['dashboard']['density'], 'compact')
+            self.assertEqual(data['dashboard']['layouts'], ['kept'])  # the merge keeps the rest
+            for raw in ({}, {'dashboard': {'density': ['compact']}},
+                        {'dashboard': {'density': {'a': 1}}}):
+                path.write_text(json.dumps(raw))
+                with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                    self.assertEqual(nx.LibraryPrefs().density, 'comfortable')
+
+    def test_pinned_stage_round_trips_through_prefs(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                pr = nx.LibraryPrefs()
+                pr.dashboard[0].update(style='clean', bg='pinned', pin='alpha')
+                pr.save()
+                st = nx.LibraryPrefs().dashboard[0]
+            self.assertEqual((st['id'], st['style'], st['bg'], st['pin']),
+                             ('stage', 'clean', 'pinned', 'alpha'))
+
+    def test_glass_raised_reads_in_every_theme(self):
+        """w-90: the pill's and list's buttons sit on glass_raised over the
+        list's tile_scrim; white text on it reads (4.5:1) in every theme,
+        even over white art. The Dawn render finding of w-89."""
+        import re
+        from nexus.gui import theme as th
+
+        def over(top, under):
+            m = re.fullmatch(r'rgba\((\d+),(\d+),(\d+),([\d.]+)\)', top.replace(' ', ''))
+            rgb, a = [int(m[i]) for i in (1, 2, 3)], float(m[4])
+            return [round(rgb[i] * a + under[i] * (1 - a)) for i in range(3)]
+
+        saved = dict(th.LOOK)
+        try:
+            for key in th.THEMES:
+                th.apply_appearance({'theme': key})
+                for art in ((255, 255, 255), (0, 0, 0)):
+                    c = over(th.P['glass_raised'], over(th.P['tile_scrim'], art))
+                    ratio = th.contrast(th.P['on_art'], '#%02x%02x%02x' % tuple(c))
+                    self.assertGreaterEqual(ratio, 4.5, (key, art, ratio))
+                self.assertIn(th.P['glass_raised'], th.build_stylesheet())
+        finally:
+            th.apply_appearance({})
+            th.LOOK.update(saved)
 
     def test_week_sizes(self):
         """w-87: Your week is small or wide; Play time and Achievements left Home."""

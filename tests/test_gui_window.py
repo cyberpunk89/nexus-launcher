@@ -337,6 +337,33 @@ class Actions(unittest.TestCase):
         self.assertTrue(fav.isChecked())
         m.deleteLater()
 
+    def test_stage_pin_actions(self):
+        """w-90: the Stage's ⋮ alone offers Pin to Stage / Unpin from Stage,
+        in a section of its own right after Play and Open folder."""
+        g = {'slug': 's', 'source': 'steam', 'appid': 1, 'launcher': 'steam://x'}
+        plain = [a.key for a in nx.game_actions(g)]
+        self.assertFalse([k for k in plain if k.startswith('stage-')])
+        for stage, key, text, glyph in (('pin', 'stage-pin', "Pin to Stage", 'pin'),
+                                        ('unpin', 'stage-unpin', "Unpin from Stage", 'pin_off')):
+            acts = nx.game_actions(g, stage=stage)
+            keys = [a.key for a in acts]
+            self.assertEqual(len(keys), len(plain) + 1)
+            at = keys.index(key)
+            self.assertEqual(acts[at].label, text)
+            self.assertEqual(acts[at].section, 'stage')
+            self.assertTrue(all(a.section == 'play' for a in acts[:at]))
+            self.assertNotEqual(acts[at + 1].section, 'play')
+            self.assertEqual(nx.action_glyph(acts[at]), nx.G[glyph])
+            m = nx.build_game_menu(None, g, lambda *a: None, stage=stage)
+            texts = [a.text() for a in m.actions()]
+            i = texts.index(text)
+            self.assertTrue(m.actions()[i - 1].isSeparator())         # its own section
+            self.assertTrue(m.actions()[i + 1].isSeparator())
+            m.deleteLater()
+        self.assertEqual([a.key for a in nx.game_actions(g, theatre=True, stage='pin')],
+                         [a.key for a in nx.game_actions(g, theatre=True)])   # never in Theatre
+        self.assertEqual([a.key for a in nx.game_actions(g, stage='other')], plain)
+
     @linux_features                                        # snapshots need btrfs
     def test_move_and_snapshots_only_for_games_nexus_owns(self):
         g = {'slug': 'a', 'source': 'nexus', 'launcher': '/a'}
@@ -1564,6 +1591,229 @@ class Window(unittest.TestCase):
         d._edit('stage', 'show')
         self.assertFalse(stage.isHidden())
         self.assertIs(w.default_focus(), stage.art.btn)
+
+    # ---- Stage styles, backgrounds, density (w-90) ----
+    def _stage_item(self):
+        return next(i for i in self.win.prefs.dashboard if i['id'] == 'stage')
+
+    def test_stage_style_and_background_buttons(self):
+        """The edit bar reads Cinematic | Style: Row on art | Background:
+        Game art; Style cycles Row on art / Clean, Background Game art ->
+        Pinned art (the shown game) -> Accent gradient -> Plain."""
+        w, stage = self._stage()
+        d, art, row = w.dashboard, stage.art, stage.row
+        tiles = [id(t) for t in row.tiles]
+        vh = w.homeview.viewport().height()
+        d.set_editing(True)
+        bar = stage.editbar.layout()
+        order = [bar.itemAt(i).widget() for i in range(bar.count())
+                 if bar.itemAt(i).widget() is not None]
+        self.assertLess(order.index(stage.btn_size), order.index(stage.btn_style))
+        self.assertLess(order.index(stage.btn_style), order.index(stage.btn_bg))
+        self.assertEqual(stage.btn_style.text(), "Style: Row on art")
+        self.assertEqual(stage.btn_bg.text(), "Background: Game art")
+        self.assertEqual(stage.btn_bg.toolTip(), "What's behind the Stage")
+        news = d.widgets['news']
+        self.assertFalse(news.btn_bg.isVisibleTo(news))
+        # Clean: the row is a shelf under the art, with the page's fades.
+        stage.btn_style.click()
+        self.assertEqual(self._stage_item()['style'], 'clean')
+        self.assertEqual(stage.btn_style.text(), "Style: Clean")
+        self.assertIs(row.parentWidget(), stage)
+        self.assertTrue(all(f.role == 'bg' and f.grad is None for f in row.fades.values()))
+        self.assertEqual(art.maximumHeight(), max(nx.stage_height('cinematic', vh, 'clean'),
+                                                  art.layout().minimumSize().height()))
+        self.assertEqual([id(t) for t in row.tiles], tiles)         # never rebuilt
+        stage.btn_style.click()
+        self.assertEqual(self._stage_item()['style'], 'row')
+        self.assertIs(row.parentWidget(), art)
+        # Background: Pinned art pins the game shown.
+        shown = art.game['slug']
+        stage.btn_bg.click()
+        self.assertEqual((self._stage_item()['bg'], self._stage_item()['pin']), ('pinned', shown))
+        self.assertEqual(stage.btn_bg.text(), "Background: Pinned art")
+        self.assertEqual(art.property('bgmode'), 'art')
+        self.assertIn("PINNED", art.kicker.text())
+        stage.btn_bg.click()
+        self.assertEqual(self._stage_item()['bg'], 'gradient')
+        self.assertNotIn('pin', self._stage_item())
+        self.assertEqual(art.property('bgmode'), 'gradient')
+        self.assertTrue(art.logo.isHidden())                       # off the art: words
+        self.assertFalse(art.title.isHidden())
+        self.assertEqual(art.title.text(), art.game['display_name'])
+        self.assertEqual({s: f.grad for s, f in row.fades.items()},
+                         {'left': ('dusk', 0), 'right': ('dusk', 1)})
+        self.assertEqual(art.maximumHeight(), max(nx.stage_height('cinematic', vh),
+                                                  art.layout().minimumSize().height()))
+        stage.btn_bg.click()
+        self.assertEqual(self._stage_item()['bg'], 'surface')
+        self.assertEqual(stage.btn_bg.text(), "Background: Plain")
+        self.assertEqual(art.property('bgmode'), 'surface')
+        self.assertTrue(all(f.role == 'surface' for f in row.fades.values()))
+        stage.btn_bg.click()
+        self.assertEqual(self._stage_item()['bg'], 'art')
+        self.assertEqual(art.property('bgmode'), 'art')
+        self.assertTrue(all(f.role == 'scrim' for f in row.fades.values()))
+        self.assertEqual([id(t) for t in row.tiles], tiles)
+        d.set_editing(False)
+
+    def test_stage_background_skips_pinned_without_a_game(self):
+        w, stage = self._stage()
+        stage.art.games = []                                        # nothing shown
+        w.dashboard._edit('stage', 'bg')
+        self.assertEqual(self._stage_item()['bg'], 'gradient')
+        self.assertNotIn('pin', self._stage_item())
+
+    def test_stage_off_the_art_has_no_tint(self):
+        w, stage = self._stage()
+        tints = []
+        stage.art.tint.connect(tints.append)
+        w.dashboard._edit('stage', 'bg')                            # pinned: still the art
+        w.dashboard._edit('stage', 'bg')                            # gradient
+        self.assertIsNone(tints[-1])
+        self.assertIsNone(stage.art._tint('/x.png'))
+
+    def test_stage_facts_follow_the_background(self):
+        w, stage = self._stage()
+        art = stage.art
+        facts = [art.facts.itemAt(i).widget() for i in range(art.facts.count())]
+        facts = [f for f in facts if f is not None]
+        self.assertTrue(facts)
+        self.assertTrue(all(f.objectName() == "StageFact" for f in facts))
+        self.assertTrue(all(f.height() == nx.scaled(24) or f.maximumHeight() == nx.scaled(24)
+                            for f in facts))
+
+    def test_clean_keeps_pad_focus_on_the_row(self):
+        w, stage = self._stage()
+        w.activateWindow()
+        row = stage.row
+        tile = row.tiles[1]
+        tile.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not tile:
+            self.skipTest("offscreen gave no focus")
+        tiles = [id(t) for t in row.tiles]
+        w.dashboard._edit('stage', 'style')
+        QApplication.processEvents()
+        self.assertIs(row.parentWidget(), stage)
+        self.assertIs(QApplication.focusWidget(), tile)
+        self.assertEqual([id(t) for t in row.tiles], tiles)
+        w.dashboard._edit('stage', 'style')
+        QApplication.processEvents()
+        self.assertIs(row.parentWidget(), stage.art)
+        self.assertIs(QApplication.focusWidget(), tile)
+
+    def test_pinned_art_ignores_the_row_but_not_a_running_game(self):
+        w, stage = self._stage()
+        art, row = stage.art, stage.row
+        beta = w.game('steam-1')
+        self.assertEqual(art.game['slug'], 'alpha')
+        w.on_game_action('stage-pin', beta)                          # the ⋮ menu's Pin to Stage
+        self.assertEqual((self._stage_item()['bg'], self._stage_item()['pin']),
+                         ('pinned', 'steam-1'))
+        self.assertEqual(art.game['slug'], 'steam-1')
+        self.assertTrue(stage.pinned())
+        self.assertEqual(art.kicker.text(), "PINNED  ·  CONTINUE PLAYING")
+        self.assertEqual(stage.menu_stage(art.game), 'unpin')
+        row.focused.emit(row.tiles[0])                               # alpha
+        stage._follow(w.game('alpha'))
+        self.assertEqual(art.game['slug'], 'steam-1')                # the row doesn't move it
+        with mock.patch.object(w, 'run', lambda *a, **k: None):
+            self._play(w, w.game('alpha'))
+        self.assertEqual(art.game['slug'], 'alpha')                  # Now playing wins
+        self.assertIn("NOW PLAYING", art.kicker.text())
+        self.assertEqual(stage.menu_stage(art.game), 'pin')
+        w._apply_running(set())
+        w._mark_states()
+        QApplication.processEvents()
+        self.assertEqual(art.game['slug'], 'steam-1')                # pinned again
+        w.on_game_action('stage-unpin', beta)
+        self.assertEqual(self._stage_item()['bg'], 'art')
+        self.assertNotIn('pin', self._stage_item())
+        self.assertFalse(stage.pinned())
+        self.assertNotIn("PINNED", art.kicker.text())
+
+    def test_pinned_game_gone_follows_the_row_and_keeps_the_pin(self):
+        w, stage = self._stage()
+        stage.pin(w.game('steam-1'))
+        w.on_game_action('hide', w.game('steam-1'))                 # out of Home's games
+        QApplication.processEvents()
+        w.dashboard.refresh(['stage'])
+        self.assertEqual(self._stage_item()['pin'], 'steam-1')       # kept
+        self.assertFalse(stage.pinned())
+        self.assertNotIn("PINNED", stage.art.kicker.text())
+        self.assertEqual(stage.menu_stage(stage.art.game), 'pin')
+
+    def test_stage_menu_offers_pin_only_on_art(self):
+        w, stage = self._stage()
+        seen = []
+        with mock.patch.object(w, '_show_menu', lambda g, pos, stage=None: seen.append(stage)):
+            stage.art.btn_more.click()
+            w.dashboard._edit('stage', 'bg')                         # pinned
+            stage.art.btn_more.click()
+            w.dashboard._edit('stage', 'bg')                         # gradient
+            stage.art.btn_more.click()
+        self.assertEqual(seen, ['pin', 'unpin', None])
+
+    def test_stage_pin_in_the_pad_sheet(self):
+        w, stage = self._stage()
+        w.input.mode = 'pad'
+        try:
+            stage.art.btn_more.click()
+            QApplication.processEvents()
+            rows = [b.text() for b in w.sheet.findChildren(QPushButton)
+                    if b.objectName() == "SheetRow"]
+            self.assertIn("Pin to Stage", rows)
+            w.sheet.close_sheet()
+        finally:
+            w.input.mode = 'mouse'
+
+    def test_week_style_button(self):
+        w, _stage = self._stage()
+        d = w.dashboard
+        week = d.widgets['week']
+        d.set_editing(True)
+        self.assertTrue(week.btn_style.isVisibleTo(week))
+        self.assertEqual(week.btn_style.text(), "Style: Bars")
+        week.btn_style.click()
+        self.assertEqual(next(i for i in d.items if i['id'] == 'week')['style'], 'number')
+        self.assertEqual(week.options['style'], 'number')
+        self.assertEqual(week.btn_style.text(), "Style: Number only")
+        d.set_editing(False)
+
+    def test_density_is_home_only(self):
+        w, stage = self._stage()
+        d = w.dashboard
+        lib = w.home.lay.contentsMargins()
+        lib_sp = w.home.lay.spacing()
+        self.assertTrue(d.btn_density.isHidden())
+        d.set_editing(True)
+        self.assertFalse(d.btn_density.isHidden())
+        self.assertEqual(d.btn_density.text(), "Density: Comfortable")
+        self.assertIn("Home only", d.btn_density.toolTip())
+        self.assertEqual((d.grid.horizontalSpacing(), d.grid.verticalSpacing()),
+                         (nx.SP['4'], nx.SP['5']))
+        d.btn_density.click()
+        self.assertEqual(w.prefs.density, 'compact')
+        self.assertEqual(d.btn_density.text(), "Density: Compact")
+        self.assertEqual((d.grid.horizontalSpacing(), d.grid.verticalSpacing()),
+                         (nx.SP['3'], nx.SP['3']))
+        m = w.homeview.lay.contentsMargins()
+        self.assertEqual((m.left(), m.top()), (nx.SP['4'], nx.SP['3']))
+        a = stage.art.layout().contentsMargins()
+        self.assertEqual((a.left(), a.top()), (nx.SP['8'], nx.SP['4']))
+        self.assertEqual(stage.row.layout().contentsMargins().top(), nx.SP['2'])
+        news = d.widgets['news'].layout().contentsMargins()
+        self.assertEqual(news.left(), nx.SP['3'])
+        self.assertEqual(w.home.lay.contentsMargins(), lib)          # the Library's shelves
+        self.assertEqual(w.home.lay.spacing(), lib_sp)
+        d.btn_density.click()
+        self.assertEqual(w.prefs.density, 'comfortable')
+        m = w.homeview.lay.contentsMargins()
+        self.assertEqual((m.left(), m.top()), (nx.SP['5'], nx.SP['4']))
+        self.assertEqual(stage.art.layout().contentsMargins().left(), 48)
+        d.set_editing(False)
+        self.assertTrue(d.btn_density.isHidden())
 
     def test_artwork_page_round_trip(self):
         game = self.win._games[1]
@@ -4640,6 +4890,28 @@ class ForYou(unittest.TestCase):
         nxt.setFocus()
         QApplication.processEvents()
         return nxt
+
+    def test_pill_ink_follows_the_stage_background(self):
+        """w-90: off the art (gradient, Plain) the pill and list are on the
+        card surface, so their glyphs go muted; back on the art, on_art."""
+        w, fy = self._fyn(stage={'bg': 'gradient'})
+        self.assertFalse(fy.pill.isHidden())
+        self.assertEqual(fy.pill.ink, 'muted')
+        self.assertEqual(fy.list.btn_quiet._glyph_spec[2], 'muted')
+        chev = fy.pill.chevron
+        self.assertGreaterEqual(fy.pill.body.layout().indexOf(chev), 0)
+        self.assertFalse(chev.isHidden())                          # several moments
+        fy.open_list()
+        self.assertTrue(fy.list_open())
+        fy.close_list()
+        w.dashboard._edit('stage', 'bg')                           # Plain
+        self.assertEqual(fy.pill.ink, 'muted')
+        w.dashboard._edit('stage', 'bg')                           # Game art
+        self.assertEqual(fy.pill.ink, 'on_art')
+        self.assertEqual(fy.list.btn_quiet._glyph_spec[2], 'on_art')
+        self._flush()
+        self.assertFalse(fy.pill.chevron.isHidden())
+        self.assertIs(fy.pill.chevron.parentWidget(), fy.pill.body)
 
     # ---- states ----
     def test_no_moments_no_pill_and_play_row_as_today(self):

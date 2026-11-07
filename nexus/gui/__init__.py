@@ -78,11 +78,12 @@ from .library import (
     LibraryView, ListView, shelf_page_target, ShelfRow, surprise_pick)  # noqa: F401
 from .dashboard import (
     _game_store_id, _visible_games, ClickRow, CollectionsWidget,
-    dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_KINDS, DASH_MERGED, DASH_MERGED_SHOWN,
-    dash_move,
+    DASH_BG_LABELS, dash_cols, dash_default, DASH_DEFAULT_SIZE, DASH_DENSITY, DASH_KINDS,
+    DASH_MERGED, DASH_MERGED_SHOWN, dash_move,
     dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
-    InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget, stage_height,
+    DASH_STYLE_LABELS, InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget,
+    stage_height, stage_pin,
     StageArt, StageWidget,
     ShelfWidget, SurpriseWidget, system_badge, system_status, SystemWidget,
     SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
