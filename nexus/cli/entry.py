@@ -587,6 +587,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="With --report-preview/-url/-send: include the game's name")
     g8.add_argument('--describe', metavar='TEXT', dest='report_describe',
                     help='With --report-preview/-url/-send: what happened, in your words')
+    gs = parser.add_argument_group('install count (opt-in, anonymous)')
+    gs.add_argument('--stats-ping', action='store_true', dest='stats_ping',
+                    help='Internal (used by the app): count this install if [stats] count '
+                         'is on and today, this week or this month is not counted yet')
+    gs.add_argument('--stats-preview', action='store_true', dest='stats_preview',
+                    help='Show exactly what the anonymous install count sends, even while '
+                         'it is off')
+    gs.add_argument('--stats-sent', action='store_true', dest='stats_sent',
+                    help='List the install-count pings sent from this computer (the last '
+                         '100), newest first')
     _hide_unavailable(parser)
     return parser
 
@@ -856,6 +866,9 @@ COMMANDS = (
     ('report_refresh', lambda a, base: cmd_report_refresh(a.json)),
     ('report_similar', lambda a, base: cmd_report_similar(a.report_similar, a.json)),
     ('report_dismiss', lambda a, base: cmd_report_dismiss(a.report_dismiss, a.json)),
+    ('stats_ping', lambda a, base: cmd_stats_ping(a.json)),
+    ('stats_preview', lambda a, base: cmd_stats_preview(a.json)),
+    ('stats_sent', lambda a, base: cmd_stats_sent(a.json)),
     ('list_steam_accounts', lambda a, base: cmd_list_steam_accounts()),
     ('doctor', lambda a, base: cmd_doctor(base, as_json=a.json)),
     ('prune', lambda a, base: sys.exit(cmd_prune(yes=a.yes, as_json=a.json))),
@@ -1068,3 +1081,4 @@ from .snapshots import cmd_snapshots  # noqa: E402
 from .report import (cmd_report_collect, cmd_report_dismiss, cmd_report_pending,
     cmd_report_preview, cmd_report_refresh, cmd_report_send, cmd_report_sent,
     cmd_report_sent_remove, cmd_report_similar, cmd_report_status, cmd_report_url)  # noqa: E402
+from .stats import cmd_stats_ping, cmd_stats_preview, cmd_stats_sent  # noqa: E402

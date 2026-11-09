@@ -396,6 +396,56 @@ class FriendsFlag(unittest.TestCase):
             self.assertIsNone(c['steam_web_api_key'])
 
 
+class Stats(unittest.TestCase):
+    """The install count's flags (w-102): JSON shapes, never GATED, and no
+    network unless the count is on and due (relay.count is replaced)."""
+
+    def run_cmd(self, fn, cfg, count=None):
+        from nexus import stats as ST
+        from nexus.cli import stats as CS
+        from nexus.report import relay as RL
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        out = io.StringIO()
+        with mock.patch.object(CS, 'load_config', lambda: cfg), \
+                mock.patch.object(ST, 'DATA_DIR', Path(d.name) / 'data'), \
+                mock.patch.object(ST, 'LOG_DIR', Path(d.name) / 'logs'), \
+                mock.patch.dict(os.environ, {'DO_NOT_TRACK': '', 'NEXUS_NO_STATS': ''}), \
+                mock.patch.object(RL, 'count', count or mock.Mock(
+                    side_effect=AssertionError('network'))), \
+                mock.patch('sys.stdout', out):
+            for f in (fn if isinstance(fn, tuple) else (fn,)):
+                f(True)
+        return [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_json_shapes(self):
+        from nexus.cli import entry, stats as CS
+        unasked = {'stats_count': None, 'report_relay': True, 'report_url': None}
+        [p] = self.run_cmd(CS.cmd_stats_ping, unasked)
+        self.assertEqual(p, {'skipped': 'unasked'})
+        [pv] = self.run_cmd(CS.cmd_stats_preview, unasked)
+        self.assertEqual(set(pv), {'state', 'count', 'blocked', 'url', 'due', 'payload'})
+        self.assertEqual((pv['state'], pv['count'], pv['due']), ('unasked', None,
+                                                                 ['d', 'w', 'm']))
+        self.assertEqual(pv['url'], 'https://nexus-reports-relay.vercel.app')
+        self.assertEqual(pv['payload']['schema'], 1)
+        [s] = self.run_cmd(CS.cmd_stats_sent, unasked)
+        self.assertEqual(s, {'sent': []})
+        on = dict(unasked, stats_count=True)
+        ping, sent = self.run_cmd((CS.cmd_stats_ping, CS.cmd_stats_sent), on,
+                                  count=lambda url, body: {'status': 'counted'})
+        self.assertEqual(ping, {'sent': True, 'ok': True, 'periods': ['d', 'w', 'm'],
+                                'error': None})
+        self.assertEqual(len(sent['sent']), 1)
+        self.assertEqual(set(sent['sent'][0]), {'at', 'payload', 'answer'})
+        [pv] = self.run_cmd(CS.cmd_stats_preview, dict(on, report_relay=False))
+        self.assertEqual((pv['state'], pv['blocked'], pv['url']), ('blocked', 'relay', None))
+        gated = {d for ds in entry.GATED.values() for d in ds}
+        self.assertFalse({'stats_ping', 'stats_preview', 'stats_sent'} & gated)
+        args = fi.build_parser().parse_args(['--stats-preview', '--json'])
+        self.assertTrue(args.stats_preview and args.json)
+
+
 class CommandTable(unittest.TestCase):
     def test_gated_options_exist_and_name_real_features(self):
         from nexus import features

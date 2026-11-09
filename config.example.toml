@@ -101,4 +101,8 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 
 [report]                  # "Report a problem"
 # relay = true                           # false hides "Send anonymously" (GitHub account path only)
+#                                        # and stops the install count below
 # url = "https://..."                    # another reports relay (testing, or a fork's own)
+
+[stats]                   # the anonymous install count, opt-in (PRIVACY.md lists every field)
+# count = true                           # unset: not asked yet, nothing is sent; false: off

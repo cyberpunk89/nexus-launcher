@@ -1065,6 +1065,18 @@ addresses and tokens before you see it:
 | `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url / send: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
 | `--report-dismiss ID` | Forget one crash report |
 
+**Install count** (opt-in: nothing is sent until you say yes in Setup, on Home or in
+Settings → System → Privacy, which writes `[stats] count`). At most once a day the app sends
+one small ping with no id: the version, edition, install kind, distro and its version, desktop,
+session, language, Python version and a rough age. Every field is in
+[PRIVACY.md](../PRIVACY.md). `DO_NOT_TRACK=1`, `NEXUS_NO_STATS=1` or `[report] relay = false`
+turn it off whatever the setting says:
+
+| Flag | Does |
+|---|---|
+| `--stats-preview` | Exactly what a ping would send now (works while it's off), and whether it's on |
+| `--stats-sent` | The last 100 pings sent from this computer, with the relay's answer, newest first |
+
 ## Config & data
 
 `~/.config/nexus/config.toml` — optional. Start from
@@ -1094,7 +1106,9 @@ set aside as `games.json.corrupt-<time>`; `--reindex` rebuilds it), `artwork/`, 
 (install logs + `<slug>-last-launch.log`), `saves/`, `integrity/`, `repack-feed.json`
 (FitGirl posts seen by `--repack-feed`), `sunshine/` (PNG covers for Sunshine entries),
 `watch-state.json` (finished downloads already announced), `alerts.json` (alerts already
-sent), `agent-state.json` (what the background agent last did).
+sent), `agent-state.json` (what the background agent last did), `stats.json` (which day,
+week and month the opt-in install count last counted; it never leaves the machine) and
+`logs/stats-sent.jsonl` (the last 100 pings it sent).
 
 ## Tests
 

@@ -271,13 +271,26 @@ class AgentTasks(unittest.TestCase):
             ag.stop = True
             raise RuntimeError("nope")
         ag.task_torrents = boom
-        for t in ('scan', 'feed', 'index', 'deals', 'proton', 'art', 'facts'):
+        for t in ('scan', 'feed', 'index', 'deals', 'proton', 'art', 'facts', 'stats'):
             setattr(ag, 'task_' + t, lambda: 60)
         with mock.patch.object(A, 'TICK', 0), mock.patch.object(A.time, 'monotonic',
                                                                side_effect=iter(range(0, 10**6, 100)).__next__), \
                 mock.patch.object(A, '_say'):
             ag.run()
         self.assertEqual(calls, [1])
+
+    def test_stats_task_pings_hourly(self):
+        from nexus import stats
+        ag = A.Agent(Path(self.tmp.name))
+        seen = []
+        with mock.patch.object(A, 'load_config', lambda: {'stats_count': True}), \
+                mock.patch.object(stats, 'ping', lambda cfg: seen.append(cfg) or
+                                  {'sent': True, 'ok': False, 'error': 'offline'}), \
+                mock.patch.object(A, '_say') as say:
+            self.assertEqual(ag.task_stats(), A.EVERY['stats'])
+        self.assertEqual(seen, [{'stats_count': True}])
+        self.assertIn('offline', say.call_args[0][0])
+        self.assertEqual(A.EVERY['stats'], 3600)
 
     def _facts(self, out=b'{}', wait=0.0, play=False):
         from nexus import facts

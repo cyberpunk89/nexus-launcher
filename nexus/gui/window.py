@@ -444,6 +444,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.repacks.start()
         QTimer.singleShot(4000, self.protonpage.refresh)  # GE update badge (6 h cache)
         QTimer.singleShot(6000, self._check_update)        # new Nexus release (daily, [updates] check)
+        self._stats_timer = QTimer(self)                    # the install count, if it's on
+        self._stats_timer.setInterval(3600_000)
+        self._stats_timer.timeout.connect(self._stats_ping)
+        self._stats_timer.start()
         # "Playing now": a cheap /proc scan, only while the window is visible.
         self._run_timer = QTimer(self)
         self._run_timer.setInterval(15000)
@@ -622,6 +626,19 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         # What became of the reports sent anonymously: the CLI looks at most
         # once a day, and not at all with the update check or the relay off.
         cli_json(['--report-refresh', '--json'], self._reports_refreshed, 60000)
+        self._stats_ping()
+
+    def _stats_ping(self):
+        """The opt-in install count: the CLI decides whether a period is due
+        (most calls send nothing). Only while it's on, so an unanswered or
+        declined count never starts a process. Also hourly (_stats_timer),
+        which covers a window kept in the tray for days (Windows' agent)."""
+        if self.config.get('stats_count') is True:
+            cli_json(['--stats-ping', '--json'], self._stats_pinged, 30000)
+
+    def _stats_pinged(self, data, _err):
+        if (data or {}).get('sent') and self.page_built(self.SETTINGS):
+            self.settings.stats_sent_changed()
 
     def _reports_refreshed(self, data, _err):
         if (data or {}).get('checked') and self.page_built(self.REPORT):

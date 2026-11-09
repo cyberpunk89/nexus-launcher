@@ -839,6 +839,66 @@ class Behaviour(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Settings(unittest.TestCase):
+    """Settings → System → Privacy (w-102)."""
+
+    def page(self, cfg: dict):
+        from nexus.gui.config import load_config
+        base = {**load_config(), **cfg}
+        saved, answers = [], []
+        stack = [mock.patch.dict('os.environ', {'DO_NOT_TRACK': '', 'NEXUS_NO_STATS': ''}),
+                 patch_gui('save_config', lambda u: (saved.append(u), base.update(
+                     {('stats_count' if k == ('stats', 'count') else
+                       'report_relay' if k == ('report', 'relay') else '_'): v
+                      for k, v in u.items()}))),
+                 patch_gui('load_config', lambda: dict(base)),
+                 patch_gui('cli_json', lambda args, cb, *a, **k: answers.append(args))]
+        for p in stack:
+            p.start()
+            self.addCleanup(p.stop)
+        page = nx.SettingsPage()
+        self.addCleanup(page.deleteLater)
+        page.load()
+        return page, saved, answers
+
+    def test_privacy_unset_survives_save(self):
+        page, saved, _ = self.page({'stats_count': None})
+        self.assertFalse(page.stats_count.isChecked())
+        page.news.toggle()                       # any other save
+        page.commit()
+        self.assertTrue(saved)
+        self.assertFalse(any(('stats', 'count') in u for u in saved), saved)
+        page.load()                              # a reload doesn't count as an answer
+        page.steam.toggle()
+        self.assertFalse(any(('stats', 'count') in u for u in saved), saved)
+        page.stats_count.toggle()                # the user's own flip does
+        self.assertIs(saved[-1][('stats', 'count')], True)
+        page.stats_count.toggle()
+        self.assertIs(saved[-1][('stats', 'count')], False)
+
+    def test_answered_stays_and_relay_off_says_why(self):
+        page, saved, answers = self.page({'stats_count': True})
+        self.assertTrue(page.stats_count.isChecked())
+        self.assertTrue(page.stats_row.note.isHidden())
+        page.report_relay.toggle()
+        self.assertEqual(saved[-1], {('report', 'relay'): False})
+        self.assertIn("Send reports anonymously", page.stats_row.note.text())
+        page.stats_preview.button.click()
+        self.assertEqual(answers[-1], ['--stats-preview', '--json'])
+        page._stats_previewed({'state': 'blocked', 'blocked': 'relay', 'url': None,
+                               'payload': {'schema': 1, 'lang': 'de'}}, '')
+        self.assertIn('"lang": "de"', page.stats_preview.text())
+        self.assertIn("stopped by Send reports anonymously", page.stats_preview.text())
+        page.stats_sent.button.click()
+        self.assertEqual(answers[-1], ['--stats-sent', '--json'])
+        page._stats_sent_loaded({'sent': [{'at': '2026-11-09T10:00:00Z', 'answer': {
+            'status': 'counted'}, 'payload': {'schema': 1}}]}, '')
+        self.assertIn("2026-11-09 10:00:00  counted", page.stats_sent.text())
+        page._stats_sent_loaded({'sent': []}, '')
+        self.assertEqual(page.stats_sent.text(), "Nothing sent yet.")
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class Storage(unittest.TestCase):
     def test_delete_forever_deletes_what_was_confirmed(self):
         page = nx.StoragePage()

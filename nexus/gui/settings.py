@@ -6,6 +6,7 @@ changes, a text field when you leave it — so there is no Save button to
 find and nothing is lost by walking away."""
 
 import html
+import json
 import os
 import re
 import time
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QFileDial
     QGridLayout, QHBoxLayout, QLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget)
 
-from nexus import __version__, gamedb, platform, updates
+from nexus import __version__, gamedb, platform, stats, updates
 from nexus.features import has
 
 from .common import ATTRACT_MINUTES, CONFIG_PATH, HOME, INSTALL_BASE_DEFAULT, VOLUME_STEPS
@@ -36,6 +37,8 @@ STEAMID_RE = re.compile(r'^7656119\d{10}$')
 LOCAL_URL_RE = re.compile(r'^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$')
 FIELD_W = (200, 340)           # text fields on the right of a row: they share a narrow one
 MOTION = not os.environ.get('NEXUS_NO_MOTION')
+BLOCKED = {'NEXUS_NO_STATS': "NEXUS_NO_STATS", 'DO_NOT_TRACK': "DO_NOT_TRACK",
+           'relay': "Send reports anonymously being off"}
 
 
 class Swatch(QAbstractButton):
@@ -1421,7 +1424,7 @@ class SettingsPage(QWidget):
 
     def _build_system(self):
         cat = self._add_category('system', "System", 'system', 'tide',
-                                 "Back up and move, setup again, the version and updates.")
+                                 "Back up and move, setup again, privacy, the version and updates.")
         sec = self._group(cat, 'backup', "Back up & move", 'save',
                           "Your settings in one file, for a new PC or a reinstall. Saves "
                           "aren't in it — each game has its own save backups.")
@@ -1443,6 +1446,7 @@ class SettingsPage(QWidget):
         again.clicked.connect(self.setup_wanted)
         self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
                   again, keywords="welcome wizard onboarding first run", key='setup')
+        self._build_privacy(cat)
         self._build_about(cat)
         # config.toml: what Settings doesn't show yet. Usable with a broken
         # file too: that is how it gets fixed.
@@ -1455,6 +1459,111 @@ class SettingsPage(QWidget):
         self._row(cat.adv_body, "Open config.toml", f"{CONFIG_PATH}. Phone pushes ([notify]) "
                   "and a few rarer options live only here.", cfg,
                   keywords="config file toml edit notify ntfy", key='config_file')
+
+    def _build_privacy(self, cat: SettingsCategory):
+        """What leaves this computer, and only with a yes (w-102): the
+        install count, what it sends, what it sent, and the reports relay."""
+        sec = self._group(cat, 'privacy', "Privacy", 'shield',
+                          "Nexus sends nothing about you on its own. These are the two things "
+                          "it can send, both anonymous.")
+        self.stats_count = Switch()
+        self._stats_touched = False
+        self.stats_row = self._row(
+            sec, "Count this install",
+            "Once a day at most: the version, the system and the language. No id, no "
+            "games, no paths. It tells which systems Nexus is used on.", self.stats_count,
+            keywords="privacy statistics stats telemetry analytics usage anonymous count "
+                     "do not track", key='stats_count')
+        self.stats_preview = self._peek_row(
+            sec, "Show what is sent", "Exactly what the next count would carry.",
+            'stats_preview', self._load_stats_preview)
+        self.stats_sent = self._peek_row(
+            sec, "Sent so far", "The counts sent from this computer, newest first (the "
+            "last 100).", 'stats_sent', self._load_stats_sent)
+        self.report_relay = Switch()
+        self._row(sec, "Send reports anonymously",
+                  "Report a problem can send a report through the Nexus relay, no GitHub "
+                  "account needed. Off also stops the install count.", self.report_relay,
+                  keywords="privacy bug report relay anonymous", key='report_relay')
+
+    def _peek_row(self, sec, title: str, desc: str, key: str, fill) -> 'QLabel':
+        """A row with a Show button that opens a read-only text under it,
+        filled by `fill()` each time it opens."""
+        btn = QPushButton("Show")
+        btn.setCheckable(True)
+        btn.setAccessibleName(title)
+        row = self._row(sec, title, desc, btn, keywords="privacy install count", key=key)
+        text = plain_label("", "ReportLine", wrap=True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.layout().addWidget(text)           # in the row first, then hidden
+        text.setContentsMargins(0, 0, 0, SP['3'])
+        text.hide()
+
+        def flip(on: bool):
+            btn.setText("Hide" if on else "Show")
+            text.setVisible(on)
+            if on:
+                text.setText("Asking…")
+                fill()
+        btn.toggled.connect(flip)
+        text.button = btn
+        return text
+
+    def _load_stats_preview(self):
+        cli_json(['--stats-preview', '--json'], self._stats_previewed, 15000)
+
+    def _stats_previewed(self, data, err):
+        try:
+            if not data:
+                self.stats_preview.setText(f"Couldn't ask: {err or 'no answer'}")
+                return
+            state = {'on': "On", 'off': "Off", 'unasked': "Not answered yet, so off",
+                     'blocked': "On, but stopped by " + BLOCKED.get(data.get('blocked'), "?")
+                     }.get(data.get('state'), "?")
+            where = (data.get('url') or '') + '/v1/count' if data.get('url') else "nowhere"
+            self.stats_preview.setText(f"{state}. Sent to {where}:\n\n"
+                                       + json.dumps(data.get('payload') or {}, indent=2))
+        except RuntimeError:
+            pass
+
+    def _load_stats_sent(self):
+        cli_json(['--stats-sent', '--json'], self._stats_sent_loaded, 15000)
+
+    def _stats_sent_loaded(self, data, err):
+        try:
+            if data is None:
+                self.stats_sent.setText(f"Couldn't ask: {err or 'no answer'}")
+                return
+            rows = data.get('sent') or []
+            lines = []
+            for r in rows:
+                a = r.get('answer') or {}
+                answer = "counted" if a.get('status') == 'counted' else \
+                    f"not counted ({a.get('error') or '?'})"
+                lines.append(f"{str(r.get('at') or '?').replace('T', ' ').rstrip('Z')}  "
+                             f"{answer}\n" + json.dumps(r.get('payload') or {},
+                                                        separators=(', ', ': ')))
+            self.stats_sent.setText("\n\n".join(lines) if lines else "Nothing sent yet.")
+        except RuntimeError:
+            pass
+
+    def stats_sent_changed(self):
+        """A count went out (the window's ping): an open "Sent so far" shows it."""
+        if self.stats_sent.button.isChecked():
+            self._load_stats_sent()
+
+    def _stats_toggled(self, _on: bool):
+        if not self._loading:
+            self._stats_touched = True
+        self.commit()
+
+    def _sync_stats_row(self, *_):
+        """Say why the count can't send even when it's on."""
+        why = stats.blocked({'report_relay': self.report_relay.isChecked()})
+        self.stats_row.set_note(
+            None if not why else
+            f"Stopped: {why} is set in the environment." if why != 'relay' else
+            "Stopped while Send reports anonymously is off.")
 
     def _build_about(self, cat: SettingsCategory):
         sec = self._group(cat, 'about', "About", 'info')
@@ -1604,6 +1713,11 @@ class SettingsPage(QWidget):
                   self.gdb_other, self.gdb_library, self.fr_enabled, self.al_atl, self.al_fitgirl,
                   self.al_updates, self.al_proton):
             c.toggled.connect(self.commit)
+        # Not in the loop: while [stats] count is unset, only a real flip may
+        # write it, or any other save would answer the ask with "no".
+        self.stats_count.toggled.connect(self._stats_toggled)
+        self.report_relay.toggled.connect(self._sync_stats_row)
+        self.report_relay.toggled.connect(self.commit)
         for cb in (self.runner, self.proton, self.al_sale):
             cb.activated.connect(self.commit)
         self.tor_client.activated.connect(self._torrent_client_changed)
@@ -2033,6 +2147,10 @@ class SettingsPage(QWidget):
         self.desktop.setChecked(c.get('desktop', True))
         self.heroic.setChecked(c.get('heroic', True))
         self.news.setChecked(c.get('news', True))
+        self.stats_count.setChecked(c.get('stats_count') is True)
+        self._stats_touched = False
+        self.report_relay.setChecked(c.get('report_relay', True))
+        self._sync_stats_row()
         self.repacks.blockSignals(True)
         self.repacks.setChecked(c.get('repacks', True))
         self.repacks.blockSignals(False)
@@ -2143,6 +2261,9 @@ class SettingsPage(QWidget):
         put('integrations', 'desktop', self.desktop.isChecked(), c.get('desktop', True))
         put('integrations', 'heroic', self.heroic.isChecked(), c.get('heroic', True))
         put('news', 'enabled', self.news.isChecked(), c.get('news', True))
+        if self._stats_touched or c.get('stats_count') is not None:
+            put('stats', 'count', self.stats_count.isChecked(), c.get('stats_count'))
+        put('report', 'relay', self.report_relay.isChecked(), c.get('report_relay', True))
         put('repacks', 'enabled', self.repacks.isChecked(), c.get('repacks', True))
         gamedb_changed = False
         gurl = self.gdb_url.text().strip() or None
@@ -2254,4 +2375,4 @@ from .friends import FRIENDS  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402
-    label, NoWheelCombo, open_modal, SegmentedControl, set_glyph_icon)
+    label, NoWheelCombo, open_modal, plain_label, SegmentedControl, set_glyph_icon)

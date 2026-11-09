@@ -541,7 +541,7 @@ class SettingsCategories(unittest.TestCase):
                    'system.backup', 'system.setup', 'system.version', 'system.update',
                    'system.check_updates', 'system.whats_new', 'system.config_file',
                    'accounts.friends_whose', 'accounts.friends_status',
-                   'accounts.friends_privacy'}
+                   'accounts.friends_privacy', 'system.stats_preview', 'system.stats_sent'}
 
     def page(self):
         page = nx.SettingsPage()
@@ -552,7 +552,7 @@ class SettingsCategories(unittest.TestCase):
         page = self.page()
         rows = [r for cat in page.categories.values() for r in cat.rows]
         self.assertEqual(len(rows), len(set(map(id, rows))))
-        self.assertEqual(len(page.rows), 69)
+        self.assertEqual(len(page.rows), 73)
         self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
         for key, row in page.rows.items():
             cat, _, short = key.partition('.')

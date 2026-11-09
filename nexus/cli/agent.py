@@ -41,7 +41,8 @@ UNIT_DIR = NX.CONFIG_DIR.parent / 'systemd' / 'user'
 
 # Seconds between runs of each task (torrents set their own pace).
 EVERY = {'scan': 60, 'scan_waiting': 30, 'scan_full': 600, 'feed': 1800, 'index': 1800,
-         'deals': 2700, 'proton': 6 * 3600, 'art': 6 * 3600, 'facts': 900, 'facts_idle': 3600}
+         'deals': 2700, 'proton': 6 * 3600, 'art': 6 * 3600, 'facts': 900, 'facts_idle': 3600,
+         'stats': 3600}
 FACTS_BATCH = 10          # per site per run: 40 an hour at EVERY['facts']
 TICK = 1.0
 
@@ -112,7 +113,7 @@ class Agent:
         now = time.monotonic()
         # Staggered first runs, like the window's startup timers.
         for i, task in enumerate(('torrents', 'scan', 'feed', 'index', 'deals', 'proton',
-                                  'art', 'facts')):
+                                  'art', 'facts', 'stats')):
             self.due[task] = now + 5 + 10 * i
         last_state = 0.0
         while not self.stop:
@@ -298,6 +299,16 @@ class Agent:
         except (ValueError, AttributeError):
             left = None
         return EVERY['facts_idle'] if left == 0 else EVERY['facts']
+
+    def task_stats(self) -> float:
+        """The opt-in install count (nexus/stats.py): days the window isn't
+        opened count too. A no-op unless it's on and a period is due; the
+        lock and stats.json keep it from counting a day the window did."""
+        from nexus import stats
+        out = stats.ping(load_config())
+        if out.get('sent') and not out.get('ok'):
+            _say(f"[!] install count: {out.get('error')}")
+        return EVERY['stats']
 
 
 def cmd_agent(base: Path) -> int:
