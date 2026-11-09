@@ -551,6 +551,27 @@ class PlatformEdid(unittest.TestCase):
             self.assertIsNone(windows.screen_size_mm(0, 0))
 
 
+class Lang(unittest.TestCase):
+    """ui_language (w-102): the locale's two letters for the install count."""
+
+    @linux_only
+    def test_ui_language_linux_env(self):
+        clear = {'LC_ALL': '', 'LC_MESSAGES': '', 'LANG': ''}
+        for env, want in (({'LANG': 'de_DE.UTF-8'}, 'de'),
+                          ({'LANG': 'en_US.UTF-8', 'LC_MESSAGES': 'pt_BR.UTF-8'}, 'pt'),
+                          ({'LANG': 'en_US.UTF-8', 'LC_MESSAGES': 'fr_FR', 'LC_ALL': 'ja_JP'},
+                           'ja'),
+                          ({'LANG': 'C.UTF-8'}, None), ({'LANG': 'POSIX'}, None),
+                          ({'LANG': 'sr@latin'}, 'sr'), ({'LANG': 'eo'}, 'eo'), ({}, None)):
+            with mock.patch.dict(os.environ, {**clear, **env}):
+                self.assertEqual(platform.ui_language(), want, env)
+
+    @windows_only
+    def test_ui_language_windows(self):
+        lang = platform.ui_language()
+        self.assertTrue(lang is None or (len(lang) == 2 and lang.isalpha()), lang)
+
+
 class MachineProbes(unittest.TestCase):
     """os_release / cpu_info / gpus: what a bug report says about the PC."""
 

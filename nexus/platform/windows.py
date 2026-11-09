@@ -6,6 +6,7 @@ import functools
 import json
 import msvcrt
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -508,6 +509,23 @@ def os_release() -> dict[str, str]:
             if build else 'unknown',
             'kernel': full, 'build': full,
             'arch': os.environ.get('PROCESSOR_ARCHITECTURE', '').lower() or 'unknown'}
+
+
+_k32.GetUserDefaultLocaleName.argtypes = [wintypes.LPWSTR, ctypes.c_int]
+_k32.GetUserDefaultLocaleName.restype = ctypes.c_int
+
+
+def ui_language() -> str | None:
+    """The two-letter language of the user's locale ('en' for en-US), from
+    GetUserDefaultLocaleName. Not locale.getlocale(): on Windows that gives
+    names like "English_United States". None when it can't be read."""
+    buf = ctypes.create_unicode_buffer(85)            # LOCALE_NAME_MAX_LENGTH
+    try:
+        n = _k32.GetUserDefaultLocaleName(buf, len(buf))
+    except OSError:
+        return None
+    m = re.match(r'^([a-z]{2})(?:-|$)', buf.value.lower()) if n else None
+    return m.group(1) if m else None
 
 
 def cpu_info() -> dict:

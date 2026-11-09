@@ -14,7 +14,7 @@ SHARED = ('net', 'gamedb', 'repackindex', 'repackfeed', 'torrent', 'hltb', 'stor
           'news', 'inno', 'safety', 'history', 'achievements', 'icons', 'watch', 'alerts',
           'cleanup', 'steamlib', 'instance', 'cli/registry', 'cli/sgdb', 'cli/config',
           'sources/__init__', 'sources/epic', 'report/__init__', 'report/scrub',
-          'report/sysinfo', 'report/crash', 'report/render')
+          'report/sysinfo', 'report/crash', 'report/render', 'stats')
 
 FORBIDDEN = {
     r'\bimport fcntl\b': "file locks: platform.file_lock",

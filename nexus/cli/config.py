@@ -18,7 +18,7 @@ def load_config() -> dict:
            'discord_client_id': None, 'keep_awake': True, 'subvolumes': True,
            'snapshots_keep': 1, 'repacks': True,
            'report_relay': True, 'report_url': None, 'steam_web_api_key': None,
-           'friends_enabled': False, 'friends_steamid': None}
+           'friends_enabled': False, 'friends_steamid': None, 'stats_count': None}
 
     def as_bool(v, default=True):
         # `steam = "no"` is a truthy string; only real TOML booleans count.
@@ -75,6 +75,10 @@ def load_config() -> dict:
         cfg['report_relay'] = as_bool(rep.get('relay', True))
         url = str(rep.get('url') or '').strip()
         cfg['report_url'] = url if url.startswith('https://') else None
+        # The anonymous install count (nexus/stats.py): None until the user
+        # answers, so a missing key never sends anything.
+        sc = data.get('stats') if isinstance(data.get('stats'), dict) else {}
+        cfg['stats_count'] = sc.get('count') if isinstance(sc.get('count'), bool) else None
         # Steam friends (nexus/cli/friends.py): the user's own Web API key.
         st = data.get('steam') if isinstance(data.get('steam'), dict) else {}
         cfg['steam_web_api_key'] = str(st.get('web_api_key') or '').strip() or None

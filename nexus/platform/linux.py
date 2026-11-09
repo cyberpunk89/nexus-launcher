@@ -268,6 +268,18 @@ def os_release() -> dict[str, str]:
     return out
 
 
+def ui_language() -> str | None:
+    """The two-letter language of the user's locale (LC_ALL, LC_MESSAGES,
+    then LANG, as glibc picks messages): 'de' for de_DE.UTF-8; None for C,
+    POSIX or nothing set."""
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
+        v = os.environ.get(name, '').strip()
+        if v:
+            m = re.match(r'^([a-z]{2})(?:[_.@-]|$)', v.lower())
+            return m.group(1) if m else None
+    return None
+
+
 def cpu_info() -> dict:
     """{model, cores, threads} from /proc/cpuinfo; model 'unknown' and
     cores None when it can't be read."""

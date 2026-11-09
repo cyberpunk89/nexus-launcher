@@ -5,6 +5,7 @@
     send(url, payload) -> {status, where, issue, token} or {'error': ...}
     track(url, tokens), similar(url, sig): what became of sent reports, and
         a public issue with the same crash signature
+    count(url, body): the opt-in anonymous install count (nexus/stats.py)
     load_sent / refresh_sent / remove_sent / describe: reports/sent.jsonl
 
 The relay (github.com/cyberpunk89/nexus-reports) files it in a private
@@ -30,6 +31,7 @@ from . import render as RD
 GH_USER = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$')
 DEFAULT_URL = 'https://nexus-reports-relay.vercel.app'
 TIMEOUT = 20
+COUNT_TIMEOUT = 10                  # the install count: small, and never in a hurry
 MAX_LINE = 400                      # the relay refuses longer lines
 
 
@@ -62,9 +64,9 @@ def payload(draft: dict, selection: dict, contact: str | None = None,
             'contact': contact, 'mention_me': bool(mention_me and contact)}
 
 
-def _call(req) -> dict:
+def _call(req, timeout: float = TIMEOUT) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read() or b'{}')
     except urllib.error.HTTPError as e:
         try:
@@ -96,9 +98,15 @@ def send(url: str, body: dict) -> dict:
                                         headers=_headers()))
 
 
-def _post(url: str, route: str, body: dict) -> dict:
+def _post(url: str, route: str, body: dict, timeout: float = TIMEOUT) -> dict:
     return _call(urllib.request.Request(f"{url}/v1/{route}", data=json.dumps(body).encode(),
-                                        method='POST', headers=_headers()))
+                                        method='POST', headers=_headers()), timeout)
+
+
+def count(url: str, body: dict) -> dict:
+    """One anonymous install-count ping (nexus/stats.py builds it):
+    {'status': 'counted'}, or {'error': 'limit'|'off'|'schema'|'offline', ...}."""
+    return _post(url, 'count', body, COUNT_TIMEOUT)
 
 
 def track(url: str, tokens: list[str]) -> dict:

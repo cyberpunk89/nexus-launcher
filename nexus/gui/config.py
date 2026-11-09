@@ -31,7 +31,8 @@ def load_config() -> dict:
            'desktop': True, 'heroic': True, 'proton': None, 'news': True,
            'heroic_proton': None, 'install_base': None,
            'scan_dir': None, 'scan_dirs': [], 'unattended': True, 'trash_repack': False,
-           'runner': 'auto', 'repacks': True, 'error': None}
+           'runner': 'auto', 'repacks': True, 'report_relay': True, 'stats_count': None,
+           'error': None}
     try:
         data = _read_config_toml()
     except ConfigError as e:
@@ -79,6 +80,11 @@ def load_config() -> dict:
         cfg['torrent_seed_ratio'] = float(tr['seed_ratio']) if 'seed_ratio' in tr else None
     except (TypeError, ValueError):
         cfg['torrent_seed_ratio'] = None
+    rep = data.get('report') if isinstance(data.get('report'), dict) else {}
+    cfg['report_relay'] = rep.get('relay', True) is not False
+    # The anonymous install count: None until answered (nexus/stats.py).
+    sc = data.get('stats') if isinstance(data.get('stats'), dict) else {}
+    cfg['stats_count'] = sc.get('count') if isinstance(sc.get('count'), bool) else None
     al = data.get('alerts', {}) if isinstance(data.get('alerts'), dict) else {}
     for k in ('atl', 'fitgirl', 'repack_updates', 'proton'):
         cfg[f'alerts_{k}'] = al.get(k, True) is not False

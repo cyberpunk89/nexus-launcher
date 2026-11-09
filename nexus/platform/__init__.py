@@ -126,6 +126,13 @@ this machine (bug reports and the launch log's system block)
                                             DisplayVersion and build from the
                                             registry (+ 'build'). 'unknown'
                                             where it can't be read
+    ui_language() -> str | None             the locale's two-letter language
+                                            ('de'): LC_ALL, LC_MESSAGES, LANG
+                                            on Linux; GetUserDefaultLocaleName
+                                            on Windows (never
+                                            locale.getlocale(), which says
+                                            "English_United States" there).
+                                            None for C/POSIX or unknown
     cpu_info() -> {model, cores, threads}   /proc/cpuinfo; the registry's
                                             ProcessorNameString on Windows
                                             (cores None there)
@@ -235,6 +242,7 @@ kill_tree = _impl.kill_tree
 stop_process = _impl.stop_process
 meminfo = _impl.meminfo
 os_release = _impl.os_release
+ui_language = _impl.ui_language
 cpu_info = _impl.cpu_info
 gpus = _impl.gpus
 open_url = _impl.open_url
