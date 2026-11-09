@@ -49,7 +49,7 @@ def cmd_stats_preview(as_json: bool) -> None:
         return
     print(f"Install count: {_state_text(cfg)}")
     print(f"Sent to: {out['url'] + '/v1/count' if out['url'] else 'nowhere'}")
-    print(json.dumps(out['payload'], indent=2))
+    print(ST.pretty(out['payload']))
 
 
 def cmd_stats_sent(as_json: bool) -> None:

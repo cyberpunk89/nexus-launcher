@@ -1522,7 +1522,7 @@ class SettingsPage(QWidget):
                      }.get(data.get('state'), "?")
             where = (data.get('url') or '') + '/v1/count' if data.get('url') else "nowhere"
             self.stats_preview.setText(f"{state}. Sent to {where}:\n\n"
-                                       + json.dumps(data.get('payload') or {}, indent=2))
+                                       + stats.pretty(data.get('payload') or {}))
         except RuntimeError:
             pass
 

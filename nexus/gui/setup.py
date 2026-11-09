@@ -20,7 +20,6 @@ title and lead, a card with the step in it (scrolling when it doesn't fit),
 then Back / Next. Choices are cards (ChoiceCard, ToggleCard), styled from
 the theme's tokens like the rest of the app."""
 
-import json
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QRectF, QSize, Qt
@@ -28,7 +27,7 @@ from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
     QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from nexus import platform
+from nexus import platform, stats
 from nexus.features import has
 
 from .common import HOME, INSTALL_BASE_DEFAULT
@@ -446,13 +445,12 @@ class SetupPage(QWidget):
                             "language. No id, no games, no paths. You can change it any "
                             "time in Settings → System → Privacy.", "Muted", wrap=True))
         self.stats = CardChoice(pick_first=False)
-        for data, title, note in ((True, "Count me", "Shows which systems Nexus runs on, so "
-                                   "they get tested."),
+        for data, title, note in ((True, "Count me", "Helps test the systems people use."),
                                   (False, "Don't", "Nothing is sent.")):
             c = ChoiceCard(title)
-            c.setMinimumWidth(220)
+            c.setMinimumWidth(260)               # equal cards: neither looks like the default
             c.add(label(title, "ChoiceTitle"))
-            c.add(label(note, "ChoiceNote", wrap=True))
+            c.add(label(note, "ChoiceNote"))
             self.stats.add(c, data)
         lay.addWidget(self.stats)
         body = QWidget()
@@ -473,7 +471,7 @@ class SetupPage(QWidget):
     def _stats_previewed(self, data, err):
         try:
             self.stats_text.setText(
-                json.dumps(data['payload'], indent=2) if data and data.get('payload')
+                stats.pretty(data['payload']) if data and data.get('payload')
                 else f"Couldn't ask: {err or 'no answer'}")
         except RuntimeError:
             pass

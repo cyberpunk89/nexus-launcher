@@ -1,4 +1,12 @@
 {
+  "0.5.5": [
+    {
+      "kind": "new",
+      "icon": "shield",
+      "title": "An install count, if you want it",
+      "text": "Nexus can count installs once a day, anonymously and with no id. It asks once; Settings → System → Privacy shows exactly what is sent."
+    }
+  ],
   "0.5.4": [
     {
       "kind": "new",

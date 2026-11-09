@@ -181,8 +181,9 @@ Debian/Ubuntu, the Steam Deck and other setups are covered in
 ## First run
 
 A short setup walks you through what Nexus found on your machine (Steam, Epic or Heroic,
-your torrent client), where games should go, and the look. Everything can be changed later
-in Settings. For cover art, add a free [SteamGridDB](https://www.steamgriddb.com/profile/preferences/api)
+your torrent client), where games should go, and the look. It also asks whether to count
+this install anonymously; nothing is sent unless you say yes, and [PRIVACY.md](PRIVACY.md)
+lists every field. Everything can be changed later in Settings. For cover art, add a free [SteamGridDB](https://www.steamgriddb.com/profile/preferences/api)
 API key there.
 
 Settings live in `~/.config/nexus/config.toml` on Linux and `%APPDATA%\nexus-launcher` on
@@ -199,6 +200,7 @@ enter your server's address and a desktop app token in Settings → Game-db.
 - [docs/LINUX.md](docs/LINUX.md): the full Linux guide, with every page, the command line
   (`nexus-cli`), the integrations and the code layout.
 - [docs/WINDOWS.md](docs/WINDOWS.md): the Windows guide.
+- [PRIVACY.md](PRIVACY.md): what Nexus can send, when, what is kept, and how to turn it off.
 
 ## Development
 

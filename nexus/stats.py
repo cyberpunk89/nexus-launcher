@@ -210,6 +210,14 @@ def payload(periods, state: dict | None = None, now: datetime | None = None) -> 
             'age': age((state or {}).get('first'), now)}
 
 
+def pretty(body: dict) -> str:
+    """A ping as JSON with one field per line, for people to read."""
+    if not body:
+        return "{}"
+    return "{\n" + ",\n".join(f"  {json.dumps(k)}: {json.dumps(v)}"
+                              for k, v in body.items()) + "\n}"
+
+
 # ---- state and the log ----------------------------------------------------
 
 def load_state() -> dict:
