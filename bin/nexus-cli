@@ -11,6 +11,10 @@ if not sys.platform.startswith("linux") and not os.environ.get("NEXUS_DEV_WINDOW
 if sys.version_info < (3, 11):
     sys.exit(f"Nexus needs Python 3.11 or newer (this is {sys.version.split()[0]}).")
 
+# A `nexus-cli-dev` symlink runs the dev profile: own data, config, socket (nexus/platform/profile.py).
+_called = Path(sys.argv[0]).name
+if _called.startswith('nexus-cli-') and not os.environ.get('NEXUS_PROFILE'):
+    os.environ['NEXUS_PROFILE'] = _called[len('nexus-cli-'):]
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # may be symlinked
 from nexus.cli import main  # noqa: E402
 

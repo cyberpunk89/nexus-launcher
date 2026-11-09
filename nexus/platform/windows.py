@@ -16,9 +16,11 @@ import winreg
 from ctypes import wintypes
 from pathlib import Path
 
+from .profile import SUFFIX
+
 # The Windows edition's name: folder names, and later the exe and installer
 # names. One constant so a rename is one line.
-APP_NAME = 'nexus-launcher'
+APP_NAME = 'nexus-launcher' + SUFFIX     # see profile.py
 OS_NAME = 'windows'
 
 
@@ -839,7 +841,7 @@ _k32.WaitNamedPipeW.restype = wintypes.BOOL
 
 def instance_address(cache_dir: Path) -> str:
     """A pipe name, per user (pipes are machine-wide)."""
-    return f"nexus-{os.environ.get('USERNAME') or 'user'}"
+    return f"nexus{SUFFIX}-{os.environ.get('USERNAME') or 'user'}"
 
 
 def send_local(address: str, data: bytes, timeout: float) -> None:

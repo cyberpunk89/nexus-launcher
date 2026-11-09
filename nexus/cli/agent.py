@@ -36,7 +36,7 @@ from .common import CLI_BIN, DATA_DIR, LOG_DIR
 
 AGENT_LOCK = instance.AGENT_LOCK
 AGENT_STATE = DATA_DIR / 'agent-state.json'
-UNIT_NAME = 'nexus-agent.service'
+UNIT_NAME = f'{NX.APP_ID}-agent.service'
 UNIT_DIR = NX.CONFIG_DIR.parent / 'systemd' / 'user'
 
 # Seconds between runs of each task (torrents set their own pace).
@@ -322,14 +322,15 @@ def cmd_agent(base: Path) -> int:
 
 def unit_text() -> str:
     exe = str(CLI_BIN).replace('%', '%%')
+    env = f'Environment=NEXUS_PROFILE={platform.PROFILE}\n' if platform.PROFILE else ''
     return f"""[Unit]
-Description=Nexus background agent (downloads, repack updates, alerts)
+Description=Nexus{platform.SUFFIX} background agent (downloads, repack updates, alerts)
 After=graphical-session.target network-online.target
 
 [Service]
 Type=simple
 ExecStart="{exe}" --agent
-Restart=on-failure
+{env}Restart=on-failure
 RestartSec=30
 Nice=10
 

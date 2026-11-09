@@ -215,6 +215,8 @@ if sys.platform == 'win32':
 else:
     from . import linux as _impl
 
+from .profile import PROFILE, SUFFIX  # noqa: E402  side-by-side copies, see profile.py
+
 APP_NAME = _impl.APP_NAME
 OS_NAME = _impl.OS_NAME
 data_dir = _impl.data_dir

@@ -13,7 +13,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-APP_NAME = 'nexus'
+from .profile import SUFFIX
+
+APP_NAME = 'nexus' + SUFFIX     # nexus-dev under NEXUS_PROFILE=dev
 OS_NAME = 'linux'
 TRASH = Path.home() / '.local/share/Trash'
 
@@ -387,8 +389,8 @@ def instance_address(cache_dir: Path) -> str:
     own, never a name in shared /tmp another user could take first."""
     run = os.environ.get('XDG_RUNTIME_DIR') or ''
     if os.path.isdir(run):
-        return os.path.join(run, 'nexus.sock')
-    return str(cache_dir / 'run' / 'nexus.sock')
+        return os.path.join(run, f'{APP_NAME}.sock')
+    return str(cache_dir / 'run' / f'{APP_NAME}.sock')
 
 
 def send_local(address: str, data: bytes, timeout: float) -> None:

@@ -10,7 +10,7 @@ from pathlib import Path
 from . import platform
 
 HOME = Path.home()
-APP_ID = "nexus"                                   # Wayland app-id / desktop file
+APP_ID = "nexus" + platform.SUFFIX                # Wayland app-id / desktop file (nexus-dev)
 REPO = Path(__file__).resolve().parent.parent      # the source folder
 
 DATA_DIR = platform.data_dir(HOME)
@@ -61,6 +61,8 @@ def migrate(quiet: bool = False) -> list[str]:
     a symlink behind. Idempotent: does nothing once the old path is a symlink,
     or when the new dir already exists (never merges two real dirs)."""
     done = []
+    if platform.PROFILE:                     # the legacy dirs belong to the main copy
+        return done
     for old, new in LEGACY:
         if old.is_symlink() or not old.is_dir():
             continue

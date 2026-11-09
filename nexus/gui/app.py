@@ -13,7 +13,7 @@ from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from nexus import instance as instance_mod, paths as NX
+from nexus import instance as instance_mod, paths as NX, platform
 from nexus.features import has
 from nexus.instance import INSTANCE, INSTANCE_MAX
 from nexus.report import crash
@@ -67,14 +67,21 @@ def ensure_icon() -> str:
     return "applications-games"
 
 
+def display_name() -> str:
+    """"Nexus", or "Nexus (Dev)" for a NEXUS_PROFILE copy."""
+    return f"Nexus ({platform.PROFILE.title()})" if platform.PROFILE else "Nexus"
+
+
 def manager_exec() -> str:
     """Desktop-entry Exec for this app: `nexus` on PATH if there is one (e.g.
     the ~/.local/bin symlink), else the repo's bin/nexus — quoted per the
     Desktop Entry spec."""
-    path = shutil.which('nexus') or str(_REPO / 'bin' / 'nexus')
+    path = shutil.which(NX.APP_ID) or str(_REPO / 'bin' / 'nexus')
     for ch in ('\\', '"', '`', '$'):
         path = path.replace(ch, '\\' + ch)
-    return f'"{path}"'.replace('\\', '\\\\').replace('%', '%%')
+    env = '' if not platform.PROFILE or shutil.which(NX.APP_ID) else \
+        f'env NEXUS_PROFILE={platform.PROFILE} '     # bin/nexus alone would be the main copy
+    return f'{env}"{path}"'.replace('\\', '\\\\').replace('%', '%%')
 
 
 # One Nexus per user. A second launch (nirinit restoring the session, Sunshine
@@ -165,7 +172,7 @@ def install_desktop_entry(icon: str):
     DESKTOP_PATH.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=Nexus\n"
+        f"Name={display_name()}\n"
         "GenericName=Game launcher\n"
         "Comment=Play and manage your games, install repacks, update Proton\n"
         f"Exec={manager_exec()}\n"
@@ -317,7 +324,7 @@ def main():
     app.setStyle('Fusion')
     return_freed_images()
     NX.migrate()                          # fitgirl-install dirs -> nexus (once)
-    app.setApplicationName("Nexus")
+    app.setApplicationName(display_name())
     # The Wayland app-id: lets niri/docks match the icon and lets users write
     # window rules for app-id="nexus".
     app.setDesktopFileName(NX.APP_ID)

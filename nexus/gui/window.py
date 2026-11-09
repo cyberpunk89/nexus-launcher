@@ -56,7 +56,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Nexus")
+        self.setWindowTitle(f"Nexus ({platform.PROFILE.title()})" if platform.PROFILE else "Nexus")
         self.setMinimumSize(720, 480)
         self.resize(1180, 760)
         self.config = load_config()

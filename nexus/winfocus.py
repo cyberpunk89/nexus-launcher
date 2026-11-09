@@ -22,7 +22,8 @@ from . import platform
 from .features import has
 
 # Windows that are never "the game": Nexus, launchers, their helper windows.
-IGNORE_APP_IDS = {'nexus', 'steam', 'steamwebhelper', 'heroic', 'electron',
+OWN_APP_ID = 'nexus' + platform.SUFFIX
+IGNORE_APP_IDS = {'nexus', OWN_APP_ID, 'steam', 'steamwebhelper', 'heroic', 'electron',
                   'com.heroicgameslauncher.hgl', 'protontricks', 'winetricks',
                   'zenity', 'yad', 'kdialog'}
 
@@ -47,7 +48,7 @@ def windows() -> list[dict]:
     """niri's window list (id, app_id, title, pid, is_focused…), or []."""
     if _native():
         me = os.getpid()
-        return [dict(w, app_id='nexus') if w.get('pid') == me else w
+        return [dict(w, app_id=OWN_APP_ID) if w.get('pid') == me else w
                 for w in platform.top_windows()]
     if not available():
         return []
@@ -119,7 +120,7 @@ def pick_game_window(wins: list[dict], before_ids: set, game: dict,
     return best.get('id')
 
 
-def own_window(wins: list[dict], app_id: str = 'nexus', pid: int | None = None) -> int | None:
+def own_window(wins: list[dict], app_id: str = OWN_APP_ID, pid: int | None = None) -> int | None:
     """Our own window: the one with our pid when niri reports pids (so a stale
     or second Nexus never gets the focus back), else the first with our app-id."""
     mine = [w for w in wins if (w.get('app_id') or '') == app_id]

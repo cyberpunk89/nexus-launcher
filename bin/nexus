@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """nexus — the Nexus GUI. The code lives in the nexus/gui/ package; this stub imports it so
 Python caches its bytecode instead of recompiling it on every run."""
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,10 @@ if sys.platform == "darwin":
 if sys.version_info < (3, 11):
     sys.exit(f"Nexus needs Python 3.11 or newer (this is {sys.version.split()[0]}).")
 
+# A `nexus-dev` symlink runs the dev profile: own data, config, socket (nexus/platform/profile.py).
+_called = Path(sys.argv[0]).name
+if _called.startswith('nexus-') and not os.environ.get('NEXUS_PROFILE') and _called != 'nexus-cli':
+    os.environ['NEXUS_PROFILE'] = _called[len('nexus-'):]
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # may be symlinked
 from nexus.gui import main  # noqa: E402
 

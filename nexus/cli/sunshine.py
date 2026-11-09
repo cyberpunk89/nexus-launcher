@@ -26,7 +26,7 @@ SUNSHINE_URL_RE = re.compile(r'^(steam|heroic)://[\w/.?=&-]+$')
 
 def _cli_command() -> str:
     """How Sunshine should call us: the nexus-cli on PATH, else this repo's."""
-    return shutil.which('nexus-cli') or str(CLI_BIN)
+    return shutil.which(f'nexus-cli{platform.SUFFIX}') or str(CLI_BIN)
 
 
 def _sunshine_marker(g: dict) -> tuple[str, str]:
