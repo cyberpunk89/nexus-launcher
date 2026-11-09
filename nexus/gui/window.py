@@ -13,7 +13,7 @@ from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget)
 
-from nexus import __version__, gamedb, paths as NX, platform
+from nexus import __version__, gamedb, paths as NX, platform, stats
 from nexus.features import has
 
 from .. import updates
@@ -287,6 +287,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.homeview.see_all.connect(self._see_all)
         self.dashboard = Dashboard(self)
         self.homeview.extra.addWidget(self.dashboard)
+        self.dashboard.ask.answered.connect(self._stats_answered)
+        self.dashboard.ask.details.connect(self._stats_details)
         self.dashboard.stage.art.tint.connect(self._desk_tint)
         self._dash_pending: set[str] = set()
         self._dash_timer = QTimer(self)
@@ -429,6 +431,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.go(self.HOME)
         self.reload_library()
         self._note_version(used_before)
+        if not self._first_run:                 # setup must not write library.json (w-15)
+            self.prefs.starts += 1
+            self.prefs.save()
+        self._sync_stats_ask()
         QTimer.singleShot(0, lambda: alive(self) and (t := self.default_focus()) and t.setFocus())
         QTimer.singleShot(1500, self.health.refresh)    # sidebar badge, in the background
         QTimer.singleShot(2000, self._check_reports)    # a crash from last time
@@ -640,6 +646,39 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if (data or {}).get('sent') and self.page_built(self.SETTINGS):
             self.settings.stats_sent_changed()
 
+    STATS_ASK_AFTER = 3                         # starts after setup before Home asks
+
+    def _sync_stats_ask(self):
+        """Home's install count ask: only while [stats] count is unset, from
+        the 3rd start (not during or right after first-run setup, which asks
+        itself), and not when DO_NOT_TRACK or [report] relay = false would
+        stop it anyway. Answered once, it never shows again. Like What's new,
+        not with NEXUS_NO_SETUP (tests: their windows would grow a card)."""
+        show = (self.config.get('stats_count') is None and not self._first_run
+                and self.prefs.starts >= self.STATS_ASK_AFTER and not stats.blocked(self.config)
+                and not os.environ.get('NEXUS_NO_SETUP'))
+        self.dashboard.ask.setVisible(show)
+
+    def _stats_answered(self, on: bool):
+        try:
+            save_config({('stats', 'count'): on})
+        except (ConfigError, OSError) as e:
+            self.toast(f"Couldn't save that — {e}", 'error', None, 0)
+            return
+        self.config = load_config()
+        self.dashboard.ask.hide()              # hidden, never deleted: it stays the dashboard's
+        if self.page_built(self.SETTINGS):
+            self.settings.load()
+        self.toast(("Thanks. " if on else "Nothing will be sent. ")
+                   + "Settings → System → Privacy can change it.", 'success', None, 6000)
+        if on:
+            self._stats_ping()
+
+    def _stats_details(self):
+        """Home ask → "What is sent": Settings' Privacy group, its preview open."""
+        self._open_settings('system', 'stats_preview')
+        self.settings.stats_preview.button.setChecked(True)
+
     def _reports_refreshed(self, data, _err):
         if (data or {}).get('checked') and self.page_built(self.REPORT):
             self.report.load_sent()
@@ -808,6 +847,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _settings_saved(self, proton_changed):
         self.config = load_config()
+        self._sync_stats_ask()                 # answered in Settings: Home stops asking
         self.nav[self.NEWS].setVisible(self.config.get('news', True))
         self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
         self._apply_repacks()

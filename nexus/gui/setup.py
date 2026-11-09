@@ -8,7 +8,8 @@ the rest of the app. Six steps, each skippable, in this order:
 3. Folders — where games install, where repacks download to.
 4. Proton — the build games play with; get GE-Proton if there's none.
 5. Extras — a SteamGridDB key, a torrent client found on this machine.
-6. Look & background — theme, size, the background agent, the tray.
+6. Look & background — theme, size, the background agent, the tray, and
+   whether to count this install anonymously (nothing picked to start).
 
 Shown once (library.json `setup_done`), when Nexus has never run here;
 Settings → Library → "Run setup again" opens it later. Windows has no Proton
@@ -19,6 +20,7 @@ title and lead, a card with the step in it (scrolling when it doesn't fit),
 then Back / Next. Choices are cards (ChoiceCard, ToggleCard), styled from
 the theme's tokens like the rest of the app."""
 
+import json
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QRectF, QSize, Qt
@@ -152,20 +154,29 @@ class CardChoice(QWidget):
     setCurrentIndex, activated), so the page's logic is the same."""
     activated = pyqtSignal(int)
 
-    def __init__(self, spacing: int = SP['2']):
+    def __init__(self, spacing: int = SP['2'], pick_first: bool = True):
         super().__init__()
         self.lay = FlowLayout(self, 0, spacing)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.group.idClicked.connect(self.activated.emit)
         self._data: list = []
+        self.pick_first = pick_first          # False: nothing picked until the user picks
 
     def add(self, card: ChoiceCard, data):
         self.group.addButton(card, len(self._data))
         self._data.append(data)
         self.lay.addWidget(card)
-        if len(self._data) == 1:
+        if len(self._data) == 1 and self.pick_first:
             card.setChecked(True)
+
+    def clear_choice(self):
+        """None picked (an exclusive group can't uncheck its last button
+        while it's exclusive)."""
+        self.group.setExclusive(False)
+        for b in self.group.buttons():
+            b.setChecked(False)
+        self.group.setExclusive(True)
 
     def count(self) -> int:
         return len(self._data)
@@ -423,7 +434,49 @@ class SetupPage(QWidget):
                                  "Closing the window leaves Nexus running in the tray."
                                  if tray_available() else "This desktop has no tray."))
         self.tray.setEnabled(tray_available())
+        lay.addSpacing(SP['3'])
+        self._stats_block(lay)
         lay.addStretch()
+
+    def _stats_block(self, lay):
+        """The install count ask (w-102): two equal cards and neither
+        picked, so going past it (or Skip setup) answers nothing."""
+        lay.addWidget(label("Count this install anonymously?", "StatLabel"))
+        lay.addWidget(label("At most once a day: the Nexus version, the system and the "
+                            "language. No id, no games, no paths. You can change it any "
+                            "time in Settings → System → Privacy.", "Muted", wrap=True))
+        self.stats = CardChoice(pick_first=False)
+        for data, title, note in ((True, "Count me", "Shows which systems Nexus runs on, so "
+                                   "they get tested."),
+                                  (False, "Don't", "Nothing is sent.")):
+            c = ChoiceCard(title)
+            c.setMinimumWidth(220)
+            c.add(label(title, "ChoiceTitle"))
+            c.add(label(note, "ChoiceNote", wrap=True))
+            self.stats.add(c, data)
+        lay.addWidget(self.stats)
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(SP['3'], 0, SP['3'], SP['2'])
+        self.stats_text = plain_label("", "ReportLine", wrap=True)
+        self.stats_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        bl.addWidget(self.stats_text)
+        self.stats_what = Disclosure('setup-stats-what', "What is sent", G['info'], body)
+        self.stats_what.toggled.connect(self._stats_disclosed)
+        lay.addWidget(self.stats_what)
+
+    def _stats_disclosed(self, on: bool):
+        if on:
+            self.stats_text.setText("Asking…")
+            cli_json(['--stats-preview', '--json'], self._stats_previewed, 15000)
+
+    def _stats_previewed(self, data, err):
+        try:
+            self.stats_text.setText(
+                json.dumps(data['payload'], indent=2) if data and data.get('payload')
+                else f"Couldn't ask: {err or 'no answer'}")
+        except RuntimeError:
+            pass
 
     def _theme_card(self, k: str):
         name, t = THEMES[k]
@@ -474,6 +527,11 @@ class SetupPage(QWidget):
         self.theme.setCurrentIndex(max(0, i))
         i = self.size.findData(appearance.get('scale', 1.0))
         self.size.setCurrentIndex(max(0, i))
+        self._stats_was = config.get('stats_count')
+        if self._stats_was is None:
+            self.stats.clear_choice()
+        else:
+            self.stats.setCurrentIndex(self.stats.findData(self._stats_was))
         self.show_step(0)
         cli_json(['--doctor', '--json'], self._got_checks, 120000)
         if has('proton'):
@@ -563,7 +621,8 @@ class SetupPage(QWidget):
         'folders': "Where games go, and where to look for downloads.",
         'proton': "Proton runs Windows games. Each game can use another one later.",
         'extras': "Both optional — and both can be set later in Settings.",
-        'look': "Last: how it looks, and whether it keeps working with the window closed.",
+        'look': "Last: how it looks, whether it keeps working with the window closed, and "
+                "whether to count this install.",
     }
 
     def _lead(self):
@@ -615,6 +674,9 @@ class SetupPage(QWidget):
         if repacks and self._torrent and self.use_torrent.isChecked():
             u[('torrent', 'client')] = self._torrent['client']
             u[('torrent', 'url')] = self._torrent['url']
+        count = self.stats.currentData()             # None: neither card picked
+        if count is not None and count != getattr(self, '_stats_was', None):
+            u[('stats', 'count')] = count
         return u, {'appearance': self._look(), 'agent': self.agent.isChecked(),
                    'tray': self.tray.isChecked() and self.tray.isEnabled()}
 
@@ -631,6 +693,7 @@ class SetupPage(QWidget):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
+from .details import Disclosure  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .settings import Swatch, Switch  # noqa: E402
 from .topbar import Wordmark  # noqa: E402

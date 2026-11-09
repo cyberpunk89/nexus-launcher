@@ -728,3 +728,48 @@ class SettingsCategories(unittest.TestCase):
         self.assertEqual(page.nav_btns['installing'].toolTip(), "Installing")
         self.assertEqual(grid.getItemPosition(grid.indexOf(page.overview.cards['library']))[:2],
                          (1, 0))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Setup(unittest.TestCase):
+    """The install count ask on setup's last step (w-102)."""
+
+    def page(self, config=None):
+        page = setup.SetupPage()
+        self.addCleanup(page.deleteLater)
+        with mock.patch.object(setup, 'cli_json'):
+            page.open(config or {}, {})
+        return page
+
+    def test_stats_unanswered_writes_nothing(self):
+        page = self.page()
+        self.assertIsNone(page.stats.currentData())          # neither card picked
+        self.assertFalse(any(b.isChecked() for b in page.stats.group.buttons()))
+        updates, _ = page.answers_now()
+        self.assertNotIn(('stats', 'count'), updates)
+        finished = []
+        page.finished.connect(lambda u, o: finished.append(u))
+        page.stats.group.button(page.stats.findData(True)).click()
+        page._skip()                                          # Skip setup keeps nothing
+        self.assertEqual(finished, [{}])
+        updates, _ = page.answers_now()
+        self.assertIs(updates[('stats', 'count')], True)
+        page.stats.group.button(page.stats.findData(False)).click()
+        self.assertIs(page.answers_now()[0][('stats', 'count')], False)
+
+    def test_setup_again_shows_the_answer_and_can_clear(self):
+        page = self.page({'stats_count': False})
+        self.assertIs(page.stats.currentData(), False)
+        self.assertNotIn(('stats', 'count'), page.answers_now()[0])     # unchanged
+        with mock.patch.object(setup, 'cli_json'):
+            page.open({}, {})
+        self.assertIsNone(page.stats.currentData())
+
+    def test_what_is_sent_asks_the_cli_when_opened(self):
+        page = self.page()
+        calls = []
+        with mock.patch.object(setup, 'cli_json', lambda args, cb, *a, **k: calls.append(args)
+                               or cb({'payload': {'schema': 1, 'os': 'fedora'}}, '')):
+            page.stats_what.set_open(True, remember=False)
+        self.assertEqual(calls, [['--stats-preview', '--json']])
+        self.assertIn('"os": "fedora"', page.stats_text.text())

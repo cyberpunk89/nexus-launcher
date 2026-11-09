@@ -5543,6 +5543,64 @@ class ForYou(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class HomeAsk(unittest.TestCase):
+    """The install count ask on Home (w-102): from the 3rd start, while
+    [stats] count is unset; answered once, never again."""
+    setUpClass = Window.__dict__['setUpClass']
+    tearDownClass = Window.__dict__['tearDownClass']
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+
+    def sync(self, **env):
+        with mock.patch.dict(os.environ, {'DO_NOT_TRACK': '', 'NEXUS_NO_STATS': '',
+                                          'NEXUS_NO_SETUP': '', **env}):
+            self.win._sync_stats_ask()
+        QApplication.processEvents()
+        return not self.win.dashboard.ask.isHidden()
+
+    def test_shows_once_then_never(self):
+        w = self.win
+        self.assertGreaterEqual(w.prefs.starts, 1)             # this start was counted
+        self.assertTrue(w.dashboard.ask.isHidden())            # tests never see it on their own
+        w.config = dict(w.config, stats_count=None, report_relay=True)
+        w.prefs.setup_done = True              # else, with no library.json, it's a first run
+        w.prefs.starts = 2
+        self.assertFalse(self.sync())
+        w.prefs.starts = 3
+        self.assertTrue(self.sync())
+        self.assertFalse(self.sync(DO_NOT_TRACK='1'))
+        self.assertFalse(self.sync(NEXUS_NO_SETUP='1'))
+        with mock.patch.object(nx.MainWindow, '_first_run', new_callable=mock.PropertyMock,
+                               return_value=True):
+            self.assertFalse(self.sync())                      # setup asks itself
+        w.config['report_relay'] = False
+        self.assertFalse(self.sync())
+        w.config['report_relay'] = True
+        self.assertTrue(self.sync())
+        saved, pings = [], []
+        answered = dict(w.config, stats_count=True)
+        with patch_gui('save_config', saved.append), \
+                patch_gui('load_config', lambda: dict(answered)), \
+                patch_gui('cli_json', lambda args, cb, *a, **k: pings.append(args)):
+            w.dashboard.ask.btn_yes.click()
+        self.assertEqual(saved, [{('stats', 'count'): True}])
+        self.assertEqual(pings, [['--stats-ping', '--json']])
+        self.assertTrue(w.dashboard.ask.isHidden())
+        self.assertIs(w.dashboard.ask.parent(), w.dashboard)  # hidden, not deleted
+        w.prefs.starts = 50
+        self.assertFalse(self.sync())                         # answered: never again
+        w.config['stats_count'] = None
+        self.assertTrue(self.sync())
+        with patch_gui('save_config', saved.append), \
+                patch_gui('load_config', lambda: dict(answered, stats_count=False)), \
+                patch_gui('cli_json', lambda args, cb, *a, **k: pings.append(args)):
+            w.dashboard.ask.btn_no.click()
+        self.assertEqual(saved[-1], {('stats', 'count'): False})
+        self.assertEqual(len(pings), 1)                       # "Don't" pings nothing
+        self.assertFalse(self.sync())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class News(unittest.TestCase):
     def setUp(self):
         self._fetch = nx.ART.fetch

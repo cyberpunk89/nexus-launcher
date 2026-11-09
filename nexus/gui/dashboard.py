@@ -2232,6 +2232,47 @@ DASH_WIDGETS = {cls.KIND: cls for cls in (
     OwnedWidget)}
 
 
+class StatsAsk(QFrame):
+    """The install count ask at the top of Home (w-102), for people who
+    upgraded or skipped setup: two equal buttons, then never again. The
+    window decides when it shows (MainWindow._sync_stats_ask) and saves the
+    answer; this only says which button was pressed."""
+    answered = pyqtSignal(bool)
+    details = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("Card")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(SP['4'], SP['3'], SP['4'], SP['3'])
+        row.setSpacing(SP['3'])
+        row.addWidget(GlyphBadge(G['shield'], 'dusk', 32), 0, Qt.AlignmentFlag.AlignTop)
+        text = QVBoxLayout()
+        text.setSpacing(SP['0_5'])
+        text.addWidget(label("Count this install anonymously?", "RowTitle", wrap=True))
+        text.addWidget(label("At most once a day: the Nexus version, the system and the "
+                             "language. No id, no games, no paths. Nothing is sent until you "
+                             "say yes.", "Muted", wrap=True))
+        row.addLayout(text, 1)
+        self.btn_what = QPushButton("What is sent")
+        self.btn_what.setObjectName("Ghost")
+        self.btn_what.clicked.connect(self.details)
+        self.btn_no = QPushButton("Don't")
+        self.btn_no.clicked.connect(self._no)
+        self.btn_yes = QPushButton("Count me")
+        self.btn_yes.clicked.connect(self._yes)
+        for b in (self.btn_what, self.btn_no, self.btn_yes):
+            row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.btn_no.setMinimumWidth(96)
+        self.btn_yes.setMinimumWidth(96)
+
+    def _yes(self):
+        self.answered.emit(True)
+
+    def _no(self):
+        self.answered.emit(False)
+
+
 class Dashboard(QWidget):
     """Home's widget grid, the Stage first. Columns follow the window width;
     "Customise" turns on per-widget edit bars (move ←↑↓→, size, hide) and an
@@ -2246,6 +2287,10 @@ class Dashboard(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['3'])
+        # The install count ask (w-102): above everything, hidden unless asked.
+        self.ask = StatsAsk()
+        lay.addWidget(self.ask)                   # in the layout first, then hidden
+        self.ask.hide()
         # Customise and Reset sit in a slim row under the grid (w-85): the
         # Stage is the top of Home, with no title above it.
         foot = QHBoxLayout()

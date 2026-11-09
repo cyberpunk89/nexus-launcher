@@ -213,6 +213,9 @@ class LibraryPrefs:
         # The newest Nexus version this library has run (its "What's new" was shown).
         lv = self._data.get('last_seen_version')
         self.last_seen_version = lv if isinstance(lv, str) else None
+        # Window starts after setup (Home asks about the install count from the 3rd).
+        st = self._data.get('starts')
+        self.starts = st if isinstance(st, int) and not isinstance(st, bool) and st > 0 else 0
         # The command palette's recent picks (Ctrl+K), newest first.
         pr = self._data.get('palette_recent')
         self.palette_recent = [str(k) for k in pr if isinstance(k, str)][:8] \
@@ -250,7 +253,7 @@ class LibraryPrefs:
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
                     'uac_note_shown': self.uac_note_shown,
-                    'last_seen_version': self.last_seen_version,
+                    'last_seen_version': self.last_seen_version, 'starts': self.starts,
                     'overrides': self.overrides, 'notes': self.notes})
         if self.seen_repacks is not None:
             out['seen_repacks'] = list(self.seen_repacks)[-300:]
