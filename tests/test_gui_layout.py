@@ -590,6 +590,88 @@ class Caching(unittest.TestCase):
         top = t.mapTo(vp, QPoint(0, 0)).y()
         self.assertTrue(0 <= top and top + t.height() <= vp.height())
 
+    def test_grid_with_a_head_builds_only_near_rows(self):
+        """w-98: a category page puts its header and chips over the grid
+        (set_head) and More like this under it (set_foot), in the same
+        scroll. The rows the head pushes off screen get no tiles."""
+        host, view, games = self._big_grid()
+        cols = view.flow_host.columns(view.flow_host.width())
+        head, foot = QWidget(), QWidget()
+        head.setFixedHeight(600)
+        foot.setFixedHeight(120)
+        view.set_head(head)
+        view.set_foot(foot)
+        _app.processEvents()
+        self.assertIs(head.parentWidget(), view.container)
+        self.assertEqual(view.flow_host.y(), 600)
+        self.assertGreater(foot.y(), view.flow_host.y() + view.flow_host.height() - 1)
+        self.assertLessEqual(len(self._shown(view)), 2 * cols)    # rows 0-1 only
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        self.assertIn('g2999', view.tiles)
+        self.assertLess(len(self._shown(view)), 8 * cols)
+        bar.setValue(0)
+        self.assertIn('g0', view.tiles)
+        view.set_head(None)                              # taken back out
+        _app.processEvents()
+        self.assertEqual(view.flow_host.y(), 0)
+        self.assertEqual(view.container.layout().indexOf(head), -1)
+
+    def test_row_title_click_is_see_all(self):
+        from PyQt6.QtTest import QTest
+        row = nx.ShelfRow("RPG", 150, see_all=True)
+        plain = nx.ShelfRow("Installing", 150)
+        self.addCleanup(row.deleteLater)
+        self.addCleanup(plain.deleteLater)
+        hits = []
+        row.see_all.connect(lambda: hits.append('row'))
+        plain.see_all.connect(lambda: hits.append('plain'))
+        for r in (row, plain):
+            r.show()
+            QTest.mouseClick(r.name_label, Qt.MouseButton.LeftButton)
+        self.assertEqual(hits, ['row'])
+        self.assertEqual(row.name_label.cursor().shape(), Qt.CursorShape.PointingHandCursor)
+
+    def test_keepplace_snapshot_restores_scroll_and_focus(self):
+        """Opening a category page from Browse takes a snapshot; Back puts
+        the page's scroll and the focused tile back."""
+        from PyQt6.QtWidgets import QVBoxLayout
+        from PyQt6.QtTest import QTest
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(900, 500)
+        view = nx.HomeView('shelves')
+        other = QWidget()
+        other.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        lay = QVBoxLayout(host)
+        lay.addWidget(view)
+        lay.addWidget(other)
+        other.hide()
+        games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': src, 'installed': True}
+                 for i, src in enumerate(['nexus'] * 12 + ['steam'] * 12 + ['epic'] * 12)]
+        view.set_games(games)
+        host.show()
+        host.activateWindow()
+        QTest.qWait(20)
+        bar = view.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 0)
+        bar.setValue(bar.maximum())
+        rows = [r for r in view.findChildren(nx.ShelfRow) if not r.isHidden()]
+        tile = rows[-1].tiles[3]
+        tile.setFocus()
+        place = nx.KeepPlace(view).take()
+        view.hide()                                    # the page opens in its place
+        other.show()
+        other.setFocus()
+        bar.setValue(0)
+        QTest.qWait(20)
+        other.hide()
+        view.show()
+        place.put_back()
+        QTest.qWait(30)
+        self.assertEqual(bar.value(), bar.maximum())
+        self.assertIs(_app.focusWidget(), tile)
+
     def test_arrow_keys_cross_rows_that_had_no_tiles(self):
         """Down from the last built row: the next row is always built (one
         row over the edge), the focus moves there, the view follows and

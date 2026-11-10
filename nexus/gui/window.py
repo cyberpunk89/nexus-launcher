@@ -73,8 +73,10 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._page_focus.setSingleShot(True)
         self._page_focus.setInterval(0)
         self._page_focus.timeout.connect(self._focus_new_page)
-        self._back: list[str] = []                   # page history (go_back / go_forward)
-        self._forward: list[str] = []
+        # Page history (go_back / go_forward): page ids, and (LIBRARY, 'cat',
+        # key) for a category page (w-98, win_nav._place).
+        self._back: list[str | tuple] = []
+        self._forward: list[str | tuple] = []
         self._lib_retry = QTimer(self)               # the queued follow-up scan
         self._lib_retry.setSingleShot(True)
         self._lib_retry.setInterval(0)

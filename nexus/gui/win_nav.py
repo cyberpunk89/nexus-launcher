@@ -68,12 +68,10 @@ class NavigationMixin:
         self._close_foryou()                     # collapsed on leaving Home and on every show
         if page != self.HOME:
             self._clear_stage_pick()             # Pick for me's pick lasts while Home shows
-        cur = self.current()
-        if _history and cur is not None and cur != page:
-            # Back / Forward (mouse buttons, Alt+←/→, Esc on a side page).
-            self._back.append(cur)
-            del self._back[:-self.HISTORY]
-            self._forward.clear()
+        if _history and self.current() is not None and self.current() != page:
+            # Back / Forward (mouse buttons, Alt+←/→, Esc on a side page):
+            # the place left, a category page included (w-98).
+            self._push_place(self._place())
         if self.current() == self.SETTINGS and page != self.SETTINGS:
             self.settings.commit()               # a field still being typed in
             if self.settings.dirty:
@@ -128,25 +126,52 @@ class NavigationMixin:
         if t is not None:
             focus_and_reveal(t)
 
-    def go_back(self) -> bool:
+    # History holds places: a page id, or (LIBRARY, 'cat', key) for a
+    # category page in the Library (w-98).
+    def _place(self):
         cur = self.current()
-        while self._back:
-            page = self._back.pop()
-            if page != cur and page in self.pages and self._page_shown(page):
-                if cur is not None:
-                    self._forward.append(cur)
-                self.go(page, _history=False)
-                return True
-        return False
+        key = getattr(self, '_cat_key', None)
+        return (self.LIBRARY, 'cat', key) if cur == self.LIBRARY and key is not None else cur
+
+    def _push_place(self, place):
+        if place is None:
+            return
+        self._back.append(place)
+        del self._back[:-self.HISTORY]
+        self._forward.clear()
+
+    def _place_ok(self, place) -> bool:
+        if isinstance(place, tuple):
+            return not self._theatre and categories.is_key(place[2])
+        return place in self.pages and self._page_shown(place)
+
+    def _go_place(self, place):
+        """Go back (or forward) to a place: a category page opens again,
+        the Library itself is Browse."""
+        if isinstance(place, tuple):
+            if not self.open_category(place[2], _history=False):
+                self.go(self.LIBRARY, _history=False)       # it's gone: Browse
+                if self._category_open():
+                    self.close_category(_history=False)
+            return
+        self.go(place, _history=False)
+        if place == self.LIBRARY and self._category_open():
+            self.close_category(_history=False)
+
+    def go_back(self) -> bool:
+        return self._step(self._back, self._forward)
 
     def go_forward(self) -> bool:
-        cur = self.current()
-        while self._forward:
-            page = self._forward.pop()
-            if page != cur and page in self.pages and self._page_shown(page):
+        return self._step(self._forward, self._back)
+
+    def _step(self, src: list, dst: list) -> bool:
+        cur = self._place()
+        while src:
+            place = src.pop()
+            if place != cur and self._place_ok(place):
                 if cur is not None:
-                    self._back.append(cur)
-                self.go(page, _history=False)
+                    dst.append(cur)
+                self._go_place(place)
                 return True
         return False
 
@@ -240,6 +265,11 @@ class NavigationMixin:
         elif self.current() == self.LIBRARY and self.search.text():
             self.search.clear()                 # a search first, then the page
             self._focus_view()
+        elif self.current() == self.LIBRARY and self._category_open():
+            # Back where the page was opened from (Browse puts its own
+            # scroll and focus back), or Browse when history has nothing.
+            if not self.go_back():
+                self.close_category()
         elif self.current() in (self.SETTINGS, self.PROTON, self.SYSTEM) and self.go_back():
             self._focus_view()                  # side pages: back where you came from
         elif self.current() != self.HOME:
@@ -382,6 +412,7 @@ def _hidden_between(w, top) -> bool:
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
+from .. import categories  # noqa: E402
 from .gameinfo import is_installed  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .library import ListView  # noqa: E402

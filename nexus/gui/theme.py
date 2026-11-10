@@ -707,6 +707,11 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #StageArt #ShelfTitle, #StageArt #ShelfCount { color: $on_art; }
     #SmartRule { background: $border; border: none; }
     #SmartHead { color: $text; font-size: ${fs_base}px; font-weight: 600; }
+    #CatTitle { color: $text; font-size: ${fs_big}px; font-weight: 700; }
+    #CatStory { color: $subtext; font-size: ${fs_sm}px; }
+    #CatKind { color: $subtext; font-size: ${fs_2xs}px; font-weight: 600; }
+    #MosaicTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
+    #MosaicCount { color: $subtext; font-size: ${fs_xs}px; }
     QToolButton#ShelfArrow, QToolButton#GlassIcon {
         background: $glass_hi; color: $on_art; border: 1px solid $glass;
         font-size: ${fs_sm}px; padding: 0;

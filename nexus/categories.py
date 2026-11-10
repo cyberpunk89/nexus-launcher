@@ -1,0 +1,315 @@
+"""Library categories: every way the Library groups your games (a smart
+rule, a genre, your favourites, a collection, a shelf you built, a store),
+as one model the category page, Browse and Theatre share. Pure functions
+over plain dicts, no Qt (Theatre and the Ribbon import it too).
+
+Keys: the smart keys of nexus/smart.py (`smart:<rule>`, `genre:<name>`,
+`user:<id>`) plus three of its own, which never start like a smart key:
+`fav` (your favourites), `col:<name>` (a collection; the name may hold
+':', so it is everything after the prefix) and `src:<source>` (a store).
+Play together's `friends:` keys stay a filter, not a category."""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from . import smart
+from .facts import NEXUS_GENRES
+from .icons import COLLECTION_ICONS, ICONS
+from .smart import USER
+
+FAV, COL, SRC = 'fav', 'col:', 'src:'
+STORE_KEYS = tuple(k for k, _t in smart.STORES)
+# The groups, in the order every place shows them.
+GROUPS = (('for_you', "For you"), ('yours', "Yours"), ('genres', "Genres"),
+          ('stores', "Stores"))
+SORTS = ('played', 'name', 'most', 'added', 'size')       # the Library's sort keys
+VIEWS = ('rows', 'grid', 'list')
+ROW_CAP = 20                 # tiles in one row of a page's Rows view
+
+# Glyphs (nexus/icons.py names): the smart rules and stores from ICONS, the
+# genres from the collection icons.
+RULE_GLYPH = {'continue': 'history', 'unfinished': 'timer', 'almost': 'medal',
+              'never': 'sparkles', 'short': 'clock', 'coop': 'friends', 'early': 'wrench',
+              'linux': 'proton'}
+GENRE_GLYPH = {'Action': 'zap', 'Adventure': 'map', 'RPG': 'swords', 'Strategy': 'brain',
+               'Shooter': 'crosshair', 'Simulation': 'castle', 'Racing': 'car',
+               'Sports': 'trophy', 'Puzzle': 'puzzle', 'Platformer': 'gamepad-2',
+               'Horror': 'ghost', 'Indie': 'heart'}
+STORE_GLYPH = {'nexus': 'folder', 'steam': 'steam', 'heroic': 'wine', 'epic': 'library'}
+
+
+@dataclass(frozen=True)
+class PrefsView:
+    """What the model needs from library.json and the platform, as plain
+    values: collection names in order, their looks ({name: {'icon',
+    'color'}}), your shelves (smart.clean_shelf dicts), whether repacks are
+    on (config) and whether Heroic is (features.has('heroic'))."""
+    collections: tuple = ()
+    looks: dict = field(default_factory=dict)
+    shelves: tuple = ()
+    repacks: bool = True
+    heroic: bool = False
+
+
+@dataclass(frozen=True)
+class Category:
+    key: str
+    kind: str                 # smart, genre, fav, collection, shelf, store
+    title: str
+    tip: str
+    glyph: str                # the glyph character
+    color: str | None         # an accent key (a coloured collection), else None
+    games: tuple = ()
+
+
+@dataclass(frozen=True)
+class Group:
+    key: str
+    title: str
+    cats: tuple = ()
+
+
+@dataclass(frozen=True)
+class Cut:
+    key: str
+    title: str
+    glyph: str
+    count: int
+
+
+@dataclass(frozen=True)
+class Stats:
+    count: int
+    minutes: int
+    finished: int             # at least smart.DONE_AT of the main story
+    bytes: int
+
+
+_PREFIX_KINDS = (('smart:', 'smart'), ('genre:', 'genre'), (USER, 'shelf'),
+                 (COL, 'collection'), (SRC, 'store'))
+
+
+def kind_of(key) -> str | None:
+    """'smart', 'genre', 'shelf', 'fav', 'collection' or 'store'; None for
+    anything else (a Play together key, a bad one)."""
+    if not isinstance(key, str):
+        return None
+    if key == FAV:
+        return 'fav'
+    for prefix, kind in _PREFIX_KINDS:
+        if key.startswith(prefix) and len(key) > len(prefix):
+            return kind
+    return None
+
+
+def is_key(key) -> bool:
+    return kind_of(key) is not None
+
+
+def collection_name(key) -> str | None:
+    """The collection a `col:` key names (never split on ':')."""
+    return key[len(COL):] if kind_of(key) == 'collection' else None
+
+
+def from_chip(chip) -> str | None:
+    """The category a Library chip stands for ("See all" on a source row,
+    the ★ chip, a collection chip); None for All, Not installed, Friends."""
+    if chip == 'favorite':
+        return FAV
+    if kind_of(chip) == 'collection':
+        return chip
+    if chip in STORE_KEYS:
+        return SRC + chip
+    return None
+
+
+def _name(g: dict) -> str:
+    """The sort key by name (the Library's)."""
+    return (g.get('display_name') or g.get('slug') or '').lower()
+
+
+def _by_played(games) -> tuple:
+    """Most recently played first, then by name."""
+    out = sorted(games, key=_name)
+    out.sort(key=lambda g: g.get('last_played') or '', reverse=True)
+    return tuple(out)
+
+
+def _store_label(src: str) -> str:
+    return dict(smart.STORES).get(src, src)
+
+
+def _store_ok(src: str, prefs: PrefsView) -> bool:
+    if src == 'nexus':
+        return prefs.repacks
+    if src == 'heroic':
+        return prefs.heroic
+    return src in STORE_KEYS
+
+
+def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=None,
+             now: datetime | None = None, keep_empty: bool = False) -> Category | None:
+    """One category over `games` (the pool the caller shows: not hidden, no
+    duplicates, the owned segment applied). None for a key that isn't one,
+    or has no game, except a shelf you built (its page says it is empty).
+    `keep_empty`: an open page keeps a category whose games all left (a
+    genre before the facts index has filled), still None for a bad key."""
+    kind = kind_of(key)
+    if kind is None:
+        return None
+    facts = facts or {}
+    now = now or datetime.now()
+    title = tip = glyph = ''
+    color = None
+    if kind == 'smart':
+        rule = key[len('smart:'):]
+        if key not in smart.rule_keys(linux):
+            return None
+        hit = smart.games_for(key, games, facts, now, linux, friends)
+        title, tip, glyph = smart.label(key), smart.tip(key), ICONS[RULE_GLYPH[rule]]
+    elif kind == 'genre':
+        name = key[len('genre:'):]
+        hit = smart.games_for(key, games, facts, now, linux, friends)
+        title, tip = name, smart.tip(key)
+        glyph = COLLECTION_ICONS.get(GENRE_GLYPH.get(name, ''), ICONS['grid'])
+    elif kind == 'shelf':
+        shelf = smart.find_user(list(prefs.shelves), key)
+        if shelf is None or shelf.get('removed'):
+            return None
+        hit = smart.user_games(shelf, games, facts, now, friends)
+        title, tip, glyph = smart.title_of(shelf), smart.describe(shelf), ICONS['sparkles']
+    elif kind == 'fav':
+        hit = _by_played(g for g in games if g.get('favorite'))
+        title, tip, glyph, color = "Favourites", "Your favourites", ICONS['star'], 'gold'
+    elif kind == 'collection':
+        name = collection_name(key)
+        if name not in prefs.collections:
+            return None
+        hit = _by_played(g for g in games if name in (g.get('collections') or ()))
+        look = prefs.looks.get(name) or {}
+        title, tip = name, "Your collection"
+        glyph = COLLECTION_ICONS.get(look.get('icon'), COLLECTION_ICONS['bookmark'])
+        color = look.get('color') or None
+    else:
+        src = key[len(SRC):]
+        if not _store_ok(src, prefs):
+            return None
+        hit = _by_played(g for g in games if g.get('source', 'nexus') == src)
+        title = _store_label(src)
+        tip = "Games Nexus installed" if src == 'nexus' else f"Your games from {title}"
+        glyph = ICONS[STORE_GLYPH[src]]
+    if not hit and kind != 'shelf' and not keep_empty:
+        return None
+    return Category(key, kind, title, tip, glyph, color, tuple(hit))
+
+
+def _keys(games, facts, prefs: PrefsView, linux: bool) -> list[tuple[str, list[str]]]:
+    genres = sorted(_genre_counts(games, facts).items(),
+                    key=lambda kv: (-kv[1], NEXUS_GENRES.index(kv[0])))
+    return [('for_you', smart.rule_keys(linux)),
+            ('yours', [FAV] + [COL + n for n in prefs.collections]
+             + [USER + s['id'] for s in prefs.shelves if not s.get('removed')]),
+            ('genres', [f'genre:{name}' for name, _n in genres]),
+            ('stores', [SRC + k for k in STORE_KEYS])]
+
+
+def _genre_counts(games, facts) -> dict:
+    count: dict[str, int] = {}
+    for g in games:
+        for genre in ((facts or {}).get(g.get('slug')) or {}).get('genres') or ():
+            if genre in NEXUS_GENRES:
+                count[genre] = count.get(genre, 0) + 1
+    return count
+
+
+def categories(games, facts, prefs: PrefsView, linux: bool = False, friends=None,
+               now: datetime | None = None) -> list[Group]:
+    """Every category with a game (and your shelves, even empty), grouped:
+    For you (the smart rules), Yours (favourites, collections, shelves),
+    Genres (most games first), Stores. Empty groups are left out."""
+    now = now or datetime.now()
+    titles = dict(GROUPS)
+    out = []
+    for gkey, keys in _keys(games, facts, prefs, linux):
+        cats = [c for c in (category(k, games, facts, prefs, linux, friends, now)
+                            for k in keys) if c is not None]
+        if cats:
+            out.append(Group(gkey, titles[gkey], tuple(cats)))
+    return out
+
+
+def lookup(groups, key) -> Category | None:
+    return next((c for g in groups for c in g.cats if c.key == key), None)
+
+
+# ---- what a category page shows ----
+def stats(cat: Category, facts) -> Stats:
+    """The page's story line: games, minutes played, finished (at least
+    smart.DONE_AT of the main story), bytes on disk."""
+    facts = facts or {}
+    games = cat.games
+    done = sum(1 for g in games
+               if (smart.progress(g, facts.get(g.get('slug'))) or 0) >= smart.DONE_AT)
+    size = sum(b for g in games if isinstance(b := g.get('disk_bytes'), (int, float))
+               and not isinstance(b, bool) and b > 0)
+    return Stats(len(games), sum(g.get('playtime_minutes') or 0 for g in games), done,
+                 int(size))
+
+
+def lead(cat: Category) -> dict | None:
+    """The game played last (Continue <game>), or None when none was."""
+    played = [g for g in cat.games if g.get('last_played')]
+    return max(played, key=lambda g: g['last_played']) if played else None
+
+
+def covers(cat: Category, n: int = 6) -> list[dict]:
+    """The games whose covers make the header: last played first, then the
+    newest added, then by name."""
+    out = sorted(cat.games, key=_name)
+    out.sort(key=lambda g: g.get('added_at') or '', reverse=True)
+    out.sort(key=lambda g: g.get('last_played') or '', reverse=True)
+    return out[:max(0, n)]
+
+
+def cuts(cat: Category, facts, linux: bool = False, now: datetime | None = None) -> list[Cut]:
+    """The smart rules that split this category (its chips): each rule with
+    some but not all of its games, never the category's own key."""
+    now = now or datetime.now()
+    out = []
+    for key in smart.rule_keys(linux):
+        if key == cat.key:
+            continue
+        n = len(smart.games_for(key, list(cat.games), facts or {}, now, linux))
+        if 0 < n < len(cat.games):
+            out.append(Cut(key, smart.label(key), ICONS[RULE_GLYPH[key[len('smart:'):]]], n))
+    return out
+
+
+def related(cat: Category, groups, n: int = 4) -> list[Category]:
+    """More like this: the categories sharing the most of this one's games
+    (shared / together), another kind before the same kind on a tie, then
+    in group order. Stores are left out (every game is in one)."""
+    mine = {g.get('slug') for g in cat.games}
+    scored = []
+    for i, c in enumerate(c for g in groups for c in g.cats):
+        if c.key == cat.key or c.kind == 'store':
+            continue
+        theirs = {g.get('slug') for g in c.games}
+        shared = len(mine & theirs)
+        if shared:
+            scored.append((-shared / len(mine | theirs), c.kind == cat.kind, i, c))
+    scored.sort(key=lambda t: t[:3])
+    return [t[3] for t in scored[:max(0, n)]]
+
+
+def sort_games(games, sort: str) -> list[dict]:
+    """The Library's sorts (a new list): by name, then recently played,
+    most played, recently added or size on disk; anything else is by name."""
+    out = sorted(games, key=_name)
+    key = {'played': lambda g: g.get('last_played') or '',
+           'most': lambda g: g.get('playtime_minutes') or 0,
+           'added': lambda g: g.get('added_at') or '',
+           'size': lambda g: g.get('disk_bytes') or 0}.get(sort)
+    if key is not None:
+        out.sort(key=key, reverse=True)
+    return out

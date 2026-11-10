@@ -166,7 +166,31 @@ class LibraryView(QScrollArea, _TileSignals):
         self._sel: set = set()
         self._job_of: dict = {}
         self.flow_host.installEventFilter(self)
+        self._head: QWidget | None = None        # over the grid, in its scroll (w-98)
+        self._foot: QWidget | None = None        # under it
         FRIENDS.avatar_ready.connect(self._friend_avatars)
+
+    def set_head(self, w: QWidget | None):
+        """A widget over the grid that scrolls with it (a category page's
+        header and chips); None takes it out. The caller shows it once it
+        is in (a widget shown before it has a parent is a window)."""
+        self._head = self._slot(self._head, w, foot=False)
+
+    def set_foot(self, w: QWidget | None):
+        """A widget under the grid (More like this), in the same scroll."""
+        self._foot = self._slot(self._foot, w, foot=True)
+
+    def _slot(self, old, w, foot: bool):
+        lay = self.container.layout()
+        if old is w:
+            return w
+        if old is not None and lay.indexOf(old) >= 0:
+            lay.removeWidget(old)
+            if old.parentWidget() is self.container:
+                old.hide()                     # still ours: out of sight
+        if w is not None:
+            lay.insertWidget(lay.indexOf(self._empty) + 1 if foot else 0, w)
+        return w
 
     def _each_tile(self):
         for t in [*self._built.values(), *self._spare]:
@@ -226,8 +250,8 @@ class LibraryView(QScrollArea, _TileSignals):
         self._fill()                           # a taller view shows more rows
 
     def eventFilter(self, obj, ev):
-        if obj is self.flow_host and ev.type() == QEvent.Type.Resize:
-            self._fill()                       # new width: new columns
+        if obj is self.flow_host and ev.type() in (QEvent.Type.Resize, QEvent.Type.Move):
+            self._fill()                       # new width: new columns; a head grew
         return super().eventFilter(obj, ev)
 
     def _focus_place(self) -> int | None:
@@ -372,21 +396,43 @@ class KeepPlace:
         self.offsets = {r.title: r.bar.value() for r in self._rows() if r.bar.value()}
         return self
 
+    def take(self) -> 'KeepPlace':
+        """A snapshot to put back later (a category page opened from
+        Browse): the focus, each shelf's offset and the view's scroll."""
+        self.__enter__()
+        bar = getattr(self.scope, 'verticalScrollBar', None)
+        self.scroll = bar().value() if bar is not None else None
+        return self
+
+    def put_back(self):
+        """Back to the snapshot (`take`), now and once the view is laid
+        out again."""
+        self._scroll_back()
+        self._later()
+
+    def _scroll_back(self):
+        if getattr(self, 'scroll', None) is not None:
+            self.scope.verticalScrollBar().setValue(self.scroll)
+
     def __exit__(self, *exc):
         if self.focus is not None or self.offsets:
-            # New rows are shown by the layout on the next event loop pass;
-            # a hidden tile can't take the focus, so put things back then.
-            # A child timer: it dies with the view. (A lambda, not the bound
-            # method: PyQt holds a plain object's method only weakly, and
-            # this KeepPlace is gone once the `with` block ends.)
-            t = QTimer(self.scope)
-            t.setSingleShot(True)
-            t.timeout.connect(lambda: self._restore())
-            t.timeout.connect(t.deleteLater)
-            t.start(0)
+            self._later()
         return False
 
+    def _later(self):
+        # New rows are shown by the layout on the next event loop pass;
+        # a hidden tile can't take the focus, so put things back then.
+        # A child timer: it dies with the view. (A lambda, not the bound
+        # method: PyQt holds a plain object's method only weakly, and
+        # this KeepPlace is gone once the `with` block ends.)
+        t = QTimer(self.scope)
+        t.setSingleShot(True)
+        t.timeout.connect(lambda: self._restore())
+        t.timeout.connect(t.deleteLater)
+        t.start(0)
+
     def _restore(self):
+        self._scroll_back()
         rows = self._rows()
         for r in rows:
             if r.title in self.offsets:
@@ -494,6 +540,9 @@ class ShelfRow(QWidget):
                            0, Qt.AlignmentFlag.AlignVCenter)
         name = self.name_label = label(title, "ShelfTitle")
         name.setToolTip(tip)
+        self._title_link = see_all            # the title opens the page too (w-98)
+        if see_all:
+            name.setCursor(Qt.CursorShape.PointingHandCursor)
         head.addWidget(name)
         self.count_label = None
         if count:
@@ -541,6 +590,8 @@ class ShelfRow(QWidget):
         self.body.installEventFilter(self)
         lay.addWidget(self.body)
         self.tiles: list[GameTile] = []
+        if see_all:                           # last: eventFilter needs the parts above
+            name.installEventFilter(self)
 
     @property
     def pitch(self) -> int:
@@ -634,6 +685,10 @@ class ShelfRow(QWidget):
             for wdg in (*self.fades.values(), self.prev, self.next):
                 wdg.raise_()
             self._sync_arrows()
+        elif obj is self.name_label and ev.type() == QEvent.Type.MouseButtonRelease \
+                and ev.button() == Qt.MouseButton.LeftButton and self._title_link \
+                and self.name_label.rect().contains(ev.position().toPoint()):
+            self.see_all.emit()
         elif ev.type() == QEvent.Type.FocusIn and obj in self.tiles:
             self._reveal(obj)
             self.focused.emit(obj)

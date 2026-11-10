@@ -10,7 +10,8 @@ from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QMenu, QPushButton, QSlider,
     QStackedWidget, QVBoxLayout, QWidget)
 
-from nexus import facts, net, paths as NX, smart
+from nexus import categories, facts, net, paths as NX, smart
+from nexus.facts import NEXUS_GENRES
 
 from .common import alive, COLLECTION_LOOK, COLLECTION_NAMES, MAX_COLLECTION_NAME
 from .theme import G, SP
@@ -29,6 +30,8 @@ class LibraryMixin:
     the window."""
 
     def _search_typed(self, text):
+        if text and self._category_open():
+            self.close_category()                 # a search is over the whole library
         if text and self.current() != self.LIBRARY:
             self.go(self.LIBRARY)
             self.search.setFocus()
@@ -42,12 +45,19 @@ class LibraryMixin:
         v.activated.connect(self._tile_activated)
         v.double.connect(self._tile_double)
         if isinstance(v, HomeView):                 # smart shelves: Library and Home
-            v.show_filter.connect(self._show_filter)
+            v.show_filter.connect(self._open_shelf_key)
             v.shelf_menu.connect(self._smart_menu)
             v.hidden_menu.connect(self._smart_hidden_menu)
             v.new_shelf.connect(self._new_shelf)
 
     def _see_all(self, chip, sort):
+        """A source row's "See all" (Library Shelves, Home): that store's
+        category page; All and Not installed keep the plain grid."""
+        key = categories.from_chip(chip)
+        if key is not None and self.open_category(key, sort):
+            return
+        if self._category_open():
+            self.close_category()
         self.go(self.LIBRARY)
         self.search.clear()
         self.filter.setCurrentIndex(0)
@@ -72,6 +82,7 @@ class LibraryMixin:
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         bar = QWidget()
+        self._lib_bar = bar                     # hidden while a category page shows
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(SP['5'], SP['4'], SP['5'], 0)
         bl.setSpacing(SP['2'])
@@ -136,6 +147,7 @@ class LibraryMixin:
         lay.addWidget(bar)
 
         chips = WrapRow(SP['1_5'])              # own_seg drops under the chips if narrow
+        self._lib_chips = chips
         chips.layout().setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
         cl = chips.left
         cl.setSpacing(SP['1_5'])
@@ -189,12 +201,30 @@ class LibraryMixin:
             self._wire_view(v)
             self.views.addWidget(v)
         self.home.see_all.connect(self._see_all)
+        # A category's own page (w-98): one more view, outside _views (the
+        # toolbar's view switch never picks it).
+        self._cat_key: str | None = None
+        self._browse_place = None                 # Browse's place, put back on leaving
+        self.catpage = CategoryPage(self.prefs)
+        self._wire_view(self.catpage)
+        self.catpage.back.connect(self.close_category)
+        self.catpage.open_key.connect(self.open_category)
+        self.catpage.play_lead.connect(self._play_lead)
+        self.catpage.pick.connect(self._pick_in_category)
+        self.catpage.cat_menu.connect(self._category_menu)
+        self.catpage.shown_changed.connect(self._category_shown)
+        self.views.addWidget(self.catpage)
         lay.addWidget(self.views, 1)
         # A game page's genre or Co-op chip (DetailsPanel.filter_library,
-        # when that panel has it) filters the Library the same way.
+        # when that panel has it) opens that category's page.
         sig = getattr(self.details, 'filter_library', None) if hasattr(self, 'details') else None
         if sig is not None:
-            sig.connect(lambda key: self._show_filter(key, from_page=True))
+            sig.connect(self._open_from_game_page)
+        # Clicking the Library tab while on a category page: back to Browse.
+        tab = self.tabs.item(self.LIBRARY) if hasattr(self, 'tabs') else None
+        if tab is not None:
+            tab.pressed.connect(self._library_tab_pressed)
+            tab.clicked.connect(self._library_tab_clicked)
         # The agent (or, on Windows, this window) fills the facts index in
         # the background: look for a new one now and then, cheaply (a stat).
         self._facts_timer = QTimer(self)
@@ -422,8 +452,12 @@ class LibraryMixin:
 
     def _reveal_game(self, slug):
         """Show one game in the Library, selected. The search and filters
-        stay as they are when the game is already in what they show."""
+        stay as they are when the game is already in what they show (a
+        category page too: otherwise it closes)."""
         self.go(self.LIBRARY)
+        if self._category_open() and slug not in self.catpage.games \
+                and not any(g.get('slug') == slug for g in self.catpage.cat.games):
+            self.close_category()
         view = self._shown_view()
         if slug not in getattr(view, 'tiles', {}) and slug not in getattr(view, 'games', {}):
             self.search.clear()
@@ -478,6 +512,8 @@ class LibraryMixin:
         if cname not in self.prefs.collections:
             return
         self.go(self.LIBRARY)
+        if self._category_open():
+            self.close_category()
         self.search.clear()
         self.filter.setCurrentIndex(0)
         if self._view == 'home':
@@ -808,6 +844,14 @@ class LibraryMixin:
         self._filter_dirty = False
         self._sync_facts()
         self._rebuild_smart_filter()
+        if self._category_open():
+            # The page shows its own games; Browse catches up when it closes.
+            pending = [j for j in self.jobs.jobs if j.kind == 'install' and j.active]
+            self._pending_ids = tuple(id(j) for j in pending)
+            self._refresh_category()
+            self._refresh_home(f"Couldn't load the library — {self._load_error}"
+                               if self._load_error and not self._games else None, pending)
+            return
         q = self.search.text().strip().lower()
         status = self.filter.currentData() or 'all'
         if status == PICK_FRIENDS:                    # never a filter (_filter_changed reverts)
@@ -861,17 +905,7 @@ class LibraryMixin:
             self.views.setCurrentWidget(self.view)
             target = self.view
         self.sort.setVisible(target is not self._views['home'])
-        key = self.sort.currentData()
-        name = lambda g: (g.get('display_name') or g.get('slug', '')).lower()
-        games.sort(key=name)
-        if key == 'played':
-            games.sort(key=lambda g: g.get('last_played') or '', reverse=True)
-        elif key == 'most':
-            games.sort(key=lambda g: g.get('playtime_minutes') or 0, reverse=True)
-        elif key == 'added':
-            games.sort(key=lambda g: g.get('added_at') or '', reverse=True)
-        elif key == 'size':
-            games.sort(key=lambda g: g.get('disk_bytes') or 0, reverse=True)
+        games[:] = categories.sort_games(games, self.sort.currentData())
         if self._load_error and not self._games:
             empty = f"Couldn't load the library — {self._load_error}"
         elif not self._loaded:
@@ -1041,6 +1075,168 @@ class LibraryMixin:
         return {'installed': is_installed, 'owned': lambda g: not is_installed(g),
                 'all': lambda g: True}[own]
 
+    # ---- category pages (w-98, nexus/categories.py, gui/category.py) ----
+    def _category_open(self) -> bool:
+        """A category page is the Library's view now."""
+        return getattr(self, '_cat_key', None) is not None
+
+    def open_category(self, key, sort: str | None = None, _history: bool = True) -> bool:
+        """Show a category's page in the Library (See all, a row title, a
+        game page's genre chip, More like this). False, and nothing
+        changes, for a key that isn't a category here (a Play together key,
+        a deleted collection, a removed shelf), for one with no games (but
+        your shelves, and a genre while the facts index is still empty), or
+        in Theatre (w-100: the caller falls back to the old filter).
+        `sort` is the page's sort until one is chosen for it."""
+        if self._theatre or not self._can_open(key):
+            return False
+        before = self._place()
+        if self.current() != self.LIBRARY:
+            self.go(self.LIBRARY, _history=_history)
+        elif _history and before != (self.LIBRARY, 'cat', key):
+            self._push_place(before)
+        if not self._category_open():
+            # Browse's scroll and focus, for Back (the grid's or list's too).
+            self._browse_place = KeepPlace(self.views.currentWidget()).take()
+        self._cat_key = key
+        self._lib_bar.hide()
+        self._lib_chips.hide()
+        self.views.setCurrentWidget(self.catpage)
+        self._refresh_category(sort)
+        self._sync_pins()
+        if self.input.mode in ('keyboard', 'pad'):
+            QTimer.singleShot(0, self._focus_category)
+        return True
+
+    def close_category(self, _history: bool = True):
+        """Back to Browse (the crumb, Escape, Back, a search), where it was."""
+        if not self._category_open():
+            return
+        if _history:
+            self._push_place(self._place())
+        self._cat_key = None
+        self._lib_bar.show()
+        self._lib_chips.show()
+        self.views.setCurrentWidget(self.view)
+        self.apply_filter()
+        place, self._browse_place = self._browse_place, None
+        if place is not None:
+            place.put_back()
+
+    def _can_open(self, key) -> bool:
+        """A page opens on a category with games, a shelf of yours (even
+        empty), or a Nexus genre before the facts index has any game."""
+        if not categories.is_key(key):
+            return False
+        if self._category_for(key, keep_empty=False) is not None:
+            return True
+        return categories.kind_of(key) == 'genre' and key[len('genre:'):] in NEXUS_GENRES \
+            and not self._smart_facts()
+
+    def _focus_category(self):
+        if self._category_open() and self.current() == self.LIBRARY:
+            t = self._first_tile()
+            if t is not None:
+                focus_and_reveal(t)
+
+    def _category_for(self, key, keep_empty: bool = True):
+        return categories.category(key, self._category_pool(), self._smart_facts(),
+                                   self._prefs_view(), linux=has('proton'),
+                                   friends=FRIENDS.public_ids(), keep_empty=keep_empty)
+
+    def _refresh_category(self, sort: str | None = None):
+        """Fill the page from the library as it is now; a category that is
+        gone (its collection deleted, its shelf removed) closes it."""
+        cat = self._category_for(self._cat_key)
+        if cat is None:
+            self.close_category(_history=False)
+            return
+        pool, facts, linux = self._category_pool(), self._smart_facts(), has('proton')
+        friends = FRIENDS.public_ids()
+        groups = categories.categories(pool, facts, self._prefs_view(), linux, friends)
+        cuts = categories.cuts(cat, facts, linux)
+        cut_games = {c.key: smart.games_for(c.key, list(cat.games), facts, linux=linux)
+                     for c in cuts}
+        self.catpage.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
+                                  cuts, cut_games, categories.related(cat, groups),
+                                  self._category_empty(cat), default_sort=sort)
+        self.catpage.set_jobs(self.jobs)
+        self.catpage.mark_selected(set(self.selected))
+        self._shown_games = self.catpage.shown_games()
+
+    def _category_empty(self, cat) -> str:
+        """The page's line when it has no game."""
+        if cat.kind == 'shelf':
+            return "No games match these rules yet"
+        if self.prefs.show_owned and self.prefs.owned_view != 'all':
+            if categories.category(cat.key, self._category_pool(every=True), self._smart_facts(), self._prefs_view(),
+                                   linux=has('proton'), friends=FRIENDS.public_ids()):
+                return "None of them are in this view. Everything shows them all."
+        if smart.needs_facts(cat.key):
+            return "Games show up here as Nexus learns about them."
+        return NO_GAMES
+
+    def _category_shown(self):
+        """A cut, sort or view changed on the page: what Ctrl+D and a
+        Shift-click range go by."""
+        if self._category_open():
+            self._shown_games = self.catpage.shown_games()
+
+    def _open_shelf_key(self, key: str):
+        """A smart shelf's See all or title (Library and Home): its page;
+        a key with no page (Play together) still filters the grid."""
+        if not self.open_category(key):
+            self._show_filter(key)
+
+    def _open_from_game_page(self, key: str):
+        """A game page's genre or Co-op chip: that category's page (in
+        Theatre, as before, the filter)."""
+        if not self.open_category(key):
+            self._show_filter(key, from_page=True)
+
+    def _play_lead(self, g: dict):
+        """Continue <game>: play it, or its page when it can't start now."""
+        if can_quick_play(g):
+            self.on_game_action('launch', g)
+        else:
+            self._open_on_play(g)
+
+    def _pick_in_category(self):
+        self.surprise(self.catpage.shown_games())
+
+    def _category_menu(self, key: str, pos: QPoint):
+        """The page's ⋮: a collection's own sheet; a smart, genre or user
+        shelf's actions. (Favourites and stores have none.)"""
+        kind = categories.kind_of(key)
+        if kind == 'collection':
+            self._manage_collection(categories.collection_name(key))
+        elif kind in ('smart', 'genre', 'shelf'):
+            self._choose(self._smart_label(key), self._shelf_actions(key),
+                         self._smart_tip(key), pos)
+
+    def _library_tab_pressed(self):
+        self._tab_on_page = self.current() == self.LIBRARY and self._category_open()
+
+    def _library_tab_clicked(self):
+        if getattr(self, '_tab_on_page', False) and self._category_open():
+            self.close_category()
+        self._tab_on_page = False
+
+    def _category_pool(self, every: bool = False) -> list[dict]:
+        """What a category page lists from: the library as the Installed /
+        Not installed / Everything switch shows it (`every`: whatever it
+        shows), no hidden games, one tile per game."""
+        in_own = (lambda g: True) if every else self._in_own()
+        return [g for g in self._games if not g.get('hidden') and not g.get('dup_of')
+                and in_own(g)]
+
+    def _prefs_view(self) -> categories.PrefsView:
+        return categories.PrefsView(
+            collections=tuple(self.prefs.collections),
+            looks={n: dict(v) for n, v in self.prefs.collection_look.items()},
+            shelves=tuple(self.prefs.user_shelves()),
+            repacks=self.config.get('repacks', True) is not False, heroic=has('heroic'))
+
     # ---- smart shelves (nexus/smart.py) ----
     def _sync_facts(self) -> bool:
         """Read the facts index again when its file changed; True if it did."""
@@ -1174,6 +1370,8 @@ class LibraryMixin:
             return
         if self.current() != self.LIBRARY:
             self.go(self.LIBRARY)
+        if self._category_open():
+            self.close_category()                     # the plain grid, filtered
         self.search.clear()
         if from_page and self._chip != 'all':
             self._chip = 'all'
@@ -1280,19 +1478,29 @@ class LibraryMixin:
         a shelf you built also has Edit and Remove. The desktop menu, or the
         ActionSheet when a pad is driving."""
         name = self._smart_label(key)
-        items = [("See all", G['grid'], lambda: self._show_filter(key)),
-                 ("Save as collection", G['collection'], lambda: self._save_smart(key)),
+        items = [("See all", G['grid'], lambda: self._open_shelf_key(key)),
+                 *self._shelf_actions(key)]
+        self._choose(name, items, self._smart_tip(key), pos)
+
+    def _shelf_actions(self, key: str) -> list[tuple]:
+        """A smart or genre shelf's actions (and a shelf you built: Edit,
+        Remove), for its ⋮ on a row and on its page."""
+        items = [("Save as collection", G['collection'], lambda: self._save_smart(key)),
                  ("Hide this shelf", G['eye_off'], lambda: self._hide_smart(key))]
         if smart.is_user(key):
             sid = key[len(smart.USER):]
-            items[1:1] = [("Edit shelf", G['pencil'], lambda: self._edit_shelf(sid))]
+            items[0:0] = [("Edit shelf", G['pencil'], lambda: self._edit_shelf(sid))]
             items.append(("Remove shelf", G['trash'], lambda: self._remove_shelf(sid)))
+        return items
+
+    def _choose(self, name: str, items: list[tuple], sub: str, pos: QPoint):
+        """Items as the desktop menu, or the ActionSheet when a pad is driving."""
         if self.input.mode == 'pad':
-            self.sheet.choose(name, items, sub=self._smart_tip(key))
+            self.sheet.choose(name, items, sub=sub)
             self._update_hints()
             return
         m = QMenu(self)
-        for text, glyph, fn in items:
+        for text, _glyph, fn in items:
             m.addAction(amp(text)).triggered.connect(lambda _=False, fn=fn: fn())
         m.exec(pos if not pos.isNull() else QCursor.pos())
         m.deleteLater()
@@ -1417,7 +1625,7 @@ class LibraryMixin:
             QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.btn_menu))
         elif new:
             self.toast(f"Made the shelf “{smart.title_of(shelf)}”.", 'success',
-                       ("Show", lambda: self._show_filter(key)), 4000)
+                       ("Show", lambda: self.open_category(key)), 4000)
 
     def _remove_shelf(self, sid: str):
         """Remove: off the Library, the filter menu and Home; kept in
@@ -1538,6 +1746,7 @@ from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,
     PRESENCE_AGE, PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
+from .category import CategoryPage, NO_GAMES  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     ShelfRow, surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

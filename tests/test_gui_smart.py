@@ -142,11 +142,17 @@ class SmartShelves(unittest.TestCase):
         w._save_smart('smart:never')                                 # again: no duplicates
         self.assertEqual(len(w.prefs.collections["Never played"]), 3)
 
-    def test_see_all_filters_and_clear_goes_back(self):
+    def test_see_all_opens_the_page_and_the_filter_still_works(self):
         w = self.win
         row = next(x for x in w.home._smart if isinstance(x, ShelfRow)
                    and x.title == "Never played")
-        row.see_all.emit()
+        row.see_all.emit()                          # w-98: the category's own page
+        self.assertIs(w.views.currentWidget(), w.catpage)
+        self.assertEqual(w.catpage.cat.key, 'smart:never')
+        self.assertEqual(w.filter.currentData(), 'all')
+        w.close_category()
+        # The status combo's Smart group still filters the plain grid.
+        w._show_filter('smart:never')
         self.assertEqual(w.filter.currentData(), 'smart:never')
         self.assertIs(w.views.currentWidget(), w.library)              # the grid
         self.assertEqual(sorted(g['slug'] for g in w._shown_games), ['new0', 'new1', 'new2'])

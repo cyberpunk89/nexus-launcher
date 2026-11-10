@@ -1,0 +1,238 @@
+"""Library categories (nexus/categories.py): the keys, the groups in their
+fixed order, the Windows set, the wording, and what a category page shows
+(stats, lead game, covers, cuts, More like this, sort). Pure: no Qt."""
+
+import subprocess
+import sys
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
+from nexus import categories as C, smart  # noqa: E402
+
+NOW = datetime(2026, 11, 10, 12, 0)
+
+
+def game(slug, minutes=0, days_ago=None, source='steam', **kw):
+    g = {'slug': slug, 'display_name': slug.title(), 'playtime_minutes': minutes,
+         'last_played': (NOW - timedelta(days=days_ago)).isoformat(timespec='seconds')
+         if days_ago is not None else None, 'installed': True, 'source': source,
+         'favorite': False, 'collections': []}
+    g.update(kw)
+    return g
+
+
+def fact(main=None, genres=(), modes=('single',)):
+    return {'length': {'main': main} if main else None, 'genres': list(genres),
+            'modes': list(modes), 'status': 'released'}
+
+
+def keys(groups):
+    return [c.key for g in groups for c in g.cats]
+
+
+class Keys(unittest.TestCase):
+    def test_new_keys_never_collide_with_smart_prefixes(self):
+        for key in (C.FAV, C.COL + 'Weekend', C.SRC + 'steam'):
+            self.assertFalse(key.startswith(smart.KEY_PREFIXES), key)
+        self.assertEqual(C.kind_of('fav'), 'fav')
+        self.assertEqual(C.kind_of('col:Weekend'), 'collection')
+        self.assertEqual(C.kind_of('src:steam'), 'store')
+        self.assertEqual(C.kind_of('smart:never'), 'smart')
+        self.assertEqual(C.kind_of('genre:RPG'), 'genre')
+        self.assertEqual(C.kind_of('user:a1b2'), 'shelf')
+        for bad in ('friends:1:multi', 'col:', 'src:', 'genre:', 'nonsense', '', None, 3):
+            self.assertIsNone(C.kind_of(bad), bad)
+            self.assertFalse(C.is_key(bad), bad)
+        self.assertTrue(C.is_key('fav'))
+
+    def test_collection_name_with_colons(self):
+        key = C.COL + 'RPG: the long ones'
+        self.assertEqual(C.kind_of(key), 'collection')
+        self.assertEqual(C.collection_name(key), 'RPG: the long ones')
+        self.assertIsNone(C.collection_name('fav'))
+
+    def test_from_chip(self):
+        self.assertEqual(C.from_chip('favorite'), 'fav')
+        self.assertEqual(C.from_chip('col:A: b'), 'col:A: b')
+        for store in ('nexus', 'steam', 'heroic', 'epic'):
+            self.assertEqual(C.from_chip(store), 'src:' + store)
+        for chip in ('all', 'owned', 'friends', '', None, 'bogus'):
+            self.assertIsNone(C.from_chip(chip), chip)
+
+
+def library():
+    """A small library: three RPGs (one a favourite in a collection), a
+    racing game, a Repacks game, a Heroic game."""
+    games = [game('rpg1', 600, 2, favorite=True, collections=['Couch: co-op']),
+             game('rpg2', 120, 40, disk_bytes=10 * 2**30),
+             game('rpg3', 0, None, added_at=(NOW - timedelta(days=1)).isoformat()),
+             game('race', 30, 1, collections=['Couch: co-op']),
+             game('pack', 0, None, source='nexus'),
+             game('wine', 45, 3, source='heroic')]
+    facts = {'rpg1': fact(10, ('RPG',), ('single', 'coop')), 'rpg2': fact(20, ('RPG',)),
+             'rpg3': fact(5, ('RPG', 'Indie')), 'race': fact(2, ('Racing',), ('coop',))}
+    return games, facts
+
+
+def prefs(**kw):
+    base = {'collections': ('Couch: co-op', 'Empty one'), 'looks': {'Couch: co-op': {
+        'icon': 'gamepad-2', 'color': 'gold'}}, 'shelves': (), 'repacks': True, 'heroic': True}
+    base.update(kw)
+    return C.PrefsView(**base)
+
+
+SHELF = {'id': 'ab12', 'name': "Long ones", 'match': 'all',
+         'rules': [{'field': 'playtime', 'op': 'atleast', 'value': 1}], 'removed': False}
+EMPTY_SHELF = {'id': 'cd34', 'name': "Nothing yet", 'match': 'all',
+               'rules': [{'field': 'playtime', 'op': 'atleast', 'value': 100}],
+               'removed': False}
+
+
+class Groups(unittest.TestCase):
+    def groups(self, linux=True, **kw):
+        games, facts = library()
+        return C.categories(games, facts, prefs(**kw), linux=linux, now=NOW)
+
+    def test_fixed_group_order(self):
+        groups = self.groups(shelves=(SHELF,))
+        self.assertEqual([g.key for g in groups], ['for_you', 'yours', 'genres', 'stores'])
+        self.assertEqual([g.title for g in groups], ["For you", "Yours", "Genres", "Stores"])
+        yours = [c.key for c in groups[1].cats]
+        self.assertEqual(yours, ['fav', 'col:Couch: co-op', 'user:ab12'])
+        genres = [c.key for c in groups[2].cats]
+        self.assertEqual(genres, ['genre:RPG', 'genre:Racing', 'genre:Indie'])
+        self.assertEqual([c.key for c in groups[3].cats], ['src:nexus', 'src:steam', 'src:heroic'])
+        rules = [c.key for c in groups[0].cats]
+        self.assertEqual(rules, [k for k in smart.rule_keys(True) if k in rules])
+        col = C.lookup(groups, 'col:Couch: co-op')
+        self.assertEqual((col.kind, col.color), ('collection', 'gold'))
+        self.assertEqual([g['slug'] for g in col.games], ['race', 'rpg1'])   # last played
+
+    def test_one_game_makes_a_page_empty_key_is_none(self):
+        games, facts = library()
+        cat = C.category('genre:Indie', games, facts, prefs(), now=NOW)
+        self.assertEqual([g['slug'] for g in cat.games], ['rpg3'])
+        self.assertEqual((cat.kind, cat.title), ('genre', 'Indie'))
+        for key in ('genre:Horror', 'col:Empty one', 'col:Missing', 'src:epic', 'smart:almost',
+                    'user:zz99', 'friends:1', 'bogus'):
+            self.assertIsNone(C.category(key, games, facts, prefs(), now=NOW), key)
+        self.assertIsNone(C.category('genre:RPG', games, {}, prefs(), now=NOW))  # no facts yet
+        kept = C.category('genre:RPG', games, {}, prefs(), now=NOW, keep_empty=True)
+        self.assertEqual((kept.title, kept.games), ('RPG', ()))     # an open page keeps it
+        self.assertIsNone(C.category('col:Missing', games, facts, prefs(), keep_empty=True))
+
+    def test_empty_user_shelf_kept(self):
+        games, facts = library()
+        cat = C.category('user:cd34', games, facts, prefs(shelves=(EMPTY_SHELF,)), now=NOW)
+        self.assertEqual((cat.kind, cat.title, cat.games), ('shelf', "Nothing yet", ()))
+        self.assertIn('user:cd34', keys(self.groups(shelves=(EMPTY_SHELF,))))
+        gone = dict(EMPTY_SHELF, removed=True)
+        self.assertIsNone(C.category('user:cd34', games, facts, prefs(shelves=(gone,))))
+
+    def test_windows_set_has_no_linux_rule_or_heroic_store(self):
+        games, facts = library()
+        games[0]['protondb'] = games[1]['protondb'] = 'platinum'
+        lin = keys(C.categories(games, facts, prefs(), linux=True, now=NOW))
+        self.assertIn('smart:linux', lin)
+        self.assertIn('src:heroic', lin)
+        win = keys(C.categories(games, facts, prefs(heroic=False), linux=False, now=NOW))
+        self.assertNotIn('smart:linux', win)
+        self.assertNotIn('src:heroic', win)
+        self.assertIsNone(C.category('smart:linux', games, facts, prefs(), linux=False))
+        self.assertIsNone(C.category('src:heroic', games, facts, prefs(heroic=False)))
+
+    def test_no_repack_wording(self):
+        groups = self.groups(shelves=(SHELF,))
+        for cat in (c for g in groups for c in g.cats):
+            self.assertNotIn('repack', cat.tip.lower(), cat.key)
+            if cat.key != 'src:nexus':
+                self.assertNotIn('repack', cat.title.lower(), cat.key)
+        self.assertEqual(C.lookup(groups, 'src:nexus').title, "Repacks")   # the existing label
+        for g in groups:
+            self.assertNotIn('repack', g.title.lower())
+
+    def test_repacks_off_drops_the_store(self):
+        self.assertNotIn('src:nexus', keys(self.groups(repacks=False)))
+        games, facts = library()
+        self.assertIsNone(C.category('src:nexus', games, facts, prefs(repacks=False)))
+
+    def test_no_qt_import(self):
+        code = ("import sys; import nexus.categories; "
+                "bad = [m for m in sys.modules if m.startswith(('PyQt6', 'nexus.gui'))]; "
+                "print(bad); sys.exit(1 if bad else 0)")
+        r = subprocess.run([sys.executable, '-c', code], cwd=REPO, capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
+class Page(unittest.TestCase):
+    def setUp(self):
+        self.games, self.facts = library()
+        self.groups = C.categories(self.games, self.facts, prefs(shelves=(SHELF,)),
+                                   linux=True, now=NOW)
+
+    def test_stats_and_lead(self):
+        cat = C.lookup(self.groups, 'genre:RPG')
+        st = C.stats(cat, self.facts)
+        self.assertEqual((st.count, st.minutes, st.finished, st.bytes), (3, 720, 1, 10 * 2**30))
+        self.assertEqual(C.lead(cat)['slug'], 'rpg1')
+        never = C.category('smart:never', self.games, self.facts, prefs(), now=NOW)
+        self.assertIsNone(C.lead(never))
+
+    def test_covers_by_last_played(self):
+        cat = C.lookup(self.groups, 'src:steam')
+        self.assertEqual([g['slug'] for g in C.covers(cat)], ['race', 'rpg1', 'rpg2', 'rpg3'])
+        self.assertEqual(len(C.covers(cat, 2)), 2)
+
+    def test_cuts_skip_self_and_whole(self):
+        cat = C.lookup(self.groups, 'genre:RPG')
+        cuts = C.cuts(cat, self.facts, linux=True, now=NOW)
+        by = {c.key: c.count for c in cuts}
+        self.assertEqual(by.get('smart:unfinished'), 1)
+        self.assertEqual(by.get('smart:never'), 1)
+        self.assertNotIn('smart:continue', by)              # rpg1 is through its story
+        self.assertEqual(by.get('smart:coop'), 1)
+        self.assertNotIn('smart:short', by)                  # none under 5 h in it
+        for c in cuts:
+            self.assertTrue(c.title and c.glyph)
+            self.assertLess(c.count, len(cat.games))
+        coop = C.lookup(self.groups, 'smart:coop')
+        self.assertNotIn('smart:coop', [c.key for c in C.cuts(coop, self.facts, True, NOW)])
+        racing = C.lookup(self.groups, 'genre:Racing')         # one game: every cut is whole
+        self.assertEqual(C.cuts(racing, self.facts, True, NOW), [])
+
+    def test_related_overlap_other_kinds_first(self):
+        rpg = C.lookup(self.groups, 'genre:RPG')
+        rel = [c.key for c in C.related(rpg, self.groups, n=10)]
+        self.assertNotIn('genre:RPG', rel)
+        self.assertFalse([k for k in rel if k.startswith(C.SRC)])        # stores left out
+        self.assertEqual(rel[0], 'user:ab12')            # rpg1, rpg2: 2 of 3 games
+        self.assertNotIn('genre:Racing', rel)             # nothing in common
+        self.assertEqual(len(C.related(rpg, self.groups)), 4)
+        # Co-op (rpg1, race): the collection holds both; Racing and Short
+        # games both share one game of two, and the other kind goes first.
+        coop = C.lookup(self.groups, 'smart:coop')
+        rel = [c.key for c in C.related(coop, self.groups, n=10)]
+        self.assertEqual(rel[0], 'col:Couch: co-op')
+        self.assertLess(rel.index('genre:Racing'), rel.index('smart:short'))
+
+    def test_sort_games_matches_library_sort(self):
+        gs = self.games
+        self.assertEqual([g['slug'] for g in C.sort_games(gs, 'name')],
+                         ['pack', 'race', 'rpg1', 'rpg2', 'rpg3', 'wine'])
+        self.assertEqual([g['slug'] for g in C.sort_games(gs, 'played')][:3],
+                         ['race', 'rpg1', 'wine'])
+        self.assertEqual([g['slug'] for g in C.sort_games(gs, 'most')][:2], ['rpg1', 'rpg2'])
+        self.assertEqual(C.sort_games(gs, 'size')[0]['slug'], 'rpg2')
+        self.assertEqual(C.sort_games(gs, 'added')[0]['slug'], 'rpg3')
+        self.assertEqual([g['slug'] for g in C.sort_games(gs, 'bogus')],
+                         [g['slug'] for g in C.sort_games(gs, 'name')])
+        self.assertEqual([g['slug'] for g in gs][0], 'rpg1')            # a copy: input kept
+
+
+if __name__ == '__main__':
+    unittest.main()

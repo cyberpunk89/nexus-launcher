@@ -5,7 +5,7 @@ import sys
 import uuid
 from datetime import datetime
 
-from nexus import net, paths as NX, smart
+from nexus import categories, net, paths as NX, smart
 from nexus.icons import COLLECTION_ICONS
 
 from .moments import (clean_kinds_off, is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key,
@@ -16,6 +16,7 @@ from .theme import ACCENTS, normalize_appearance, TILE_W
 
 MAX_PINNED = 3                    # collections pinned to the top bar (w-52)
 MAX_KINDS_OFF = 20                # For you now kinds switched off (w-88)
+MAX_CATEGORY_PREFS = 200          # category pages remembered (w-98)
 
 
 def clean_collection_name(name) -> str:
@@ -36,6 +37,15 @@ def clean_collection_look(look) -> dict:
     if look.get('pinned') is True:
         out['pinned'] = True
     return out
+
+
+def _per_category(raw, allowed) -> dict:
+    """category_sort / category_view: {category key: one of `allowed`};
+    anything else is dropped; the newest MAX_CATEGORY_PREFS are kept."""
+    if not isinstance(raw, dict):
+        return {}
+    good = [(k, v) for k, v in raw.items() if categories.is_key(k) and v in allowed]
+    return dict(good[-MAX_CATEGORY_PREFS:])
 
 
 def _snoozes(raw, now: datetime) -> dict:
@@ -203,6 +213,10 @@ class LibraryPrefs:
             k for k in sh if isinstance(k, str)
             and (k.startswith(('smart:', 'genre:')) or smart.is_user(k))))[:50] \
             if isinstance(sh, list) else []
+        # Each category page's sort and view (w-98): {key: 'played'|..., key:
+        # 'rows'|'grid'|'list'}. New keys, so an older Nexus just keeps them.
+        self.category_sort = _per_category(self._data.get('category_sort'), categories.SORTS)
+        self.category_view = _per_category(self._data.get('category_view'), categories.VIEWS)
         # Shelves you built from rules (w-51, nexus/smart.py); removed ones are kept.
         self.smart_shelves = smart.clean_shelves(self._data.get('smart_shelves'))
         # The Deals page as it was left: section, filter, sort, hide owned.
@@ -255,6 +269,8 @@ class LibraryPrefs:
                     'theatre_library': self.theatre_library,
                     'theatre_hide_gamedb': self.theatre_hide_gamedb,
                     'smart_shelves': self.smart_shelves,
+                    'category_sort': _per_category(self.category_sort, categories.SORTS),
+                    'category_view': _per_category(self.category_view, categories.VIEWS),
                     'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,

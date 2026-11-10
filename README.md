@@ -33,6 +33,10 @@ once. Games you own but haven't installed are there too, with an Install button.
   progress through the story and the achievements, then tabs: Overview (description, genres,
   reviews, how long to beat, how it runs, your notes), Media (screenshots, trailers),
   Achievements and Manage (launch settings, files, logs).
+- **A page for every category:** See all, a row's title or a genre on a game's page opens
+  that category's own page: its covers, games and hours at the top, chips for the smart
+  shelves inside it (Unfinished RPGs, Co-op RPGs), a sort, rows, grid or list, Pick for me
+  from just those games, and related categories under it.
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
   quietly in the background. Pick another image for any game, Steam games included.
 - **Steam friends (optional):** with your own Steam Web API key, a game's page shows which
