@@ -426,6 +426,12 @@ class LibraryPrefs:
             self.quiet_until = None
             self.save()
 
+    def clear_snoozes(self):
+        """Show again: every Not now'd moment comes back (w-107)."""
+        if self.snoozes:
+            self.snoozes = {}
+            self.save()
+
     def toggle(self, which: str, slug: str) -> bool:
         s = self.favorites if which == 'favorite' else self.hidden
         s.symmetric_difference_update({slug})

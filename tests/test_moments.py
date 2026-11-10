@@ -384,6 +384,25 @@ class Dismiss(unittest.TestCase):
         self.assertEqual(len(rank(inputs, quiet_until=NOW - timedelta(minutes=1))), 2)
         self.assertEqual(len(rank(inputs, quiet_until='not a date')), 2)
 
+    def test_quiet_moment_only_while_quiet(self):
+        """w-107: while quiet, one moment says so and offers Show now."""
+        q = M.quiet_until_next(NOW)
+        m = M.quiet_moment(q, NOW)
+        self.assertEqual((m['kind'], m['action']['id'], m['action']['label']),
+                         ('quiet', 'show_now', "Show now"))
+        self.assertIn("04:00", m['why'])
+        self.assertIsNone(m['snooze_key'])
+        self.assertIsNone(M.quiet_moment(None, NOW))
+        self.assertIsNone(M.quiet_moment(NOW - timedelta(minutes=1), NOW))
+        self.assertIsNone(M.quiet_moment('not a date', NOW))
+
+    def test_snoozed_count_ignores_ended_ones(self):
+        today = NOW.date()
+        snoozes = {'friends:a': (today + timedelta(days=3)).isoformat(),
+                   'store:b': (today - timedelta(days=1)).isoformat(), 'bad': 7}
+        self.assertEqual(M.snoozed_count(snoozes, NOW), 1)
+        self.assertEqual(M.snoozed_count(None, NOW), 0)
+
 
 class Adapter(unittest.TestCase):
     """moments_inputs(hub): the only place that reads the window."""

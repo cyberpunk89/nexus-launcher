@@ -75,7 +75,7 @@ class Radii(unittest.TestCase):
         the round badge sits as far from the left as from the top."""
         from nexus.gui.foryou import ForYouPill
         m = {'title': 'Frostpunk 2', 'why': '', 'action': {'label': 'Launch'},
-             'badge': ('check', 'accent')}
+             'badge': ('check', 'accent'), 'snooze_key': 'idle:frostpunk-2'}
         for scale in (1.0, 1.25):
             nx.apply_appearance({'scale': scale, 'corners': 'round'})
             QApplication.instance().setStyleSheet(nx.build_stylesheet())
@@ -945,6 +945,8 @@ class DashboardModel(unittest.TestCase):
         again.clear_quiet()
         self.assertIsNone(nx.LibraryPrefs().quiet_until)
         self.assertEqual(json.loads(path.read_text())['dashboard']['layouts'][0]['n'], 1)
+        again.clear_snoozes()                                       # w-107: Show again
+        self.assertEqual(nx.LibraryPrefs().snoozes, {})
 
     def test_moments_state_from_a_v1_file_keeps_the_backup(self):
         import json

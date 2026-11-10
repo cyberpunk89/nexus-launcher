@@ -25,7 +25,8 @@ from nexus.features import has
 
 from .common import alive
 from .dashboard import DashWidget, GlyphBadge
-from .moments import home_moments, moments_inputs, stage_key, TOTAL_MAX
+from .moments import (home_moments, moments_inputs, quiet_moment, snoozed_count, stage_key,
+    TOTAL_MAX)
 from .theme import G, P, pill, scaled, SP, STAGE_BTN_H
 
 TONE_GRAD = {'accent': 'dusk', 'success': 'tide', 'warning': 'dawn', 'danger': 'ember'}
@@ -89,6 +90,11 @@ def badge(m: dict, size: int) -> GlyphBadge:
     return GlyphBadge(G.get(glyph, G['sparkles']), TONE_GRAD.get(tone, 'dusk'), size)
 
 
+def can_snooze(m: dict) -> bool:
+    """Not now (✕, the menu) is for a real moment, not the quiet notice (w-107)."""
+    return bool(m.get('snooze_key'))
+
+
 def _set_badge(b: GlyphBadge, m: dict):
     glyph, tone = m['badge']
     b.glyph, b.grad = G.get(glyph, G['sparkles']), TONE_GRAD.get(tone, 'dusk')
@@ -118,11 +124,15 @@ class ForYouModel(QObject):
         self._sig = None
 
     def compute(self) -> list[dict]:
+        """The moments, then (while quiet) the notice with Show now (w-107)."""
         prefs = self.hub.prefs
-        return home_moments(moments_inputs(self.hub), datetime.now(),
-                            snoozes=prefs.snoozes, quiet_until=prefs.quiet_until,
-                            kinds_off=prefs.kinds_off, stage_key=stage_key(self.hub),
-                            linux=has('proton'))
+        now = datetime.now()
+        ms = home_moments(moments_inputs(self.hub), now,
+                          snoozes=prefs.snoozes, quiet_until=prefs.quiet_until,
+                          kinds_off=prefs.kinds_off, stage_key=stage_key(self.hub),
+                          linux=has('proton'))
+        q = quiet_moment(prefs.quiet_until, now)
+        return ms + [q] if q is not None else ms
 
     def refresh(self) -> bool:
         """Ask again; `changed` (and True) only when something shown moved."""
@@ -135,9 +145,27 @@ class ForYouModel(QObject):
         return True
 
     def act(self, m: dict):
-        self.hub.moment_action(m)
+        if m['action']['id'] == 'show_now':
+            self.show_now()
+        else:
+            self.hub.moment_action(m)
+
+    def show_now(self):
+        """Quiet ends now: everything comes back (w-107; GitHub #1)."""
+        self.hub.prefs.clear_quiet()
+        self.refresh()
+
+    def snoozed(self) -> int:
+        return snoozed_count(self.hub.prefs.snoozes, datetime.now())
+
+    def show_snoozed(self):
+        """Every Not now'd moment comes back (w-107)."""
+        self.hub.prefs.clear_snoozes()
+        self.refresh()
 
     def not_now(self, m: dict):
+        if not can_snooze(m):
+            return
         kind, key = split_snooze(m['snooze_key'])
         self.hub.prefs.snooze(kind, key, datetime.now())
         self.refresh()
@@ -210,6 +238,9 @@ class MomentRow(QFrame):
         self.setToolTip(f"{m['title']}\n{m['why']}")
         self.act.setText(amp(m['action']['label']))
         _set_badge(self.badge, m)
+        if not can_snooze(m) and self.x.hasFocus():
+            self.act.setFocus(Qt.FocusReason.OtherFocusReason)   # before ✕ hides (w-60)
+        self.x.setVisible(can_snooze(m))
 
     def contextMenuEvent(self, ev):
         self.menu.emit(self.m, ev.globalPos())
@@ -314,7 +345,8 @@ class ForYouPill(QFrame):
             return
         m, many = moments[0], len(moments) > 1
         # Focus moves before the part that has it hides (w-60).
-        if many and self.x.hasFocus():
+        x = not many and can_snooze(m)
+        if not x and self.x.hasFocus():
             self.act.setFocus(Qt.FocusReason.OtherFocusReason)
         if not many and self.body.hasFocus():
             self.act.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -325,7 +357,7 @@ class ForYouPill(QFrame):
         self.act.setText(amp(m['action']['label']))
         _set_badge(self.badge, m)
         self.chevron.setVisible(many)
-        self.x.setVisible(not many)
+        self.x.setVisible(x)
         self.body.setFocusPolicy(Qt.FocusPolicy.StrongFocus if many else Qt.FocusPolicy.NoFocus)
         self.updateGeometry()
 
@@ -894,7 +926,8 @@ class ForYouWidget(DashWidget):
         cols = self.dash._cols if self.dash is not None else 3
         sig = (mode, editing, self.kinds_open, strip_count(self.width()) if mode == 'strip'
                else 0, self.expanded, cols >= 3, moments_sig(ms) if mode == 'strip' else (),
-               tuple(self.hub.prefs.kinds_off) if self.kinds_open else ())
+               (tuple(self.hub.prefs.kinds_off), self.model.snoozed()) if self.kinds_open
+               and self.model is not None else ())
         if sig == self._drawn:
             for m in ms:
                 parts = self._labels.get(m['id'])
@@ -949,7 +982,7 @@ class ForYouWidget(DashWidget):
                 sep.setObjectName("FynSep")
                 sep.setFixedSize(1, 28)
                 h.addWidget(sep)
-            item = StripItem(m, x=len(ms) == 1)
+            item = StripItem(m, x=len(ms) == 1 and can_snooze(m))
             item.acted.connect(self._act)
             item.dismissed.connect(self._not_now)
             item.menu.connect(self._menu)
@@ -1032,7 +1065,24 @@ class ForYouWidget(DashWidget):
             b.toggled.connect(lambda on, k=key: self.model.set_kind(k, on))
             flow.addWidget(b)
             self._chips[key] = b
+        n = self.model.snoozed() if self.model is not None else 0
+        if n:                       # w-107: Not now can be undone
+            again = QPushButton(f"{n} snoozed · Show again")
+            again.setObjectName("Ghost")
+            again.setToolTip("Bring back the moments you chose Not now for.")
+            set_glyph_icon(again, G['eye'], 14)
+            again.clicked.connect(self._show_snoozed)
+            flow.addWidget(again)
+            self._chips['snoozed'] = again
         return host
+
+    def _show_snoozed(self):
+        b = self._chips.get('snoozed')
+        if b is not None and b.hasFocus():
+            first = next((c for k, c in self._chips.items() if k != 'snoozed'), None)
+            _focus(first)                        # before the button goes (w-60)
+        self.model.show_snoozed()
+        self._draw()
 
 
 class StripItem(QWidget):

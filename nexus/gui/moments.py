@@ -123,6 +123,28 @@ def clean_kinds_off(raw) -> list[str]:
     return list(dict.fromkeys(k for k in raw if isinstance(k, str) and k in KINDS_OFF_OK))
 
 
+def snoozed_count(snoozes, now: datetime) -> int:
+    """How many Not now snoozes are still running (w-107: "N snoozed")."""
+    if not isinstance(snoozes, dict):
+        return 0
+    return sum(1 for k in snoozes if isinstance(k, str) and is_snoozed(snoozes, k, now))
+
+
+def quiet_moment(quiet_until, now: datetime) -> dict | None:
+    """While Quiet until tomorrow runs, the one moment that says so, with
+    Show now (w-107; GitHub #1). It has no snooze key: it can't be Not now'd."""
+    if not _quiet(quiet_until, now):
+        return None
+    if isinstance(quiet_until, str):
+        quiet_until = datetime.fromisoformat(quiet_until)
+    return {'id': 'quiet:', 'kind': 'quiet', 'sub': None, 'rank': len(KINDS) + 1, 'key': '',
+            'title': "For you now is quiet",
+            'why': f"Until {_local(quiet_until):%H:%M}. Problems still show.",
+            'action': {'id': 'show_now', 'label': "Show now", 'arg': None},
+            'badge': ('moon', 'accent'), 'urgency': 0, 'count': 1,
+            'when': now.timestamp(), 'snooze_key': None}
+
+
 def _quiet(quiet_until, now: datetime) -> bool:
     if isinstance(quiet_until, str):
         try:

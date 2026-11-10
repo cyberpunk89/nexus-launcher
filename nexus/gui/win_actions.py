@@ -111,11 +111,14 @@ class ActionsMixin:
         from PyQt6.QtGui import QCursor
         from PyQt6.QtWidgets import QMenu
         fy = self.dashboard.foryou
-        items = [("Not now", G['close'], lambda: fy._not_now(m))]
+        from .foryou import can_snooze
+        items = [("Not now", G['close'], lambda: fy._not_now(m))] if can_snooze(m) else []
         name = fy.kind_name(m)
         if name:
             items.append((f"Don't show {name}", G['eye_off'],
                           lambda: fy.dont_show(m['kind'])))
+        if not items:
+            return                               # the quiet notice: its button is all
         if self.input.mode == 'pad':
             fy.close_list()
             self.sheet.choose(m['title'], items, sub=m.get('why') or '')

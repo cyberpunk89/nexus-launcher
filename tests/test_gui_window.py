@@ -5112,6 +5112,45 @@ class ForYou(unittest.TestCase):
         QApplication.processEvents()
         return nxt
 
+    def test_quiet_shows_a_notice_and_show_now_ends_it(self):
+        """w-107 (GitHub #1): Quiet until tomorrow leaves a notice on the
+        pill with Show now (no ✕, no Not now); Show now brings all back."""
+        w, fy = self._fyn()
+        before = [m['id'] for m in fy.moments]
+        fy._quiet()
+        self._flush()
+        self.assertIsNotNone(w.prefs.quiet_until)
+        self.assertEqual([m['kind'] for m in fy.moments if m['kind'] != 'broken'], ['quiet'])
+        self.assertFalse(fy.pill.isHidden())
+        top = fy.pill.moments[0]
+        if top['kind'] == 'quiet':
+            self.assertTrue(fy.pill.x.isHidden())
+            self.assertEqual(fy.pill.act.text(), "Show now")
+        fy.model.not_now(next(m for m in fy.moments if m['kind'] == 'quiet'))
+        self.assertIsNotNone(w.prefs.quiet_until)                     # can't be snoozed
+        fy._act(next(m for m in fy.moments if m['kind'] == 'quiet'))
+        self._flush()
+        self.assertIsNone(w.prefs.quiet_until)
+        self.assertEqual([m['id'] for m in fy.moments], before)
+
+    def test_snoozed_moments_come_back_from_kinds(self):
+        """w-107: "N snoozed · Show again" in Customise → Kinds… undoes Not now."""
+        w, fy = self._fyn()
+        before = [m['id'] for m in fy.moments]
+        fy._not_now(fy.moments[0])
+        self._flush()
+        self.assertEqual(fy.model.snoozed(), 1)
+        self.assertNotIn(before[0], [m['id'] for m in fy.moments])
+        fy.kinds_open = True
+        fy._draw()
+        again = fy._chips['snoozed']
+        self.assertEqual(again.text(), "1 snoozed · Show again")
+        again.click()
+        self._flush()
+        self.assertEqual(w.prefs.snoozes, {})
+        self.assertEqual([m['id'] for m in fy.moments], before)
+        self.assertNotIn('snoozed', fy._chips)
+
     def test_pill_ink_follows_the_stage_background(self):
         """w-90: off the art (gradient, Plain) the pill and list are on the
         card surface, so their glyphs go muted; back on the art, on_art."""
@@ -5334,7 +5373,8 @@ class ForYou(unittest.TestCase):
             fy.model.not_now(first)
             self.assertNotIn(first['id'], [m['id'] for m in fy.moments])
             fy.list.quiet.emit()
-            self.assertEqual([m['kind'] for m in fy.moments], ['broken'] * 2)  # problems show
+            self.assertEqual([m['kind'] for m in fy.moments],
+                             ['broken'] * 2 + ['quiet'])          # problems show, then w-107's notice
             w2 = nx.MainWindow()
             self.addCleanup(w2.deleteLater)
             self.assertIn(first['snooze_key'], w2.prefs.snoozes)
@@ -5342,7 +5382,8 @@ class ForYou(unittest.TestCase):
             w2.prefs.dashboard = nx.dash_default()
             w2._on_library({'games': fake_games(), 'disks': []}, '')
             w2.dashboard.refresh()
-            self.assertEqual([m['kind'] for m in w2.dashboard.foryou.moments], ['broken'] * 2)
+            self.assertEqual([m['kind'] for m in w2.dashboard.foryou.moments],
+                             ['broken'] * 2 + ['quiet'])
             w2.prefs.clear_quiet()
             w2.dashboard.refresh(['foryou'])
             ids = [m['id'] for m in w2.dashboard.foryou.moments]
