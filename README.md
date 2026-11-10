@@ -79,6 +79,9 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
 - **Tabs:** Home with a *Your week* card, Library with sort and filter, Downloads, and
   Discover with news and deals. Theatre's own settings are one button away, and Nexus can
   start in Theatre on a TV or when a controller is plugged in.
+- **Ribbon layout:** switch Theatre from tabs to a Ribbon in its settings: a line of
+  categories with the games in a column under it, and a soft ribbon behind that moves when
+  you move (it stays still with reduced motion).
 - **Game page:** Play, favourite, Options, and cards for achievements, compatibility, news
   and trailers, all reachable with the D-pad.
 - **On-screen keyboard** for search, a **screensaver** that shows your games' art or trailers

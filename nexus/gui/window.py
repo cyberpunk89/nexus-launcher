@@ -208,6 +208,16 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre_settings.all_settings.connect(self._theatre_all_settings)
         self.theatre_settings.closed.connect(self._show_session)
         self.theatre.settings_sheet.connect(self.open_theatre_settings)
+        # The Ribbon layout (w-108): its Settings items, its moves.
+        # A look change waits in _ap_pending for a moment (one restyle): the
+        # Ribbon must step on from that value, not the saved one.
+        self.theatre.settings_values = lambda: (
+            self.prefs.controls,
+            {**self.prefs.appearance, **(getattr(self, '_ap_pending', None) or {})})
+        self.theatre.ribbon_setting.connect(self._theatre_setting)
+        self.theatre.settings_row.connect(self.open_theatre_settings)
+        self.theatre.all_settings.connect(self._theatre_all_settings)
+        self.theatre.ribbon_moved.connect(self._ribbon_moved)
         for sh in (self.sheet, self.theatre_sheet, self.theatre_settings):
             sh.closed.connect(self._update_hints)
         # Theatre's system menu (Guide / Start / F10), on the left.
@@ -988,6 +998,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             if self.page_built(self.SETTINGS):
                 self.settings.appearance.load(ap)
             self.sounds.play('move')
+            self.theatre.refresh_ribbon()
             return
         self._apply_controls({key: value})
         if self.page_built(self.SETTINGS):
@@ -998,6 +1009,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.sounds.sample()                # at the new level; turning them on says so
         else:
             self.sounds.play('move')            # a step (A's select already sounded)
+        self.theatre.refresh_ribbon()           # the Ribbon's Settings show the new value
+
+    def _ribbon_moved(self, d: int):
+        """A move in Theatre's Ribbon: the move sound, the background's
+        ribbon glides a step, the hints follow the item."""
+        self.sounds.play('move')
+        self.background.ribbon_step(d)
+        self._update_hints()
 
     # ---- Theatre's sounds and tint (w-65) ----
     def _sound_problem(self, text: str):

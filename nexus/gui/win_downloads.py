@@ -149,6 +149,7 @@ class DownloadsMixin:
             self._sync_theatre_tabs()                 # Downloads shows while there's something
         if self._theatre:
             self.theatre.downloads_page.set_downloads(rows)
+            self.theatre.refresh_ribbon()             # the Ribbon's Downloads line (w-108)
 
     def _theatre_download(self, action: str, r: dict):
         """A Downloads row's action (A) or options (X)."""

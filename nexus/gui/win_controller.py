@@ -61,9 +61,17 @@ class ControllerMixin:
             self._on_activity()
         self.theatre.double_plays = self.prefs.controls['double_click'] == 'play'
         self.sounds.configure(self.prefs.controls['sounds'], self.prefs.controls['volume'])
+        self.theatre.set_layout(self.prefs.controls['theatre_layout'])      # w-108
+        self._sync_ribbon()
+        self.theatre.refresh_ribbon()               # A plays, the Settings items
         self.sync_tray()
         if hasattr(self, 'hints'):
             self._update_hints()
+
+    def _sync_ribbon(self):
+        """The background's ribbon: in Theatre with the Ribbon layout only."""
+        on = getattr(self, '_theatre', False) and self.theatre.layout_mode == 'ribbon'
+        self.background.set_ribbon(self.prefs.controls['ribbon_motion'] if on else 'off')
 
     def _open_on_play(self, game):
         self._tile_clicked(game, Qt.KeyboardModifier.NoModifier)
@@ -424,13 +432,15 @@ class ControllerMixin:
             self._tray_quit = True                      # quit for real, not to the tray
             self.close()
 
-    def open_theatre_settings(self):
-        """Theatre's settings sheet (the gear, the quick menu's Settings),
-        with the values as they are now."""
+    def open_theatre_settings(self, focus_key: str | None = None):
+        """Theatre's settings sheet (the gear, the quick menu's Settings, X
+        on a setting in the Ribbon: on that row), with the values as they
+        are now."""
         if not self._theatre:
             return
         self.theatre_sheet.close_sheet(restore=False)
-        self.theatre_settings.open(self.prefs.controls, self.prefs.appearance)
+        self.theatre_settings.open(self.prefs.controls, self.prefs.appearance,
+                                   focus_key or None)
         self._update_hints()
 
     def _power_now(self, action: str):
@@ -518,6 +528,9 @@ class ControllerMixin:
             self._on_activity()                   # the screensaver clock starts
             self._feed_theatre_week()
             self.background.set_wash(True)        # w-65: the tint follows focus, low wash
+            self._sync_ribbon()
+            if now_playing(self._games) is not None:
+                self.theatre.ribbon_home()        # the Ribbon: on Now playing (w-108)
             self.theatre.refresh_tint()
             self.sounds.preload()
         else:
@@ -536,6 +549,7 @@ class ControllerMixin:
             self.shell.setCurrentWidget(self.desk)
             self.sounds.release()                 # Theatre only: let go of the device
             self.background.set_wash(False)
+            self._sync_ribbon()
             art = self.dashboard.stage.art
             self.background.set_tint(self._game_tint(art.game if art.on_art() else None))
             self.hints.setStyleSheet("")
@@ -581,6 +595,38 @@ class ControllerMixin:
         game = f.game if isinstance(f, GameTile) else {}
         return "Play" if self.prefs.controls['pad_a'] == 'play' and game \
             and can_quick_play(game) else "Open"
+
+    def _ribbon_hints(self) -> list:
+        """The hint bar for the Ribbon's focused item (w-108)."""
+        th = self.theatre
+        it = th.ribbon.current()
+        cat = th.ribbon.state.cat
+        hints = []
+        if it is not None:
+            g = th._ribbon_game(it)
+            if it.kind == 'game':
+                hints = [('a', 'Resume' if it.primary == 'resume' else
+                          'Play' if th.a_plays and g and can_quick_play(g) else 'Open'),
+                         ('x', 'Options')]
+            elif it.kind == 'setting':
+                hints = ([('a', 'Change')] if it.primary == 'step' else []) + [('x', 'More')]
+            elif it.key.startswith('friend:'):
+                hints = [('a', 'Open'), ('x', 'Options')] if g is not None else \
+                    [('a', 'Options')]
+            elif it.primary == 'sheet':
+                hints = [('a', 'Sort & filter')]
+            elif it.primary == 'all_settings':
+                hints = [('a', 'All settings')]
+            elif it.primary != 'none':
+                hints = [('a', 'Open')]
+        if th.moment_banner.isVisible():
+            hints.append(('View', f"Show {th.moment_banner.name}" if th.moment_banner.name
+                          else "Show it"))
+        elif cat == 'library':
+            hints.append(('View', 'Sort & filter'))
+        if cat != 'home':
+            hints.append(('b', 'Home'))
+        return hints + [('y', 'Search'), ('LB RB', 'Category'), ('Menu', 'Quick menu')]
 
     def _sync_hints(self):
         """Button hints are for a controller: always in Theatre, and on the
@@ -646,6 +692,9 @@ class ControllerMixin:
                     hints.append(('Menu', 'Quick menu'))
                 self.hints.show_hints(hints)
                 return
+            if f is th.ribbon:                          # w-108
+                self.hints.show_hints(self._ribbon_hints())
+                return
             if f is th.week_card:
                 hints = ([('a', f"Open {f.game_name}")] if f.game_name else []) + [('b', 'Home')]
             elif f is not None and th.hero.isAncestorOf(f):
@@ -679,7 +728,10 @@ class ControllerMixin:
                                   else "Show it"))
             elif th.tabs.current() == 'library':
                 hints.insert(-1, ('View', 'Sort & filter'))
-            hints += [('y', 'Search'), ('LB RB', 'Tabs'), ('Menu', 'Quick menu')]
+            if th.layout_mode == 'ribbon' and hints and hints[-1] == ('b', 'Home'):
+                hints[-1] = ('b', 'Back')               # a page opened from the Ribbon
+            hints += [('y', 'Search'), ('LB RB', 'Category' if th.layout_mode == 'ribbon'
+                                        else 'Tabs'), ('Menu', 'Quick menu')]
             self.hints.show_hints(hints)
             return
         if isinstance(f, GameTile) or isinstance(f, ListView):

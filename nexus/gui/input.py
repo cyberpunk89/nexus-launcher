@@ -18,7 +18,10 @@ from .theme import GLYPHS, GRAD, pill, R, SP, TILE_LIFT
 def _native_arrows(w: QWidget, key) -> bool:
     """Arrow keys this widget should keep for itself instead of moving focus."""
     horiz = key in (Qt.Key.Key_Left, Qt.Key.Key_Right)
-    if getattr(w, 'NATIVE_ARROWS', False):      # Theatre's settings rows: Left/Right step
+    native = getattr(w, 'NATIVE_ARROWS', False)
+    if native == 'all':                         # Theatre's Ribbon moves itself (w-108)
+        return True
+    if native:                                  # Theatre's settings rows: Left/Right step
         return horiz
     if isinstance(w, QLineEdit):
         return horiz and bool(w.text())
@@ -626,7 +629,8 @@ class FocusRing(QWidget):
     def _focus_changed(self, _old, new):
         try:
             ok = (self.keyboard and new is not None and new.window() is self.win
-                  and not isinstance(new, self.SKIP))
+                  and not isinstance(new, self.SKIP)
+                  and not getattr(new, 'OWN_FOCUS_RING', False))   # the Ribbon draws its own
         except RuntimeError:
             ok = False
         if not ok:

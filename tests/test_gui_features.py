@@ -552,7 +552,7 @@ class SettingsCategories(unittest.TestCase):
         page = self.page()
         rows = [r for cat in page.categories.values() for r in cat.rows]
         self.assertEqual(len(rows), len(set(map(id, rows))))
-        self.assertEqual(len(page.rows), 73)
+        self.assertEqual(len(page.rows), 75)        # w-108: Theatre layout, Ribbon background
         self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
         for key, row in page.rows.items():
             cat, _, short = key.partition('.')

@@ -1,7 +1,7 @@
 """Theatre's own settings and the Your week card (w-63).
 
 `TheatreSettings` is a couch-sized sheet on the right, opened from the top
-bar's gear and the quick menu's Settings row: nine rows in four groups, each
+bar's gear and the quick menu's Settings row: eleven rows in four groups, each
 a `CouchRow` the D-pad walks (Up/Down move, Left/Right step and stop at the
 ends, A steps and wraps). Every change goes out through `changed` at once;
 the window saves it (prefs.controls, or the appearance) and keeps desktop
@@ -27,6 +27,9 @@ ROWS = (
     ("Controller", 'pad_a', "A on a game",
      (('details', "Opens its page"), ('play', "Plays it"))),
     ("Controller", 'theatre_on_pad', "Switch to Theatre when a controller connects", SWITCH),
+    ("Theatre", 'theatre_layout', "Layout", (('tabs', "Tabs"), ('ribbon', "Ribbon"))),
+    ("Theatre", 'ribbon_motion', "Ribbon background",
+     (('input', "Moves when you move"), ('still', "Still"))),
     ("Theatre", 'theatre_start', "Start Nexus in Theatre",
      tuple(zip(THEATRE_STARTS, ("Never", "On a TV", "Always")))),
     ("Theatre", 'attract', "Screensaver",
@@ -40,6 +43,8 @@ ROWS = (
 HELP = {
     'pad_a': "A busy, running or not installed game always opens its page.",
     'theatre_on_pad': "Only when you plug a controller in or turn it on.",
+    'theatre_layout': "Tabs: rows of big tiles. Ribbon: categories on one line, games under them.",
+    'ribbon_motion': "Always still with reduced motion, Glow off or High contrast.",
     'theatre_start': "On a TV: when the screen Nexus opens on is 32\" or bigger.",
     'attract': "Shows off your games when Theatre sits untouched.",
     'week_home': "Your play time this week, under Jump back in.",
@@ -214,10 +219,13 @@ class TheatreSettings(ActionSheet):
         self.foot_rows.addWidget(self.btn_all)
         self.foot.show()
 
-    def open(self, controls: dict, appearance: dict):
-        """Show the sheet with these values; focus the row used last."""
+    def open(self, controls: dict, appearance: dict, focus_key: str | None = None):
+        """Show the sheet with these values; focus the row `focus_key` (X on
+        a setting in the Ribbon), else the row used last."""
         self._remember_focus()
         self.sync(controls, appearance)
+        if focus_key in self.rows_by_key:
+            self._last = focus_key
         self._cover()
         t = self.default_focus()
         if t is not None:
@@ -230,11 +238,15 @@ class TheatreSettings(ActionSheet):
         self._sync_volume()
 
     def _sync_volume(self):
-        self.rows_by_key['volume'].setEnabled(bool(self.rows_by_key['sounds'].value))
+        """Volume is greyed while sounds are off, the Ribbon's background
+        under Tabs."""
+        rows = self.rows_by_key
+        rows['volume'].setEnabled(bool(rows['sounds'].value))
+        rows['ribbon_motion'].setEnabled(rows['theatre_layout'].value == 'ribbon')
 
     def _stepped(self, key: str, value):
-        if key == 'sounds':
-            self._sync_volume()                  # greyed while sounds are off
+        if key in ('sounds', 'theatre_layout'):
+            self._sync_volume()
         self.changed.emit(key, value)
 
     def _row_focused(self, row: CouchRow):

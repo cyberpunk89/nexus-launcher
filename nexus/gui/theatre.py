@@ -677,6 +677,11 @@ class TheatreView(QWidget):
     hide_gamedb = pyqtSignal()                   # ... and X on it
     settings_sheet = pyqtSignal()                # the gear: the window opens Theatre's settings
     focus_game = pyqtSignal(object)              # the game focus rests on (dwell): the tint (w-65)
+    # The Ribbon layout (w-108):
+    ribbon_setting = pyqtSignal(str, object)     # A on a setting: its key, the new value
+    settings_row = pyqtSignal(str)               # X on a setting: the sheet, on that row
+    all_settings = pyqtSignal()                  # All settings (leaves Theatre)
+    ribbon_moved = pyqtSignal(int)               # a move: the sound, the background, the hints
 
     TILE = 230
     WIDE = 440
@@ -693,6 +698,10 @@ class TheatreView(QWidget):
         top = QHBoxLayout()
         top.addWidget(Wordmark("Nexus", 30))
         top.addSpacing(SP['6'])
+        # The Ribbon's open page (Discover, Downloads): its name by the wordmark.
+        self.crumb = label("", "TheatreClock")
+        self.crumb.hide()
+        top.addWidget(self.crumb)
         self.tabs = SegmentedControl('underline', 56)
         self.tabs.add('home', "Home")
         self.tabs.add('library', "Library")
@@ -812,6 +821,30 @@ class TheatreView(QWidget):
         self.pages.addWidget(self.downloads_page)
         self._pages = {'home': self.home, 'library': self.lib_page,
                        'discover': self.discover_page, 'downloads': self.downloads_page}
+        # The Ribbon layout (w-108): one painted page instead of the tabs.
+        # Discover and Downloads open their tab's page over it (a sub-page).
+        self.layout_mode = 'tabs'
+        self.ribbon = RibbonView(THEATRE_SCALE)
+        self.ribbon.art_for = self._ribbon_art
+        self.ribbon.help = HELP
+        self.ribbon.activated.connect(self._ribbon_activate)
+        self.ribbon.options.connect(self._ribbon_options)
+        self.ribbon.moved.connect(self._ribbon_moved)
+        self.ribbon.category_changed.connect(self._ribbon_category)
+        self.pages.addWidget(self.ribbon)
+        self._ribbon_sub: str | None = None      # the tab page open over the Ribbon
+        self._mirroring = False                  # the tabs follow the Ribbon (no page switch)
+        self._ribbon_timer = QTimer(self)        # refreshes coalesced into one
+        self._ribbon_timer.setSingleShot(True)
+        self._ribbon_timer.setInterval(0)
+        self._ribbon_timer.timeout.connect(self._ribbon_build)
+        self._panels: dict = {}                  # the Ribbon's art panel, faded (paintEvent)
+        self._panel_asked = None
+        self._panel_bad: set = set()             # panel art keys that didn't decode
+        self.settings_values = lambda: ({}, {})  # the window: (controls, appearance)
+        self._by_slug: dict[str, dict] = {}
+        self._friend_entries: list[dict] = []
+        self._week_item: dict | None = None
         self.reader = TheatreReader(self)
         self.reader.options.connect(self.reader_options)
         self.reader.show_game.connect(self._reader_show_game)
@@ -857,6 +890,7 @@ class TheatreView(QWidget):
                                       (g.get('display_name') or '').lower()))
         self.games = games
         self.everything = everything
+        self._by_slug = {g['slug']: g for g in everything}
         self.hero.set_games(featured_games(games))
         self.hero.setVisible(bool(games))
         self._sync_art()
@@ -909,16 +943,22 @@ class TheatreView(QWidget):
         """`week`: history.periods()['week'] (None: not known). Hidden with no
         play this week or with the setting off; never a "0 h"."""
         show = bool(on and week and (week.get('minutes') or 0) > 0)
+        self._week_item = None
         if show:
             self.week_card.set_week(week, streak, today)
             top = (week.get('games') or [{}])[0]
             self._week_slug = top.get('slug')
             self._sync_week_game()
+            most = top.get('name') or top.get('slug')
+            self._week_item = {'slug': self._week_slug, 'sub': "  ·  ".join(
+                p for p in (self.week_card.total.text(), self.week_card.days.text(),
+                            f"Most played: {most}" if most else '') if p)}
         elif self.week_card.hasFocus():              # focus first, then hide (w-60)
             nxt = self.default_focus()
             if nxt is not None and nxt is not self.week_card:
                 focus_and_reveal(nxt)
         self.week_row.setVisible(show)
+        self.refresh_ribbon()
 
     def _week_game(self) -> dict | None:
         slug = self._week_slug
@@ -940,6 +980,8 @@ class TheatreView(QWidget):
     def set_friends(self, entries: list[dict]):
         """friends.playing_now entries: a card per game (the window feeds
         it). Absent when nobody plays; focus leaves the row before it hides."""
+        self._friend_entries = list(entries)
+        self.refresh_ribbon()
         f = QApplication.focusWidget()
         inside = f is not None and self.friends_row.isAncestorOf(f)
         sig = tuple((e['appid'], e['slug'], e['title'],
@@ -1065,15 +1107,8 @@ class TheatreView(QWidget):
         refresh keeps focus. By collection: a block per collection (a game in
         two shows in both), the rest last."""
         games = self._lib_games()
-        sort, show = self.lib_state['sort'], self._show()
-        name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
-        if sort == 'collection':
-            groups = [(n, [g for g in games if n in (g.get('collections') or ())])
-                      for n in COLLECTION_NAMES]
-            groups.append(("No collection", [g for g in games if not g.get('collections')]))
-            groups = [(t, sorted(gs, key=name)) for t, gs in groups if gs]
-        else:
-            groups = [(None, games)]
+        sort = self.lib_state['sort']
+        groups = self._collection_groups(games) if sort == 'collection' else [(None, games)]
         spare: dict[str, list[GameTile]] = {}
         flows = [self.lib_flow] + [w.flow for w in self._lib_groups]
         for flow in flows:
@@ -1115,11 +1150,27 @@ class TheatreView(QWidget):
             for w in tiles:
                 w.hide()
                 w.deleteLater()
-        sort_t = dict(self.SORTS)[sort]
+        sort_t, show_t = self._library_labels()
         n = len(games)
-        show_t = "Play together" if show.startswith(smart.FRIENDS_KEY) else dict(self.SHOWS)[show]
         self.lib_chip.setText(f"{sort_t}  ·  {show_t}  ·  "
                               f"{n} game{'s' if n != 1 else ''}")
+        self.refresh_ribbon()
+
+    @staticmethod
+    def _collection_groups(games: list[dict]) -> list[tuple[str, list[dict]]]:
+        """By collection: a block per collection (a game in two is in both),
+        the rest under "No collection", each A to Z; empty ones left out."""
+        name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
+        groups = [(n, [g for g in games if n in (g.get('collections') or ())])
+                  for n in COLLECTION_NAMES]
+        groups.append(("No collection", [g for g in games if not g.get('collections')]))
+        return [(t, sorted(gs, key=name)) for t, gs in groups if gs]
+
+    def _library_labels(self) -> tuple[str, str]:
+        """The Library's sort and Show as words ("A to Z", "Installed")."""
+        show = self._show()
+        return dict(self.SORTS)[self.lib_state['sort']], \
+            "Play together" if show.startswith(smart.FRIENDS_KEY) else dict(self.SHOWS)[show]
 
     def open_library_sheet(self, sheet, focus: int = 0):
         """Sort & filter in `sheet` (Theatre's ActionSheet): a pick updates
@@ -1186,7 +1237,10 @@ class TheatreView(QWidget):
                 self.tabs.set_current('downloads', emit=True)
                 QTimer.singleShot(0, lambda: self._focus_download(key))
             return True
-        if self.tabs.current() == 'library' and not self.details.isVisible() \
+        on_library = self.ribbon.state.cat == 'library' and \
+            self.pages.currentWidget() is self.ribbon if self.layout_mode == 'ribbon' \
+            else self.tabs.current() == 'library'
+        if on_library and not self.details.isVisible() \
                 and not self.search.isVisible() and not self.trailer.isVisible():
             self.library_sheet.emit()
             return True
@@ -1249,6 +1303,9 @@ class TheatreView(QWidget):
         up with the page and fading out before the shelves. It fades to
         transparent, not to the page colour, so the window's background
         (and its art-tinted wash, w-65) shows through below it."""
+        if self.layout_mode == 'ribbon':
+            self._paint_panel()
+            return
         if not self._art_on() or self.details.isVisible():
             return
         h = self.hero
@@ -1302,6 +1359,8 @@ class TheatreView(QWidget):
         """The game a focused control stands for: a tile, the game page,
         the spotlight, Your week (its most played game)."""
         while w is not None and w is not self:
+            if w is self.ribbon:
+                return self._ribbon_game(self.ribbon.current())
             if isinstance(w, GameTile):
                 return w.game
             if w is self.details:
@@ -1341,6 +1400,333 @@ class TheatreView(QWidget):
         self._tint_slug = g.get('slug') if g else None
         self.focus_game.emit(g)
 
+    # ---- the Ribbon layout (w-108) ----
+    PAGE_TITLES = {'discover': "Discover", 'downloads': "Downloads"}
+
+    def set_layout(self, mode: str):
+        """Tabs (rows of tiles) or the Ribbon. The game in focus stays in
+        focus. Focus is set on purpose, on a widget that stays visible, and
+        before anything is hidden: hiding the focused widget would throw it
+        somewhere else (w-60). A Discover or Downloads page stays open only
+        when it is on screen in Theatre."""
+        mode = 'ribbon' if mode == 'ribbon' else 'tabs'
+        if mode == self.layout_mode:
+            return
+        f = QApplication.focusWidget()
+        # Changed from Theatre's settings sheet: the sheet keeps focus, and
+        # gets the new place to give it back to.
+        holder = next((o for o in self.children() if isinstance(o, QWidget) and o.isVisible()
+                       and hasattr(o, '_back_to') and f is not None and o.isAncestorOf(f)),
+                      None)
+        if holder is not None:
+            f = holder._back_to
+        shown = self.isVisible()
+        inside = f is not None and shown and self._in_base(f)
+        g = self._game_at(f) if inside else None
+        page = self.pages.currentWidget()
+        sub = next((k for k in self.PAGE_TITLES if self._pages[k] is page), None) \
+            if shown else None
+        self.layout_mode = mode
+        if mode == 'ribbon':
+            self._ribbon_sub = sub               # first: the tabs stay on that page
+            self._ribbon_build()
+            cat = self.tabs.current() if self.tabs.current() in ('home', 'library') else 'home'
+            self.ribbon.select(sub or cat)
+            if g is not None and not sub:
+                key = f"game:{g['slug']}"
+                for c in (cat, 'library' if cat == 'home' else 'home'):
+                    if find(self.ribbon.cats, c, key) is not None:
+                        self.ribbon.select(c, key)
+                        break
+            if sub:                              # the page stays, now over the Ribbon
+                self.crumb.setText(self.PAGE_TITLES[sub])
+                self.crumb.show()
+            else:
+                self.pages.setCurrentWidget(self.ribbon)
+        else:
+            self._ribbon_timer.stop()
+            self._ribbon_sub = None
+            self.crumb.hide()
+            cat = self.ribbon.state.cat
+            key = sub or (cat if cat in self._pages and not self.tabs.item(cat).isHidden()
+                          else 'home')
+            self.tabs.set_current(key)
+            self.pages.setCurrentWidget(self._pages[key])
+        hiding = (self.tabs, self.btn_search, self.btn_surprise) if mode == 'ribbon' else ()
+        if inside:
+            target = self._layout_target(f, g, sub, hiding)
+            if holder is not None:
+                holder._back_to = target
+            elif target is not None:
+                focus_and_reveal(target)         # first, then hide what had it
+        for w in (self.tabs, self.btn_search, self.btn_surprise):
+            w.setVisible(mode == 'tabs')
+        if inside and holder is None:
+            now = QApplication.focusWidget()
+            if now is None or not now.isVisible():
+                focus_and_reveal(self.default_focus())
+        self._sync_art()
+
+    def _layout_target(self, f, g, sub, hiding):
+        """Where focus goes after a layout switch: the Ribbon, the game's
+        tile, or (a page that stays open) where it was, never a widget that
+        is hidden or about to be."""
+        if sub is None:
+            if self.layout_mode == 'ribbon':
+                return self.ribbon
+            page = self.pages.currentWidget()
+            tile = next((t for t in page.findChildren(GameTile)
+                         if g is not None and t.game.get('slug') == g['slug']
+                         and not t.isHidden()), None)
+            return tile or self.default_focus()
+        stays = f is not None and f.isVisible() \
+            and not any(w is f or w.isAncestorOf(f) for w in hiding)
+        return f if stays else self.default_focus()
+
+    def _in_base(self, w) -> bool:
+        """`w` is on the page or the top bar (not on an overlay)."""
+        return self.pages.isAncestorOf(w) or self.tabs.isAncestorOf(w) \
+            or w in (self.btn_search, self.btn_surprise, self.btn_settings)
+
+    def refresh_ribbon(self):
+        """The Ribbon's data changed: rebuild it once the event loop runs
+        (several feeds in a row make one rebuild)."""
+        if self.layout_mode == 'ribbon':
+            self._ribbon_timer.start()
+
+    def _ribbon_flush(self):
+        if self._ribbon_timer.isActive():
+            self._ribbon_build()
+
+    def _ribbon_build(self):
+        self._ribbon_timer.stop()
+        if self.layout_mode != 'ribbon':
+            return
+        self.ribbon.set_categories(ribbon_model.categories(self._ribbon_feed()))
+        self.update()                            # the art panel follows the item
+
+    def _ribbon_feed(self) -> 'ribbon_model.Feed':
+        """What Theatre holds, for ribbon_model.categories."""
+        controls, appearance = self.settings_values()
+        settings = []
+        for _grp, key, title, choices in ROWS:
+            if key == 'theatre_layout':
+                value = self.layout_mode
+            else:
+                value = (appearance if key in APPEARANCE_KEYS else controls).get(key,
+                                                                                choices[0][0])
+            enabled = not (key == 'volume' and not controls.get('sounds')) \
+                and not (key == 'ribbon_motion' and self.layout_mode != 'ribbon')
+            settings.append((key, title, choices, value, enabled))
+        sort_t, show_t = self._library_labels()
+        games = self._lib_games()
+        groups = self._collection_groups(games) \
+            if self.lib_state['sort'] == 'collection' else None
+        run = now_playing(self.everything)
+        kicker = "STARTING…"
+        if run is not None and run.get('playing'):
+            mins = session_minutes(run)
+            kicker = "NOW PLAYING" + (f"  ·  {mins} MIN" if mins is not None else "")
+        groups_n: dict[str, int] = {}
+        for row in self.downloads_page.rows.values():
+            groups_n[row.r['group']] = groups_n.get(row.r['group'], 0) + 1
+        down = "  ·  ".join(t for t in (
+            f"{groups_n['progress']} downloading" if groups_n.get('progress') else '',
+            f"{groups_n['queue']} up next" if groups_n.get('queue') else '',
+            f"{groups_n['ready']} ready to play" if groups_n.get('ready') else '') if t)
+        return ribbon_model.Feed(
+            games=self.games, library=games, lib_groups=groups,
+            lib_label=f"{show_t}  ·  {sort_t}", lib_show_label=show_t,
+            playing=run, playing_kicker=kicker, week=self._week_item,
+            friends=[{'key': f"friend:{e['appid']}", 'title': e['title'], 'sub': who_text(e),
+                      'slug': e.get('slug')} for e in self._friend_entries],
+            settings=settings, discover=not self.tabs.item('discover').isHidden(),
+            downloads=not self.tabs.item('downloads').isHidden(), downloads_sub=down,
+            fact=fact_text, a_plays=self.a_plays)
+
+    def ribbon_home(self):
+        """Home's first item (Now playing while a game runs): entering
+        Theatre with a game running, Back to Home on the session band."""
+        if self.layout_mode != 'ribbon':
+            return
+        self._ribbon_flush()
+        self._ribbon_close_page()
+        home = next((c for c in self.ribbon.cats if c.key == 'home'), None)
+        if home is not None and home.items:
+            self.ribbon.select('home', home.items[0].key)
+        self.update()
+
+    def _ribbon_art(self, slug: str) -> tuple[str | None, str | None]:
+        g = self._by_slug.get(slug)
+        return art_source(g, WIDE_KINDS) if g else (None, None)
+
+    def _ribbon_game(self, item) -> dict | None:
+        """The game an item stands for: a game, Your week's most played, a
+        game friends play that you have."""
+        if item is None:
+            return None
+        if item.key == 'card:week':
+            return self._week_game()
+        return self._by_slug.get(item.slug) if item.slug else None
+
+    def _friend_entry(self, key: str) -> dict | None:
+        return next((e for e in self._friend_entries if f"friend:{e['appid']}" == key), None)
+
+    def _ribbon_activate(self, item):
+        """A on the focused item: what its `primary` says."""
+        if item.kind == 'game':
+            g = self._by_slug.get(item.slug)
+            if g is None:
+                return
+            if item.primary == 'resume':
+                self.action.emit('resume', g)
+            else:
+                self._activated(g)
+        elif item.key == 'card:week':
+            self._week_open()
+        elif item.key.startswith('friend:'):
+            e = self._friend_entry(item.key)
+            g = self._by_slug.get(item.slug) if item.slug else None
+            if g is not None:
+                self.open_game(g)
+            elif e is not None:
+                self.deal_asked.emit(e, 'friends')
+        elif item.primary.startswith('tab:'):
+            self._ribbon_tab(item.primary[4:])
+        elif item.kind == 'setting' and item.primary == 'step':
+            self.ribbon_setting.emit(item.key[4:], ribbon_model.step_value(item))
+        elif item.primary == 'sheet':
+            self.library_sheet.emit()
+        elif item.primary == 'all_settings':
+            self.all_settings.emit()
+
+    def _ribbon_options(self, item):
+        """X: a game's options sheet; a setting's row in Theatre's settings."""
+        if item.kind == 'game':
+            g = self._by_slug.get(item.slug)
+            if g is not None:
+                self.menu.emit(g, QPoint())
+        elif item.kind == 'setting':
+            self.settings_row.emit(item.key[4:])
+        elif item.key.startswith('friend:'):
+            e = self._friend_entry(item.key)
+            if e is not None:
+                self.deal_asked.emit(e, 'friends')
+
+    def _ribbon_moved(self, d: int):
+        g = self._ribbon_game(self.ribbon.current())
+        if g is not None:
+            self._tint.push(g)                   # focus stays on the Ribbon: push it here
+        self.update()
+        self.ribbon_moved.emit(d)
+
+    def _ribbon_category(self, key: str):
+        """The tabs follow the Ribbon (Home's presence, the hints), without
+        switching a page."""
+        if self._ribbon_sub is not None:
+            return
+        self._mirror_tabs(key if key in ('home', 'library') else 'home')
+
+    def _mirror_tabs(self, key: str):
+        """Put the hidden tabs on `key` (their `changed` still goes out, for
+        Home's presence) without switching a page."""
+        if self.tabs.current() != key:
+            self._mirroring = True
+            try:
+                self.tabs.set_current(key, animate=False, emit=True)
+            finally:
+                self._mirroring = False
+
+    def _ribbon_tab(self, key: str):
+        """A tab picked while in the Ribbon (Back to Home, View on a finished
+        download, a tab that went away): its category, or its page."""
+        if key in self.PAGE_TITLES:
+            self._ribbon_sub = key               # first: the tabs then stay on this page
+            self.ribbon.select(key)
+            self._mirror_tabs(key)
+            self.pages.setCurrentWidget(self._pages[key])
+            self.crumb.setText(self.PAGE_TITLES[key])
+            self.crumb.show()
+            if key == 'discover':
+                self.discover_shown.emit()
+            self._sync_art()
+            QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.default_focus()))
+            return
+        self._ribbon_close_page()
+        self.ribbon.select(key)
+
+    def _ribbon_close_page(self) -> bool:
+        """B on Discover or Downloads opened from the Ribbon: back to it, on
+        the same item. True if a page was open."""
+        if self._ribbon_sub is None:
+            return False
+        self._ribbon_sub = None
+        self.crumb.hide()
+        self.pages.setCurrentWidget(self.ribbon)
+        focus_and_reveal(self.ribbon)
+        self._ribbon_category(self.ribbon.state.cat)
+        self._sync_art()
+        return True
+
+    def _paint_panel(self):
+        """The Ribbon's focused game, quiet, on the right: its hero art over
+        60% of the width, faded in from the left and out at the bottom. Dark
+        themes only (not on a light theme, nor High contrast)."""
+        if self.details.isVisible() or self.pages.currentWidget() is not self.ribbon \
+                or LOOK['light'] or LOOK['contrast']:
+            return
+        it = self.ribbon.current()
+        g = self._by_slug.get(it.slug) if it is not None and it.kind == 'game' else None
+        path = art_source(g, HERO_KINDS)[0] if g else None
+        if not path:
+            return
+        w, h = self.width(), self.height()
+        pw = int(w * 0.6)
+        key = ART.key(path, pw, h)
+        if key is None or key in self._panel_bad:
+            return                               # no file, or it didn't decode: no panel
+        pm = ART.get(key)
+        if pm is None:
+            if key != self._panel_asked:
+                self._panel_asked = key
+                ART.request_key(key, lambda pm, k=key: self._panel_decoded(k, pm))
+            return
+        pt = QPainter(self)
+        pt.drawPixmap(w - pw, 0, self._panel(pm, pw, h))
+        pt.end()
+
+    def _panel_decoded(self, key, pm):
+        self._panel_asked = None
+        if pm is None:
+            self._panel_bad.add(key)             # never asked again (a new file: a new key)
+        self.update()
+
+    def _panel(self, art: QPixmap, w: int, h: int) -> QPixmap:
+        """The art with its fades baked in (kept for the last two)."""
+        key = (art.cacheKey(), w, h)
+        hit = self._panels.get(key)
+        if hit is not None:
+            return hit
+        out = QPixmap(art.size())
+        out.setDevicePixelRatio(art.devicePixelRatio())
+        out.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(out)
+        pt.drawPixmap(0, 0, art)
+        pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        g = QLinearGradient(0.0, 0.0, float(w), 0.0)
+        for at, a in ((0.0, 0), (0.55, 50), (1.0, 95)):
+            g.setColorAt(at, QColor(0, 0, 0, a))
+        pt.fillRect(QRectF(0, 0, w, h), QBrush(g))
+        g = QLinearGradient(0.0, 0.0, 0.0, float(h))
+        for at, a in ((0.0, 60), (0.18, 255), (0.60, 255), (1.0, 0)):   # quieter under the clock
+            g.setColorAt(at, QColor(0, 0, 0, a))
+        pt.fillRect(QRectF(0, 0, w, h), QBrush(g))
+        pt.end()
+        if len(self._panels) >= 2:
+            self._panels.pop(next(iter(self._panels)))
+        self._panels[key] = out
+        return out
+
     # ---- navigation ----
     def _open_reader(self, items: list, index: int, card):
         self.reader.open(items, index, card, self._news_game_name)
@@ -1368,6 +1754,10 @@ class TheatreView(QWidget):
         self.show_game_for(appid)
 
     def _tab(self, key):
+        if self.layout_mode == 'ribbon':
+            if not self._mirroring:
+                self._ribbon_tab(key)
+            return
         self.pages.setCurrentWidget(self._pages[key])
         if key == 'discover':
             self.discover_shown.emit()
@@ -1375,7 +1765,12 @@ class TheatreView(QWidget):
         QTimer.singleShot(0, lambda: alive(self) and focus_and_reveal(self.default_focus()))
 
     def cycle_tab(self, d):
-        """LB / RB: the next tab that is showing, wrapping round."""
+        """LB / RB: the next tab that is showing, wrapping round (the
+        Ribbon: the next category)."""
+        if self.layout_mode == 'ribbon':
+            self._ribbon_close_page()
+            self.ribbon.cycle(d)
+            return
         keys = [k for k in self.tabs.keys() if not self.tabs.item(k).isHidden()]
         cur = self.tabs.current()
         i = (keys.index(cur) + d) % len(keys) if cur in keys else 0
@@ -1390,6 +1785,7 @@ class TheatreView(QWidget):
         if self.tabs.current() not in [k for k in self.tabs.keys()
                                        if not self.tabs.item(k).isHidden()]:
             self.tabs.set_current('home', emit=True)
+        self.refresh_ribbon()
 
     def _focus_download(self, key: str):
         row = self.downloads_page.rows.get(key)
@@ -1419,6 +1815,9 @@ class TheatreView(QWidget):
         self.details.clear_session()
         if self.details.isVisible():
             self.close_game()
+        if self.layout_mode == 'ribbon':
+            self.ribbon_home()
+            return
         self.tabs.set_current('home', emit=True)
 
     def _load_info(self, g):
@@ -1487,7 +1886,9 @@ class TheatreView(QWidget):
         if not self.details.isVisible():
             self.pages.setEnabled(True)
             self.tabs.setEnabled(True)
-            focus_and_reveal(self.btn_search)
+            # The Ribbon has no search button (Y searches): back to the item.
+            focus_and_reveal(self.btn_search if self.layout_mode == 'tabs'
+                             else self.default_focus())
 
     def back(self) -> bool:
         """B, one step at a time: a trailer, the game page's reader, its
@@ -1516,6 +1917,14 @@ class TheatreView(QWidget):
             else:
                 self.close_game()
             return True
+        if self.layout_mode == 'ribbon':
+            if self._ribbon_close_page():
+                return True
+            if self.ribbon.state.cat != 'home':
+                self.ribbon.select('home')
+                self.ribbon_moved.emit(-1)
+                return True
+            return False
         if self.tabs.current() != 'home':
             self.tabs.set_current('home', emit=True)
             return True
@@ -1536,6 +1945,8 @@ class TheatreView(QWidget):
             return self.search.default_focus()
         if self.details.isVisible():
             return self.details.default_focus()
+        if self.pages.currentWidget() is self.ribbon:
+            return self.ribbon
         if self.pages.currentWidget() is self.home:
             if not self.hero.isHidden() and self.hero.btn.isEnabled():
                 return self.hero.btn
@@ -1557,6 +1968,7 @@ class TheatreView(QWidget):
             self.details.refresh_friends()
         if self.hero.pinned is not None:         # "42 min" on the spotlight and tiles
             self.hero.tick()
+            self.refresh_ribbon()
             for t in self.findChildren(GameTile):
                 if t.game.get('playing'):
                     t.update()
@@ -1628,10 +2040,10 @@ class CursorHider(QObject):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .art import ART, art_source, HERO_KINDS, screen_pixmap  # noqa: E402
+from .art import ART, art_source, HERO_KINDS, screen_pixmap, WIDE_KINDS  # noqa: E402
 from .fmt import fmt_hours  # noqa: E402
-from .gameinfo import (can_quick_play, is_installed, live_kicker,  # noqa: E402
-    played_minutes)
+from .gameinfo import (can_quick_play, is_installed, live_kicker, now_playing,  # noqa: E402
+    played_minutes, session_minutes)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import Dwell, featured_games, ShelfRow, surprise_pick  # noqa: E402
@@ -1639,8 +2051,11 @@ from .actions import TrailerOverlay  # noqa: E402
 from .friends import FRIENDS, who_text  # noqa: E402
 from nexus import smart  # noqa: E402
 from .theatre_discover import TheatreCard, TheatreDiscover, TheatreReader  # noqa: E402
-from .theatre_settings import WeekCard  # noqa: E402
-from .theme import TILE_LIFT  # noqa: E402
+from .theatre_settings import APPEARANCE_KEYS, HELP, ROWS, WeekCard  # noqa: E402
+from .theme import LOOK, TILE_LIFT  # noqa: E402
+from . import ribbon_model  # noqa: E402
+from .ribbon import RibbonView  # noqa: E402
+from .ribbon_model import find  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, EmptyState, FlowLayout, glyph_pixmap, icon_button,  # noqa: E402

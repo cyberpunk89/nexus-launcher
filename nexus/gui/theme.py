@@ -234,7 +234,8 @@ PRESETS = {
     'contrast': ("High contrast", {'theme': 'contrast', 'accent': 'gold', 'partner': 'none',
                                    'glow': 'off', 'corners': 'sharp'}),
 }
-LOOK = {'glow': 1.0, 'art_tint': True, 'light': False, 'scale': 1.0}   # read by the painters
+LOOK = {'glow': 1.0, 'art_tint': True, 'light': False, 'scale': 1.0,   # read by the painters
+        'contrast': False}
 
 
 def is_light() -> bool:
@@ -404,6 +405,7 @@ def apply_appearance(ap: dict) -> dict:
     LOOK['art_tint'] = ap['art_tint']
     LOOK['light'] = light_theme
     LOOK['scale'] = ap['scale']
+    LOOK['contrast'] = ap['theme'] == 'contrast'     # High contrast: no moving ribbon (w-108)
     _ICON_CACHE.clear()
     _TINTS.clear()
     return ap

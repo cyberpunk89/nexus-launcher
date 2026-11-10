@@ -10,8 +10,8 @@ from nexus.icons import COLLECTION_ICONS
 
 from .moments import (clean_kinds_off, is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key,
     snooze_until)
-from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, THEATRE_STARTS,
-    VOLUME_STEPS)
+from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, RIBBON_MOTIONS,
+    THEATRE_LAYOUTS, THEATRE_STARTS, VOLUME_STEPS)
 from .theme import ACCENTS, normalize_appearance, TILE_W
 
 MAX_PINNED = 3                    # collections pinned to the top bar (w-52)
@@ -164,6 +164,12 @@ class LibraryPrefs:
             'volume': _volume(ctl.get('volume')),
             # The "Your week" card on Theatre's Home.
             'week_home': ctl.get('week_home') is not False,
+            # Theatre's layout (tabs or the Ribbon) and whether the Ribbon's
+            # background glides as you move (w-108).
+            'theatre_layout': ctl.get('theatre_layout') if ctl.get('theatre_layout') in
+            THEATRE_LAYOUTS else 'tabs',
+            'ribbon_motion': ctl.get('ribbon_motion') if ctl.get('ribbon_motion') in
+            RIBBON_MOTIONS else 'input',
         }
         # Your notes on a game (the details panel's Notes section).
         notes = self._data.get('notes')

@@ -1063,6 +1063,14 @@ class SettingsPage(QWidget):
         self.ctl_start = _combo((("Never", 'never'), ("On a TV", 'tv'), ("Always", 'always')))
         self._row(sec, "Start Nexus in Theatre", "On a TV: when the screen is 32\" or bigger.",
                   self.ctl_start, keywords="tv couch startup launch", key='theatre_start')
+        self.ctl_layout = _combo((("Tabs", 'tabs'), ("Ribbon", 'ribbon')))
+        self._row(sec, "Theatre layout", "Tabs: rows of big tiles. Ribbon: categories on one "
+                  "line, your games in a column under them.", self.ctl_layout,
+                  keywords="tv couch ribbon categories", key='theatre_layout')
+        self.ctl_ribbon = _combo((("Moves when you move", 'input'), ("Still", 'still')))
+        self._row(sec, "Ribbon background", "Always still with reduced motion, Glow off or "
+                  "High contrast.", self.ctl_ribbon, keywords="tv motion animation wave",
+                  key='ribbon_motion')
         self.ctl_attract = _combo([("Never" if not m else f"After {m} minutes idle", m)
                                    for m in ATTRACT_MINUTES])
         self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
@@ -1088,6 +1096,7 @@ class SettingsPage(QWidget):
                                     keywords="audio loud test", key='volume')
         self.row_of[self.ctl_volume] = self.volume_row
         self.ctl_sounds.toggled.connect(self.ctl_volume.setEnabled)
+        self.ctl_layout.activated.connect(self._sync_ribbon_row)
         sec = self._group(cat, 'windows', "Windows games", 'proton')
         self.proton = _combo(())
         self.proton.setToolTip("A game can override it on its page, under Launch")
@@ -1099,6 +1108,10 @@ class SettingsPage(QWidget):
         self._row(cat.adv_body, "Runner", "How Windows games start. Automatic uses umu-run "
                   "with Proton when it's installed, then Proton, then Wine.", self.runner,
                   keywords="umu wine backend", key='runner')
+
+    def _sync_ribbon_row(self, _i=None):
+        """The Ribbon's background only means something under Ribbon."""
+        self.ctl_ribbon.setEnabled(self.ctl_layout.currentData() == 'ribbon')
 
     def set_sound_problem(self, text: str):
         """Why menu sounds can't play ('' when they can), under the switch."""
@@ -1723,7 +1736,8 @@ class SettingsPage(QWidget):
         self.tor_client.activated.connect(self._torrent_client_changed)
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
                          (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract'),
-                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume')):
+                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume'),
+                         (self.ctl_layout, 'theatre_layout'), (self.ctl_ribbon, 'ribbon_motion')):
             box.activated.connect(lambda _i, box=box, key=key: self.controls_changed.emit(
                 {key: box.currentData()}))
         for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
@@ -1993,7 +2007,8 @@ class SettingsPage(QWidget):
     def set_controls(self, controls: dict):
         for box, key in ((self.ctl_double, 'double_click'), (self.ctl_a, 'pad_a'),
                          (self.ctl_dedupe, 'dedupe'), (self.ctl_attract, 'attract'),
-                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume')):
+                         (self.ctl_start, 'theatre_start'), (self.ctl_volume, 'volume'),
+                         (self.ctl_layout, 'theatre_layout'), (self.ctl_ribbon, 'ribbon_motion')):
             box.setCurrentIndex(max(0, box.findData(controls.get(key))))
         for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
                         (self.ctl_week, 'week_home')):
@@ -2001,6 +2016,7 @@ class SettingsPage(QWidget):
             sw.setChecked(bool(controls.get(key)))
             sw.blockSignals(False)
         self.ctl_volume.setEnabled(bool(controls.get('sounds')))   # greyed while sounds are off
+        self.ctl_ribbon.setEnabled(controls.get('theatre_layout') == 'ribbon')
         self._refresh_overview()
         has_tray = tray_available()
         self.tray.blockSignals(True)

@@ -4,11 +4,12 @@ import json
 import re
 import shlex
 import shutil
+import time
 from pathlib import Path
 
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QObject, QPoint, QProcess,
     QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation)
-from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPen,
+from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPen,
     QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QComboBox, QFrame,
     QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy,
@@ -70,9 +71,20 @@ class GradientBackground(QWidget):
     Theatre adds a wash (`set_wash`, w-65): a low, wide pool of the same tint
     along the bottom. Light themes get a fainter, less saturated one so Dawn
     stays cream. Glow Off paints neither.
+
+    Theatre's Ribbon layout adds the ribbon (`set_ribbon`, w-108): a sheet of
+    light in the tint across the lower part of the window. It moves only
+    when you move (`ribbon_step`): a child timer runs for that one glide and
+    updates only the band (the lower 70%; the Theatre widgets over it
+    repaint inside that rect too), then stops. Still under reduced motion, Glow Off
+    and High contrast, or when asked for.
     """
 
     WASH_SIZE = (64, 36)          # painted this small and scaled up: it's all blur anyway
+    RIBBON_TOP = 0.30             # the ribbon's band: this far down to the bottom
+    RIBBON_MS = 600               # one glide
+    RIBBON_TICK = 33              # ms between its frames
+    RIBBON_STEP = 0.35            # phase moved per step
 
     def __init__(self):
         super().__init__()
@@ -87,6 +99,62 @@ class GradientBackground(QWidget):
         self._base: tuple | None = None          # (key, pixmap): the layers that don't fade
         self.wash = False
         self._wash_pm: tuple | None = None       # (key, small pixmap)
+        self.ribbon = 'off'                      # 'off', 'still' or 'input' (w-108)
+        self._phase = 1.3                        # where the ribbon's waves are
+        self._glide = (1.3, 1.3, 0.0)            # from, to, started (monotonic s)
+        self._ribbon_img: tuple | None = None    # (key, half-size image)
+        self._ribbon_timer = QTimer(self)        # runs only during a glide
+        self._ribbon_timer.setInterval(self.RIBBON_TICK)
+        self._ribbon_timer.timeout.connect(self._ribbon_tick)
+
+    def set_ribbon(self, mode: str):
+        """Theatre's Ribbon layout: 'off' (none), 'still', or 'input' (it
+        glides a little with each move)."""
+        mode = mode if mode in ('still', 'input') else 'off'
+        if mode != self.ribbon:
+            self.ribbon = mode
+            self._ribbon_timer.stop()
+            self.update()
+
+    def ribbon_moves(self) -> bool:
+        """Whether a move glides the ribbon: 'input', with motion on, a glow,
+        and not High contrast."""
+        return self.ribbon == 'input' and anim_ms(1) > 0 and LOOK['glow'] > 0 \
+            and not LOOK['contrast']
+
+    def ribbon_step(self, d: int = 1):
+        """A move in the Ribbon: the waves glide a step in that direction. A
+        step during a glide carries on from where it is (a held key)."""
+        if not self.ribbon_moves():
+            return
+        self._glide = (self._phase, self._glide[1] + self.RIBBON_STEP * (1 if d >= 0 else -1),
+                       time.monotonic())
+        if not self._ribbon_timer.isActive():
+            self._ribbon_timer.start()
+
+    def _ribbon_tick(self):
+        a, b, t0 = self._glide
+        t = min(1.0, (time.monotonic() - t0) * 1000 / max(1, anim_ms(self.RIBBON_MS)))
+        self._phase = a + (b - a) * QEasingCurve(QEasingCurve.Type.OutCubic).valueForProgress(t)
+        if t >= 1.0:
+            self._phase = b
+            self._ribbon_timer.stop()
+        self.update(self._ribbon_band().toAlignedRect())
+
+    def _ribbon_band(self) -> QRectF:
+        top = self.height() * self.RIBBON_TOP
+        return QRectF(0, top, self.width(), self.height() - top)
+
+    def _ribbon_image(self, band: QRectF) -> QImage:
+        """The ribbon at half size, for this size, tint and phase (kept)."""
+        light = LOOK['light']
+        c = ribbon_color(self._tint, light)
+        key = (int(band.width()) // 2, int(band.height()) // 2, c.rgb(),
+               round(self._phase * 64), light)
+        if self._ribbon_img is None or self._ribbon_img[0] != key:
+            self._ribbon_img = (key, ribbon_image(int(band.width()), int(band.height()),
+                                                  round(self._phase * 64) / 64, c, light, 2))
+        return self._ribbon_img[1]
 
     def set_wash(self, on: bool):
         """Theatre's low, wide wash of the tint (w-65)."""
@@ -154,6 +222,14 @@ class GradientBackground(QWidget):
             if self.wash:
                 pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                 pt.drawPixmap(QRect(0, 0, w, h), self._wash_pixmap())
+        if self.ribbon != 'off':
+            band = self._ribbon_band()
+            if band.intersects(QRectF(ev.rect())):
+                pt.setClipRect(ev.rect())
+                pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                if not LOOK['light']:            # light adds up: dark themes only
+                    pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+                pt.drawImage(band, self._ribbon_image(band))
         pt.end()
 
     def _wash_pixmap(self) -> QPixmap:
@@ -1062,5 +1138,6 @@ class SteamGate(QFrame):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import anim_ms, MOTION  # noqa: E402
+from .ribbon import ribbon_color, ribbon_image  # noqa: E402
 from .config import steam_running  # noqa: E402
 from .tray import tray_message  # noqa: E402

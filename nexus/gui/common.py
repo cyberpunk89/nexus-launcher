@@ -77,6 +77,9 @@ MAX_TITLE = 120
 ATTRACT_MINUTES = (0, 3, 5, 10, 20)
 # Start Nexus in Theatre: never, on a TV (a big screen), always (w-63).
 THEATRE_STARTS = ('never', 'tv', 'always')
+# Theatre's layout, and how its Ribbon's background moves (w-108).
+THEATRE_LAYOUTS = ('tabs', 'ribbon')
+RIBBON_MOTIONS = ('input', 'still')
 # Theatre's sound volume, in steps of 10 (the sheet shows 10 pills).
 VOLUME_STEPS = tuple(range(0, 101, 10))
 MAX_NOTE = 20000
