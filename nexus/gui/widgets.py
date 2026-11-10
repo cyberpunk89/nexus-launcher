@@ -810,6 +810,10 @@ class SegmentedControl(QWidget):
     def keys(self) -> list[str]:
         return list(self._items)
 
+    def buttons(self) -> list:
+        """The item buttons, in order."""
+        return list(self._items.values())
+
     def set_item_visible(self, key: str, on: bool):
         b = self._items.get(key)
         if b is not None:

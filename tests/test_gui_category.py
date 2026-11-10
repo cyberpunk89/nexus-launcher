@@ -51,6 +51,56 @@ class Prefs(unittest.TestCase):
                 p = nx.LibraryPrefs()
             self.assertEqual((p.category_sort, p.category_view), ({}, {}))
 
+    def test_pins_round_trip(self):
+        """w-100: category_pins, in order, cleaned on load and on save."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'category_pins': ['genre:RPG', 'bogus', 'genre:RPG',
+                                                          'col:A: b']}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                p = nx.LibraryPrefs()
+                self.assertEqual(p.category_pins, ['genre:RPG', 'col:A: b'])
+                p.category_pins = p.category_pins + ['fav', 'friends:1']
+                p.save()
+                self.assertEqual(json.loads(path.read_text())['category_pins'],
+                                 ['genre:RPG', 'col:A: b', 'fav'])
+                self.assertEqual(nx.LibraryPrefs().category_pins,
+                                 ['genre:RPG', 'col:A: b', 'fav'])
+
+    def test_older_json_without_pins(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'favorites': ['a']}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                self.assertEqual(nx.LibraryPrefs().category_pins, [])
+            for bad in ('fav', {'fav': 1}, 7, None):
+                path.write_text(json.dumps({'category_pins': bad}))
+                with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                    self.assertEqual(nx.LibraryPrefs().category_pins, [], bad)
+
+    def test_rename_collection_moves_pin(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'collections': {'Couch': [], 'Short': []},
+                                        'category_pins': ['fav', 'col:Couch', 'col:Short']}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                p = nx.LibraryPrefs()
+                self.assertEqual(p.rename_collection('Couch', 'Sofa'), 'Sofa')
+                self.assertEqual(p.category_pins, ['fav', 'col:Sofa', 'col:Short'])
+                self.assertEqual(nx.LibraryPrefs().category_pins,
+                                 ['fav', 'col:Sofa', 'col:Short'])
+
+    def test_delete_collection_drops_pin(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            path.write_text(json.dumps({'collections': {'Couch': []},
+                                        'category_pins': ['col:Couch', 'fav']}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                p = nx.LibraryPrefs()
+                p.delete_collection('Couch')
+                self.assertEqual(p.category_pins, ['fav'])
+                self.assertEqual(nx.LibraryPrefs().category_pins, ['fav'])
+
 
 def lib_games(n=8, source='steam', prefix='g'):
     """Plain library dicts, the newest played first (g0 yesterday...)."""
@@ -140,6 +190,109 @@ class Mosaic(unittest.TestCase):
         self.assertEqual(h.story.text(), "3 games")
 
 
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Tabs(unittest.TestCase):
+    """CategoryTabs (w-100): Browse, the pinned categories, All categories as
+    underline tabs; rebuilt only when the tabs change."""
+
+    def strip(self, width=900):
+        from nexus.gui.category import CategoryTabs
+        from PyQt6.QtWidgets import QApplication, QHBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(width, 80)
+        t = CategoryTabs()
+        QHBoxLayout(host).addWidget(t)
+        host.show()
+        QApplication.processEvents()
+        return host, t
+
+    TABS = [('browse', "Browse"), ('genre:RPG', "RPG"), ('fav', "Favourites"),
+            ('all', "All categories")]
+
+    def test_same_signature_keeps_buttons(self):
+        from PyQt6.QtWidgets import QApplication
+        _host, t = self.strip()
+        picked = []
+        t.picked.connect(picked.append)
+        t.set_tabs(self.TABS, 'browse')
+        seg = t.seg
+        b = t.button('genre:RPG')
+        t.set_tabs(list(self.TABS), 'genre:RPG')          # same tabs: kept, current moves
+        self.assertIs(t.seg, seg)
+        self.assertIs(t.button('genre:RPG'), b)
+        self.assertEqual(t.current(), 'genre:RPG')
+        self.assertEqual(picked, [])                       # set_tabs never emits
+        t.set_tabs(self.TABS[:2] + self.TABS[3:], 'browse')   # Favourites unpinned
+        QApplication.processEvents()
+        self.assertIsNot(t.seg, seg)
+        self.assertEqual(t.keys(), ['browse', 'genre:RPG', 'all'])
+        t.button('all').click()
+        self.assertEqual(picked, ['all'])
+
+    def test_rebuild_keeps_focus_off_hidden(self):
+        from PyQt6.QtWidgets import QApplication
+        host, t = self.strip()
+        host.activateWindow()
+        t.set_tabs(self.TABS, 'fav')
+        t.button('fav').setFocus()
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), t.button('fav'))
+        t.set_tabs(self.TABS[:2] + self.TABS[3:], 'browse')
+        f = QApplication.focusWidget()
+        self.assertIs(f, t.button('browse'))               # moved before the old one hid
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), t.button('browse'))
+
+    def test_eight_tabs_fit_900px(self):
+        from PyQt6.QtWidgets import QApplication
+        _host, t = self.strip(900)
+        long = "A really long collection name that goes on"
+        tabs = [('browse', "Browse")] + [(f'col:{long} {i}', f"{long} {i}")
+                                         for i in range(6)] + [('all', "All categories")]
+        t.set_tabs(tabs, 'browse')
+        for _ in range(3):
+            QApplication.processEvents()
+        right = max(t.button(k).geometry().right() for k, _ in tabs)
+        self.assertLessEqual(t.seg.x() + right, t.width())
+        for k, title in tabs:
+            b = t.button(k)
+            self.assertTrue(b.text())
+            self.assertLessEqual(len(b.text()), 18, b.text())
+            self.assertEqual(b.toolTip(), title)
+        self.assertEqual(t.button('browse').text(), "Browse")   # short ones stay whole
+        self.assertEqual(t.button('all').text(), "All categories")
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Pin(unittest.TestCase):
+    def test_pin_button_states(self):
+        """w-100: Pin / Pinned in the header; full (6 pinned) greys it out
+        with a reason; a click asks for the toggle."""
+        from nexus.gui.category import MosaicHeader
+        from PyQt6.QtWidgets import QApplication
+        h = MosaicHeader()
+        self.addCleanup(h.deleteLater)
+        h.resize(900, h.height())
+        h.set_category(a_category(lib_games(4)))
+        h.show()
+        QApplication.processEvents()
+        asked = []
+        h.pin.connect(lambda: asked.append(1))
+        h.set_pin_state('off')
+        self.assertEqual((h.btn_pin.text(), h.btn_pin.isEnabled(), h.btn_pin.isChecked()),
+                         ("Pin", True, False))
+        h.btn_pin.click()
+        self.assertEqual(asked, [1])
+        h.set_pin_state('on')
+        self.assertEqual((h.btn_pin.text(), h.btn_pin.isEnabled(), h.btn_pin.isChecked()),
+                         ("Pinned", True, True))
+        self.assertIn("Unpin", h.btn_pin.toolTip())
+        h.set_pin_state('full')
+        self.assertEqual((h.btn_pin.text(), h.btn_pin.isEnabled()), ("Pin", False))
+        self.assertEqual(h.btn_pin.toolTip(), "6 pinned, unpin one first")
+
+
 class _Prefs:
     """What the page reads and writes of LibraryPrefs."""
     def __init__(self):
@@ -198,6 +351,53 @@ class Page(unittest.TestCase):
         self.assertEqual(p.prefs.category_view, {})              # nothing saved
         self.assertEqual(p.view_seg.current(), 'grid')
         p.set_view('list')                                       # a choice is saved
+        self.assertEqual(p.prefs.category_view, {'src:steam': 'list'})
+
+    def theatre_page(self, games, size=(1600, 900)):
+        from nexus.gui.category import CategoryPage
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(*size)
+        prefs = _Prefs()
+        prefs.category_view = {'src:steam': 'list'}       # the desktop's: not for Theatre
+        p = CategoryPage(prefs, theatre=True, scale=1.4, tile=230)
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        p.set_category(a_category(games),
+                       cuts=[self.cut('smart:continue', "Continue playing", 2)],
+                       cut_games={'smart:continue': games[:2]})
+        for _ in range(3):
+            QApplication.processEvents()
+        return p
+
+    def test_theatre_page_grid_only_big_tiles(self):
+        from nexus.gui.category import CategoryPage
+        p = self.theatre_page(lib_games(12))
+        self.assertEqual(p.view, 'grid')
+        self.assertTrue(p.bar.isHidden())                  # no cuts, sort or view switch
+        self.assertTrue(p.foot.isHidden())                 # no More like this
+        self.assertTrue(p.header.btn_back.isHidden())      # B is the way back
+        self.assertTrue(p.header.btn_more.isHidden())
+        desk = CategoryPage(_Prefs())
+        self.addCleanup(desk.deleteLater)
+        self.assertGreater(p.header.height(), desk.header.height())
+        tiles = self.shown_tiles(p)
+        self.assertTrue(tiles)
+        for t in tiles:
+            self.assertTrue(t.theatre)
+            self.assertEqual(t.tw, 230)
+        self.assertIs(p.tile_for(), p.grid.tile_for())
+        p.set_view('rows')                                 # never anything but the grid
+        self.assertEqual(p.view, 'grid')
+
+    def test_theatre_page_writes_no_category_view(self):
+        p = self.theatre_page(lib_games(6))
+        self.assertEqual(p.prefs.category_view, {'src:steam': 'list'})
+        self.assertEqual(p.prefs.saved, 0)
+        p.set_sort('name')                                 # the sort is the page's own
+        self.assertEqual(p.prefs.category_sort, {'src:steam': 'name'})
+        self.assertEqual([g['slug'] for g in p.shown_games()][:2], ['g0', 'g1'])
         self.assertEqual(p.prefs.category_view, {'src:steam': 'list'})
 
     def test_cut_chip_filters_grid(self):
@@ -1079,6 +1279,439 @@ class HubHistory(_Rich):
         w._reveal_game('b7')
         self.assertFalse(w._category_open())
         self.assertEqual(w.selected, ['b7'])
+
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Pins(_Rich):
+    """Pinned categories as Library tabs on the desktop (w-100)."""
+
+    def tabs(self):
+        return self.win.cat_tabs
+
+    def test_strip_hidden_without_pins(self):
+        w = self.win
+        self.assertEqual(w.prefs.category_pins, [])
+        self.assertTrue(self.tabs().isHidden())
+        w.open_category('src:steam')
+        self.assertTrue(self.tabs().isHidden())
+        self.assertEqual(w.catpage.header.btn_pin.text(), "Pin")
+        self.assertFalse(w.catpage.header.btn_pin.isHidden())
+
+    def test_pin_adds_tab_and_survives_restart(self):
+        import tempfile
+        from pathlib import Path
+        w = self.win
+        w.open_category('src:steam')
+        w.catpage.header.btn_pin.click()
+        self.assertEqual(w.prefs.category_pins, ['src:steam'])
+        self.assertEqual(w.catpage.header.btn_pin.text(), "Pinned")
+        self.assertFalse(self.tabs().isHidden())
+        self.assertEqual(self.tabs().keys(), ['browse', 'src:steam', 'all'])
+        self.assertEqual(self.tabs().current(), 'src:steam')
+        self.assertEqual(self.tabs().button('browse').text(), "Browse")
+        w.close_category()
+        self.assertFalse(self.tabs().isHidden())           # Browse keeps the strip
+        self.assertEqual(self.tabs().current(), 'browse')
+        w.set_view('grid', save=False)
+        self.assertEqual(self.tabs().button('browse').text(), "All games")
+        # Saved, and read back by the next start.
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(nx.LibraryPrefs, 'PATH', Path(d) / 'library.json'):
+            self._saved[1](w.prefs)                         # the real save
+            w2 = nx.MainWindow()
+            try:
+                self.assertEqual(w2.prefs.category_pins, ['src:steam'])
+                w2._facts_idx = facts_index()
+                w2._sync_facts = lambda: False
+                w2.show()
+                w2._on_library({'games': win_games(), 'disks': []}, '')
+                w2.go(w2.LIBRARY)
+                self.pump()
+                self.assertEqual(w2.cat_tabs.keys(), ['browse', 'src:steam', 'all'])
+            finally:
+                stop_leftovers(w2.jobs)
+                w2.close()
+                w2.deleteLater()
+
+    def test_unpin_from_header_removes_tab(self):
+        w = self.win
+        w.prefs.category_pins = ['fav', 'src:steam']
+        w.apply_filter()
+        self.assertEqual(self.tabs().keys(), ['browse', 'fav', 'src:steam', 'all'])
+        w.open_category('src:steam')
+        self.assertEqual(w.catpage.header.btn_pin.text(), "Pinned")
+        w.catpage.header.btn_pin.click()
+        self.assertEqual(w.prefs.category_pins, ['fav'])
+        self.assertEqual(self.tabs().keys(), ['browse', 'fav', 'all'])
+        self.assertEqual(w.catpage.header.btn_pin.text(), "Pin")
+        w.catpage.header.btn_pin.click()                   # and back, last
+        self.assertEqual(w.prefs.category_pins, ['fav', 'src:steam'])
+        w.prefs.category_pins = [f'genre:{g}' for g in GENRES8[:6]]
+        w._refresh_category()
+        self.assertFalse(w.catpage.header.btn_pin.isEnabled())   # full
+
+    def test_tab_opens_page_back_returns_browse_place(self):
+        from PyQt6.QtWidgets import QApplication
+        w = self.win
+        w.activateWindow()
+        w.prefs.category_pins = ['fav', 'src:steam']
+        w.apply_filter()
+        self.pump()
+        bar = w.home.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 0)
+        bar.setValue(bar.maximum() // 2)
+        place = bar.value()
+        self.tabs().button('src:steam').click()
+        self.assertTrue(self.on_page('src:steam'))
+        self.assertEqual(self.tabs().current(), 'src:steam')
+        self.assertFalse(self.tabs().isHidden())
+        self.tabs().button('fav').click()                   # tab to tab
+        self.assertTrue(self.on_page('fav'))
+        self.tabs().button('browse').click()
+        self.pump(6)
+        self.assertFalse(w._category_open())
+        self.assertIs(w.views.currentWidget(), w.home)
+        self.assertEqual(bar.value(), place)
+        self.assertEqual(self.tabs().current(), 'browse')
+        w.go_back()                                         # history: the pages
+        self.assertTrue(self.on_page('fav'))
+        QApplication.processEvents()
+
+    def test_all_categories_tab_opens_hub(self):
+        w = self.win
+        w.prefs.category_pins = ['fav']
+        w.apply_filter()
+        self.tabs().button('all').click()
+        self.assertTrue(self.on_hub())
+        self.assertEqual(self.tabs().current(), 'all')
+        self.assertFalse(self.tabs().isHidden())
+        self.tabs().button('fav').click()
+        self.assertTrue(self.on_page('fav'))
+
+
+
+class _Theatre(_Rich):
+    """Theatre on rich_library(), its Library tab on show."""
+
+    def setUp(self):
+        super().setUp()
+        w = self.win
+        w.activateWindow()
+        w.prefs.theatre_library = {'sort': 'name', 'show': 'installed', 'view': 'browse'}
+        w.theatre.set_library_state(w.prefs.theatre_library)
+        w.set_theatre(True)
+        self.th = w.theatre
+        self.th.tabs.set_current('library', emit=True)
+        self.pump()
+
+    def tearDown(self):
+        self.win.set_theatre(False)
+        super().tearDown()
+
+    def row_keys(self):
+        return [r.key for r in self.th.lib_rows_list()]
+
+    def row(self, key):
+        return next(r for r in self.th.lib_rows_list() if r.key == key)
+
+    def key(self, k, w=None):
+        from PyQt6.QtCore import QEvent, Qt
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtWidgets import QApplication
+        target = w or QApplication.focusWidget()
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):    # A on a button: both
+            QApplication.sendEvent(target, QKeyEvent(kind, k, Qt.KeyboardModifier.NoModifier))
+        self.pump()
+
+    def focus(self):
+        from PyQt6.QtWidgets import QApplication
+        return QApplication.focusWidget()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class TheatreRows(_Theatre):
+    """Theatre's Library as rows from categories.browse (w-100)."""
+
+    def test_rows_follow_browse_continue_first_wide(self):
+        from nexus import categories
+        th = self.th
+        self.assertIs(th.lib_stack.currentWidget(), th.lib_rows)
+        w = self.win
+        from nexus.features import has
+        groups = categories.categories(
+            [g for g in w._games if not g.get('hidden')], w._smart_facts(), w._prefs_view(),
+            has('proton'))
+        want = [c.key for g in categories.browse(groups, w.prefs.smart_hidden) for c in g.cats]
+        self.assertEqual(self.row_keys(), want)
+        self.assertEqual(self.row_keys()[0], 'smart:continue')
+        first = self.row('smart:continue')
+        self.assertEqual((first.kind, first.tile_w), ('wide', th.WIDE))
+        for t in first.tiles:
+            self.assertTrue(t.theatre)
+        steam = self.row('src:steam')
+        self.assertEqual(len(steam.tiles), categories.ROW_CAP)
+        self.assertEqual(steam.count_label.text(), '40')
+        self.assertEqual(self.row_keys()[-2:], ['src:nexus', 'src:steam'])   # stores last
+        self.assertEqual(th.lib_tabs.keys(), ['browse', 'games'])
+        self.assertEqual(th.lib_tabs.current(), 'browse')
+
+    def test_rows_reused_by_key_keep_focus(self):
+        th = self.th
+        row = self.row('src:steam')
+        tile = row.tiles[3]
+        tile.setFocus()
+        self.pump()
+        slug = tile.game['slug']
+        w = self.win
+        w._on_library({'games': [dict(g) for g in rich_library()[0]], 'disks': []}, '')
+        self.pump()
+        self.assertIs(self.row('src:steam'), row)
+        self.assertIs(row.tiles[3], tile)
+        self.assertIs(self.focus(), tile)
+        self.assertEqual(tile.game['slug'], slug)
+
+    def test_no_groups_shows_old_grid(self):
+        th = self.th
+        th.set_games([])
+        self.pump()
+        self.assertEqual(self.row_keys(), [])
+        self.assertIs(th.lib_stack.currentWidget(), th.lib)
+
+    def test_all_games_keeps_sort_and_show(self):
+        th = self.th
+        saved = []
+        th.library_changed.connect(saved.append)
+        th.lib_tabs.button('games').click()
+        self.pump()
+        self.assertIs(th.lib_stack.currentWidget(), th.lib)
+        self.assertEqual(th.lib_tabs.current(), 'games')
+        self.assertEqual(saved[-1], {'sort': 'name', 'show': 'installed', 'view': 'all'})
+        slugs = [th.lib_flow.itemAt(i).widget().game['slug'] for i in range(th.lib_flow.count())]
+        self.assertEqual(slugs[:2], ['b0', 'b1'])              # A to Z, as saved
+        self.assertEqual(len(slugs), 50)
+        th._pick_library(self.win.theatre_sheet, 'sort', 'most', 1)
+        self.assertEqual(saved[-1]['view'], 'all')
+        th.lib_tabs.button('browse').click()
+        self.pump()
+        self.assertIs(th.lib_stack.currentWidget(), th.lib_rows)
+        self.assertEqual(saved[-1], {'sort': 'most', 'show': 'installed', 'view': 'browse'})
+
+    def test_windows_set_no_linux_no_heroic(self):
+        from nexus import features
+        gs, idx = rich_library()
+        gs.append({'slug': 'h0', 'display_name': 'H0', 'source': 'heroic', 'installed': True,
+                   'launcher': '/x', 'playtime_minutes': 5, 'last_played': None})
+        saved = features.FEATURES
+        try:
+            features.FEATURES = features.ALL
+            self.load([dict(g) for g in gs], idx)
+            self.pump()
+            every = lambda: [c.key for g in self.th._cat_groups for c in g.cats]  # noqa: E731
+            self.assertIn('src:heroic', self.row_keys())
+            self.assertIn('smart:linux', every())               # past For you's cap here
+            features.FEATURES = features.WINDOWS
+            self.win._home_sig = None                     # the same games: rebuild anyway
+            self.load([dict(g) for g in gs], idx)
+            self.pump()
+            self.assertNotIn('smart:linux', every())
+            self.assertNotIn('src:heroic', every())
+            self.assertNotIn('src:heroic', self.row_keys())
+        finally:
+            features.FEATURES = saved
+
+    def test_pins_are_tabs_in_theatre(self):
+        th = self.th
+        w = self.win
+        w.prefs.category_pins = ['fav', 'genre:Gone']
+        th.pins_changed()
+        self.assertEqual(th.lib_tabs.keys(), ['browse', 'fav', 'games'])
+        th.lib_tabs.button('fav').click()
+        self.pump()
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        self.assertEqual(th.catpage.cat.key, 'fav')
+        self.assertEqual(th.catpage.header.btn_pin.text(), "Pinned")
+        th.catpage.header.btn_pin.click()                       # unpin, here too
+        self.assertEqual(w.prefs.category_pins, ['genre:Gone'])
+        th.back()
+        self.pump()
+        self.assertIs(th.pages.currentWidget(), th.lib_page)
+        self.assertEqual(th.lib_tabs.keys(), ['browse', 'games'])   # an unknown genre: none
+
+    def test_empty_pinned_category_is_a_tab_on_both(self):
+        """A pinned category with no games keeps its tab, on the desktop and
+        in Theatre alike; its page says it is empty."""
+        w, th = self.win, self.th
+        w.prefs.collections = {**w.prefs.collections, 'Empty': []}
+        w._mirror_collections()
+        w.prefs.category_pins = ['col:Empty', 'fav']
+        th.set_games([g for g in w._games if not g.get('hidden')])
+        self.pump()
+        self.assertEqual(th.lib_tabs.keys(), ['browse', 'col:Empty', 'fav', 'games'])
+        th.lib_tabs.button('col:Empty').click()
+        self.pump()
+        self.assertEqual(th.catpage.cat.key, 'col:Empty')
+        self.assertEqual(th.catpage.shown_games(), [])
+        th.back()
+        w.set_theatre(False)
+        w.go(w.LIBRARY)
+        w.apply_filter()
+        self.assertEqual(w.cat_tabs.keys(), ['browse', 'col:Empty', 'fav', 'all'])
+        w.cat_tabs.button('col:Empty').click()
+        self.assertTrue(self.on_page('col:Empty'))
+        self.assertEqual(w.catpage.shown_games(), [])
+        w.set_theatre(True)                                     # tearDown leaves it
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class TheatreAB(_Theatre):
+    """A, B, X, Y on Theatre's rows and category page (w-100)."""
+
+    def test_x_on_row_opens_page(self):
+        from PyQt6.QtCore import Qt
+        th = self.th
+        tile = self.row('src:steam').tiles[2]
+        tile.setFocus()
+        self.pump()
+        self.key(Qt.Key.Key_Menu)                                # X
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        self.assertEqual(th.catpage.cat.key, 'src:steam')
+        self.assertFalse(self.win.theatre_sheet.isVisible())     # not the options sheet
+        self.pump()
+        f = self.focus()
+        self.assertIsInstance(f, nx.GameTile)
+        self.assertTrue(th.catpage.isAncestorOf(f))
+        self.assertEqual(f.tw, th.TILE)
+
+    def test_a_on_see_all_opens_page(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QPushButton
+        th = self.th
+        b = next(b for b in self.row('fav').findChildren(QPushButton) if b.text() == "See all")
+        b.setFocus()
+        self.pump()
+        self.key(Qt.Key.Key_Space)                               # A on a button
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        self.assertEqual(th.catpage.cat.key, 'fav')
+
+    def test_b_returns_same_row_tile_scroll(self):
+        from PyQt6.QtCore import Qt
+        th = self.th
+        bar = th.lib_rows.verticalScrollBar()
+        row = self.row('src:steam')
+        tile = row.tiles[6]
+        from nexus.gui.input import focus_and_reveal
+        focus_and_reveal(tile)
+        self.pump(6)
+        place, offset = bar.value(), row.bar.value()
+        self.assertGreater(place, 0)
+        self.key(Qt.Key.Key_Menu)
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        self.win._escape()                                       # B
+        self.pump(6)
+        self.assertIs(th.pages.currentWidget(), th.lib_page)
+        self.assertIs(self.focus(), tile)
+        self.assertEqual(bar.value(), place)
+        self.assertEqual(row.bar.value(), offset)
+
+    def test_focus_moves_once_into_page_and_back(self):
+        """w-60: focus goes straight to the target before the page switch,
+        never through nowhere or a widget on the way."""
+        from PyQt6.QtWidgets import QApplication
+        th = self.th
+        tile = self.row('src:steam').tiles[1]
+        tile.setFocus()
+        self.pump()
+        seen = []
+        app = QApplication.instance()
+        app.focusChanged.connect(self._spy)
+        self._seen = seen
+        try:
+            th.open_category('src:steam')
+            self.assertEqual(len(seen), 1, seen)
+            self.assertTrue(th.catpage.isAncestorOf(seen[0]))
+            del seen[:]
+            th.close_category()
+            self.assertEqual(seen, [tile])
+        finally:
+            app.focusChanged.disconnect(self._spy)
+
+    def _spy(self, _old, new):
+        self._seen.append(new)
+
+    def test_y_picks_inside_category(self):
+        th = self.th
+        w = self.win
+        th.open_category('fav')
+        self.pump()
+        picks = []
+        th.pick_in.connect(picks.append)                         # what the window picks from
+        w._pad_action('search')                                  # Y
+        th.pick_in.disconnect(picks.append)
+        self.assertEqual(sorted(g['slug'] for g in picks[0]), ['b1', 'n2'])
+        self.assertTrue(th.details.isVisible())                  # surprise opened a game
+        th.back()
+        self.pump()
+        self.assertFalse(th.search.isVisible())
+        w.surprise(th.catpage.shown_games())
+        self.assertTrue(th.details.isVisible())
+        self.assertIn(th.details.game['slug'], ('b1', 'n2'))
+
+    def test_lb_rb_drops_page(self):
+        th = self.th
+        w = self.win
+        th.open_category('src:steam')
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        w._pad_action('page-next')
+        self.pump()
+        self.assertIsNot(th.pages.currentWidget(), th.catpage)
+        self.assertIsNone(th.category_key())
+        th.tabs.set_current('library', emit=True)
+        self.pump()
+        self.assertIs(th.pages.currentWidget(), th.lib_page)
+        th.open_category('src:steam')
+        th.go_home()
+        self.assertIsNone(th.category_key())
+        self.assertFalse(th.back())                             # Home: B does nothing more
+
+    def test_view_opens_category_sort(self):
+        from PyQt6.QtWidgets import QPushButton
+        th = self.th
+        w = self.win
+        th.open_category('src:steam')
+        self.pump()
+        w._pad_action('view')
+        sheet = w.theatre_sheet
+        self.assertTrue(sheet.isVisible())
+        rows = [b.text() for b in sheet.findChildren(QPushButton)
+                if b.objectName() == 'SheetRow' and b.isVisibleTo(sheet)]
+        self.assertEqual(rows, ["Recently played", "Name", "Most played", "Recently added",
+                                "Size on disk"])
+        next(b for b in sheet.findChildren(QPushButton) if b.text() == "Name").click()
+        self.pump()
+        self.assertTrue(sheet.isVisible())                       # stays up
+        self.assertEqual(w.prefs.category_sort.get('src:steam'), 'name')
+        self.assertEqual(th.catpage.shown_games()[0]['slug'], 'b0')
+        self.assertEqual(w.prefs.theatre_library['sort'], 'name')   # Library's own untouched
+        w._pad_action('view')                                    # View closes it
+        self.assertFalse(sheet.isVisible())
+
+    def test_hints_on_rows_and_page(self):
+        th = self.th
+        w = self.win
+        self.row('fav').tiles[0].setFocus()
+        self.pump()
+        w._update_hints()
+        hints = dict(w.hints._shown[1])
+        self.assertEqual(hints.get('x'), 'See all')
+        th.open_category('fav')
+        self.pump()
+        th.catpage.tile_for().setFocus()
+        self.pump()
+        w._update_hints()
+        hints = dict(w.hints._shown[1])
+        self.assertEqual((hints.get('x'), hints.get('y'), hints.get('View'), hints.get('b')),
+                         ('Options', 'Pick for me', 'Sort', 'Back'))
 
 
 if __name__ == '__main__':

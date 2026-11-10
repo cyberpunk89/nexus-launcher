@@ -140,6 +140,7 @@ class LibraryView(QScrollArea, _TileSignals):
     pending_clicked = pyqtSignal(object)
 
     BUFFER_ROWS = 1          # built beyond each edge of the view
+    theatre = False          # Theatre's tiles (a category page there, w-100)
 
     def __init__(self):
         super().__init__()
@@ -339,7 +340,7 @@ class LibraryView(QScrollArea, _TileSignals):
             t.show()
 
     def _make(self, g: dict) -> 'GameTile':
-        t = GameTile(g, width=self.tile_width)
+        t = GameTile(g, width=self.tile_width, theatre=self.theatre)
         t.setParent(self.flow_host)
         self._wire(t)
         return t

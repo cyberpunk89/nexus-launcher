@@ -334,5 +334,78 @@ class Browse(unittest.TestCase):
         self.assertEqual(C.Group('x', 'X').more, 0)
 
 
+class Pins(unittest.TestCase):
+    """Pinned categories (category_pins): at most PIN_MAX, any category key,
+    the order you pinned them in; one missing from the library stays saved."""
+
+    def test_clean_drops_bad_and_dupes_caps_six(self):
+        raw = ['fav', 'fav', 'bogus', None, 3, 'friends:1', 'col:A: b', 'genre:RPG',
+               'src:steam', 'smart:never', 'user:ab12', 'genre:Indie', 'src:epic']
+        out = C.clean_pins(raw)
+        self.assertEqual(C.PIN_MAX, 6)
+        self.assertEqual(out, ['fav', 'col:A: b', 'genre:RPG', 'src:steam', 'smart:never',
+                               'user:ab12'])
+        for bad in (None, 'fav', {'fav': 1}, 7):
+            self.assertEqual(C.clean_pins(bad), [], bad)
+        self.assertEqual(C.clean_pins(('fav', C.HUB)), ['fav'])      # the hub isn't one
+
+    def test_toggle_adds_removes_and_refuses_seventh(self):
+        pins = C.toggle_pin([], 'fav')
+        self.assertEqual(pins, ['fav'])
+        pins = C.toggle_pin(pins, 'genre:RPG')
+        self.assertEqual(pins, ['fav', 'genre:RPG'])
+        self.assertEqual(C.toggle_pin(pins, 'fav'), ['genre:RPG'])
+        self.assertEqual(pins, ['fav', 'genre:RPG'])                    # a new list
+        full = [f'genre:{n}' for n in GENRES[:6]]
+        self.assertEqual(C.toggle_pin(full, 'fav'), full)                # full: unchanged
+        self.assertEqual(C.toggle_pin(full, 'genre:RPG'), full[1:])      # unpin still works
+        self.assertEqual(C.toggle_pin(['fav'], 'bogus'), ['fav'])
+
+    def test_pin_state_full(self):
+        full = [f'genre:{n}' for n in GENRES[:6]]
+        self.assertEqual(C.pin_state([], 'fav'), 'off')
+        self.assertEqual(C.pin_state(['fav'], 'fav'), 'on')
+        self.assertEqual(C.pin_state(full, 'fav'), 'full')
+        self.assertEqual(C.pin_state(full, 'genre:RPG'), 'on')
+
+    def test_only_live_pins_count_toward_full(self):
+        """A pin with no category now (a deleted collection, a store that's
+        off) stays saved but doesn't take a place: Pin isn't greyed out,
+        and pinning at six drops such pins first."""
+        pins = ['col:Gone', 'genre:RPG', 'genre:Action', 'src:heroic', 'genre:Indie',
+                'genre:Racing']
+        live = set(pins) - {'col:Gone', 'src:heroic'} | {'fav'}
+        self.assertEqual(C.pin_state(pins, 'fav', live), 'off')
+        self.assertEqual(C.pin_state(pins, 'fav'), 'full')         # no live set: all count
+        out = C.toggle_pin(pins, 'fav', live)
+        self.assertEqual(out, ['genre:RPG', 'genre:Action', 'src:heroic', 'genre:Indie',
+                               'genre:Racing', 'fav'])              # the first dead one went
+        all_live = set(pins) | {'fav'}
+        self.assertEqual(C.toggle_pin(pins, 'fav', all_live), pins)  # full of live ones
+        self.assertEqual(C.pin_state(pins, 'fav', all_live), 'full')
+
+    def test_pinned_keeps_empty_skips_missing_keeps_order(self):
+        """pinned(): each pin as a category over the games, in pin order;
+        one with no games now is kept (its page says so), one that isn't a
+        category here (a deleted collection, Heroic off) is skipped."""
+        games, facts = library()
+        out = C.pinned(['genre:Indie', 'col:Gone', 'fav', 'col:Empty one', 'src:heroic',
+                        'genre:Horror', 'genre:Gone'], games, facts, prefs(heroic=False),
+                       now=NOW)
+        self.assertEqual([c.key for c in out], ['genre:Indie', 'fav', 'col:Empty one',
+                                                'genre:Horror'])
+        self.assertEqual(len(out[2].games), 0)
+        self.assertEqual(len(out[0].games), 1)
+        self.assertEqual(C.pinned([], games, facts, prefs()), [])
+
+    def test_hidden_row_still_pinnable(self):
+        """A row hidden from Browse (or past its cap) is still a pin."""
+        games, facts = library()
+        out = C.pinned(['genre:RPG', 'smart:never'], games, facts, prefs(), now=NOW)
+        self.assertEqual([c.key for c in out], ['genre:RPG', 'smart:never'])
+        shown = keys(C.browse(C.categories(games, facts, prefs(), now=NOW),
+                              hidden={'genre:RPG'}))
+        self.assertNotIn('genre:RPG', shown)
+
 if __name__ == '__main__':
     unittest.main()

@@ -73,6 +73,7 @@ class Feed:
     downloads_sub: str = ''
     fact: object = None                                # game -> its fact line (fact_text)
     a_plays: bool = False                              # Settings: A plays a game
+    pins: list = field(default_factory=list)           # [(category key, title, games)] (w-100)
 
 
 def clamp(i: int, n: int) -> int:
@@ -134,7 +135,11 @@ def _library(feed: Feed) -> Category:
                  Item(key='empty:library', kind='empty', glyph='library', title=NO_GAMES,
                       sub=NO_GAMES_SUB, primary='all_settings')]
     sub = "  ·  ".join(p for p in (feed.lib_label, f"{n} game{'s' if n != 1 else ''}") if p)
-    return Category('library', "Library", 'library', tuple(items), sub=sub)
+    # Pinned categories first (w-100): A opens the category's page.
+    pins = [Item(key=f"cat:{key}", kind='action', title=title, glyph='pin', primary=f"cat:{key}",
+                 sub=f"{count} game{'s' if count != 1 else ''}")
+            for key, title, count in feed.pins]
+    return Category('library', "Library", 'library', tuple(pins + items), sub=sub)
 
 
 def _settings(feed: Feed) -> Category:

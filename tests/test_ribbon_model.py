@@ -94,6 +94,23 @@ class Categories(unittest.TestCase):
         one = cat(categories(feed(library=[GAMES[0]])), 'library')
         self.assertTrue(one.sub.endswith("1 game"))
 
+    def test_pins_top_of_library(self):
+        """w-100: pinned categories first in the Library column; A opens
+        the category's page. The count is still the games'."""
+        lib = cat(categories(feed(pins=[('genre:RPG', "RPG", 14), ('fav', "Favourites", 1)])),
+                  'library')
+        self.assertEqual([it.key for it in lib.items[:2]], ['cat:genre:RPG', 'cat:fav'])
+        first = lib.items[0]
+        self.assertEqual((first.kind, first.title, first.glyph, first.primary, first.sub),
+                         ('action', "RPG", 'pin', 'cat:genre:RPG', "14 games"))
+        self.assertEqual(lib.items[1].sub, "1 game")
+        self.assertEqual([it.key for it in lib.items[2:]],
+                         ['game:alpha', 'game:beta', 'game:gamma'])
+        self.assertTrue(lib.sub.endswith("3 games"))
+        self.assertEqual(cat(categories(feed()), 'library').items[0].key, 'game:alpha')
+        empty = cat(categories(feed(library=[], pins=[('fav', "Favourites", 1)])), 'library')
+        self.assertEqual([it.key for it in empty.items], ['cat:fav', 'empty:library'])
+
     def test_by_collection_is_flat_with_the_collection_as_kicker(self):
         groups = [("Couch", [GAMES[0], GAMES[1]]), ("Short", [GAMES[0]])]
         lib = cat(categories(feed(lib_groups=groups)), 'library')

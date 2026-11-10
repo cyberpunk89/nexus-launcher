@@ -3,6 +3,7 @@
 import random
 import re
 from datetime import datetime
+from typing import NamedTuple
 
 from PyQt6.QtCore import (pyqtSignal, QEvent, QObject, QPoint, QRectF, Qt, QTimer, QUrl,
     QVariantAnimation)
@@ -655,6 +656,21 @@ class TheatreMoment(QFrame):
             self.changed.emit()
 
 
+class CategoryPrefs(NamedTuple):
+    """What Theatre's Library needs of the window's prefs for categories."""
+    view: 'categories.PrefsView'               # categories.PrefsView
+    hidden: tuple = ()                         # rows hidden from Browse (smart_hidden)
+
+
+class _PagePrefs:
+    """A category page's prefs until the window hands over its own."""
+    def __init__(self):
+        self.category_sort, self.category_view = {}, {}
+
+    def save(self):
+        pass
+
+
 class TheatreView(QWidget):
     """Theatre mode: one big hero, rows of big tiles, a clock, and nothing
     that needs a mouse. LB/RB switch Home and Library, A opens a game, B goes
@@ -682,6 +698,9 @@ class TheatreView(QWidget):
     settings_row = pyqtSignal(str)               # X on a setting: the sheet, on that row
     all_settings = pyqtSignal()                  # All settings (leaves Theatre)
     ribbon_moved = pyqtSignal(int)               # a move: the sound, the background, the hints
+    # The Library's categories (w-100):
+    pick_in = pyqtSignal(list)                   # Pick for me (Y) on a category page: its games
+    pin_toggled = pyqtSignal(str)                # Pin / Pinned on a category page
 
     TILE = 230
     WIDE = 440
@@ -778,18 +797,39 @@ class TheatreView(QWidget):
         self.home_lay.addStretch()
         self.home.setWidget(host)
         self.pages.addWidget(self.home)
-        # Library: your games, big tiles, under a chip that opens Sort & filter
+        # Library: a strip (Browse, the pinned categories, All games; the
+        # chip that opens Sort & filter on the right) over rows by category
+        # (w-100, categories.browse) or every game as big tiles.
         self.lib_page = QWidget()
         lp = QVBoxLayout(self.lib_page)
         lp.setContentsMargins(0, 0, 0, 0)
         lp.setSpacing(SP['3'])
         chip_row = QHBoxLayout()
+        chip_row.setSpacing(SP['4'])
+        self.lib_tabs = CategoryTabs(48)
+        self.lib_tabs.picked.connect(self._lib_tab)
+        chip_row.addWidget(self.lib_tabs, 1)
         self.lib_chip = QPushButton()
         self.lib_chip.setObjectName("StateChip")
         self.lib_chip.clicked.connect(self.library_sheet)
-        chip_row.addWidget(self.lib_chip)
-        chip_row.addStretch()
+        chip_row.addWidget(self.lib_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         lp.addLayout(chip_row)
+        self.lib_stack = QStackedWidget()
+        self.lib_rows = QScrollArea()
+        self.lib_rows.setWidgetResizable(True)
+        self.lib_rows.setFrameShape(QFrame.Shape.NoFrame)
+        self.lib_rows.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.lib_rows.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rhost = QWidget()
+        self.lib_rows_lay = QVBoxLayout(rhost)
+        self.lib_rows_lay.setContentsMargins(0, 0, 0, SP['8'])
+        self.lib_rows_lay.setSpacing(SP['6'])
+        self.lib_rows_lay.addStretch()
+        self.lib_rows.setWidget(rhost)
+        self._lib_row_by: dict[str, ShelfRow] = {}       # category key -> its row
+        self._lib_order: list[ShelfRow] = []
+        self._cat_groups: list = []                      # categories() of the Library's games
+        self.lib_stack.addWidget(self.lib_rows)
         self.lib = QScrollArea()
         self.lib.setWidgetResizable(True)
         self.lib.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -803,11 +843,36 @@ class TheatreView(QWidget):
         self.lib_col.addWidget(self.lib_plain)
         self.lib_col.addStretch()
         self._lib_groups: list[QWidget] = []
-        self.lib_state = {'sort': 'name', 'show': 'installed'}
+        self.lib_state = {'sort': 'name', 'show': 'installed', 'view': 'browse'}
         self.facts: dict = {}                     # the facts index's games (Play together's modes)
         self.lib.setWidget(lhost)
-        lp.addWidget(self.lib, 1)
+        self.lib_stack.addWidget(self.lib)
+        lp.addWidget(self.lib_stack, 1)
         self.pages.addWidget(self.lib_page)
+        # A category's page (w-100): big tiles under its mosaic header. Its
+        # own page, so the tabs and the Ribbon both open it; B goes back.
+        # The window hands over its prefs (set_prefs), what the model needs
+        # (category_prefs: a CategoryPrefs) and the pins (category_pins).
+        self.category_prefs = lambda: CategoryPrefs(categories.PrefsView(), ())
+        self.category_pins = lambda: ()
+        self._pin_cats: list = []                 # the pinned categories (categories.pinned)
+        self._cat_pool: list[dict] = []           # what the last fill made categories of
+        self._cat_pv = categories.PrefsView()
+        self.catpage = CategoryPage(_PagePrefs(), theatre=True, scale=THEATRE_SCALE,
+                                    tile=self.TILE)
+        self.catpage.clicked.connect(self._page_clicked)
+        self.catpage.activated.connect(self._activated)
+        self.catpage.double.connect(self._double)
+        self.catpage.play.connect(self.play)
+        self.catpage.menu.connect(self.menu)
+        self.catpage.back.connect(self.close_category)
+        self.catpage.play_lead.connect(self._play_lead)
+        self.catpage.pick.connect(self.pick_for_me)
+        self.catpage.pin_asked.connect(self.pin_toggled)
+        self.pages.addWidget(self.catpage)
+        self._cat_key: str | None = None
+        self._cat_back = None                     # the Library's place (KeepPlace) for B
+        self._cat_from = None                     # the widget focus came from
         # Discover and Downloads: stubs until their cards (w-62, w-61) fill them.
         self.discover = self.discover_page = TheatreDiscover()
         self.discover.news_opened.connect(self._open_reader)
@@ -1066,9 +1131,25 @@ class TheatreView(QWidget):
              ('friends', "Friends own"))
 
     def set_library_state(self, state: dict):
-        """The saved sort and filter (prefs.theatre_library)."""
-        self.lib_state = {'sort': state.get('sort', 'name'), 'show': state.get('show', 'installed')}
+        """The saved sort, filter and view (prefs.theatre_library)."""
+        self.lib_state = {'sort': state.get('sort', 'name'), 'show': state.get('show', 'installed'),
+                          'view': 'all' if state.get('view') == 'all' else 'browse'}
         self._fill_library()
+
+    def set_prefs(self, prefs):
+        """The window's LibraryPrefs: a category page's saved sort."""
+        self.catpage.prefs = prefs
+
+    def pins_changed(self):
+        """A category was pinned or unpinned (desktop or here): the strip,
+        and the page's Pin."""
+        self._sync_lib_tabs()
+        if self._cat_key is not None:
+            self.catpage.set_pin_state(self._pin_state(self._cat_key))
+        self.refresh_ribbon()
+
+    def _pin_state(self, key: str) -> str:
+        return categories.pin_state(self.category_pins(), key, {c.key for c in self._pin_cats})
 
     def _show(self) -> str:
         """The Show filter in use: Friends own falls back to Installed while
@@ -1080,7 +1161,8 @@ class TheatreView(QWidget):
             return 'installed'
         return show
 
-    def _lib_games(self) -> list[dict]:
+    def _lib_pool(self) -> list[dict]:
+        """The games the Show filter lets in (rows, pages and the grid)."""
         show = self._show()
         if show.startswith(smart.FRIENDS_KEY):            # Play together (w-83)
             pool = smart.games_for(show, self.everything, self.facts,
@@ -1090,6 +1172,13 @@ class TheatreView(QWidget):
                     'missing': [g for g in self.everything if not is_installed(g)],
                     'all': self.everything,
                     'friends': [g for g in self.everything if g.get('friends')]}[show]
+        return list(pool)
+
+    def _lib_games(self) -> list[dict]:
+        """The All games grid's games: the Show filter, sorted."""
+        return self._sorted(self._lib_pool())
+
+    def _sorted(self, pool) -> list[dict]:
         name = lambda g: (g.get('display_name') or '').lower()      # noqa: E731
         sort = self.lib_state['sort']
         by_name = sorted(pool, key=name)                 # stable: ties keep A to Z
@@ -1103,10 +1192,37 @@ class TheatreView(QWidget):
         return by_name
 
     def _fill_library(self):
-        """The Library grid for the saved sort and filter, reusing tiles so a
-        refresh keeps focus. By collection: a block per collection (a game in
-        two shows in both), the rest last."""
-        games = self._lib_games()
+        """The Library: the categories of the Show filter's games (once per
+        fill), as rows (Browse) or every game (All games, the saved sort);
+        only the one on show is filled. Without a category: the grid. An
+        open category page is refilled too."""
+        pool = self._lib_pool()
+        cp = self.category_prefs()
+        self._cat_pool, self._cat_pv = [g for g in pool if not g.get('dup_of')], cp.view
+        self._cat_groups = categories.categories(self._cat_pool, self.facts, cp.view,
+                                                 has('proton'), FRIENDS.public_ids())
+        browse = categories.browse(self._cat_groups, cp.hidden)
+        if self.lib_state.get('view') != 'all' and browse:
+            self._fill_grid([])
+            self._fill_rows(browse)
+            self.lib_stack.setCurrentWidget(self.lib_rows)
+        else:
+            self._fill_rows([])
+            self._fill_grid(self._sorted(pool))
+            self.lib_stack.setCurrentWidget(self.lib)
+        self._sync_lib_tabs()
+        sort_t, show_t = self._library_labels()
+        n = len(pool)
+        self.lib_chip.setText(f"{sort_t}  ·  {show_t}  ·  "
+                              f"{n} game{'s' if n != 1 else ''}")
+        if self._cat_key is not None:
+            self._refresh_category()
+        self.refresh_ribbon()
+
+    def _fill_grid(self, games: list[dict]):
+        """The All games grid, reusing tiles so a refresh keeps focus. By
+        collection: a block per collection (a game in two shows in both),
+        the rest last."""
         sort = self.lib_state['sort']
         groups = self._collection_groups(games) if sort == 'collection' else [(None, games)]
         spare: dict[str, list[GameTile]] = {}
@@ -1150,11 +1266,252 @@ class TheatreView(QWidget):
             for w in tiles:
                 w.hide()
                 w.deleteLater()
-        sort_t, show_t = self._library_labels()
-        n = len(games)
-        self.lib_chip.setText(f"{sort_t}  ·  {show_t}  ·  "
-                              f"{n} game{'s' if n != 1 else ''}")
-        self.refresh_ribbon()
+
+    def _fill_rows(self, groups):
+        """Browse's rows (categories.browse() groups), flat in group order:
+        Continue playing wide, at most ROW_CAP tiles, the count says all. A
+        row still there with games is kept and re-pointed (its tiles too),
+        so focus stays; one gone is hidden and deleted (focus out first)."""
+        old, self._lib_row_by = self._lib_row_by, {}
+        order: list[ShelfRow] = []
+        drop: list[ShelfRow] = []
+        for grp in groups:
+            for c in grp.cats:
+                kind = 'wide' if c.key in HomeView.WIDE_KEYS else 'cover'
+                base = HomeView._look(c)
+                look = (*base[:2], int(16 * THEATRE_SCALE)) if base else None
+                games = list(c.games[:categories.ROW_CAP])
+                row = old.pop(c.key, None)
+                if row is not None and row.kind == kind and row.look == look and games \
+                        and row.tiles:
+                    row.set_games(games, lambda g, r=row: self._row_tile(g, r),
+                                  count=len(c.games))
+                    row.set_title(c.title, c.tip)
+                else:
+                    if row is not None:
+                        drop.append(row)
+                    row = self._lib_row(c, kind, look, games)
+                self._lib_row_by[c.key] = row
+                order.append(row)
+        drop += old.values()
+        if order != self._lib_order:
+            lay = self.lib_rows_lay
+            while lay.count():
+                lay.takeAt(0)                    # the rows stay children of the host
+            for r in order:
+                lay.addWidget(r)
+                r.show()                         # has its parent now: no window
+            lay.addStretch()
+            self._lib_order = order
+        f = QApplication.focusWidget()
+        if f is not None and any(r.isAncestorOf(f) for r in drop):
+            nxt = self.default_focus()           # focus first, then hide (w-60)
+            if nxt is not None and not any(r.isAncestorOf(nxt) for r in drop):
+                focus_and_reveal(nxt)
+        for r in drop:
+            r.hide()
+            r.deleteLater()
+
+    def _lib_row(self, c, kind: str, look, games: list[dict]) -> 'ShelfRow':
+        w = self.WIDE if kind == 'wide' else self.TILE
+        row = ShelfRow(c.title, w, kind, count=len(c.games), see_all=True, tip=c.tip, look=look)
+        row.key = c.key
+        row.cat_key = c.key
+        row.see_all.connect(self._row_see_all)
+        for g in games:
+            row.add(self._row_tile(g, row))
+        row.finish()
+        if not games:
+            row.set_empty("No games match these rules yet" if c.kind == 'shelf'
+                          else CAT_NO_GAMES)
+        return row
+
+    def _row_tile(self, g: dict, row: 'ShelfRow') -> 'GameTile':
+        """A row's tile: as any Theatre tile, but X (its menu) is See all."""
+        t = GameTile(g, width=row.tile_w, kind=row.kind, theatre=True)
+        t.cat_key = row.key
+        t.selected.connect(lambda game, _m: self.open_game(game))
+        t.activated.connect(self._activated)
+        t.double.connect(self._double)
+        t.play.connect(self.play)
+        t.menu.connect(self._row_see_all)
+        return t
+
+    def _row_see_all(self, *_args):
+        """X on a row's tile (its menu), or the row's See all: the page of
+        the category the sender stands for."""
+        key = getattr(self.sender(), 'cat_key', None)
+        if key:
+            self.open_category(key)
+
+    def lib_rows_list(self) -> 'list[ShelfRow]':
+        """The Library's rows, in order."""
+        return list(self._lib_order)
+
+    def _sync_lib_tabs(self):
+        """The strip: Browse, the pinned categories (categories.pinned: one
+        with no games keeps its tab, one that's no category here is
+        skipped, still pinned), All games."""
+        self._pin_cats = categories.pinned(self.category_pins(), self._cat_pool, self.facts,
+                                           self._cat_pv, has('proton'), FRIENDS.public_ids())
+        tabs = [(BROWSE_TAB, "Browse")] + [(c.key, c.title) for c in self._pin_cats] \
+            + [(GAMES_TAB, "All games")]
+        self.lib_tabs.set_tabs(tabs, GAMES_TAB if self.lib_state.get('view') == 'all'
+                               else BROWSE_TAB)
+
+    def _lib_tab(self, key: str):
+        if key in (BROWSE_TAB, GAMES_TAB):
+            self.set_library_view('all' if key == GAMES_TAB else 'browse')
+        elif not self.open_category(key):
+            self._sync_lib_tabs()
+
+    def set_library_view(self, view: str):
+        """Browse (rows) or All games (the grid), saved with the sort and
+        Show (theatre_library.view)."""
+        view = 'all' if view == 'all' else 'browse'
+        if self.lib_state.get('view') == view:
+            self._sync_lib_tabs()
+            return
+        self.lib_state = {**self.lib_state, 'view': view}
+        self._fill_library()
+        self.library_changed.emit(dict(self.lib_state))
+
+    def _lib_first(self):
+        """The first tile of the Library on show (rows or grid), else None."""
+        if self.lib_stack.currentWidget() is self.lib_rows:
+            return next((r.tiles[0] for r in self._lib_order if r.tiles), None)
+        flows = [self.lib_flow] + [w.flow for w in self._lib_groups]
+        return next((f.itemAt(0).widget() for f in flows if f.count()), None)
+
+    # ---- a category's page (w-100) ----
+    def category_key(self) -> str | None:
+        return self._cat_key
+
+    def category_open(self) -> bool:
+        return self._cat_key is not None and self.pages.currentWidget() is self.catpage
+
+    def open_category(self, key: str) -> bool:
+        """A category's page (X or See all on a row, a pinned tab, the
+        Ribbon's pin): big tiles, the focus on the first. B comes back to
+        the row, tile and scroll it was opened from. False for a key with
+        no category here."""
+        cat = self._category(key)
+        if cat is None:
+            return False
+        if self._cat_key is None:
+            self._cat_from = QApplication.focusWidget()
+            self._cat_back = KeepPlace(self.lib_stack.currentWidget(), scroll=True).take() \
+                if self.pages.currentWidget() is self.lib_page else None
+        self._cat_key = key
+        self._refresh_category(cat)
+        if self.layout_mode == 'ribbon':
+            self._ribbon_sub = 'category'        # first: the tabs then stay on it
+            self._mirror_tabs('library')
+            self.crumb.setText(cat.title)
+            self.crumb.show()
+        target = self._page_focus()
+        if self._has_base_focus():               # focus first, then switch (w-60)
+            target.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.pages.setCurrentWidget(self.catpage)
+        self._sync_art()
+        focus_and_reveal(target)
+        return True
+
+    def _category(self, key):
+        """A category of the Library's games: a row's, or a pin's (kept
+        with no games)."""
+        return categories.lookup(self._cat_groups, key) \
+            or next((c for c in self._pin_cats if c.key == key), None)
+
+    def _has_base_focus(self) -> bool:
+        f = QApplication.focusWidget()
+        return f is not None and self._in_base(f)
+
+    def _page_focus(self):
+        """Where focus goes on the category page: its first tile, else
+        Continue or Pick for me."""
+        h = self.catpage.header
+        return self.catpage.tile_for() or (h.btn_continue if not h.btn_continue.isHidden()
+                                           else h.btn_pick)
+
+    def _refresh_category(self, cat=None):
+        cat = cat or self._category(self._cat_key)
+        if cat is None:                          # gone (a collection deleted): back
+            self.close_category()
+            return
+        self.catpage.set_category(cat, categories.stats(cat, self.facts), categories.lead(cat),
+                                  empty=CAT_NO_GAMES)
+        self.catpage.set_pin_state(self._pin_state(cat.key))
+
+    def close_category(self) -> bool:
+        """B on a category page: back to the Library's rows (or the
+        Ribbon's item) where it was opened. True if a page was open."""
+        if self._cat_key is None:
+            return False
+        back, came = self._cat_back, self._cat_from
+        self._drop_category()
+        if self.layout_mode == 'ribbon':
+            self._ribbon_close_page()
+            return True
+        key = self.tabs.current() if self.tabs.current() in self._pages else 'library'
+        page = self._pages[key]
+        self._sync_lib_tabs()
+        target = None
+        if back is not None:
+            back.put_back()                      # the scroll and row offsets, now and later
+            if back.focus is not None:
+                slug, rid = back.focus
+                rows = [r for r in self._lib_order if (r.key or r.title) == rid] \
+                    or self._lib_order
+                target = next((t for r in rows for t in r.tiles
+                               if t.game.get('slug') == slug), None)
+        if target is None and alive(came) and page.isAncestorOf(came):
+            target = came                        # a strip tab, the grid's tile
+        if target is None and page is self.lib_page:
+            target = self._lib_first() or self.lib_chip
+        if target is not None and self._has_base_focus():
+            target.setFocus(Qt.FocusReason.OtherFocusReason)    # first, then switch (w-60)
+        self.pages.setCurrentWidget(page)
+        self._sync_art()
+        if target is None:
+            focus_and_reveal(self.default_focus())
+        return True
+
+    def _drop_category(self) -> bool:
+        """Forget the open page (LB/RB, a layout switch, Home): nothing to
+        go back to. True if one was open."""
+        was = self._cat_key is not None
+        self._cat_key = self._cat_back = self._cat_from = None
+        return was
+
+    def _page_clicked(self, g, _mods):
+        self.open_game(g)
+
+    def _play_lead(self, g: dict):
+        """Continue <game>: play it, or its page when it can't start now."""
+        if can_quick_play(g):
+            self.play.emit(g)
+        else:
+            self.open_game(g)
+
+    def pick_for_me(self):
+        """Pick for me (Y, or the header's button) on a category page: a
+        game from what it shows (the window picks)."""
+        self.pick_in.emit(self.catpage.shown_games())
+
+    def open_category_sheet(self, sheet, focus: int = 0):
+        """View on a category page: its sort (saved per category, as the
+        desktop page's); a pick refills the page and the sheet stays up."""
+        cur = self.catpage.sort.currentData()
+        items = ["Sort by"] + [
+            (text, G['check'] if key == cur else G['list'],
+             lambda k=key, i=i: self._pick_category_sort(sheet, k, i), key == cur)
+            for i, (text, key) in enumerate(SORT_NAMES)]
+        sheet.choose("Sort", items, focus=focus, keep_open=True)
+
+    def _pick_category_sort(self, sheet, key: str, index: int):
+        self.catpage.set_sort(key)
+        self.open_category_sheet(sheet, index)
 
     @staticmethod
     def _collection_groups(games: list[dict]) -> list[tuple[str, list[dict]]]:
@@ -1174,7 +1531,12 @@ class TheatreView(QWidget):
 
     def open_library_sheet(self, sheet, focus: int = 0):
         """Sort & filter in `sheet` (Theatre's ActionSheet): a pick updates
-        the grid and the chip behind it and the sheet stays up."""
+        the grid and the chip behind it and the sheet stays up. On a
+        category page: that page's sort."""
+        if self.category_open():
+            self.open_category_sheet(sheet, focus)
+            return
+
         def row(kind, key, text, i):
             on = self.lib_state[kind] == key
             return (text, G['check'] if on else G['list'],
@@ -1237,9 +1599,9 @@ class TheatreView(QWidget):
                 self.tabs.set_current('downloads', emit=True)
                 QTimer.singleShot(0, lambda: self._focus_download(key))
             return True
-        on_library = self.ribbon.state.cat == 'library' and \
-            self.pages.currentWidget() is self.ribbon if self.layout_mode == 'ribbon' \
-            else self.tabs.current() == 'library'
+        on_library = self.category_open() or (
+            self.ribbon.state.cat == 'library' and self.pages.currentWidget() is self.ribbon
+            if self.layout_mode == 'ribbon' else self.tabs.current() == 'library')
         if on_library and not self.details.isVisible() \
                 and not self.search.isVisible() and not self.trailer.isVisible():
             self.library_sheet.emit()
@@ -1293,7 +1655,7 @@ class TheatreView(QWidget):
         on = self._art_on()
         if self.property('art') != on:
             self.setProperty('art', on)
-            for b in self.tabs._items.values():
+            for b in (*self.tabs.buttons(), *self.lib_tabs.buttons()):  # #Theatre[art] rules
                 b.style().unpolish(b)
                 b.style().polish(b)
         self.update()
@@ -1426,6 +1788,9 @@ class TheatreView(QWidget):
         page = self.pages.currentWidget()
         sub = next((k for k in self.PAGE_TITLES if self._pages[k] is page), None) \
             if shown else None
+        cur = QApplication.focusWidget()
+        on_page = cur is not None and self.catpage.isAncestorOf(cur)
+        self._drop_category()                    # a category page doesn't survive the switch
         self.layout_mode = mode
         if mode == 'ribbon':
             self._ribbon_sub = sub               # first: the tabs stay on that page
@@ -1442,6 +1807,9 @@ class TheatreView(QWidget):
                 self.crumb.setText(self.PAGE_TITLES[sub])
                 self.crumb.show()
             else:
+                self.crumb.hide()
+                if on_page:                      # focus first, then switch (w-60)
+                    self.ribbon.setFocus(Qt.FocusReason.OtherFocusReason)
                 self.pages.setCurrentWidget(self.ribbon)
         else:
             self._ribbon_timer.stop()
@@ -1451,6 +1819,11 @@ class TheatreView(QWidget):
             key = sub or (cat if cat in self._pages and not self.tabs.item(cat).isHidden()
                           else 'home')
             self.tabs.set_current(key)
+            if on_page:                          # focus first, then switch (w-60)
+                t = (self._shown_tile(g['slug'], self._pages[key]) if g else None) \
+                    or (self._lib_first() if key == 'library' else None)
+                if t is not None:
+                    t.setFocus(Qt.FocusReason.OtherFocusReason)
             self.pages.setCurrentWidget(self._pages[key])
         hiding = (self.tabs, self.btn_search, self.btn_surprise) if mode == 'ribbon' else ()
         if inside:
@@ -1474,10 +1847,7 @@ class TheatreView(QWidget):
         if sub is None:
             if self.layout_mode == 'ribbon':
                 return self.ribbon
-            page = self.pages.currentWidget()
-            tile = next((t for t in page.findChildren(GameTile)
-                         if g is not None and t.game.get('slug') == g['slug']
-                         and not t.isHidden()), None)
+            tile = self._shown_tile(g['slug']) if g is not None else None
             return tile or self.default_focus()
         stays = f is not None and f.isVisible() \
             and not any(w is f or w.isAncestorOf(f) for w in hiding)
@@ -1542,7 +1912,9 @@ class TheatreView(QWidget):
                       'slug': e.get('slug')} for e in self._friend_entries],
             settings=settings, discover=not self.tabs.item('discover').isHidden(),
             downloads=not self.tabs.item('downloads').isHidden(), downloads_sub=down,
-            fact=fact_text, a_plays=self.a_plays)
+            fact=fact_text, a_plays=self.a_plays,
+            pins=[(c.key, c.title, len(c.games))
+                  for c in self._pin_cats])
 
     def ribbon_home(self):
         """Home's first item (Now playing while a game runs): entering
@@ -1593,6 +1965,8 @@ class TheatreView(QWidget):
                 self.deal_asked.emit(e, 'friends')
         elif item.primary.startswith('tab:'):
             self._ribbon_tab(item.primary[4:])
+        elif item.primary.startswith('cat:'):      # a pinned category (w-100)
+            self.open_category(item.primary[4:])
         elif item.kind == 'setting' and item.primary == 'step':
             self.ribbon_setting.emit(item.key[4:], ribbon_model.step_value(item))
         elif item.primary == 'sheet':
@@ -1641,6 +2015,7 @@ class TheatreView(QWidget):
         """A tab picked while in the Ribbon (Back to Home, View on a finished
         download, a tab that went away): its category, or its page."""
         if key in self.PAGE_TITLES:
+            self._drop_category()
             self._ribbon_sub = key               # first: the tabs then stay on this page
             self.ribbon.select(key)
             self._mirror_tabs(key)
@@ -1661,7 +2036,10 @@ class TheatreView(QWidget):
         if self._ribbon_sub is None:
             return False
         self._ribbon_sub = None
+        self._drop_category()                    # a category page (w-100) goes too
         self.crumb.hide()
+        if self._has_base_focus():
+            self.ribbon.setFocus(Qt.FocusReason.OtherFocusReason)   # first, then switch (w-60)
         self.pages.setCurrentWidget(self.ribbon)
         focus_and_reveal(self.ribbon)
         self._ribbon_category(self.ribbon.state.cat)
@@ -1758,6 +2136,7 @@ class TheatreView(QWidget):
             if not self._mirroring:
                 self._ribbon_tab(key)
             return
+        self._drop_category()                   # LB/RB, Home: the page is left behind
         self.pages.setCurrentWidget(self._pages[key])
         if key == 'discover':
             self.discover_shown.emit()
@@ -1866,10 +2245,19 @@ class TheatreView(QWidget):
         self.details.setVisible(False)
         self.pages.setEnabled(True)
         self.tabs.setEnabled(True)
-        tile = next((t for t in self.findChildren(GameTile)
-                     if t.game.get('slug') == slug and not t.isHidden()
-                     and self.pages.currentWidget().isAncestorOf(t)), None)
+        tile = self._shown_tile(slug) if slug else None
         focus_and_reveal(tile or self.default_focus())
+
+    def _shown_tile(self, slug: str, page=None):
+        """The tile of `slug` on `page` (the page on show by default; the
+        Library: the rows or the grid, whichever shows; a category page:
+        its grid)."""
+        page = page or self.pages.currentWidget()
+        if page is self.catpage:
+            return self.catpage.tile_for(slug)
+        scope = self.lib_stack.currentWidget() if page is self.lib_page else page
+        return next((t for t in scope.findChildren(GameTile)
+                     if t.game.get('slug') == slug and not t.isHidden()), None)
 
     # ---- search ----
     def open_search(self):
@@ -1917,6 +2305,8 @@ class TheatreView(QWidget):
             else:
                 self.close_game()
             return True
+        if self.close_category():               # a category page: back to its row
+            return True
         if self.layout_mode == 'ribbon':
             if self._ribbon_close_page():
                 return True
@@ -1951,13 +2341,15 @@ class TheatreView(QWidget):
             if not self.hero.isHidden() and self.hero.btn.isEnabled():
                 return self.hero.btn
         page = self.pages.currentWidget()
+        if page is self.catpage:
+            return self._page_focus()
+        if page is self.lib_page:
+            return self._lib_first() or self.lib_chip
         if page is self.downloads_page:
             return page.first_row() or page.empty
         if page is self.discover_page:
             return page.first_focus()
         tile = next((t for t in page.findChildren(GameTile) if not t.isHidden()), None)
-        if tile is None and page is self.lib_page:
-            return self.lib_chip
         return tile or (page if page.focusPolicy() != Qt.FocusPolicy.NoFocus else None)
 
     def _tick(self):
@@ -2058,6 +2450,11 @@ from .ribbon import RibbonView  # noqa: E402
 from .ribbon_model import find  # noqa: E402
 from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
+from nexus import categories  # noqa: E402
+from nexus.features import has  # noqa: E402
+from .category import (BROWSE_TAB, CategoryPage, CategoryTabs, GAMES_TAB,  # noqa: E402
+    NO_GAMES as CAT_NO_GAMES, SORT_NAMES)
+from .library import HomeView, KeepPlace  # noqa: E402
 from .widgets import (clear_layout, EmptyState, FlowLayout, glyph_pixmap, icon_button,  # noqa: E402
     icon_label, label, plain_label, SegmentedControl, set_glyph_icon)
 from .topbar import Wordmark  # noqa: E402

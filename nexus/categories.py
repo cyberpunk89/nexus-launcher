@@ -29,6 +29,7 @@ ROW_CAP = 20                 # tiles in one row of a page's Rows view (and of Br
 CAPS = {'for_you': 6, 'genres': 6}
 # The All categories hub's place key: never a category (is_key is False).
 HUB = 'all'
+PIN_MAX = 6                  # pinned categories (tabs in the Library)
 
 # Glyphs (nexus/icons.py names): the smart rules and stores from ICONS, the
 # genres from the collection icons.
@@ -182,6 +183,8 @@ def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=N
         title, tip, glyph = smart.label(key), smart.tip(key), ICONS[RULE_GLYPH[rule]]
     elif kind == 'genre':
         name = key[len('genre:'):]
+        if name not in NEXUS_GENRES:             # not one the facts index gives
+            return None
         hit = smart.games_for(key, games, facts, now, linux, friends)
         title, tip = name, smart.tip(key)
         glyph = COLLECTION_ICONS.get(GENRE_GLYPH.get(name, ''), ICONS['grid'])
@@ -274,6 +277,60 @@ def browse(groups, hidden=(), caps=None) -> list[Group]:
 
 def lookup(groups, key) -> Category | None:
     return next((c for g in groups for c in g.cats if c.key == key), None)
+
+
+# ---- pinned categories (tabs) ----
+def clean_pins(raw) -> list[str]:
+    """library.json's category_pins as a list of category keys: bad ones
+    and repeats dropped, at most PIN_MAX, in the order given."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for key in raw:
+        if is_key(key) and key not in out:
+            out.append(key)
+    return out[:PIN_MAX]
+
+
+def _live_count(pins, live) -> int:
+    return len(pins) if live is None else sum(1 for k in pins if k in live)
+
+
+def pin_state(pins, key, live=None) -> str:
+    """'on' (pinned), 'off', or 'full' (not pinned and no room left).
+    `live`: the pinned keys that are a category now (pinned()); a pin
+    outside it is kept but takes no place. None: every pin counts."""
+    if key in pins:
+        return 'on'
+    return 'full' if _live_count(pins, live) >= PIN_MAX else 'off'
+
+
+def toggle_pin(pins, key, live=None) -> list[str]:
+    """Pins with `key` unpinned or pinned last (a new list); unchanged when
+    the live pins are full or the key isn't a category. Pinning with no
+    room left drops pins that aren't live (the oldest first)."""
+    out = list(pins)
+    if key in out:
+        out.remove(key)
+        return out
+    if not is_key(key) or pin_state(out, key, live) == 'full':
+        return out
+    while len(out) >= PIN_MAX:
+        out.remove(next(k for k in out if live is not None and k not in live))
+    out.append(key)
+    return out
+
+
+def pinned(pins, games, facts, prefs: PrefsView, linux: bool = False, friends=None,
+           now: datetime | None = None) -> list[Category]:
+    """The pinned categories over `games`, in pin order, for the tabs
+    (desktop, Theatre) and the Ribbon alike. One with no games now is kept
+    (its page says so); a key that is no category here (a collection
+    deleted, a store that's off) is skipped and stays in the pins. A row
+    hidden from Browse is still a pin."""
+    now = now or datetime.now()
+    return [c for c in (category(k, games, facts, prefs, linux, friends, now, keep_empty=True)
+                        for k in pins) if c is not None]
 
 
 # ---- what a category page shows ----

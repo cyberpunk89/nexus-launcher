@@ -3279,7 +3279,8 @@ class Window(unittest.TestCase):
         QApplication.processEvents()
         self.assertTrue(w.theatre.hero.btn_more.isHidden())
         self.assertEqual(w.theatre.hero.btn_more.focusPolicy(), Qt.FocusPolicy.NoFocus)
-        tile = next(t for t in w.theatre.findChildren(nx.GameTile) if not t.isHidden())
+        # A Home tile (X on a Library row's tile is See all, w-100).
+        tile = next(t for t in w.theatre.home.findChildren(nx.GameTile) if not t.isHidden())
         tile.setFocus()
         self._key(tile, Qt.Key.Key_Menu)                    # X
         self.assertTrue(w.theatre_sheet.isVisible())
@@ -4376,7 +4377,8 @@ class Window(unittest.TestCase):
                 mock.patch('nexus.gui.theatre.is_installed', lambda g: g['slug'] != 'eps'), \
                 mock.patch('nexus.gui.theatre.COLLECTION_NAMES', ['Couch', 'Co-op']):
             th.set_games(games)
-            th.set_library_state({'sort': 'name', 'show': 'installed'})
+            # All games: the grid (w-100; Browse, the rows, is the default).
+            th.set_library_state({'sort': 'name', 'show': 'installed', 'view': 'all'})
             QApplication.processEvents()
             self.assertEqual(order(), ['alpha', 'steam-1', 'delta', 'gamma'])
             self.assertEqual(th.lib_chip.text(), "A to Z  ·  Installed  ·  4 games")
@@ -4393,7 +4395,7 @@ class Window(unittest.TestCase):
             QApplication.processEvents()
             self.assertTrue(sheet.isVisible())                  # stays up
             self.assertEqual(order(), ['delta', 'alpha', 'steam-1', 'gamma'])
-            self.assertEqual(saved[-1], {'sort': 'most', 'show': 'installed'})
+            self.assertEqual(saved[-1], {'sort': 'most', 'show': 'installed', 'view': 'all'})
             self.assertEqual(th.lib_chip.text(), "Most played  ·  Installed  ·  4 games")
             next(b for b in sheet.findChildren(QPushButton) if b.text() == "Everything").click()
             QApplication.processEvents()
@@ -4721,13 +4723,13 @@ class Window(unittest.TestCase):
             self.assertTrue(x.isHidden())
         self.assertEqual(spot.game['slug'], 'alpha')            # the last played
         self.assertIn("2.0 h played", spot.fact.text())         # one line, no pills
-        row = th.findChildren(nx.ShelfRow)[0]
+        row = th.home.findChildren(nx.ShelfRow)[0]               # Home's (not the Library's)
         self.assertEqual(row.title, "Jump back in")
         tile = row.tiles[1]
         tile.setFocus()
         QApplication.processEvents()
         self.assertEqual(spot.game['slug'], tile.game['slug'])  # follows focus
-        th.findChildren(nx.ShelfRow)[1].tiles[0].setFocus()     # another shelf: stays
+        th.home.findChildren(nx.ShelfRow)[1].tiles[0].setFocus()   # another shelf: stays
         QApplication.processEvents()
         self.assertEqual(spot.game['slug'], tile.game['slug'])
         spot.btn.setFocus()

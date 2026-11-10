@@ -296,6 +296,8 @@ class ControllerMixin:
         if self._theatre and act == 'search':
             if self.theatre.search.isVisible():
                 self.theatre.search.type(' ')        # Y on the keyboard: a space
+            elif self.theatre.category_open() and not self.theatre.details.isVisible():
+                self.theatre.pick_for_me()           # Pick for me (w-100): pick_in -> surprise
             elif not self.theatre.details.isVisible():
                 self.theatre.open_search()
             self._update_hints()
@@ -703,6 +705,8 @@ class ControllerMixin:
                 hints = [('a', ('Resume' if pinned else 'Play') if f is th.hero.btn else
                           'Quit game' if pinned and f is th.hero.btn_details else 'Open'),
                          ('x', 'Options'), ('↓', 'Your games')]
+            elif isinstance(f, GameTile) and getattr(f, 'cat_key', None):   # a Library row
+                hints = [('a', self._a_label(f)), ('x', 'See all'), ('b', 'Home')]
             elif isinstance(f, GameTile):
                 hints = [('a', self._a_label(f)), ('x', 'Options'), ('b', 'Home')]
             elif isinstance(f, TheatreCard) and f.kind == 'friends':       # w-82, Home
@@ -723,15 +727,21 @@ class ControllerMixin:
                              ('x', 'Options'), ('b', 'Home')]
                 else:
                     hints = [('b', 'Home')]
+            page = th.category_open()                   # a category page (w-100)
+            if page and hints and hints[-1] == ('b', 'Home'):
+                hints[-1] = ('b', 'Back')
             if th.moment_banner.isVisible():
                 hints.insert(-1, ('View', f"Show {th.moment_banner.name}" if th.moment_banner.name
                                   else "Show it"))
+            elif page:
+                hints.insert(-1, ('View', 'Sort'))
             elif th.tabs.current() == 'library':
                 hints.insert(-1, ('View', 'Sort & filter'))
             if th.layout_mode == 'ribbon' and hints and hints[-1] == ('b', 'Home'):
                 hints[-1] = ('b', 'Back')               # a page opened from the Ribbon
-            hints += [('y', 'Search'), ('LB RB', 'Category' if th.layout_mode == 'ribbon'
-                                        else 'Tabs'), ('Menu', 'Quick menu')]
+            hints += [('y', 'Pick for me' if page else 'Search'),
+                      ('LB RB', 'Category' if th.layout_mode == 'ribbon' else 'Tabs'),
+                      ('Menu', 'Quick menu')]
             self.hints.show_hints(hints)
             return
         if isinstance(f, GameTile) or isinstance(f, ListView):

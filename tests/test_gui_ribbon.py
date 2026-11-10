@@ -185,6 +185,34 @@ class Ribbon(unittest.TestCase):
         self.assertEqual(self._where(rb), ('library', 'game:gamma'))
         w.set_theatre(False)
 
+    def test_pin_opens_page_b_back_to_item(self):
+        """w-100: a pinned category heads the Library column; A opens its
+        page (the crumb names it), B comes back to the same item."""
+        w = self.win
+        th = w.theatre
+        w.prefs.category_pins = ['src:nexus']
+        rb = self._ribbon()
+        th.pins_changed()
+        th._ribbon_flush()
+        lib = next(c for c in rb.cats if c.key == 'library')
+        self.assertEqual(lib.items[0].key, 'cat:src:nexus')
+        rb.select('library', 'cat:src:nexus')
+        self._press(Qt.Key.Key_Return, rb)
+        self._pump()
+        self.assertIs(th.pages.currentWidget(), th.catpage)
+        self.assertEqual(th.catpage.cat.key, 'src:nexus')
+        self.assertEqual(th.crumb.text(), "Repacks")
+        self.assertFalse(th.crumb.isHidden())
+        self.assertTrue(th.catpage.isAncestorOf(QApplication.focusWidget()))
+        self.assertEqual(th.tabs.current(), 'library')            # mirrored, unseen
+        w._escape()                                               # B
+        self._pump()
+        self.assertIs(th.pages.currentWidget(), rb)
+        self.assertIs(QApplication.focusWidget(), rb)
+        self.assertEqual(self._where(rb), ('library', 'cat:src:nexus'))
+        self.assertTrue(th.crumb.isHidden())
+        w.set_theatre(False)
+
     def test_b_goes_home_and_never_leaves_theatre(self):
         w = self.win
         rb = self._ribbon()

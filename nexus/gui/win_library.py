@@ -189,6 +189,12 @@ class LibraryMixin:
         chips.set_right(self.own_seg)
         self.own_seg.setVisible(self.prefs.show_owned)
         lay.addWidget(chips)
+        # Pinned categories as tabs (w-100): Browse, the pins, All
+        # categories; shown with a pin, on Browse, a page and the hub alike.
+        self.cat_tabs = CategoryTabs(34, (SP['5'], SP['2'], SP['5'], 0))
+        self.cat_tabs.picked.connect(self._cat_tab_picked)
+        lay.addWidget(self.cat_tabs)
+        self.cat_tabs.hide()
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
 
@@ -214,6 +220,7 @@ class LibraryMixin:
         self.catpage.pick.connect(self._pick_in_category)
         self.catpage.cat_menu.connect(self._category_menu)
         self.catpage.shown_changed.connect(self._category_shown)
+        self.catpage.pin_asked.connect(self._toggle_pin)
         self.views.addWidget(self.catpage)
         # All categories (w-99): the hub, routed as the place key categories.HUB.
         self.cathub = CategoryHub()
@@ -855,6 +862,7 @@ class LibraryMixin:
             pending = [j for j in self.jobs.jobs if j.kind == 'install' and j.active]
             self._pending_ids = tuple(id(j) for j in pending)
             self._refresh_category()
+            self._sync_cat_tabs()
             self._refresh_home(f"Couldn't load the library — {self._load_error}"
                                if self._load_error and not self._games else None, pending)
             return
@@ -939,6 +947,7 @@ class LibraryMixin:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
+        self._sync_cat_tabs()
         self._refresh_home(empty, pending)
 
     # ---- Steam friends (w-81) ----
@@ -1110,6 +1119,7 @@ class LibraryMixin:
         self._lib_chips.hide()
         self.views.setCurrentWidget(self.cathub if hub else self.catpage)
         self._refresh_category(sort)
+        self._sync_cat_tabs()
         self._sync_pins()
         if self.input.mode in ('keyboard', 'pad'):
             QTimer.singleShot(0, self._focus_category)
@@ -1125,7 +1135,7 @@ class LibraryMixin:
         self._lib_bar.show()
         self._lib_chips.show()
         self.views.setCurrentWidget(self.view)
-        self.apply_filter()
+        self.apply_filter()                     # the tabs follow (_sync_cat_tabs)
         place, self._browse_place = self._browse_place, None
         if place is not None:
             place.put_back()
@@ -1150,6 +1160,8 @@ class LibraryMixin:
             return False
         if self._category_for(key, keep_empty=False) is not None:
             return True
+        if key in self.prefs.category_pins and self._category_for(key) is not None:
+            return True                         # a pinned tab: its page says it is empty
         return categories.kind_of(key) == 'genre' and key[len('genre:'):] in NEXUS_GENRES \
             and not self._smart_facts()
 
@@ -1193,9 +1205,66 @@ class LibraryMixin:
         self.catpage.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
                                   cuts, cut_games, categories.related(cat, groups),
                                   self._category_empty(cat), default_sort=sort)
+        self.catpage.set_pin_state(self._pin_state(cat.key))
         self.catpage.set_jobs(self.jobs)
         self.catpage.mark_selected(set(self.selected))
         self._shown_games = self.catpage.shown_games()
+
+    # ---- pinned categories (w-100) ----
+    def _pinned_cats(self) -> list:
+        """The pinned categories (categories.pinned, as Theatre's): one with
+        no games keeps its tab; one that is no category here is left out
+        and takes no place towards the 6."""
+        return categories.pinned(self.prefs.category_pins, self._category_pool(),
+                                 self._smart_facts(), self._prefs_view(), has('proton'),
+                                 FRIENDS.public_ids())
+
+    def _live_pins(self) -> set:
+        return {c.key for c in self._pinned_cats()}
+
+    def _pin_state(self, key: str) -> str:
+        return categories.pin_state(self.prefs.category_pins, key, self._live_pins())
+
+    def _toggle_pin(self, key: str):
+        """Pin / Pinned on a page (desktop or Theatre): the category's tab
+        comes or goes (nothing when 6 live ones are pinned already)."""
+        pins = categories.toggle_pin(self.prefs.category_pins, key, self._live_pins())
+        if pins == self.prefs.category_pins:
+            return
+        self.prefs.category_pins = pins
+        self.prefs.save()
+        if self._category_open() and not self._hub_open():
+            self.catpage.set_pin_state(self._pin_state(self._cat_key))
+        self._sync_cat_tabs()
+        theatre = getattr(self, 'theatre', None)
+        if theatre is not None:
+            theatre.pins_changed()
+
+    def _sync_cat_tabs(self):
+        """The strip: shown with a pin; its current tab is the place the
+        Library shows (none on a page that isn't pinned)."""
+        pins = self.prefs.category_pins
+        if not pins:
+            self.cat_tabs.hide()
+            return
+        cats = self._pinned_cats()          # one category() per pin: cheap per search key
+        if not cats:
+            self.cat_tabs.hide()
+            return
+        key = self._cat_key if self._category_open() else BROWSE_TAB
+        first = "Browse" if self._view == 'home' else "All games"
+        tabs = [(BROWSE_TAB, first)] + [(c.key, c.title) for c in cats] \
+            + [(categories.HUB, "All categories")]
+        self.cat_tabs.set_tabs(tabs, key)
+        self.cat_tabs.show()
+
+    def _cat_tab_picked(self, key: str):
+        if key == BROWSE_TAB:
+            self.close_category()
+        elif key == categories.HUB:
+            self._open_hub()
+        elif not self.open_category(key):
+            self._sync_cat_tabs()               # it couldn't open: the tab goes back
 
     def _category_empty(self, cat) -> str:
         """The page's line when it has no game."""
@@ -1804,7 +1873,7 @@ from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,
     PRESENCE_AGE, PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
-from .category import CategoryHub, CategoryPage, NO_GAMES  # noqa: E402
+from .category import BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, NO_GAMES  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

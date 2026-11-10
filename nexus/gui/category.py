@@ -35,6 +35,9 @@ COVER_MAX = 6
 CONTINUE_CHARS = 24            # "Continue <name>": the name is cut after this many
 NO_GAMES = "No games here right now."
 HOME_TILE = 150                # a row's tiles: as on the Shelves view (HomeView.SHELF_TILE)
+# The pinned-tab strip's own tabs (never a category key; categories.HUB is
+# the desktop's All categories): Browse, and Theatre's All games.
+BROWSE_TAB, GAMES_TAB = 'browse', 'games'
 
 
 def _short(name: str, n: int = CONTINUE_CHARS) -> str:
@@ -232,21 +235,28 @@ class _Mosaic:
 class MosaicHeader(QWidget, _Mosaic):
     """The category page's header: a crumb back to the Library, the kind,
     the title and a story line (games, hours, finished, size), then
-    Continue <the game played last>, Pick for me and ⋮ — over the mosaic."""
+    Continue <the game played last>, Pick for me, Pin and ⋮ — over the
+    mosaic. In Theatre (`theatre`, w-100) it is `scale` times as tall and
+    has no crumb (B goes back) and no ⋮."""
     back = pyqtSignal()
     play_lead = pyqtSignal(dict)
     pick = pyqtSignal()
     menu = pyqtSignal(QPoint)
+    pin = pyqtSignal()                      # Pin / Pinned: toggle this category's tab
 
     TEXT_SHARE = 0.52
 
-    def __init__(self):
+    def __init__(self, theatre: bool = False, scale: float = 1.0):
         super().__init__()
         self._mosaic_init()
+        self.theatre = theatre
         self._lead: dict | None = None
+        self._lead_name = ''                     # Continue's game, before _fit cuts it
         self._title = self._story = ''
+        self._pin_state: str | None = None
         self.setObjectName("MosaicHeader")
-        self.setFixedHeight(scaled(208))
+        self.setFixedHeight(round(scaled(208) * scale))
+        px = lambda n: round(n * scale)          # noqa: E731  (glyph sizes)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(SP['5'], SP['3'], SP['5'], SP['5'])
         lay.setSpacing(0)
@@ -261,10 +271,11 @@ class MosaicHeader(QWidget, _Mosaic):
         set_glyph_icon(self.btn_back, G['chevron_left'], 15, 'subtext')
         self.btn_back.clicked.connect(self.back)
         col.addWidget(self.btn_back, 0, Qt.AlignmentFlag.AlignLeft)
+        self.btn_back.setVisible(not theatre)
         col.addStretch(1)
         kind = QHBoxLayout()
         kind.setSpacing(SP['2'])
-        self.kind_icon = icon_label('', 14, P['subtext'])
+        self.kind_icon = icon_label('', px(14), P['subtext'])
         kind.addWidget(self.kind_icon)
         self.kind = label("", "CatKind")
         kind.addWidget(self.kind)
@@ -281,16 +292,25 @@ class MosaicHeader(QWidget, _Mosaic):
         self.btn_continue = QPushButton("")
         self.btn_continue.setObjectName("Primary")
         self.btn_continue.setCursor(Qt.CursorShape.PointingHandCursor)
-        set_glyph_icon(self.btn_continue, G['play'], 15, 'on_accent', hover_role=None)
+        set_glyph_icon(self.btn_continue, G['play'], px(15), 'on_accent', hover_role=None)
         self.btn_continue.clicked.connect(lambda: self._lead and self.play_lead.emit(self._lead))
         acts.addWidget(self.btn_continue)
         self.btn_pick = QPushButton("Pick for me")
         self.btn_pick.setObjectName("Ghost")
         self.btn_pick.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_pick.setToolTip("A game from this category, picked for you")
-        set_glyph_icon(self.btn_pick, G['dice'], 15, 'subtext')
+        set_glyph_icon(self.btn_pick, G['dice'], px(15), 'subtext')
         self.btn_pick.clicked.connect(self.pick)
         acts.addWidget(self.btn_pick)
+        # Pin (w-100): this category as a tab in the Library.
+        self.btn_pin = QPushButton("Pin")
+        self.btn_pin.setObjectName("Ghost")
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_glyph_icon(self.btn_pin, G['pin'], px(15), 'subtext', on_role='accent')
+        self.btn_pin.clicked.connect(self._pin_clicked)
+        self.btn_pin.hide()
+        acts.addWidget(self.btn_pin)
         self.btn_more = icon_button(G['more'], "More for this category", 32, "Ghost",
                                     round_=True)
         self.btn_more.clicked.connect(lambda: self.menu.emit(
@@ -298,7 +318,10 @@ class MosaicHeader(QWidget, _Mosaic):
         acts.addWidget(self.btn_more)
         acts.addStretch()
         col.addLayout(acts)
-        lay.addWidget(self.col)
+        # The text takes its share (_fit caps it), the covers the rest: with
+        # Ignored labels the column would otherwise shrink to its buttons.
+        self.col.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self.col, 1)
         lay.addStretch(1)
 
     def set_category(self, cat: categories.Category, stats: categories.Stats | None = None,
@@ -312,20 +335,57 @@ class MosaicHeader(QWidget, _Mosaic):
         self._story = story(stats or categories.stats(cat, {}))
         self.story.setToolTip(cat.tip)
         self.btn_continue.setVisible(lead is not None)
+        self._lead_name = ''
         if lead is not None:
             name = lead.get('display_name') or lead.get('slug') or ''
-            self.btn_continue.setText(f"Continue {_short(name)}".replace('&', '&&'))
+            self._lead_name = _short(name)
             self.btn_continue.setToolTip(f"Play {name}")
-        self.btn_more.setVisible(cat.kind not in ('fav', 'store'))
+        self.btn_more.setVisible(cat.kind not in ('fav', 'store') and not self.theatre)
         self._fit()
 
+    def set_pin_state(self, state: str):
+        """categories.pin_state(): 'on' (Pinned), 'off' (Pin), 'full' (Pin,
+        greyed out: no room). The button shows from the first call."""
+        self._pin_state = state
+        self.btn_pin.show()
+        on = state == 'on'
+        self.btn_pin.setChecked(on)
+        self.btn_pin.setText("Pinned" if on else "Pin")
+        self.btn_pin.setEnabled(state != 'full')
+        self.btn_pin.setToolTip(
+            "Unpin this category from the Library's tabs" if on else
+            f"{categories.PIN_MAX} pinned, unpin one first" if state == 'full' else
+            "Pin this category as a tab in the Library")
+        self._fit()                              # Continue's room changed
+
+    def _pin_clicked(self):
+        self.btn_pin.setChecked(self._pin_state == 'on')     # the window says what it is
+        self.pin.emit()
+
     def _fit(self):
-        """The text keeps to the left part, the title on one line."""
+        """The text keeps to the left part, the title on one line, and
+        Continue's game name is cut to leave room for the other buttons."""
         m = self.layout().contentsMargins()
         w = max(120, int(self.width() * self.TEXT_SHARE) - m.left())
         self.col.setMaximumWidth(w)
         for lab, text in ((self.title, self._title), (self.story, self._story)):
+            lab.ensurePolished()                 # the theme's font, not the default
             lab.setText(lab.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, w))
+        if self._lead_name:
+            b = self.btn_continue
+            b.ensurePolished()
+            gap = SP['2']
+            others = sum(o.sizeHint().width() + gap for o in (self.btn_pick, self.btn_pin,
+                                                              self.btn_more)
+                         if not o.isHidden())
+            fm = b.fontMetrics()
+            head = "Continue "
+            pad = b.sizeHint().width() - fm.horizontalAdvance(b.text().replace('&&', '&'))
+            room = w - others - pad - fm.horizontalAdvance(head)
+            name = fm.elidedText(self._lead_name, Qt.TextElideMode.ElideRight, max(40, room))
+            text = (head + name).replace('&', '&&')
+            if b.text() != text:
+                b.setText(text)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -445,7 +505,12 @@ class CategoryPage(QWidget, _TileSignals):
     """One category's page in the Library (see the module docstring). The
     window fills it (set_category) from nexus/categories.py and refills it
     as the library changes; the sort and view are kept per category in
-    `prefs` (category_sort, category_view)."""
+    `prefs` (category_sort, category_view).
+
+    `theatre` (w-100): Theatre's page, the header `scale` times as big and
+    the grid only, of `tile`-wide Theatre tiles; no cuts, view switch or
+    More like this. Its sort is the saved per-category sort (Theatre's
+    View sheet sets it); the view is never saved."""
     clicked = pyqtSignal(dict, object)
     play = pyqtSignal(dict)
     menu = pyqtSignal(dict, QPoint)
@@ -458,13 +523,16 @@ class CategoryPage(QWidget, _TileSignals):
     pick = pyqtSignal()                     # Pick for me
     cat_menu = pyqtSignal(str, QPoint)      # ⋮ (key, where)
     shown_changed = pyqtSignal()            # a cut, sort or view changed what is shown
+    pin_asked = pyqtSignal(str)             # Pin / Pinned (the category's key)
 
     DEFAULT_VIEW = 'rows'
     DEFAULT_SORT = 'played'
 
-    def __init__(self, prefs):
+    def __init__(self, prefs, theatre: bool = False, scale: float = 1.0,
+                 tile: int | None = None):
         super().__init__()
         self.prefs = prefs
+        self.theatre = theatre
         self.cat: categories.Category | None = None
         self.cut: str | None = None
         self.view = self.DEFAULT_VIEW
@@ -486,13 +554,16 @@ class CategoryPage(QWidget, _TileSignals):
         tl = QVBoxLayout(self.top)
         tl.setContentsMargins(SP['5'], SP['4'], SP['5'], SP['2'])
         tl.setSpacing(SP['3'])
-        self.header = MosaicHeader()
+        self.header = MosaicHeader(theatre, scale)
         self.header.back.connect(self.back)
         self.header.play_lead.connect(self.play_lead)
         self.header.pick.connect(self.pick)
         self.header.menu.connect(lambda pos: self.cat and self.cat_menu.emit(self.cat.key, pos))
+        self.header.pin.connect(self._pin)
         tl.addWidget(self.header)
-        bar = QHBoxLayout()
+        self.bar = QWidget()                    # cuts, sort, view (not in Theatre)
+        bar = QHBoxLayout(self.bar)
+        bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(SP['2'])
         self.chips_box = QWidget()
         self._chips = FlowLayout(self.chips_box, margin=0, spacing=SP['1_5'])
@@ -510,7 +581,8 @@ class CategoryPage(QWidget, _TileSignals):
             self.view_seg.add(key, glyph=glyph, tip=tip)
         self.view_seg.changed.connect(self.set_view)
         bar.addWidget(self.view_seg, 0, Qt.AlignmentFlag.AlignTop)
-        tl.addLayout(bar)
+        tl.addWidget(self.bar)
+        self.bar.setVisible(not theatre)
         # Never taller than it needs: a short grid in a tall window would
         # otherwise hand the spare height to the head (a gap over the games).
         self.top.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -528,7 +600,8 @@ class CategoryPage(QWidget, _TileSignals):
         self.foot.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         # The bodies.
         self.grid = LibraryView()
-        self.grid.tile_width = getattr(prefs, 'tile', self.grid.tile_width)
+        self.grid.theatre = theatre
+        self.grid.tile_width = tile or getattr(prefs, 'tile', self.grid.tile_width)
         self.listview = ListView()
         for v in (self.grid, self.listview):
             for name in ('clicked', 'play', 'menu', 'activated', 'double', 'pending_clicked'):
@@ -596,8 +669,17 @@ class CategoryPage(QWidget, _TileSignals):
             self.sort.blockSignals(True)
             self.sort.setCurrentIndex(max(0, i))
             self.sort.blockSignals(False)
-            self._show_view(self.prefs.category_view.get(cat.key, self.DEFAULT_VIEW))
+            self._show_view('grid' if self.theatre else
+                            self.prefs.category_view.get(cat.key, self.DEFAULT_VIEW))
         self._apply()
+
+    def set_pin_state(self, state: str):
+        """The header's Pin (categories.pin_state)."""
+        self.header.set_pin_state(state)
+
+    def _pin(self):
+        if self.cat is not None:
+            self.pin_asked.emit(self.cat.key)
 
     def _fill_chips(self):
         sig = (self.cat.key, len(self.cat.games), tuple((c.key, c.count) for c in self._cuts))
@@ -626,6 +708,8 @@ class CategoryPage(QWidget, _TileSignals):
                 if self._chips.itemAt(i).widget() is not None]
 
     def _fill_related(self, related):
+        if self.theatre:
+            related = ()
         keys = tuple((c.key, len(c.games)) for c in related)
         if keys == self._related_keys:
             return
@@ -658,7 +742,7 @@ class CategoryPage(QWidget, _TileSignals):
         self._apply()
 
     def set_view(self, view: str):
-        if view not in categories.VIEWS:
+        if view not in categories.VIEWS or self.theatre:
             return
         if self.cat is not None:
             self._remember(self.prefs.category_view, view)
@@ -674,7 +758,8 @@ class CategoryPage(QWidget, _TileSignals):
             self.prefs.save()
 
     def _show_view(self, view: str):
-        self.view = view if view in categories.VIEWS else self.DEFAULT_VIEW
+        self.view = 'grid' if self.theatre else \
+            view if view in categories.VIEWS else self.DEFAULT_VIEW
         if self.view_seg.current() != self.view:
             self.view_seg.set_current(self.view, animate=False)
         self._place_top()
@@ -867,6 +952,131 @@ class CategoryPage(QWidget, _TileSignals):
     def refresh_friends(self):
         _TileSignals.refresh_friends(self)
         self.grid.refresh_friends()
+
+
+class CategoryTabs(QWidget):
+    """Pinned categories as underline tabs (w-100): Browse (or All games),
+    each pin, All categories. `set_tabs` rebuilds the tabs only when they
+    change (the same ones just move `current`); `picked(key)` is a click
+    or A on one. Titles are cut at TITLE_CHARS, and the pins' shortened
+    further, the long ones first, when the strip is too narrow for them
+    all (the first and last tab, the way back, stay whole)."""
+    picked = pyqtSignal(str)
+
+    TITLE_CHARS = 18
+    MIN_TEXT = 40                           # px a squeezed tab keeps for its text
+
+    def __init__(self, height: int = 36, margins: tuple = (0, 0, 0, 0), parent=None):
+        super().__init__(parent)
+        self.setObjectName("CategoryTabs")
+        self._h = height
+        self._sig = None
+        self._titles: dict[str, str] = {}
+        self.seg: SegmentedControl | None = None
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(*margins)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        # As wide as the row gives it: the titles fit that (_fit), not the
+        # other way round.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(height + margins[1] + margins[3])
+
+    def set_tabs(self, tabs, current: str | None):
+        """`tabs`: [(key, title)] in order. Never emits `picked`."""
+        tabs = [(k, t) for k, t in tabs]
+        sig = tuple(tabs)
+        if sig != self._sig:
+            self._sig = sig
+            self._rebuild(tabs, current)
+        elif self.seg is not None and self.seg.current() != (current or ''):
+            self.seg.set_current(current if current in self._titles else None,
+                                 animate=self.isVisible())
+
+    def _rebuild(self, tabs, current):
+        old = self.seg
+        f = QApplication.focusWidget()
+        had = old is not None and f is not None and old.isAncestorOf(f)
+        seg = SegmentedControl('underline', self._h, self)
+        self._titles = {}
+        for key, title in tabs:
+            short = _short(title, self.TITLE_CHARS)
+            b = seg.add(key, short.replace('&', '&&'))
+            b.setToolTip(title)
+            b.setAccessibleName(title)
+            self._titles[key] = short
+        seg.set_current(current if current in self._titles else None, animate=False)
+        seg.changed.connect(self.picked)
+        lay = self.layout()
+        lay.insertWidget(0, seg)                 # in the layout before it shows
+        seg.show()
+        self.seg = seg
+        self._fit()
+        if had and tabs:                         # focus first, then hide (w-60)
+            b = seg.item(current) if current in self._titles else seg.item(tabs[0][0])
+            b.setFocus(Qt.FocusReason.OtherFocusReason)
+        if old is not None:
+            lay.removeWidget(old)
+            old.hide()
+            old.deleteLater()
+
+    def _fit(self):
+        """The titles in the width there is: the shortest stay whole, the
+        longer ones share what is left equally, elided."""
+        seg = self.seg
+        if seg is None or not self._titles:
+            return
+        buttons = [seg.item(k) for k in self._titles]
+        for b in buttons:
+            b.ensurePolished()
+        fm = buttons[0].fontMetrics()
+        pad = buttons[0].sizeHint().width() - fm.horizontalAdvance(buttons[0].text())
+        lay = seg.layout()
+        m = lay.contentsMargins()
+        keys = list(self._titles)
+        ends = {keys[0], keys[-1]} if len(keys) > 2 else set()
+        om = self.layout().contentsMargins()
+        avail = self.width() - om.left() - om.right() - m.left() - m.right() \
+            - lay.spacing() * (len(buttons) - 1) \
+            - pad * len(buttons) - sum(fm.horizontalAdvance(self._titles[k]) for k in ends)
+        need = sorted(fm.horizontalAdvance(t) for k, t in self._titles.items() if k not in ends)
+        cap = None
+        if sum(need) > avail:
+            left, n = avail, len(need)           # water-fill: whole while under the cap
+            for i, w in enumerate(need):
+                if w * (n - i) > left:
+                    cap = max(self.MIN_TEXT, left // (n - i))
+                    break
+                left -= w
+        for key, b in zip(self._titles, buttons):
+            text = self._titles[key]
+            if cap is not None and key not in ends and fm.horizontalAdvance(text) > cap:
+                text = fm.elidedText(text, Qt.TextElideMode.ElideRight, cap)
+            text = text.replace('&', '&&')
+            if b.text() != text:
+                b.setText(text)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() in (ev.Type.StyleChange, ev.Type.FontChange):
+            self._fit()
+
+    # ---- what callers ask ----
+    def current(self) -> str:
+        return self.seg.current() if self.seg is not None else ''
+
+    def keys(self) -> list[str]:
+        return list(self._titles)
+
+    def button(self, key: str):
+        return self.seg.item(key) if self.seg is not None else None
+
+    def buttons(self) -> list:
+        return self.seg.buttons() if self.seg is not None else []
 
 
 class CategoryHub(QScrollArea):

@@ -57,7 +57,7 @@ class Prefs(unittest.TestCase):
         key = 'friends:76561190000000101,76561190000000102:multi'
         self.path.write_text(json.dumps({'theatre_library': {'sort': 'most', 'show': key}}))
         p = nx.LibraryPrefs()
-        self.assertEqual(p.theatre_library, {'sort': 'most', 'show': key})
+        self.assertEqual(p.theatre_library, {'sort': 'most', 'show': key, 'view': 'browse'})
         p.save()
         self.assertEqual(nx.LibraryPrefs().theatre_library['show'], key)
         for bad in ('friends:', 'friends:abc', 'friends:1:solo', ['friends:1'], 7):
@@ -65,19 +65,33 @@ class Prefs(unittest.TestCase):
             self.assertEqual(nx.LibraryPrefs().theatre_library['show'], 'installed', bad)
 
     def test_theatre_library_defaults_bad_values_and_round_trip(self):
-        self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'name', 'show': 'installed'})
+        self.assertEqual(nx.LibraryPrefs().theatre_library,
+                         {'sort': 'name', 'show': 'installed', 'view': 'browse'})
         self.assertFalse(nx.LibraryPrefs().theatre_hide_gamedb)
         self.path.write_text(json.dumps({'theatre_library': {'sort': 'nope', 'show': 'all'},
                                          'library_state': {'sort': 'most'}}))
         p = nx.LibraryPrefs()
-        self.assertEqual(p.theatre_library, {'sort': 'name', 'show': 'all'})
-        p.theatre_library = {'sort': 'collection', 'show': 'missing'}
+        self.assertEqual(p.theatre_library, {'sort': 'name', 'show': 'all', 'view': 'browse'})
+        p.theatre_library = {'sort': 'collection', 'show': 'missing', 'view': 'browse'}
         p.save()
         data = json.loads(self.path.read_text())
-        self.assertEqual(data['theatre_library'], {'sort': 'collection', 'show': 'missing'})
+        self.assertEqual(data['theatre_library'],
+                         {'sort': 'collection', 'show': 'missing', 'view': 'browse'})
         self.assertEqual(data['library_state'], {'sort': 'most'})   # the desktop's, untouched
         self.assertEqual(nx.LibraryPrefs().theatre_library,
-                         {'sort': 'collection', 'show': 'missing'})
+                         {'sort': 'collection', 'show': 'missing', 'view': 'browse'})
+
+    def test_theatre_library_view_round_trip(self):
+        """w-100: Theatre's Library shows rows ('browse') or All games
+        ('all'); anything else reads as rows."""
+        self.path.write_text(json.dumps({'theatre_library': {'sort': 'most', 'view': 'all'}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.theatre_library['view'], 'all')
+        p.save()
+        self.assertEqual(json.loads(self.path.read_text())['theatre_library']['view'], 'all')
+        for bad in ('grid', None, 3, ['all']):
+            self.path.write_text(json.dumps({'theatre_library': {'view': bad}}))
+            self.assertEqual(nx.LibraryPrefs().theatre_library['view'], 'browse', bad)
 
     def test_theatre_controls_defaults_bad_values_and_unknown_kept(self):
         """w-63, w-108: Theatre's controls keys default, fall back on junk,

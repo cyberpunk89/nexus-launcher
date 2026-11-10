@@ -238,6 +238,13 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre.moment_changed.connect(self._update_hints)
         self.theatre.library_changed.connect(self._save_theatre_library)
         self.theatre.together_asked.connect(self._theatre_together)     # w-83
+        # The Library's categories in Theatre (w-100): rows, pages, pins.
+        self.theatre.set_prefs(self.prefs)
+        self.theatre.category_prefs = lambda: CategoryPrefs(
+            self._prefs_view(), tuple(self.prefs.smart_hidden))
+        self.theatre.category_pins = lambda: tuple(self.prefs.category_pins)
+        self.theatre.pick_in.connect(self.surprise)
+        self.theatre.pin_toggled.connect(self._toggle_pin)
         self.theatre.set_library_state(self.prefs.theatre_library)
         self.theatre_sheet.closed.connect(self._show_session)
         # Y on the desktop without Steam's on-screen keyboard: Theatre's
@@ -1324,7 +1331,8 @@ from .settings import SettingsPage, torrent_problem  # noqa: E402
 from .storage import StoragePage  # noqa: E402
 from .report_page import ReportPage  # noqa: E402
 from .system import HealthPage, PlayHistoryPage, SystemPage  # noqa: E402
-from .theatre import (AttractOverlay, CursorHider, THEATRE_SCALE, TheatreSearch, TheatreView)  # noqa: E402
+from .theatre import (AttractOverlay, CategoryPrefs, CursorHider, THEATRE_SCALE,  # noqa: E402
+    TheatreSearch, TheatreView)
 from .theatre_settings import APPEARANCE_KEYS, TheatreSettings  # noqa: E402
 from .sounds import UiSounds  # noqa: E402
 from .art import art_source, dominant_color, HERO_KINDS  # noqa: E402

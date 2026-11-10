@@ -1059,7 +1059,8 @@ class TheatreFriends(_FriendsWindow):
         f.write_text(json.dumps({'theatre_library': {'sort': 'most', 'show': 'friends'}}))
         with mock.patch.object(nx.LibraryPrefs, 'PATH', f):
             self.assertEqual(nx.LibraryPrefs().theatre_library, {'sort': 'most',
-                                                                 'show': 'friends'})
+                                                                 'show': 'friends',
+                                                                 'view': 'browse'})
         f.write_text(json.dumps({'theatre_library': {'show': 'bogus'}}))
         with mock.patch.object(nx.LibraryPrefs, 'PATH', f):
             self.assertEqual(nx.LibraryPrefs().theatre_library['show'], 'installed')

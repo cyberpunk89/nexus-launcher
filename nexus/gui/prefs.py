@@ -204,7 +204,9 @@ class LibraryPrefs:
             'sort': tl.get('sort') if isinstance(tl, dict) and tl.get('sort') in (
                 'name', 'played', 'most', 'added', 'collection') else 'name',
             'show': show if show in ('installed', 'missing', 'all', 'friends')
-            or smart.parse_friends_key(show) is not None else 'installed'}
+            or smart.parse_friends_key(show) is not None else 'installed',
+            # w-100: rows by category ('browse') or every game ('all').
+            'view': 'all' if isinstance(tl, dict) and tl.get('view') == 'all' else 'browse'}
         # Theatre's Discover: the Game-db setup card, hidden with X.
         self.theatre_hide_gamedb = bool(self._data.get('theatre_hide_gamedb', False))
         # Rows you hid from Browse (and the smart shelves on Home): any
@@ -218,6 +220,9 @@ class LibraryPrefs:
         # 'rows'|'grid'|'list'}. New keys, so an older Nexus just keeps them.
         self.category_sort = _per_category(self._data.get('category_sort'), categories.SORTS)
         self.category_view = _per_category(self._data.get('category_view'), categories.VIEWS)
+        # Categories pinned as Library tabs (w-100): keys in order, at most
+        # categories.PIN_MAX. One missing from the library now stays here.
+        self.category_pins = categories.clean_pins(self._data.get('category_pins'))
         # Shelves you built from rules (w-51, nexus/smart.py); removed ones are kept.
         self.smart_shelves = smart.clean_shelves(self._data.get('smart_shelves'))
         # The Deals page as it was left: section, filter, sort, hide owned.
@@ -272,6 +277,7 @@ class LibraryPrefs:
                     'smart_shelves': self.smart_shelves,
                     'category_sort': _per_category(self.category_sort, categories.SORTS),
                     'category_view': _per_category(self.category_view, categories.VIEWS),
+                    'category_pins': categories.clean_pins(self.category_pins),
                     'collections': self.collections,
                     'deals_state': self.deals_state, 'move_targets': self.move_targets,
                     'palette_recent': self.palette_recent, 'setup_done': self.setup_done,
@@ -467,11 +473,16 @@ class LibraryPrefs:
         self.collections = {new if n == old else n: v for n, v in self.collections.items()}
         if old in self.collection_look:            # its icon, colour and pin go with it
             self.collection_look[new] = self.collection_look.pop(old)
+        key = categories.COL + old                 # and its Library tab (w-100)
+        self.category_pins = [categories.COL + new if k == key else k
+                              for k in self.category_pins]
         self.save()
         return new
 
     def delete_collection(self, name: str):
         self.collection_look.pop(name, None)
+        self.category_pins = [k for k in self.category_pins            # its tab (w-100)
+                              if k != categories.COL + name]
         if self.collections.pop(name, None) is not None:
             self.save()
 

@@ -38,7 +38,8 @@ once. Games you own but haven't installed are there too, with an Install button.
   shelves inside it (Unfinished RPGs, Co-op RPGs), a sort, rows, grid or list, Pick for me
   from just those games, and related categories under it. The Library opens on rows grouped
   as For you, Yours, Genres and Stores, with chips to jump between them; *All categories*
-  shows every category as a tile, and any row can be hidden.
+  shows every category as a tile, and any row can be hidden. Pin up to six categories to
+  keep them as tabs above the Library.
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
   quietly in the background. Pick another image for any game, Steam games included.
 - **Steam friends (optional):** with your own Steam Web API key, a game's page shows which
@@ -82,6 +83,9 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
   Shut down, Exit Theatre, and on Linux **Turn off controller** for a Bluetooth pad. Holding
   Guide to switch a pad off leaves Nexus where it was. When a game closes, a short summary of
   the session shows.
+- **Library rows:** Theatre's Library opens on the same rows as the desktop, with your pinned
+  categories as tabs. X on a row opens its category page with big tiles, Y picks a game from
+  it, and B goes back to where you were. *All games* keeps the full grid.
 - **Tabs:** Home with a *Your week* card, Library with sort and filter, Downloads, and
   Discover with news and deals. Theatre's own settings are one button away, and Nexus can
   start in Theatre on a TV or when a controller is plugged in.
