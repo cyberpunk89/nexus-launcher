@@ -11,7 +11,7 @@ game page, jobs and focus need nothing of their own. Its header and chips
 set_head, so the grid stays virtual), the first item of the Rows scroll, or
 a strip over the List."""
 
-from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt
+from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QPushButton,
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
@@ -23,8 +23,8 @@ from .gameinfo import is_installed
 from .library import _TileSignals, LibraryView, ListView, ShelfRow
 from .theme import FONTS, G, is_light, LOOK, P, R, scaled, SP
 from .tiles import GameTile
-from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label, SegmentedControl,
-    set_glyph_icon)
+from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label,
+    SegmentedControl, set_glyph_icon, set_icon_label)
 
 # What the header's kicker calls each kind.
 KIND_WORDS = {'smart': "Smart shelf", 'genre': "Genre", 'fav': "Yours",
@@ -56,6 +56,25 @@ def story(st: categories.Stats) -> str:
         gb = st.bytes / 1e9
         parts.append(f"{gb:,.0f} GB on disk" if gb >= 10 else f"{gb:.1f} GB on disk")
     return "  ·  ".join(parts)
+
+
+def two_lines(text: str, fm, width: int) -> list[str]:
+    """`text` in at most two lines of `width` px: the first breaks between
+    words, the second takes the rest, elided. A first word too long for a
+    line is elided on one line."""
+    text = ' '.join((text or '').split())
+    if fm.horizontalAdvance(text) <= width:
+        return [text]
+    words = text.split(' ')
+    first = words[0]
+    if fm.horizontalAdvance(first) > width:
+        return [fm.elidedText(text, Qt.TextElideMode.ElideRight, width)]
+    i = 1
+    while i < len(words) and fm.horizontalAdvance(first + ' ' + words[i]) <= width:
+        first += ' ' + words[i]
+        i += 1
+    rest = ' '.join(words[i:])
+    return [first, fm.elidedText(rest, Qt.TextElideMode.ElideRight, width)]
 
 
 class _Mosaic:
@@ -325,8 +344,10 @@ class MosaicHeader(QWidget, _Mosaic):
 
 
 class MosaicTile(QPushButton, _Mosaic):
-    """A category as a tile (More like this): the glyph, title and count
-    over its mosaic. Focusable; a click or Enter opens it (`opened`)."""
+    """A category as a tile (More like this, the All categories hub): the
+    glyph, title and count over its mosaic. Focusable; a click or Enter
+    opens it (`opened`). set_category re-points it (the hub keeps its
+    tiles across a refresh)."""
     opened = pyqtSignal(str)
 
     INSET = SP['3']
@@ -338,38 +359,62 @@ class MosaicTile(QPushButton, _Mosaic):
         super().__init__()
         self._mosaic_init()
         self.key = cat.key
+        self._look = None
         self.setObjectName("MosaicTile")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(scaled(300), scaled(128))
-        self.setToolTip(cat.tip)
-        self.setAccessibleName(cat.title)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(SP['4'], SP['3'], SP['4'], SP['3'])
         lay.setSpacing(SP['0_5'])
-        role = f'col_{cat.color}' if cat.color and f'col_{cat.color}' in P else 'accent'
-        lay.addWidget(icon_label(cat.glyph, 20, P[role]))
+        self.glyph = icon_label('', 20, P['accent'])
+        self.glyph.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self.glyph)
         lay.addStretch()
-        self._title = cat.title
-        title = self.title = label(cat.title, "MosaicTitle")
+        self._title = ''
+        title = self.title = label("", "MosaicTitle")
         title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(title)
-        n = len(cat.games)
-        count = label(f"{n} game{'s' if n != 1 else ''}", "MosaicCount")
-        count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        lay.addWidget(count)
-        self._set_mosaic(cat)
+        self.count = label("", "MosaicCount")
+        self.count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self.count)
         self.clicked.connect(lambda: self.opened.emit(self.key))
+        self.set_category(cat)
+
+    def set_category(self, cat: categories.Category):
+        """Show `cat` (this tile's category refreshed, or another one)."""
+        self.key = cat.key
+        self.setToolTip(cat.tip)
+        self.setAccessibleName(cat.title)
+        role = f'col_{cat.color}' if cat.color and f'col_{cat.color}' in P else 'accent'
+        if (cat.glyph, role) != self._look:
+            self._look = (cat.glyph, role)
+            set_icon_label(self.glyph, cat.glyph, 20, role)
+        self._title = cat.title
+        n = len(cat.games)
+        self.count.setText(f"{n} game{'s' if n != 1 else ''}")
+        self._set_mosaic(cat)
         self._fit()
 
     def _fit(self):
-        """The title on one line, clear of the covers. Measured once the
+        """The title in the width left of the cover fan, on up to two lines
+        (broken between words), the second elided. Measured once the
         theme's font is on the label (after polish), and again when the
-        style or font changes."""
+        size, style or font changes."""
         self.title.ensurePolished()
-        w = int(self.width() * 0.5) - SP['4']
-        self.title.setText(self.title.fontMetrics().elidedText(
-            self._title, Qt.TextElideMode.ElideRight, w))
+        w = self.text_width()
+        self.title.setText('\n'.join(two_lines(self._title, self.title.fontMetrics(), w)))
+
+    def text_width(self) -> int:
+        """From the text's left edge to just before the first cover (the
+        whole inner width with no cover)."""
+        left = self.layout().contentsMargins().left()
+        n = self.cover_count()
+        if not n:
+            return max(1, self.width() - 2 * left)
+        cw, _ch, step = self._cover_geometry()
+        x0 = self.width() - self.INSET - cw - step * (n - 1)
+        return max(1, x0 - SP['2'] - left)
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
@@ -379,6 +424,10 @@ class MosaicTile(QPushButton, _Mosaic):
     def showEvent(self, ev):
         super().showEvent(ev)
         self._fit()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()                            # the hub sizes its tiles to the columns
 
     def paintEvent(self, _ev):
         pt = QPainter(self)
@@ -818,3 +867,212 @@ class CategoryPage(QWidget, _TileSignals):
     def refresh_friends(self):
         _TileSignals.refresh_friends(self)
         self.grid.refresh_friends()
+
+
+class CategoryHub(QScrollArea):
+    """All categories (w-99): every category as a MosaicTile, grouped under
+    the same kickers as Browse, rows you hid from Browse included. One of
+    the Library's views like CategoryPage (the window routes it as the
+    place key categories.HUB); it has no game tiles, so the view calls are
+    no-ops and tile_for gives the tile to focus."""
+    back = pyqtSignal()                     # the crumb
+    open_key = pyqtSignal(str)              # a tile
+
+    TILE_MIN = 260                          # a tile's narrowest (scaled); columns share the rest
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("CategoryHub")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        host = QWidget()
+        lay = self._lay = QVBoxLayout(host)
+        lay.setContentsMargins(SP['5'], SP['4'], SP['5'], SP['6'])
+        lay.setSpacing(SP['3'])
+        self.btn_back = QPushButton("Library")
+        self.btn_back.setObjectName("Ghost")
+        self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_back.setToolTip("Back to the Library (Esc)")
+        set_glyph_icon(self.btn_back, G['chevron_left'], 15, 'subtext')
+        self.btn_back.clicked.connect(self.back)
+        lay.addWidget(self.btn_back, 0, Qt.AlignmentFlag.AlignLeft)
+        self.title = label("All categories", "CatTitle")
+        lay.addWidget(self.title)
+        self.sections_lay = QVBoxLayout()
+        self.sections_lay.setContentsMargins(0, 0, 0, 0)
+        self.sections_lay.setSpacing(SP['5'])
+        lay.addLayout(self.sections_lay)
+        lay.addStretch(1)
+        self.setWidget(host)
+        self._sig = None
+        self._tiles: dict[str, MosaicTile] = {}
+        self._sections: dict[str, tuple[QWidget, FlowLayout]] = {}
+        self._order: list[str] = []                 # group keys, as shown
+        self._last: str | None = None               # the tile opened last (Back lands there)
+        self._jump: str | None = None
+
+    # ---- filling ----
+    def set_groups(self, groups):
+        """Show `groups` (categories.categories(), uncapped). Nothing is
+        touched when no tile's text, look or games changed (one game out and
+        another in changes the covers); otherwise tiles are kept by key and
+        re-pointed, and only new ones are made."""
+        sig = tuple((g.key, g.title, tuple((c.key, c.title, c.tip, c.glyph, c.color,
+                                            tuple(x.get('slug') for x in c.games))
+                                           for c in g.cats))
+                    for g in groups)
+        if sig == self._sig:
+            return
+        self._sig = sig
+        old_tiles, self._tiles = self._tiles, {}
+        old_secs, self._sections = self._sections, {}
+        for gkey in self._order:
+            if gkey in old_secs:
+                self.sections_lay.removeWidget(old_secs[gkey][0])
+        for g in groups:
+            sec = old_secs.pop(g.key, None)
+            if sec is None:
+                sec = self._section(g.title)
+            box, flow = sec
+            inner = flow.parentWidget()
+            while flow.count():
+                flow.takeAt(0)                       # the tiles stay children of the box
+            tiles = []
+            for c in g.cats:
+                t = old_tiles.pop(c.key, None)
+                if t is None:
+                    t = MosaicTile(c)
+                    t.opened.connect(self._opened)
+                else:
+                    t.set_category(c)
+                if t.parentWidget() is not inner:
+                    t.setParent(inner)
+                tiles.append(t)
+                self._tiles[c.key] = t
+            self._size_tiles(tiles)
+            flow.add_widgets(tiles)
+            self.sections_lay.addWidget(box)
+            box.show()
+            self._sections[g.key] = sec
+        self._order = [g.key for g in groups]
+        for t in old_tiles.values():
+            t.hide()
+            t.deleteLater()
+        for box, _flow in old_secs.values():
+            box.hide()
+            box.deleteLater()
+
+    def tile_width(self) -> int:
+        """As many columns as fit tiles of TILE_MIN, sharing the width."""
+        m = self._lay.contentsMargins()
+        avail = max(1, self.viewport().width() - m.left() - m.right())
+        gap, least = SP['4'], scaled(self.TILE_MIN)
+        cols = max(1, (avail + gap) // (least + gap))
+        return max(least if cols > 1 else 1, (avail - gap * (cols - 1)) // cols)
+
+    def _size_tiles(self, tiles):
+        w, h = self.tile_width(), scaled(128)
+        for t in tiles:
+            if t.width() != w or t.height() != h:
+                t.setFixedSize(w, h)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._size_tiles(self._tiles.values())
+
+    def _section(self, title: str) -> tuple[QWidget, FlowLayout]:
+        box = QWidget(self.widget())
+        box.setObjectName("HubSection")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, SP['2'], 0, 0)
+        lay.setSpacing(SP['2'])
+        lay.addWidget(label(title.upper(), "SectionKicker"))
+        tiles = QWidget()
+        flow = FlowLayout(tiles, margin=0, spacing=SP['4'])
+        lay.addWidget(tiles)
+        return box, flow
+
+    def _opened(self, key: str):
+        self._last = key
+        self.open_key.emit(key)
+
+    # ---- where to go ----
+    def group_keys(self) -> list[str]:
+        return list(self._order)
+
+    def tiles_in(self, gkey: str) -> list[MosaicTile]:
+        sec = self._sections.get(gkey)
+        if sec is None:
+            return []
+        flow = sec[1]
+        return [flow.itemAt(i).widget() for i in range(flow.count())]
+
+    def tile(self, key: str) -> MosaicTile | None:
+        return self._tiles.get(key)
+
+    def jump_to(self, gkey: str):
+        """Scroll to a group (All genres): now, and once more after the next
+        layout pass (a child timer on a bound method, so it dies with the
+        hub). The group's first tile becomes tile_for(), where the window
+        puts the focus (keys or pad, no overlay up); the hub never moves
+        the focus itself, least of all from a timer."""
+        tiles = self.tiles_in(gkey)
+        if not tiles:
+            return
+        self._jump = gkey
+        self._last = tiles[0].key                   # Back and the focus land here
+        self._scroll_to_jump()
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.timeout.connect(self._scroll_to_jump)
+        t.timeout.connect(t.deleteLater)
+        t.start(0)
+
+    def _scroll_to_jump(self):
+        sec = self._sections.get(self._jump or '')
+        if sec is None:
+            return
+        self.widget().layout().activate()
+        y = sec[0].mapTo(self.widget(), QPoint(0, 0)).y()
+        self.verticalScrollBar().setValue(max(0, y - SP['2']))
+
+    # ---- what the window asks of a Library view (no game tiles here) ----
+    @property
+    def tiles(self) -> dict:
+        return {}
+
+    @property
+    def games(self) -> dict:
+        return {}
+
+    def tile_for(self, slug: str | None = None):
+        """The tile to focus: the one opened last, else the first."""
+        if slug:
+            return None
+        t = self._tiles.get(self._last) if self._last else None
+        if t is not None:
+            return t
+        for gkey in self._order:
+            ts = self.tiles_in(gkey)
+            if ts:
+                return ts[0]
+        return None
+
+    def shown_games(self) -> list[dict]:
+        return []
+
+    def reveal(self, _slug):
+        pass
+
+    def mark_selected(self, _slugs):
+        pass
+
+    def set_jobs(self, _jobs):
+        pass
+
+    def set_friends_badge(self, _on):
+        pass
+
+    def refresh_friends(self):
+        pass

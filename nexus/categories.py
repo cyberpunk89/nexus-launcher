@@ -24,7 +24,11 @@ GROUPS = (('for_you', "For you"), ('yours', "Yours"), ('genres', "Genres"),
           ('stores', "Stores"))
 SORTS = ('played', 'name', 'most', 'added', 'size')       # the Library's sort keys
 VIEWS = ('rows', 'grid', 'list')
-ROW_CAP = 20                 # tiles in one row of a page's Rows view
+ROW_CAP = 20                 # tiles in one row of a page's Rows view (and of Browse)
+# Browse shows at most this many rows of a group (the rest: the hub).
+CAPS = {'for_you': 6, 'genres': 6}
+# The All categories hub's place key: never a category (is_key is False).
+HUB = 'all'
 
 # Glyphs (nexus/icons.py names): the smart rules and stores from ICONS, the
 # genres from the collection icons.
@@ -36,6 +40,9 @@ GENRE_GLYPH = {'Action': 'zap', 'Adventure': 'map', 'RPG': 'swords', 'Strategy':
                'Sports': 'trophy', 'Puzzle': 'puzzle', 'Platformer': 'gamepad-2',
                'Horror': 'ghost', 'Indie': 'heart'}
 STORE_GLYPH = {'nexus': 'folder', 'steam': 'steam', 'heroic': 'wine', 'epic': 'library'}
+# Each group's glyph character (Browse's jump chips).
+GROUP_GLYPH = {'for_you': ICONS['sparkles'], 'yours': ICONS['star'], 'genres': ICONS['grid'],
+               'stores': ICONS['folder']}
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,7 @@ class Group:
     key: str
     title: str
     cats: tuple = ()
+    more: int = 0             # Browse: rows past the group's cap (in the hub)
 
 
 @dataclass(frozen=True)
@@ -104,6 +112,11 @@ def kind_of(key) -> str | None:
 
 def is_key(key) -> bool:
     return kind_of(key) is not None
+
+
+def is_page_key(key) -> bool:
+    """A place the Library can show: a category, or the hub."""
+    return key == HUB or is_key(key)
 
 
 def collection_name(key) -> str | None:
@@ -235,6 +248,27 @@ def categories(games, facts, prefs: PrefsView, linux: bool = False, friends=None
                             for k in keys) if c is not None]
         if cats:
             out.append(Group(gkey, titles[gkey], tuple(cats)))
+    return out
+
+
+def browse(groups, hidden=(), caps=None) -> list[Group]:
+    """What Browse shows of `groups` (categories()): none of the `hidden`
+    keys, a smart rule or genre only with smart.MIN_GAMES games, at most
+    `caps[group]` rows (CAPS by default; `more` counts the rest), empty
+    groups left out. The groups given are not changed: the hub shows them
+    all."""
+    caps = CAPS if caps is None else caps
+    hidden = set(hidden or ())
+    out = []
+    for g in groups:
+        cats = [c for c in g.cats if c.key not in hidden
+                and (c.kind not in ('smart', 'genre') or len(c.games) >= smart.MIN_GAMES)]
+        cap = caps.get(g.key)
+        more = 0
+        if cap is not None and len(cats) > cap:
+            cats, more = cats[:cap], len(cats) - cap
+        if cats:
+            out.append(Group(g.key, g.title, tuple(cats), more))
     return out
 
 

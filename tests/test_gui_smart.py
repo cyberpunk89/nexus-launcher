@@ -1,4 +1,4 @@
-"""Smart shelves in the window: the Library's Shelves view rows and divider,
+"""Smart shelves in the window: the Library's Browse rows and head (w-99),
 the Smart group in the status filter, See all / Save as collection / hide,
 the game page's filter key (_show_filter), and the Home widget. Offscreen,
 CLI stubbed, prefs never written; the facts index is set in memory."""
@@ -16,7 +16,7 @@ if nx is not None:
     from PyQt6.QtCore import QEvent, QPoint
     from PyQt6.QtWidgets import QApplication
     from nexus import features
-    from nexus.gui.library import ShelfRow, SmartDivider
+    from nexus.gui.library import ShelfRow
 
 
 def ago(days):
@@ -88,7 +88,9 @@ class SmartShelves(unittest.TestCase):
                 and r.parentWidget() is not None]
 
     def smart_rows(self):
-        return [w.title for w in self.win.home._smart if isinstance(w, ShelfRow)]
+        """Browse's rows for smart rules, genres and your shelves, in order."""
+        return [r.title for r in self.win.home.group_rows()
+                if r.key.startswith(('smart:', 'genre:', 'user:'))]
 
     def filter_keys(self):
         f = self.win.filter
@@ -100,10 +102,13 @@ class SmartShelves(unittest.TestCase):
         self.win.apply_filter()                  # built before the feature set changed
         self.assertEqual(self.smart_rows(), ["Continue playing", "Never played",
                                              "Runs great on Linux"])
-        div = [x for x in self.win.home._smart if isinstance(x, SmartDivider)]
-        self.assertEqual(len(div), 1)
-        self.assertIn("learns about your games", div[0].text.text())
-        self.assertIn("0 of 3", div[0].text.text())       # the Steam games have store ids
+        note = self.win.home.head.note
+        self.assertFalse(note.isHidden())
+        self.assertIn("learns about your games", note.text())
+        self.assertIn("0 of 3", note.text())              # the Steam games have store ids
+        self.load(games(), facts_for('play0'))            # built: no note
+        self.assertTrue(note.isHidden())
+        self.assertEqual(self.win._smart_note(games()), '')
         self.assertIn('smart:continue', self.filter_keys())
 
     def test_three_games_minimum(self):
@@ -129,10 +134,12 @@ class SmartShelves(unittest.TestCase):
         w._hide_smart('smart:continue')
         self.assertEqual(self.smart_rows()[:1], ["Never played"])
         self.assertIn('smart:continue', self.filter_keys())          # still filterable
-        div = next(x for x in w.home._smart if isinstance(x, SmartDivider))
-        self.assertEqual(div.btn_hidden.text(), "1 hidden")
+        head = w.home.head
+        self.assertEqual(head.btn_hidden.text(), "1 hidden")
+        self.assertFalse(head.btn_hidden.isHidden())
         w._unhide_smart('smart:continue')
         self.assertEqual(self.smart_rows()[:2], ["Continue playing", "Never played"])
+        self.assertTrue(head.btn_hidden.isHidden())
 
     def test_save_as_collection(self):
         w = self.win
@@ -144,8 +151,8 @@ class SmartShelves(unittest.TestCase):
 
     def test_see_all_opens_the_page_and_the_filter_still_works(self):
         w = self.win
-        row = next(x for x in w.home._smart if isinstance(x, ShelfRow)
-                   and x.title == "Never played")
+        row = w.home.row_for('smart:never')
+        self.assertEqual(row.title, "Never played")
         row.see_all.emit()                          # w-98: the category's own page
         self.assertIs(w.views.currentWidget(), w.catpage)
         self.assertEqual(w.catpage.cat.key, 'smart:never')
@@ -210,14 +217,14 @@ class SmartShelves(unittest.TestCase):
             w.close()
             w.deleteLater()
 
-    def test_nothing_to_show_leaves_the_divider_with_new_shelf(self):
-        # w-51: the divider stays for its "New shelf" button, with no rows.
+    def test_no_smart_rows_leaves_the_head_with_new_shelf(self):
+        # w-51: "New shelf" stays (on Browse's head since w-99) with no smart row.
         self.load([games()[0], games()[3]], facts_for('play0'))
-        smart = self.win.home._smart
-        self.assertEqual(len(smart), 1)
-        self.assertIsInstance(smart[0], SmartDivider)
-        self.assertIsNotNone(smart[0].btn_new)
-        self.assertIsNone(smart[0].btn_hidden)
+        head = self.win.home.head
+        self.assertEqual(self.smart_rows(), [])
+        self.assertFalse(head.isHidden())
+        self.assertFalse(head.btn_new.isHidden())
+        self.assertTrue(head.btn_hidden.isHidden())
 
     def test_shelf_menu_offers_three_actions(self):
         w = self.win
@@ -260,10 +267,11 @@ class SmartShelves(unittest.TestCase):
         w = self.win
         w.config['repacks'] = False
         w.apply_filter()
-        for x in w.home._smart:
-            texts = [x.text.text()] if isinstance(x, SmartDivider) else [x.title]
-            for t in texts:
-                self.assertNotIn('repack', t.lower())
+        self.assertIsNone(w.home.row_for('src:nexus'))
+        texts = [r.title for r in w.home.group_rows()] + [w.home.head.note.text()] + [
+            b.text() for b in w.home.head.chips().values()]
+        for t in texts:
+            self.assertNotIn('repack', t.lower())
 
     def test_prefs_keep_hidden_shelves(self):
         import tempfile
@@ -271,10 +279,18 @@ class SmartShelves(unittest.TestCase):
         from unittest import mock
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'library.json'
-            path.write_text('{"smart_hidden": ["smart:never", "bogus", 3, "genre:RPG"]}')
+            path.write_text('{"smart_hidden": ["smart:never", "bogus", 3, "genre:RPG", '
+                            '"fav", "col:A:b", "src:steam", "all", "friends:1", "smart:never"]}')
             with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
                 p = nx.LibraryPrefs()
-                self.assertEqual(p.smart_hidden, ['smart:never', 'genre:RPG'])
+                # w-99: any category hides (Browse); the hub's key and Play
+                # together never do.
+                self.assertEqual(p.smart_hidden, ['smart:never', 'genre:RPG', 'fav',
+                                                  'col:A:b', 'src:steam'])
+            many = [f'col:c{i}' for i in range(60)]
+            path.write_text(__import__('json').dumps({'smart_hidden': many}))
+            with mock.patch.object(nx.LibraryPrefs, 'PATH', path):
+                self.assertEqual(nx.LibraryPrefs().smart_hidden, many[:50])
 
 
 if __name__ == '__main__':

@@ -36,7 +36,9 @@ once. Games you own but haven't installed are there too, with an Install button.
 - **A page for every category:** See all, a row's title or a genre on a game's page opens
   that category's own page: its covers, games and hours at the top, chips for the smart
   shelves inside it (Unfinished RPGs, Co-op RPGs), a sort, rows, grid or list, Pick for me
-  from just those games, and related categories under it.
+  from just those games, and related categories under it. The Library opens on rows grouped
+  as For you, Yours, Genres and Stores, with chips to jump between them; *All categories*
+  shows every category as a tile, and any row can be hidden.
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
   quietly in the background. Pick another image for any game, Steam games included.
 - **Steam friends (optional):** with your own Steam Web API key, a game's page shows which

@@ -1,4 +1,4 @@
-"""Shelves you build (w-51) in the window: New shelf on the divider, the
+"""Shelves you build (w-51) in the window: New shelf on Browse's head, the
 shelf modal (w-67: templates, rules, match count and covers, saved only on
 Save), rows in the Shelves view, the Smart filter group, the ⋮ menu, hide /
 remove / bring back, the Home widget, and prefs. Offscreen, CLI stubbed,
@@ -26,7 +26,6 @@ if nx is not None:
     from PyQt6.QtWidgets import QApplication, QPushButton
     from nexus import smart
     from nexus.features import has
-    from nexus.gui.library import ShelfRow, SmartDivider
     from nexus.gui.shelfedit import ShelfForm
 
 
@@ -72,10 +71,12 @@ class UserShelves(unittest.TestCase):
         self._tmp.cleanup()
 
     def divider(self):
-        return next(x for x in self.win.home._smart if isinstance(x, SmartDivider))
+        """Browse's head (w-99): New shelf and "N hidden" moved there."""
+        return self.win.home.head
 
     def rows(self):
-        return [x.title for x in self.win.home._smart if isinstance(x, ShelfRow)]
+        """Your shelves' rows on Browse, in order."""
+        return [r.title for r in self.win.home.group_rows() if r.key.startswith('user:')]
 
     def filter_keys(self):
         f = self.win.filter
@@ -149,7 +150,7 @@ class UserShelves(unittest.TestCase):
         self.assertEqual(w.filter.currentData(), 'all')
         self.assertEqual(self.on_disk(), before)
         self.assertEqual(w.prefs.smart_shelves, [])
-        # Create shelf: one write, the row first after the divider.
+        # Create shelf: one write, the row on Browse.
         with mock.patch.object(w.prefs, 'save', wraps=w.prefs.save) as save:
             m.primary.click()
         self.assertEqual(save.call_count, 1)
@@ -321,8 +322,7 @@ class UserShelves(unittest.TestCase):
 
     def test_empty_shelf_still_shows_saying_so(self):
         self.make("Nothing", ('store', 'is', 'steam'), ('store', 'is', 'nexus'))
-        row = next(x for x in self.win.home._smart if isinstance(x, ShelfRow)
-                   and x.title == "Nothing")
+        row = next(r for r in self.win.home.group_rows() if r.title == "Nothing")
         self.assertTrue(row.body.isHidden())
 
     def test_menu_edit_hide_remove_and_bring_back(self):

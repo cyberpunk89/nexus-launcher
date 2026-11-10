@@ -127,7 +127,8 @@ class NavigationMixin:
             focus_and_reveal(t)
 
     # History holds places: a page id, or (LIBRARY, 'cat', key) for a
-    # category page in the Library (w-98).
+    # category page in the Library (w-98) or the All categories hub (key
+    # categories.HUB, w-99).
     def _place(self):
         cur = self.current()
         key = getattr(self, '_cat_key', None)
@@ -142,7 +143,7 @@ class NavigationMixin:
 
     def _place_ok(self, place) -> bool:
         if isinstance(place, tuple):
-            return not self._theatre and categories.is_key(place[2])
+            return not self._theatre and categories.is_page_key(place[2])
         return place in self.pages and self._page_shown(place)
 
     def _go_place(self, place):

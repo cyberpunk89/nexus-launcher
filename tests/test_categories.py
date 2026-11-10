@@ -234,5 +234,105 @@ class Page(unittest.TestCase):
         self.assertEqual([g['slug'] for g in gs][0], 'rpg1')            # a copy: input kept
 
 
+def cat(key, n):
+    """A category of `n` made-up games (browse() looks only at keys,
+    kinds and counts)."""
+    return C.Category(key, C.kind_of(key), key, '', '*', None,
+                      tuple({'slug': f'{key}-{i}'} for i in range(n)))
+
+
+def group(gkey, *cats):
+    return C.Group(gkey, dict(C.GROUPS)[gkey], tuple(cats))
+
+
+def rules(n, games=5):
+    keys = smart.rule_keys(True)
+    return [cat(k, games) for k in keys[:n]]
+
+
+def genres(names, games=5):
+    return [cat(f'genre:{n}', games) for n in names]
+
+
+GENRES = ('RPG', 'Action', 'Adventure', 'Indie', 'Strategy', 'Racing', 'Puzzle', 'Horror')
+
+
+class Browse(unittest.TestCase):
+    """browse(): what Browse shows of the groups (the hub shows them all)."""
+
+    def full(self):
+        return [group('for_you', *rules(8)),
+                group('yours', cat('fav', 2), cat('col:A: b', 1), cat('user:ab12', 0)),
+                group('genres', *genres(GENRES)),
+                group('stores', cat('src:nexus', 4), cat('src:steam', 9))]
+
+    def test_caps_and_more(self):
+        out = C.browse(self.full())
+        self.assertEqual([g.key for g in out], ['for_you', 'yours', 'genres', 'stores'])
+        by = {g.key: g for g in out}
+        self.assertEqual(len(by['for_you'].cats), C.CAPS['for_you'])
+        self.assertEqual(by['for_you'].more, 2)
+        self.assertEqual([c.key for c in by['genres'].cats],
+                         [f'genre:{n}' for n in GENRES[:6]])
+        self.assertEqual(by['genres'].more, 2)
+        self.assertEqual((len(by['yours'].cats), by['yours'].more), (3, 0))   # uncapped
+        self.assertEqual((len(by['stores'].cats), by['stores'].more), (2, 0))
+        self.assertEqual(C.CAPS, {'for_you': 6, 'genres': 6})
+        none = C.browse(self.full(), caps={})
+        self.assertEqual(len(none[0].cats), 8)
+
+    def test_hidden_leaves_browse_only(self):
+        groups = self.full()
+        before = [[c.key for c in g.cats] for g in groups]
+        out = C.browse(groups, hidden={'fav', 'src:steam', 'genre:RPG'})
+        shown = [c.key for g in out for c in g.cats]
+        for k in ('fav', 'src:steam', 'genre:RPG'):
+            self.assertNotIn(k, shown)
+        self.assertEqual([[c.key for c in g.cats] for g in groups], before)   # untouched
+        self.assertEqual(C.lookup(groups, 'fav').key, 'fav')        # the hub still has it
+
+    def test_hidden_row_lets_the_next_in(self):
+        keys = smart.rule_keys(True)
+        out = C.browse(self.full(), hidden={keys[0]})
+        mine = [c.key for c in out[0].cats]
+        self.assertEqual(mine, list(keys[1:7]))
+        self.assertEqual(out[0].more, 1)
+
+    def test_min_games_rules_and_genres_only(self):
+        few = smart.MIN_GAMES - 1
+        groups = [group('for_you', cat('smart:continue', few), cat('smart:never', 5)),
+                  group('yours', cat('fav', 1), cat('col:One', 1)),
+                  group('genres', cat('genre:RPG', few), cat('genre:Indie', smart.MIN_GAMES)),
+                  group('stores', cat('src:epic', 1))]
+        shown = [c.key for g in C.browse(groups) for c in g.cats]
+        self.assertEqual(shown, ['smart:never', 'fav', 'col:One', 'genre:Indie', 'src:epic'])
+
+    def test_empty_user_shelf_stays(self):
+        out = C.browse([group('yours', cat('user:cd34', 0))])
+        self.assertEqual([c.key for c in out[0].cats], ['user:cd34'])
+
+    def test_empty_groups_dropped(self):
+        groups = [group('for_you', cat('smart:continue', 1)),
+                  group('yours', cat('fav', 2)),
+                  group('genres', cat('genre:RPG', 5))]
+        out = C.browse(groups, hidden={'genre:RPG'})
+        self.assertEqual([g.key for g in out], ['yours'])
+        self.assertEqual(C.browse([]), [])
+
+    def test_hub_key_is_not_a_category(self):
+        self.assertEqual(C.HUB, 'all')
+        self.assertFalse(C.is_key(C.HUB))
+        self.assertIsNone(C.from_chip(C.HUB))
+        self.assertIsNone(C.category(C.HUB, [], {}, prefs()))
+        self.assertTrue(C.is_page_key(C.HUB))
+        for k in ('fav', 'genre:RPG', 'src:steam', 'user:ab12'):
+            self.assertTrue(C.is_page_key(k), k)
+        for k in ('friends:1', 'bogus', None, ''):
+            self.assertFalse(C.is_page_key(k), k)
+        for gkey, _t in C.GROUPS:
+            self.assertTrue(C.GROUP_GLYPH[gkey])
+        self.assertEqual(C.Group('x', 'X').more, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

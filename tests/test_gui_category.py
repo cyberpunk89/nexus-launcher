@@ -1,6 +1,7 @@
 """Library category pages (w-98, nexus/gui/category.py): the prefs they
 keep, the mosaic header, the page's views, routing from See all, row titles
-and the game page's chips, and Back / Escape / mouse Back. Offscreen, CLI
+and the game page's chips, and Back / Escape / mouse Back. Browse's grouped
+rows and the All categories hub (w-99). Offscreen, CLI
 stubbed, prefs never written (except the round-trip test, in a temp dir)."""
 
 import json
@@ -294,10 +295,27 @@ class Page(unittest.TestCase):
         self.addCleanup(t.deleteLater)
         t.show()
         QApplication.processEvents()
-        text = t.title.text()
-        self.assertTrue(text.endswith("…"), text)
+        lines = t.title.text().split('\n')
+        self.assertEqual(len(lines), 2)                 # w-99: two lines, then elided
+        self.assertTrue(lines[1].endswith("…"), lines)
+        self.assertTrue(long.startswith(lines[0]))      # broken between words
         fm = t.title.fontMetrics()                     # the theme's font, measured after polish
-        self.assertLessEqual(fm.horizontalAdvance(text), int(t.width() * 0.5))
+        for line in lines:
+            self.assertLessEqual(fm.horizontalAdvance(line), t.text_width())
+        # The text keeps left of the first cover.
+        self.assertLess(t.text_width(), t.width() - 2 * t.layout().contentsMargins().left())
+
+    def test_short_title_one_line_long_word_elided(self):
+        from nexus.gui.category import two_lines
+        from PyQt6.QtGui import QFontMetrics
+        from PyQt6.QtWidgets import QApplication
+        fm = QFontMetrics(QApplication.font())
+        self.assertEqual(two_lines("RPG", fm, 200), ["RPG"])
+        two = two_lines("Continue playing", fm, fm.horizontalAdvance("Continue") + 4)
+        self.assertEqual(two, ["Continue", "playing"])
+        one = two_lines("Supercalifragilistic games", fm, fm.horizontalAdvance("Super"))
+        self.assertEqual(len(one), 1)
+        self.assertTrue(one[0].endswith("…"))
 
 
 def win_games():
@@ -396,8 +414,8 @@ class Routing(_Window):
         self.assertIs(w.views.currentWidget(), w.home)
         self.assertFalse(w._lib_bar.isHidden())
         # A smart row's See all, and its title.
-        row = next(x for x in w.home._smart if isinstance(x, nx.ShelfRow)
-                   and x.title == "Continue playing")
+        row = w.home.row_for('smart:continue')
+        self.assertEqual(row.title, "Continue playing")
         row.see_all.emit()
         self.assertTrue(self.on_page('smart:continue'))
         w.close_category()
@@ -596,6 +614,471 @@ class History(_Window):
         w.search.clear()
         w.go_back()
         self.assertTrue(self.on_page('src:steam'))
+
+
+GENRES8 = ('RPG', 'Action', 'Adventure', 'Indie', 'Strategy', 'Racing', 'Puzzle', 'Horror')
+
+
+def rich_library(n_steam=40, n_nexus=10):
+    """A library with something in every smart rule (5 games each, so 7
+    rules on Windows, 8 with Proton), 8 genres of 4+ games, two stores.
+    Returns (games, facts index)."""
+    from datetime import datetime, timedelta
+    now = datetime.now()
+
+    def ago(d):
+        return (now - timedelta(days=d)).isoformat(timespec='seconds')
+    games, facts = [], {}
+    for i in range(n_steam):
+        g = {'slug': f'b{i}', 'display_name': f'B{i:04d}', 'source': 'steam', 'installed': True,
+             'launcher': '/x', 'appid': 1000 + i, 'favorite': False, 'collections': [],
+             'playtime_minutes': 30, 'last_played': ago(60)}
+        f = {'genres': [GENRES8[i % 8]], 'modes': ['single'], 'length': None,
+             'status': 'released'}
+        band = i // 5
+        if band == 0:                                       # continue
+            g.update(playtime_minutes=60, last_played=ago(2))
+            f['length'] = {'main': 20}
+        elif band == 1:                                     # unfinished
+            g.update(playtime_minutes=120)
+            f['length'] = {'main': 20}
+        elif band == 2:                                     # almost done
+            g.update(playtime_minutes=900)
+            f['length'] = {'main': 17}
+        elif band == 3:                                     # never played, short
+            g.update(playtime_minutes=0, last_played=None)
+            f['length'] = {'main': 3}
+        elif band == 4:
+            f['modes'] = ['single', 'coop']
+        elif band == 5:
+            f['status'] = 'early_access'
+        elif band == 6:
+            g['protondb'] = 'platinum'
+        games.append(g)
+        facts[g['slug']] = f
+    for i in range(n_nexus):
+        games.append({'slug': f'n{i}', 'display_name': f'N{i:04d}', 'source': 'nexus',
+                      'installed': True, 'launcher': '/x', 'favorite': False, 'collections': [],
+                      'playtime_minutes': 45, 'last_played': ago(i + 1)})
+    idx = {'v': 1, 'built': 1, 'missing': {'steam': 0, 'hltb': 0}, 'games': facts}
+    return games, idx
+
+
+class _Rich(_Window):
+    """The window on rich_library()'s Browse."""
+
+    def setUp(self):
+        super().setUp()
+        self.load()
+
+    def load(self, games=None, idx=None):
+        w = self.win
+        w.prefs.collections = {'Couch': ['b3', 'n4']}
+        w.prefs.favorites = {'b1', 'n2'}
+        w._mirror_collections()
+        gs, ix = rich_library()
+        w._facts_idx = idx or ix
+        w._on_library({'games': games or gs, 'disks': []}, '')
+        if w._category_open():
+            w.close_category(_history=False)
+        w.set_view('home', save=False)
+        self.pump()
+
+    def order(self):
+        """Browse's group layout as ('kicker', group) and row keys."""
+        from nexus.gui.library import BrowseKicker
+        out = []
+        for wdg in self.win.home._order:
+            out.append(('kicker', wdg.gkey) if isinstance(wdg, BrowseKicker) else wdg.key)
+        return out
+
+    def on_hub(self) -> bool:
+        w = self.win
+        return w.views.currentWidget() is w.cathub and w._hub_open()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Browse(_Rich):
+    def test_groups_kickers_order(self):
+        from nexus import categories, smart
+        w = self.win
+        o = self.order()
+        kick = [x[1] for x in o if isinstance(x, tuple)]
+        self.assertEqual(kick, ['for_you', 'yours', 'genres', 'stores'])
+        i = {g: o.index(('kicker', g)) for g in kick}
+        for_you = o[i['for_you'] + 1:i['yours']]
+        self.assertEqual(len(for_you), 6)                                 # capped
+        self.assertEqual(for_you, [k for k in smart.rule_keys(True) if k in for_you])
+        self.assertEqual(o[i['yours'] + 1:i['genres']], ['fav', 'col:Couch'])
+        genres = o[i['genres'] + 1:i['stores']]
+        self.assertEqual(len(genres), 6)
+        self.assertTrue(all(k.startswith('genre:') for k in genres))
+        self.assertEqual(o[i['stores'] + 1:], ['src:nexus', 'src:steam'])   # stores last
+        head = w.home.head
+        self.assertEqual([b.text() for b in head.chips().values()],
+                         ["For you", "Yours", "Genres", "Stores"])
+        self.assertTrue(head.note.isHidden())                             # facts built
+        self.assertIsNotNone(w.home.kicker('genres').btn_all)
+        self.assertIsNone(w.home.kicker('stores').btn_all)
+        self.assertEqual(w.home.kicker('yours').text.text(), "YOURS")
+        # Installing sits above the groups; with a job it is the rows layout.
+        self.assertEqual(w.home.lay.indexOf(head), 0)
+        self.assertEqual(categories.HUB, 'all')
+
+    def test_reload_repoints_rows_and_tiles_by_key(self):
+        w = self.win
+        rows = {r.key: r for r in w.home.group_rows()}
+        tiles = {id(t) for r in rows.values() for t in r.tiles}
+        calls = []
+        orig = w.home.set_groups
+        w.home.set_groups = lambda *a, **k: (calls.append(1), orig(*a, **k))
+        gs, idx = rich_library()
+        w._on_library({'games': gs, 'disks': []}, '')        # a reload: fresh dicts
+        self.pump()
+        self.assertEqual(len(calls), 1)                       # filled once
+        now = {r.key: r for r in w.home.group_rows()}
+        self.assertEqual({k: id(r) for k, r in now.items()}, {k: id(r) for k, r in rows.items()})
+        self.assertEqual({id(t) for r in now.values() for t in r.tiles}, tiles)
+        self.assertIs(now['src:steam'].tiles[0].game, w.game(now['src:steam'].tiles[0].game['slug']))
+
+    def test_reload_keeps_scroll_place(self):
+        w = self.win
+        bar = w.home.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 600)
+        bar.setValue(bar.maximum() // 2)
+        self.pump()
+        before = bar.value()
+        self.load()
+        self.pump(6)
+        self.assertEqual(bar.value(), before)
+
+    def test_rows_capped_count_shows_total(self):
+        from nexus import categories
+        row = self.win.home.row_for('src:steam')
+        self.assertEqual(len(row.tiles), categories.ROW_CAP)
+        self.assertEqual(row.count_label.text(), "40")
+        # See all opens the store's page on Name, as the row once was.
+        row.see_all.emit()
+        self.assertTrue(self.on_page('src:steam'))
+        self.assertEqual(self.win.catpage.sort.currentData(), 'name')
+        self.assertEqual(len(self.win.catpage.cat.games), 40)
+
+    def test_three_thousand_games_capped_tiles(self):
+        from nexus import categories
+        from nexus.gui.tiles import GameTile
+        gs, idx = rich_library(n_steam=2990, n_nexus=10)
+        self.load(gs, idx)
+        w = self.win
+        rows = w.home.group_rows()
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertLessEqual(len(r.tiles), categories.ROW_CAP, r.key)
+        live = [t for t in w.home.findChildren(GameTile) if not t.isHidden()]
+        self.assertLessEqual(len(live), len(rows) * categories.ROW_CAP)
+        self.assertEqual(w.home.row_for('src:steam').count_label.text(), "2990")
+
+    def test_continue_wide_yours_looks(self):
+        from nexus.gui.library import HomeView
+        home = self.win.home
+        cont = home.row_for('smart:continue')
+        self.assertEqual(cont.kind, 'wide')
+        self.assertEqual(cont.tile_w, HomeView.WIDE_TILE)
+        self.assertEqual(home.row_for('smart:never').kind, 'cover')
+        fav = home.row_for('fav')
+        self.assertEqual(fav.look[0], nx.G['star'])
+        self.assertIn(fav.look[1], ('col_gold', 'accent'))
+        self.assertIsNone(home.row_for('src:steam').look)
+        # A collection with a look wears it; a recolour makes the row again.
+        w = self.win
+        w.prefs.collection_look['Couch'] = {'icon': 'heart', 'color': 'rose'}
+        w._collections_changed()
+        self.pump()
+        look = home.row_for('col:Couch').look
+        self.assertIsNotNone(look)
+        self.assertEqual(look[1], 'col_rose')
+
+    def test_jump_chip_scrolls_and_moves_focus(self):
+        from PyQt6.QtWidgets import QApplication
+        w = self.win
+        w.activateWindow()
+        bar = w.home.verticalScrollBar()
+        bar.setValue(0)
+        self.pump()
+        w.home.head.chips()['genres'].click()
+        self.pump()
+        self.assertGreater(bar.value(), 0)
+        k = w.home.kicker('genres')
+        from PyQt6.QtCore import QPoint
+        y = k.mapTo(w.home.viewport(), QPoint(0, 0)).y()
+        self.assertTrue(0 <= y < 80, y)
+        first = next(r for r in w.home.group_rows() if r.key.startswith('genre:'))
+        self.assertIs(QApplication.focusWidget(), first.tiles[0])
+
+    def test_home_mode_unchanged(self):
+        from nexus.gui.library import BrowseHead, BrowseKicker
+        hv = self.win.homeview
+        self.assertEqual(hv.mode, 'home')
+        self.assertIsNone(hv.head)
+        self.assertEqual(hv.group_rows(), [])
+        self.assertEqual(hv.findChildren(BrowseHead), [])
+        self.assertEqual(hv.findChildren(BrowseKicker), [])
+        self.assertEqual(hv.group_lay.count(), 0)
+
+    def test_hide_any_row_and_restore(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QPushButton
+        w = self.win
+        for key in ('fav', 'col:Couch', 'src:steam'):
+            w._hide_smart(key)
+            self.assertIsNone(w.home.row_for(key), key)
+        self.assertEqual(w.prefs.smart_hidden, ['fav', 'col:Couch', 'src:steam'])
+        self.assertEqual(w.home.head.btn_hidden.text(), "3 hidden")
+        # Gone from Browse only: the hub and the page still have them.
+        w._open_hub()
+        self.assertTrue(self.on_hub())
+        for key in ('fav', 'col:Couch', 'src:steam'):
+            self.assertIsNotNone(w.cathub.tile(key), key)
+        w.close_category()
+        w.input.mode = 'pad'
+        w._smart_hidden_menu(QPoint())
+        texts = [b.text() for b in w.sheet.findChildren(QPushButton)
+                 if b.objectName() == 'SheetRow' and b.isVisibleTo(w.sheet)]
+        self.assertEqual(texts, ["Show “Favourites” again", "Show “Couch” again",
+                                 "Show “Steam” again"])
+        w.sheet.close_sheet()
+        # A store's or favourites' ⋮: See all and Hide only.
+        w._smart_menu('src:nexus', QPoint())
+        texts = [b.text() for b in w.sheet.findChildren(QPushButton)
+                 if b.objectName() == 'SheetRow' and b.isVisibleTo(w.sheet)]
+        self.assertEqual(texts, ["See all", "Hide this row"])
+        w.sheet.close_sheet()
+        w.input.mode = 'mouse'
+        w._unhide_smart('fav')
+        self.assertIsNotNone(w.home.row_for('fav'))
+        self.assertEqual(w.home.head.btn_hidden.text(), "2 hidden")
+        # A hidden collection that is deleted no longer counts.
+        w._delete_collection('Couch')
+        self.assertEqual(w.home.head.btn_hidden.text(), "1 hidden")
+
+    def test_new_shelf_stays(self):
+        w = self.win
+        b = w.home.head.btn_new
+        self.assertFalse(b.isHidden())
+        b.click()
+        self.assertTrue(w.modal.isVisible())
+        w._escape()
+        self.pump()
+        self.assertEqual(w.prefs.smart_shelves, [])
+
+    def test_windows_set_no_linux_row_no_heroic(self):
+        from nexus import features
+        gs, idx = rich_library()
+        gs.append({'slug': 'h0', 'display_name': 'H0', 'source': 'heroic', 'installed': True,
+                   'launcher': '/x', 'playtime_minutes': 5, 'last_played': None})
+        saved = features.FEATURES
+        try:
+            features.FEATURES = features.ALL
+            self.load([dict(g) for g in gs], idx)
+            keys = [r.key for r in self.win.home.group_rows()]
+            self.assertIn('src:heroic', keys)
+            features.FEATURES = features.WINDOWS
+            self.load([dict(g) for g in gs], idx)
+            keys = [r.key for r in self.win.home.group_rows()]
+            self.assertNotIn('smart:linux', keys)
+            self.assertNotIn('src:heroic', keys)
+            self.win._open_hub()
+            self.assertIsNone(self.win.cathub.tile('smart:linux'))
+            self.assertIsNone(self.win.cathub.tile('src:heroic'))
+        finally:
+            features.FEATURES = saved
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Hub(unittest.TestCase):
+    def groups(self):
+        from nexus import categories
+        gs, idx = rich_library()
+        return categories.categories(gs, idx['games'], categories.PrefsView(), linux=True)
+
+    def hub(self):
+        from nexus.gui.category import CategoryHub
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        from PyQt6.QtWidgets import QApplication
+        h = CategoryHub()
+
+        def gone():
+            h.close()
+            h.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        self.addCleanup(gone)
+        h.resize(900, 600)
+        h.set_groups(self.groups())
+        h.show()
+        QApplication.processEvents()
+        return h
+
+    def test_tiles_per_group_include_hidden(self):
+        h = self.hub()
+        self.assertEqual(h.group_keys(), ['for_you', 'genres', 'stores'])
+        self.assertEqual(len(h.tiles_in('for_you')), 8)                      # uncapped
+        self.assertEqual(len(h.tiles_in('genres')), 8)
+        self.assertEqual(h.title.text(), "All categories")
+
+    def test_tiles_reused_by_key(self):
+        from unittest import mock
+        from nexus import categories
+        from nexus.gui.category import MosaicTile
+        h = self.hub()
+        before = {k: id(h.tile(k)) for g in self.groups() for k in [c.key for c in g.cats]}
+        with mock.patch.object(MosaicTile, 'set_category') as setc:
+            h.set_groups(self.groups())                       # nothing changed: untouched
+            setc.assert_not_called()
+        groups = self.groups()
+        steam = categories.lookup(groups, 'src:steam')
+        fewer = categories.Category(steam.key, steam.kind, steam.title, steam.tip, steam.glyph,
+                                    None, steam.games[:3])
+        groups[-1] = categories.Group('stores', "Stores", (fewer,))
+        h.set_groups(groups)
+        self.assertEqual(id(h.tile('src:steam')), before['src:steam'])
+        self.assertEqual(h.tile('src:steam').count.text(), "3 games")
+        self.assertIsNone(h.tile('src:nexus'))
+        self.assertEqual(id(h.tile('genre:RPG')), before['genre:RPG'])
+        # One game out, another in: the count stays, the tile still follows.
+        swapped = categories.Category(steam.key, steam.kind, steam.title, steam.tip,
+                                      steam.glyph, None, steam.games[1:4])
+        groups[-1] = categories.Group('stores', "Stores", (swapped,))
+        h.set_groups(groups)
+        self.assertEqual(h.tile('src:steam').count.text(), "3 games")
+        self.assertEqual(set(h.tile('src:steam')._by), {g['slug'] for g in steam.games[1:4]})
+        self.assertEqual(len(h.findChildren(MosaicTile)), sum(len(g.cats) for g in groups)
+                         + 1)                          # the dropped one waits for deleteLater
+
+    def test_jump_to_group(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QApplication
+        h = self.hub()
+        before = QApplication.focusWidget()
+        h.jump_to('stores')
+        first = h.tiles_in('stores')[0]
+        self.assertIs(h.tile_for(), first)                  # where the window focuses
+        QApplication.processEvents()                         # the second, laid-out pass
+        bar = h.verticalScrollBar()
+        self.assertGreater(bar.value(), 0)
+        y = first.mapTo(h.viewport(), QPoint(0, 0)).y()
+        self.assertTrue(0 <= y < h.viewport().height(), y)
+        self.assertIs(QApplication.focusWidget(), before)   # the hub never moves the focus
+        h.jump_to('nope')                                        # nothing happens
+        QApplication.processEvents()
+        self.assertIs(h.tile_for(), first)
+
+    def test_view_protocol_noops(self):
+        h = self.hub()
+        self.assertEqual((h.tiles, h.games, h.shown_games()), ({}, {}, []))
+        self.assertIsNone(h.tile_for('b1'))
+        self.assertIs(h.tile_for(), h.tiles_in('for_you')[0])
+        h.reveal('b1')
+        h.mark_selected({'b1'})
+        h.set_jobs(None)
+        h.set_friends_badge(True)
+        h.refresh_friends()
+        h.tile('genre:RPG').click()                               # opened last: Back lands there
+        self.assertIs(h.tile_for(), h.tile('genre:RPG'))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class HubHistory(_Rich):
+    def test_hub_tile_page_back_back_to_browse_scroll(self):
+        w = self.win
+        bar = w.home.verticalScrollBar()
+        bar.setValue(bar.maximum() // 3)
+        self.pump()
+        before = bar.value()
+        self.assertGreater(before, 0)
+        w.home.head.btn_hub.click()
+        self.assertTrue(self.on_hub())
+        self.assertEqual(w._place(), (w.LIBRARY, 'cat', 'all'))
+        self.assertTrue(w._lib_bar.isHidden())
+        self.assertEqual(w._shown_games, [])             # no game tiles: Ctrl+D picks nothing
+        w.cathub.tile('genre:RPG').click()
+        self.assertTrue(self.on_page('genre:RPG'))
+        self.assertTrue(w.go_back())
+        self.assertTrue(self.on_hub())
+        self.assertIs(w.cathub.tile_for(), w.cathub.tile('genre:RPG'))
+        self.assertTrue(w.go_back())
+        self.pump(6)
+        self.assertFalse(w._category_open())
+        self.assertIs(w.views.currentWidget(), w.home)
+        self.assertEqual(bar.value(), before)
+
+    def test_all_genres_opens_hub_at_genres(self):
+        w = self.win
+        w.home.kicker('genres').btn_all.click()
+        self.pump(6)
+        self.assertTrue(self.on_hub())
+        self.assertGreater(w.cathub.verticalScrollBar().value(), 0)
+        self.assertEqual(w.cathub._last, w.cathub.tiles_in('genres')[0].key)
+
+    def test_keys_focus_jumped_group_once_unless_covered(self):
+        from PyQt6.QtWidgets import QApplication
+        from nexus.gui.category import MosaicTile
+        w = self.win
+        w.activateWindow()
+        w.input.mode = 'keyboard'
+        moves = []
+        orig = MosaicTile.focusInEvent
+        def spy(t, ev):                       # a Qt virtual: must return None
+            moves.append(t.key)
+            orig(t, ev)
+        with mock.patch.object(MosaicTile, 'focusInEvent', spy):
+            w.home.kicker('genres').btn_all.click()
+            self.pump(6)
+        first = w.cathub.tiles_in('genres')[0]
+        self.assertIs(QApplication.focusWidget(), first)
+        self.assertEqual(moves, [first.key])                     # once, straight there
+        # Something opens over the hub before the deferred focus: it stays put.
+        w.close_category()
+        w.home.kicker('genres').btn_all.click()
+        w._new_shelf()                                           # the shelf modal
+        self.pump(6)
+        self.assertTrue(w.modal.isVisible())
+        self.assertNotIsInstance(QApplication.focusWidget(), MosaicTile)
+        w._escape()
+        self.pump()
+
+    def test_hub_is_history_place(self):
+        w = self.win
+        w._open_hub()
+        w.go(w.HOME)
+        self.assertTrue(w.go_back())
+        self.assertEqual(w.current(), w.LIBRARY)
+        self.assertTrue(self.on_hub())
+        self.assertTrue(w.go_forward())
+        self.assertEqual(w.current(), w.HOME)
+
+    def test_escape_from_hub(self):
+        w = self.win
+        w._open_hub()
+        w.search.clearFocus()
+        w._escape()
+        self.assertFalse(w._category_open())
+        self.assertIs(w.views.currentWidget(), w.home)
+        self.assertFalse(w._lib_chips.isHidden())
+
+    def test_theatre_hub_does_nothing(self):
+        w = self.win
+        w._theatre = True
+        try:
+            self.assertFalse(w.open_category('all'))
+            self.assertFalse(w._category_open())
+        finally:
+            w._theatre = False
+
+    def test_reveal_a_game_closes_the_hub(self):
+        w = self.win
+        w._open_hub()
+        w._reveal_game('b7')
+        self.assertFalse(w._category_open())
+        self.assertEqual(w.selected, ['b7'])
 
 
 if __name__ == '__main__':

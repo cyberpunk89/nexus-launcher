@@ -79,6 +79,12 @@ DEEP = "/home/someone/Games/FitGirl/" + "/".join(f"very-long-directory-{i}" for 
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+def browse_groups(games, **pv):
+    """Browse's groups (w-99) over plain dicts, as the window makes them."""
+    from nexus import categories
+    return categories.browse(categories.categories(games, {}, categories.PrefsView(**pv)))
+
+
 class SoftWrap(unittest.TestCase):
     def test_breaks_after_separators(self):
         self.assertEqual(nx.soft_wrap("a/b,c=d"), "a/​b,​c=​d")
@@ -650,6 +656,7 @@ class Caching(unittest.TestCase):
         games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': src, 'installed': True}
                  for i, src in enumerate(['nexus'] * 12 + ['steam'] * 12 + ['epic'] * 12)]
         view.set_games(games)
+        view.set_groups(browse_groups(games))
         host.show()
         host.activateWindow()
         QTest.qWait(20)
@@ -820,42 +827,82 @@ class Caching(unittest.TestCase):
             self.assertFalse(cache.has_room())
 
     def test_shelves_keep_rows_and_tiles_across_refreshes(self):
+        """Browse (w-99): a reload re-points the rows it keeps, by key."""
         view = nx.HomeView('shelves')
         games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': 'nexus' if i < 4
-                  else 'steam'} for i in range(6)]
-        smart = lambda gs: [{'key': 'smart:never', 'title': "Never played", 'tip': 't',
-                             'games': gs[:3]}]
-        view.set_games(games)
-        view.set_smart(smart(games))
-        rows = {r.title: r for r in view.findChildren(nx.ShelfRow)}
+                  else 'steam', 'favorite': i < 3} for i in range(6)]
+
+        def fill(gs):
+            view.set_games(gs)
+            view.set_groups(browse_groups(gs))
+        fill(games)
+        rows = {r.key: r for r in view.group_rows()}
+        self.assertIn('src:nexus', rows)
+        self.assertIn('fav', rows)
         first = {id(t): t for r in rows.values() for t in r.tiles}
-        g1 = rows['Repacks'].tiles[1]
+        g1 = rows['src:nexus'].tiles[1]
         fresh = [dict(g) for g in games]                 # a reload: new dicts
-        view.set_games(fresh)
-        view.set_smart(smart(fresh))
-        now = {r.title: r for r in view.findChildren(nx.ShelfRow) if not r.isHidden()}
+        fill(fresh)
+        now = {r.key: r for r in view.group_rows() if not r.isHidden()}
         self.assertEqual({k: id(v) for k, v in now.items()},
                          {k: id(v) for k, v in rows.items()})        # the same rows…
         self.assertEqual({id(t) for r in now.values() for t in r.tiles}, set(first))
-        self.assertIs(now['Repacks'].tiles[0].game, fresh[0])         # …on the new data
-        self.assertEqual(sorted(len(ts) for ts in view.tiles.values()), [1, 1, 1, 2, 2, 2])
+        self.assertIs(now['src:nexus'].tiles[0].game, fresh[0])        # …on the new data
+        self.assertEqual(len(view.tiles['g1']), sum(
+            1 for r in now.values() for t in r.tiles if t.game['slug'] == 'g1'))
         # One repack gone, one new: the rest keep their tiles, the count follows.
         fresh2 = [dict(g) for g in fresh[1:]] + [{'slug': 'g9', 'display_name': 'G9',
                                                   'source': 'nexus'}]
-        view.set_games(fresh2)
-        view.set_smart(smart(fresh2))
-        repacks = now['Repacks']
-        self.assertEqual([t.game['slug'] for t in repacks.tiles], ['g1', 'g2', 'g3', 'g9'])
-        self.assertIs(repacks.tiles[0], g1)
+        fill(fresh2)
+        repacks = now['src:nexus']
+        self.assertEqual(sorted(t.game['slug'] for t in repacks.tiles), ['g1', 'g2', 'g3', 'g9'])
+        self.assertIn(g1, repacks.tiles)
         self.assertEqual(repacks.count_label.text(), '4')
         self.assertNotIn('g0', [s for s, ts in view.tiles.items() if ts])
-        self.assertEqual(len(view.tiles['g1']), 2)                    # its shelf and Never played
-        # No games: no rows, no smart shelves, the empty state.
+        # No games: no rows, no head, the empty state.
         view.set_games([])
         QApplication.processEvents()
         self.assertEqual([r for r in view.findChildren(nx.ShelfRow) if not r.isHidden()], [])
-        self.assertEqual(view._smart, [])
+        self.assertEqual(view.group_rows(), [])
+        self.assertTrue(view.head.isHidden())
         view.deleteLater()
+
+    def test_keepplace_matches_rows_by_key(self):
+        """A row renamed in a rebuild (a shelf of yours) keeps its sideways
+        offset and focus: KeepPlace knows rows by key, then by title."""
+        from PyQt6.QtTest import QTest
+        from nexus import categories
+        view = nx.HomeView('shelves')
+        self.addCleanup(view.deleteLater)
+        view.resize(700, 600)
+        games = [{'slug': f'g{i}', 'display_name': f'G{i}', 'source': 'steam',
+                  'installed': True, 'collections': ['Old name']} for i in range(14)]
+        pv = categories.PrefsView(collections=('Old name',))
+        view.set_games(games)
+        view.set_groups(categories.browse(categories.categories(games, {}, pv)))
+        view.show()
+        view.activateWindow()
+        QTest.qWait(20)
+        row = view.row_for('col:Old name')
+        self.assertGreater(row.bar.maximum(), 0)
+        row.bar.setValue(row.bar.maximum())
+        focused = row.tiles[10]
+        focused.setFocus()
+        QTest.qWait(5)
+        same = categories.lookup(categories.categories(games, {}, pv), 'col:Old name').games
+        renamed = categories.Category('col:Old name', 'collection', "New name", '', '*', None,
+                                      tuple(dict(g) for g in same))
+        with nx.KeepPlace(view, scroll=True):
+            view.set_games(games)
+            view.set_groups([categories.Group('yours', "Yours", (renamed,))])
+            row.bar.setValue(0)                    # as a rebuild that lost the place would
+            focused.clearFocus()
+        QTest.qWait(30)
+        self.assertIs(view.row_for('col:Old name'), row)
+        self.assertEqual(row.title, "New name")
+        self.assertEqual(row.name_label.text(), "New name")
+        self.assertEqual(row.bar.value(), row.bar.maximum())
+        self.assertIs(_app.focusWidget(), focused)
 
     def test_art_cache_is_bounded_and_async(self):
         import tempfile

@@ -44,11 +44,12 @@ class LibraryMixin:
         v.pending_clicked.connect(self._open_job)
         v.activated.connect(self._tile_activated)
         v.double.connect(self._tile_double)
-        if isinstance(v, HomeView):                 # smart shelves: Library and Home
+        if isinstance(v, HomeView):                 # category rows: Library and Home
             v.show_filter.connect(self._open_shelf_key)
             v.shelf_menu.connect(self._smart_menu)
             v.hidden_menu.connect(self._smart_hidden_menu)
             v.new_shelf.connect(self._new_shelf)
+            v.open_hub.connect(self._open_hub)
 
     def _see_all(self, chip, sort):
         """A source row's "See all" (Library Shelves, Home): that store's
@@ -126,7 +127,7 @@ class LibraryMixin:
         self._tile_timer.timeout.connect(self._tile_size_changed)
         self.size_slider.valueChanged.connect(self._tile_timer.start)
         self.view_seg = SegmentedControl('pill', 34)
-        for key, glyph, tip in (('home', G['shelves'], "Shelves — one row per source"),
+        for key, glyph, tip in (('home', G['shelves'], "Browse — rows by category"),
                                 ('grid', G['grid'], "Grid"),
                                 ('list', G['list'], "List")):
             self.view_seg.add(key, glyph=glyph, tip=tip)
@@ -214,6 +215,11 @@ class LibraryMixin:
         self.catpage.cat_menu.connect(self._category_menu)
         self.catpage.shown_changed.connect(self._category_shown)
         self.views.addWidget(self.catpage)
+        # All categories (w-99): the hub, routed as the place key categories.HUB.
+        self.cathub = CategoryHub()
+        self.cathub.back.connect(self.close_category)
+        self.cathub.open_key.connect(self.open_category)
+        self.views.addWidget(self.cathub)
         lay.addWidget(self.views, 1)
         # A game page's genre or Co-op chip (DetailsPanel.filter_library,
         # when that panel has it) opens that category's page.
@@ -455,7 +461,7 @@ class LibraryMixin:
         stay as they are when the game is already in what they show (a
         category page too: otherwise it closes)."""
         self.go(self.LIBRARY)
-        if self._category_open() and slug not in self.catpage.games \
+        if self._hub_open() or self._category_open() and slug not in self.catpage.games \
                 and not any(g.get('slug') == slug for g in self.catpage.cat.games):
             self.close_category()
         view = self._shown_view()
@@ -924,11 +930,11 @@ class LibraryMixin:
         badge = chip == 'friends' or together       # avatars on tiles only while filtering
         self.library.set_friends_badge(badge)
         self.home.set_friends_badge(badge)
-        if isinstance(target, HomeView):            # shelves are rebuilt: keep the place
-            with KeepPlace(target):
+        if isinstance(target, HomeView):            # rows are rebuilt: keep the place
+            with KeepPlace(target, scroll=True):
                 target.set_games(games, empty, pending)
                 if games:
-                    target.set_smart(*self._smart_shelves(games))
+                    target.set_groups(*self._browse_groups(games))
         else:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
@@ -1090,6 +1096,7 @@ class LibraryMixin:
         `sort` is the page's sort until one is chosen for it."""
         if self._theatre or not self._can_open(key):
             return False
+        hub = key == categories.HUB
         before = self._place()
         if self.current() != self.LIBRARY:
             self.go(self.LIBRARY, _history=_history)
@@ -1101,7 +1108,7 @@ class LibraryMixin:
         self._cat_key = key
         self._lib_bar.hide()
         self._lib_chips.hide()
-        self.views.setCurrentWidget(self.catpage)
+        self.views.setCurrentWidget(self.cathub if hub else self.catpage)
         self._refresh_category(sort)
         self._sync_pins()
         if self.input.mode in ('keyboard', 'pad'):
@@ -1123,9 +1130,22 @@ class LibraryMixin:
         if place is not None:
             place.put_back()
 
+    def _hub_open(self) -> bool:
+        """All categories is the Library's view now."""
+        return getattr(self, '_cat_key', None) == categories.HUB
+
+    def _open_hub(self, group: str = ''):
+        """Browse's All categories, or a kicker's All genres (`group`: the
+        hub scrolls there)."""
+        if self.open_category(categories.HUB) and group:
+            self.cathub.jump_to(group)
+
     def _can_open(self, key) -> bool:
         """A page opens on a category with games, a shelf of yours (even
-        empty), or a Nexus genre before the facts index has any game."""
+        empty), or a Nexus genre before the facts index has any game. The
+        hub opens when there is a category to show."""
+        if key == categories.HUB:
+            return bool(self._hub_groups())
         if not categories.is_key(key):
             return False
         if self._category_for(key, keep_empty=False) is not None:
@@ -1134,7 +1154,11 @@ class LibraryMixin:
             and not self._smart_facts()
 
     def _focus_category(self):
-        if self._category_open() and self.current() == self.LIBRARY:
+        """Keys or pad: the page's first tile (the hub's: the one opened
+        last, or its jump's group), once laid out, unless something opened
+        over it meanwhile (a palette, a modal, a sheet)."""
+        if self._category_open() and self.current() == self.LIBRARY \
+                and self.nav_scope() is self and not self.palette.isVisible():
             t = self._first_tile()
             if t is not None:
                 focus_and_reveal(t)
@@ -1146,7 +1170,16 @@ class LibraryMixin:
 
     def _refresh_category(self, sort: str | None = None):
         """Fill the page from the library as it is now; a category that is
-        gone (its collection deleted, its shelf removed) closes it."""
+        gone (its collection deleted, its shelf removed) closes it. The hub
+        shows every category of the pool, hidden rows too."""
+        if self._hub_open():
+            groups = self._hub_groups()
+            if not groups:
+                self.close_category(_history=False)
+                return
+            self.cathub.set_groups(groups)
+            self._shown_games = []          # no game tiles here: Ctrl+D, ranges, Surprise
+            return
         cat = self._category_for(self._cat_key)
         if cat is None:
             self.close_category(_history=False)
@@ -1179,13 +1212,15 @@ class LibraryMixin:
     def _category_shown(self):
         """A cut, sort or view changed on the page: what Ctrl+D and a
         Shift-click range go by."""
-        if self._category_open():
+        if self._category_open() and not self._hub_open():
             self._shown_games = self.catpage.shown_games()
 
     def _open_shelf_key(self, key: str):
-        """A smart shelf's See all or title (Library and Home): its page;
-        a key with no page (Play together) still filters the grid."""
-        if not self.open_category(key):
+        """A row's See all or title (Browse, Home's smart shelves): its
+        page (a store's starts on Name, as its row used to be); a smart key
+        with no page (Play together, Theatre) still filters the grid."""
+        sort = 'name' if categories.kind_of(key) == 'store' else None
+        if not self.open_category(key, sort) and str(key).startswith(smart.KEY_PREFIXES):
             self._show_filter(key)
 
     def _open_from_game_page(self, key: str):
@@ -1230,6 +1265,12 @@ class LibraryMixin:
         return [g for g in self._games if not g.get('hidden') and not g.get('dup_of')
                 and in_own(g)]
 
+    def _hub_groups(self) -> list:
+        """Every category of the pool, grouped (the hub; uncapped, hidden
+        rows included)."""
+        return categories.categories(self._category_pool(), self._smart_facts(),
+                                     self._prefs_view(), has('proton'), FRIENDS.public_ids())
+
     def _prefs_view(self) -> categories.PrefsView:
         return categories.PrefsView(
             collections=tuple(self.prefs.collections),
@@ -1259,36 +1300,36 @@ class LibraryMixin:
             self.apply_filter()
 
     def _smart_note(self, games) -> str:
-        """The divider's note: what the shelves come from, or, while the
-        index is still filling, how far it got."""
+        """Browse's note while the facts index is still filling (how far it
+        got); nothing once it is built."""
         idx = self._facts_idx
         missing = (idx.get('missing') or {}).get('steam')
         if idx.get('built') and not missing:
-            return "Sorted from your play time and store info"
+            return ''
         known = self._smart_facts()
         could = [g for g in games if _game_store_id(g)]
         have = sum(1 for g in could if g['slug'] in known)
         return "More appear as Nexus learns about your games" + (
             f" · {have} of {len(could)}" if could else '')
 
-    def _smart_shelves(self, games) -> tuple[list, str, int, bool]:
-        """What HomeView.set_smart needs for the Shelves view: your own
-        shelves first (shown even when empty), then the automatic ones."""
-        hidden = set(self.prefs.smart_hidden)
-        facts = self._smart_facts()
-        friends, names = FRIENDS.public_ids(), FRIENDS.names()
-        mine = [{'key': smart.USER + s['id'], 'title': smart.title_of(s),
-                 'tip': smart.describe(s, names=names),
-                 'games': smart.user_games(s, games, facts, friends=friends)}
-                for s in self.prefs.user_shelves() if smart.USER + s['id'] not in hidden]
-        auto = smart.shelves(games, facts, hidden=hidden, linux=has('proton'))
-        return mine + auto, self._smart_note(games), len(self._hidden_keys()), True
+    def _browse_groups(self, games) -> tuple[list, str, int, bool]:
+        """What HomeView.set_groups needs for Browse: the groups of
+        nexus/categories.py over the games it shows, capped and without the
+        rows you hid (categories.browse), the head's note, how many are
+        hidden, and New shelf."""
+        groups = categories.categories(games, self._smart_facts(), self._prefs_view(),
+                                       has('proton'), FRIENDS.public_ids())
+        return (categories.browse(groups, self.prefs.smart_hidden), self._smart_note(games),
+                len(self._hidden_keys()), True)
 
     def _hidden_keys(self) -> list[str]:
-        """What the divider's "N hidden" brings back: hidden shelves (yours
-        only while not removed), then the ones you removed."""
+        """What Browse's "N hidden" brings back: hidden rows that can still
+        be a category here (a shelf of yours while not removed, a collection
+        that still exists, no Linux rule without Proton), then the shelves
+        you removed."""
         live = {smart.USER + s['id'] for s in self.prefs.user_shelves()}
-        hid = [k for k in self.prefs.smart_hidden if not smart.is_user(k) or k in live]
+        hid = [k for k in self.prefs.smart_hidden
+               if (k in live if smart.is_user(k) else self._any_category(k) is not None)]
         return hid + [smart.USER + s['id'] for s in self.prefs.smart_shelves if s['removed']]
 
     def _smart_games(self, key: str, games: list[dict]) -> list[dict]:
@@ -1300,12 +1341,23 @@ class LibraryMixin:
         return smart.games_for(key, games, self._smart_facts(), linux=has('proton'),
                                friends=FRIENDS.public_ids())
 
+    def _any_category(self, key):
+        """`key` as a category with no games (its title and tip), or None
+        when it can't be one here."""
+        if smart.is_user(key):
+            return None
+        return categories.category(key, [], {}, self._prefs_view(), linux=has('proton'),
+                                   keep_empty=True)
+
     def _smart_label(self, key: str) -> str:
         together = smart.parse_friends_key(key)
         if together is not None:                      # w-83: 'Play together: Ana and Ben'
             return "Play together: " + smart.people_text(together[0], FRIENDS.names())
         shelf = smart.find_user(self.prefs.smart_shelves, key)
-        return smart.title_of(shelf) if shelf else smart.label(key)
+        if shelf:
+            return smart.title_of(shelf)
+        cat = self._any_category(key)
+        return cat.title if cat is not None else smart.label(key)
 
     def _smart_tip(self, key: str) -> str:
         together = smart.parse_friends_key(key)
@@ -1314,7 +1366,10 @@ class LibraryMixin:
             return smart.describe_rule({'field': 'friends', 'op': 'all_multi' if multi else 'all',
                                         'value': ids}, FRIENDS.names())
         shelf = smart.find_user(self.prefs.smart_shelves, key)
-        return smart.describe(shelf, names=FRIENDS.names()) if shelf else smart.tip(key)
+        if shelf:
+            return smart.describe(shelf, names=FRIENDS.names())
+        cat = self._any_category(key)
+        return cat.tip if cat is not None else smart.tip(key)
 
     def _rebuild_smart_filter(self, want: str | None = None):
         """The status filter's Smart group: a separator, a "Smart" header,
@@ -1474,12 +1529,16 @@ class LibraryMixin:
         self._save_shelf(draft, new=True)
 
     def _smart_menu(self, key: str, pos: QPoint):
-        """A smart shelf's ⋮: See all, Save as collection, Hide this shelf;
-        a shelf you built also has Edit and Remove. The desktop menu, or the
-        ActionSheet when a pad is driving."""
+        """A row's ⋮: See all, Save as collection, Hide this shelf; a shelf
+        you built also has Edit and Remove; Favourites, a collection or a
+        store only See all and Hide. The desktop menu, or the ActionSheet
+        when a pad is driving."""
         name = self._smart_label(key)
-        items = [("See all", G['grid'], lambda: self._open_shelf_key(key)),
-                 *self._shelf_actions(key)]
+        if categories.kind_of(key) in ('fav', 'collection', 'store'):
+            acts = [("Hide this row", G['eye_off'], lambda: self._hide_smart(key))]
+        else:
+            acts = self._shelf_actions(key)
+        items = [("See all", G['grid'], lambda: self._open_shelf_key(key)), *acts]
         self._choose(name, items, self._smart_tip(key), pos)
 
     def _shelf_actions(self, key: str) -> list[tuple]:
@@ -1506,7 +1565,7 @@ class LibraryMixin:
         m.deleteLater()
 
     def _smart_hidden_menu(self, pos: QPoint):
-        """The divider's "N hidden": bring a hidden or removed shelf back."""
+        """Browse's "N hidden": bring a hidden row or a removed shelf back."""
         removed = {smart.USER + s['id'] for s in self.prefs.smart_shelves if s['removed']}
         items = [(f"Bring back “{self._smart_label(k)}”", G['reset'],
                   lambda k=k: self._restore_shelf(k[len(smart.USER):])) if k in removed else
@@ -1617,9 +1676,8 @@ class LibraryMixin:
         self._smart_sig = None
         self.apply_filter()
         self.dash_update('smart')
-        # Its row in the Shelves view, scrolled into sight (the focus goes there too).
-        row = next((x for x in self.home._smart if isinstance(x, ShelfRow)
-                    and x.title == self._smart_label(key)), None)
+        # Its row on Browse, scrolled into sight (the focus goes there too).
+        row = self.home.row_for(key)
         if row is not None and self.current() == self.LIBRARY \
                 and self.views.currentWidget() is self.home:
             QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.btn_menu))
@@ -1746,9 +1804,9 @@ from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,
     PRESENCE_AGE, PRESENCE_ARGS)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
-from .category import CategoryPage, NO_GAMES  # noqa: E402
+from .category import CategoryHub, CategoryPage, NO_GAMES  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
-    ShelfRow, surprise_pick, vibe_pools)  # noqa: E402
+    surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402

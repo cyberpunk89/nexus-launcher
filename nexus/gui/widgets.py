@@ -474,6 +474,14 @@ def icon_label(glyph: str, px: int = 14, color: str | None = None) -> QLabel:
     return lab
 
 
+def set_icon_label(lab: QLabel, glyph: str, px: int = 14, role: str | None = None):
+    """Point an icon_label at another glyph and palette role (it keeps
+    following theme changes)."""
+    lab.setText(glyph)
+    lab._icon_spec = (px, role, P[role] if role else None)
+    _style_icon_label(lab)
+
+
 def _style_icon_label(lab: QLabel):
     # Via the stylesheet: the app-wide QSS font rules beat setFont().
     px, role, color = lab._icon_spec

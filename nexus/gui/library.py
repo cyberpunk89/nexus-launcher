@@ -11,12 +11,13 @@ from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QItemSelection,
 from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QImageReader, QLinearGradient,
     QPainter, QPainterPath, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+    QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from .. import smart
+from .. import categories, smart
 from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
-from .theme import FS, G, GRAD, P, pill_qss, R, SP, STAGE_BTN_H, TILE_LIFT, TILE_W
+from .theme import (collection_look, FS, G, GRAD, P, pill_qss, R, SP, STAGE_BTN_H, TILE_LIFT,
+    TILE_W)
 
 
 class _TileSignals:
@@ -377,13 +378,26 @@ class KeepPlace:
     """`with KeepPlace(view): rebuild…` — a rebuild of `view`'s shelves
     (a library reload, an install finishing) keeps the keyboard/controller
     user where they were: the same game's tile gets the focus back, and each
-    shelf goes back to its sideways offset."""
+    shelf goes back to its sideways offset. Rows are told apart by their
+    `key` (a category, w-99) or else their title, so a renamed shelf keeps
+    its place. With `scroll`, the view's own scroll comes back too (Browse:
+    a row taken out above the place would otherwise pull the page up)."""
 
-    def __init__(self, scope: QWidget):
+    def __init__(self, scope: QWidget, scroll: bool = False):
         self.scope = scope
+        self._keep_scroll = scroll
+        self.scroll = None
 
     def _rows(self):
         return [r for r in self.scope.findChildren(ShelfRow) if not r.isHidden()]
+
+    @staticmethod
+    def _id(row) -> str | None:
+        return getattr(row, 'key', None) or row.title
+
+    def _view_scroll(self) -> int | None:
+        bar = getattr(self.scope, 'verticalScrollBar', None)
+        return bar().value() if bar is not None else None
 
     def __enter__(self):
         f = QApplication.focusWidget()
@@ -392,16 +406,17 @@ class KeepPlace:
             row = f.parentWidget()
             while row is not None and not isinstance(row, ShelfRow):
                 row = row.parentWidget()
-            self.focus = (f.game.get('slug'), row.title if row is not None else None)
-        self.offsets = {r.title: r.bar.value() for r in self._rows() if r.bar.value()}
+            self.focus = (f.game.get('slug'), self._id(row) if row is not None else None)
+        self.offsets = {self._id(r): r.bar.value() for r in self._rows() if r.bar.value()}
+        if self._keep_scroll:
+            self.scroll = self._view_scroll() or None
         return self
 
     def take(self) -> 'KeepPlace':
         """A snapshot to put back later (a category page opened from
         Browse): the focus, each shelf's offset and the view's scroll."""
         self.__enter__()
-        bar = getattr(self.scope, 'verticalScrollBar', None)
-        self.scroll = bar().value() if bar is not None else None
+        self.scroll = self._view_scroll()
         return self
 
     def put_back(self):
@@ -411,11 +426,12 @@ class KeepPlace:
         self._later()
 
     def _scroll_back(self):
-        if getattr(self, 'scroll', None) is not None:
+        if self.scroll is not None:
             self.scope.verticalScrollBar().setValue(self.scroll)
 
     def __exit__(self, *exc):
-        if self.focus is not None or self.offsets:
+        self._scroll_back()
+        if self.focus is not None or self.offsets or self.scroll:
             self._later()
         return False
 
@@ -435,16 +451,16 @@ class KeepPlace:
         self._scroll_back()
         rows = self._rows()
         for r in rows:
-            if r.title in self.offsets:
-                r.restore_offset(self.offsets[r.title])
+            if self._id(r) in self.offsets:
+                r.restore_offset(self.offsets[self._id(r)])
         if self.focus is None:
             return
-        slug, title = self.focus
+        slug, rid = self.focus
         cur = QApplication.focusWidget()
         # Hiding the old tile moved Qt's focus to some neighbour (or nowhere).
         if not (isinstance(cur, GameTile) and not cur.isHidden()
                 and cur.game.get('slug') == slug):
-            same = [t for r in rows if r.title == title for t in r.tiles
+            same = [t for r in rows if self._id(r) == rid for t in r.tiles
                     if t.game.get('slug') == slug]
             anywhere = [t for t in self.scope.findChildren(GameTile)
                         if t.game.get('slug') == slug and not t.isHidden()]
@@ -527,6 +543,8 @@ class ShelfRow(QWidget):
         super().__init__()
         self.title = title
         self.smart: str | None = None             # a smart shelf's key (HomeView sets it)
+        self.key: str | None = None               # its category (Browse, w-99): KeepPlace
+        self.look = look
         self._want: int | None = None             # an offset to come back to (KeepPlace)
         self.tile_w, self.kind = tile_w, kind
         tile_h = tile_h or (int(tile_w * 9 / 16) if kind == 'wide' else int(tile_w * 3 / 2))
@@ -610,10 +628,18 @@ class ShelfRow(QWidget):
     def finish(self):
         self.row.addStretch()
 
-    def set_games(self, games: list[dict], make):
+    def set_title(self, title: str, tip: str = ''):
+        """A new name for the row (a shelf renamed): the row stays."""
+        self.title = title
+        if self.name_label.text() != title:
+            self.name_label.setText(title)
+        self.name_label.setToolTip(tip)
+
+    def set_games(self, games: list[dict], make, count: int | None = None):
         """Point the row at `games` (a refresh): the tiles of games still in
         it are kept and re-pointed at the fresh dicts, `make(game)` makes the
-        missing ones. The same games in the same order touch no layout."""
+        missing ones. The same games in the same order touch no layout.
+        `count`: what the count says when the row shows only some (a cap)."""
         if [t.game.get('slug') for t in self.tiles] == [g['slug'] for g in games]:
             for t, g in zip(self.tiles, games):
                 t.set_game(g)
@@ -639,7 +665,7 @@ class ShelfRow(QWidget):
                     t.deleteLater()
             self.finish()
         if self.count_label is not None:
-            self.count_label.setText(str(len(games)))
+            self.count_label.setText(str(len(games) if count is None else count))
 
     def page(self, direction: int):
         self.scroll_to(shelf_page_target(self.bar.value(), self.bar.maximum(),
@@ -707,54 +733,120 @@ class ShelfRow(QWidget):
             self.scroll_to(min(self.bar.maximum(), x1 - vw + margin))
 
 
-class SmartDivider(QWidget):
-    """The line between the source rows and the smart shelves: a glyph,
-    "Smart shelves" and a muted note on one baseline (one rich-text label),
-    and "N hidden" on the right while shelves are hidden."""
+class BrowseKicker(QWidget):
+    """A group's kicker on Browse ("FOR YOU", "GENRES"…), with an "All
+    genres" link on Genres: the hub, at that group."""
+    hub = pyqtSignal(str)
+
+    LINKS = {'genres': "All genres"}
+
+    def __init__(self, gkey: str, title: str):
+        super().__init__()
+        self.gkey = gkey
+        self.setObjectName("BrowseKicker")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['2'])
+        self.text = label(title.upper(), "SectionKicker")
+        lay.addWidget(self.text, 0, Qt.AlignmentFlag.AlignBottom)
+        lay.addStretch(1)
+        self.btn_all = None
+        if gkey in self.LINKS:
+            b = self.btn_all = QPushButton(self.LINKS[gkey])
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Every genre, in All categories")
+            set_glyph_icon(b, G['grid'], 14, 'subtext', hover_role='text')
+            b.clicked.connect(lambda: self.hub.emit(self.gkey))
+            lay.addWidget(b)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+
+class BrowseHead(QWidget):
+    """The top of Browse: a jump chip per group (scrolls there), then on
+    the right All categories (the hub), "N hidden" (bring a row back) and
+    New shelf; under them a muted note while the facts index is filling."""
+    jump = pyqtSignal(str)
+    hub = pyqtSignal()
     hidden_menu = pyqtSignal(QPoint)
     new_shelf = pyqtSignal()
 
-    def __init__(self, note: str, hidden: int = 0, can_add: bool = False):
+    def __init__(self):
         super().__init__()
+        self.setObjectName("BrowseHead")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, SP['2'], 0, 0)
-        lay.setSpacing(SP['3'])
-        rule = QFrame()
-        rule.setObjectName("SmartRule")
-        rule.setFixedHeight(1)
-        lay.addWidget(rule)
-        head = QHBoxLayout()
-        head.setSpacing(SP['2'])
-        head.addWidget(icon_label(G['sparkles'], 16, P['accent']), 0,
-                       Qt.AlignmentFlag.AlignVCenter)
-        self.text = label("", "SmartHead", wrap=True)
-        self.text.setTextFormat(Qt.TextFormat.RichText)
-        self.text.setText(
-            "Smart shelves" + (f"&nbsp;&nbsp;<span style='color:{P['muted']}; font-size:"
-                               f"{FS['xs']}px; font-weight:400'>{html.escape(note)}</span>"
-                               if note else ''))
-        head.addWidget(self.text, 1)
-        self.btn_hidden = None
-        if hidden:
-            b = QPushButton(f"{hidden} hidden")
-            b.setObjectName("Ghost")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip("Bring back a shelf you hid")
-            b.clicked.connect(lambda: self.hidden_menu.emit(
-                b.mapToGlobal(QPoint(0, b.height()))))
-            self.btn_hidden = b
-            head.addWidget(b)
-        self.btn_new = None
-        if can_add:                               # w-51: a shelf you build from rules
-            b = QPushButton("New shelf")
-            b.setObjectName("Ghost")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip("Make your own shelf from rules")
-            set_glyph_icon(b, G['plus'], 15, 'subtext', hover_role='text')
-            b.clicked.connect(self.new_shelf)
-            self.btn_new = b
-            head.addWidget(b)
-        lay.addLayout(head)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['2'])
+        self.bar = WrapRow(SP['2'])
+        self.bar.left.setSpacing(SP['1_5'])
+        self._chips: dict[str, QPushButton] = {}
+        self._chip_sig = None
+        self.bar.left.addStretch(1)
+        right = QWidget()
+        rl = QHBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(SP['1'])
+        self.btn_hub = self._ghost("All categories", G['grid'], "Every category, as tiles")
+        self.btn_hub.clicked.connect(self.hub)
+        self.btn_hidden = self._ghost("", None, "Bring back a row you hid")
+        self.btn_hidden.clicked.connect(lambda: self.hidden_menu.emit(
+            self.btn_hidden.mapToGlobal(QPoint(0, self.btn_hidden.height()))))
+        self.btn_new = self._ghost("New shelf", G['plus'], "Make your own shelf from rules")
+        self.btn_new.clicked.connect(self.new_shelf)
+        for b in (self.btn_hub, self.btn_hidden, self.btn_new):
+            rl.addWidget(b)
+        lay.addWidget(self.bar)
+        self.note = label("", "Muted", wrap=True)
+        self.note.hide()
+        lay.addWidget(self.note)
+        self.bar.set_right(right)                 # last: its filter reads the parts above
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+    @staticmethod
+    def _ghost(text: str, glyph: str | None, tip: str) -> QPushButton:
+        b = QPushButton(text)
+        b.setObjectName("Ghost")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setToolTip(tip)
+        if glyph:
+            set_glyph_icon(b, glyph, 15, 'subtext', hover_role='text')
+        return b
+
+    def set_state(self, groups: list[tuple[str, str]], note: str = '', hidden: int = 0,
+                  can_add: bool = False):
+        """`groups`: (key, title) of the groups Browse shows, in order."""
+        sig = tuple(groups)
+        if sig != self._chip_sig:
+            self._chip_sig = sig
+            old, self._chips = self._chips, {}
+            while self.bar.left.count():
+                self.bar.left.takeAt(0)
+            for gkey, title in groups:
+                b = old.pop(gkey, None)
+                if b is None:
+                    b = QPushButton(title)
+                    b.setObjectName("Chip")
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+                    b.setToolTip(f"Jump to {title}")
+                    set_glyph_icon(b, categories.GROUP_GLYPH.get(gkey, G['grid']), 14,
+                                   'subtext', hover_role='text')
+                    b.clicked.connect(lambda _=False, k=gkey: self.jump.emit(k))
+                self.bar.left.addWidget(b)
+                self._chips[gkey] = b
+            self.bar.left.addStretch(1)
+            for b in old.values():
+                b.hide()
+                b.deleteLater()
+        self.btn_hub.setVisible(bool(groups))
+        self.btn_hidden.setText(f"{hidden} hidden")
+        self.btn_hidden.setVisible(hidden > 0)
+        self.btn_new.setVisible(can_add)
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
+
+    def chips(self) -> dict[str, QPushButton]:
+        return dict(self._chips)
 
 
 class HeroCarousel(QWidget):
@@ -1323,21 +1415,26 @@ class HomeView(QScrollArea, _TileSignals):
 
     mode='home'    — the Home page: the dashboard widgets (the Stage,
                      shelves and cards).
-    mode='shelves' — the Library's shelf view: one row per source."""
+    mode='shelves' — the Library's Browse view (w-99): a head (jump chips,
+                     All categories, N hidden, New shelf), the Installing
+                     row, then the category groups of nexus/categories.py,
+                     each under a kicker, one row per category."""
     clicked = pyqtSignal(dict, object)
     play = pyqtSignal(dict)
     menu = pyqtSignal(dict, QPoint)
     activated = pyqtSignal(dict)
     double = pyqtSignal(dict)
     pending_clicked = pyqtSignal(object)
-    see_all = pyqtSignal(str, str)         # (chip, sort) for the Library
-    show_filter = pyqtSignal(str)          # a smart shelf's "See all": its filter key
-    shelf_menu = pyqtSignal(str, QPoint)   # a smart shelf's ⋮ (key, where)
-    hidden_menu = pyqtSignal(QPoint)       # the divider's "N hidden"
-    new_shelf = pyqtSignal()               # the divider's "New shelf"
+    see_all = pyqtSignal(str, str)         # (chip, sort): a Home source row's See all
+    show_filter = pyqtSignal(str)          # a row's See all or title: its category key
+    shelf_menu = pyqtSignal(str, QPoint)   # a row's ⋮ (key, where)
+    hidden_menu = pyqtSignal(QPoint)       # Browse's "N hidden"
+    new_shelf = pyqtSignal()               # Browse's "New shelf"
+    open_hub = pyqtSignal(str)             # All categories ('') / All genres (a group key)
 
     SHELF_TILE = 150
     WIDE_TILE = 300
+    WIDE_KEYS = ('smart:continue',)        # Browse rows with wide tiles
 
     def __init__(self, mode: str = 'home'):
         super().__init__()
@@ -1351,109 +1448,168 @@ class HomeView(QScrollArea, _TileSignals):
         self.rows = QVBoxLayout()
         self.rows.setSpacing(SP['5'])
         self.lay.addLayout(self.rows)
-        self.smart_rows = QVBoxLayout()       # Shelves: the divider and smart shelves
-        self.smart_rows.setSpacing(SP['5'])
-        self.lay.addLayout(self.smart_rows)
+        self.group_lay = QVBoxLayout()        # Browse: the kickers and category rows
+        self.group_lay.setSpacing(0)          # set per gap (_relayout): a kicker hugs its row
+        self.lay.addLayout(self.group_lay)
         self.extra = QVBoxLayout()            # Home: the dashboard goes here
         self.lay.addLayout(self.extra)
         self.lay.addStretch()
         self.setWidget(host)
         self.tiles: dict[str, list[GameTile]] = {}
-        self._smart: list[QWidget] = []
-        self._kept: dict[str, ShelfRow] = {}   # Shelves: the source rows, by title
+        self._group_rows: dict[str, ShelfRow] = {}       # Browse: category key -> row
+        self._kickers: dict[str, BrowseKicker] = {}       # Browse: group key -> kicker
+        self._order: list[QWidget] = []                   # Browse: group_lay's widgets
+        self.head = None
+        if mode == 'shelves':
+            # Into the layout before it is shown (a parentless shown widget
+            # is a window).
+            self.head = BrowseHead()
+            self.head.hide()
+            self.head.jump.connect(self.jump_to)
+            self.head.hub.connect(lambda: self.open_hub.emit(''))
+            self.head.hidden_menu.connect(self.hidden_menu)
+            self.head.new_shelf.connect(self.new_shelf)
+            self.lay.insertWidget(0, self.head)
         FRIENDS.avatar_ready.connect(self._friend_avatars)
 
     def set_games(self, games, empty_text=None, pending_jobs=()):
+        """The Installing row (Home and Browse) and the empty state; Browse's
+        category rows come from set_groups."""
         self.tiles = {}             # the dashboard re-adds its shelves' tiles after this
-        if self.mode == 'home':
-            # Everything on Home is a dashboard widget (MainWindow fills it,
-            # the Stage first); only an install in progress gets a row of its own.
-            shelves = [("Installing", [], pending_jobs, 'cover', None)]
-        else:
-            shelves = [("Installing", [], pending_jobs, 'cover', None)]
-            for src, name in (('nexus', "Repacks"), ('steam', "Steam"),
-                              *((('heroic', "Heroic"),) if has('heroic') else ()),
-                              ('epic', "Epic")):
-                items = sorted((g for g in games if g.get('source', 'nexus') == src),
-                               key=lambda g: (g.get('display_name') or '').lower())
-                shelves.append((name, items, (), 'cover', (src, 'name')))
-        # A source row that's still there is kept, with the tiles of the
-        # games still in it: a library reload (after every job) or a
-        # favourite re-points a few hundred tiles instead of making them again.
-        old, self._kept = self._kept, {}
         while self.rows.count():
             w = self.rows.takeAt(0).widget()
-            if w is not None and w not in old.values():
+            if w is not None:
                 w.hide()
                 w.deleteLater()
-        for title, items, jobs, kind, link in shelves:
-            if not (items or jobs):
-                continue
-            row = old.pop(title, None) if not jobs else None
-            if row is not None and row.kind == kind:
-                row.set_games(items, lambda g, r=row: self._tile(g, r.tile_w, r.kind))
-                self.rows.addWidget(row)
-                self._track(row)
-            else:
-                if row is not None:
-                    old[title] = row
-                row = self._shelf(title, items, jobs, kind, link)
-            if not jobs:
-                self._kept[title] = row
-        for row in old.values():
-            row.hide()
-            row.deleteLater()
-        for w in self._smart:
-            if isinstance(w, ShelfRow):
-                self._track(w)
-        if not games:
-            self.set_smart([])
+        if pending_jobs:
+            self._shelf("Installing", [], pending_jobs, 'cover', None)
+        for row in self._group_rows.values():
+            self._track(row)
+        if self.mode == 'shelves' and not games:
+            self.set_groups([])
         if not games and not pending_jobs:
             self.rows.addWidget(EmptyState(G['library'], *empty_state_text(empty_text)))
 
-    def set_smart(self, shelves: list[dict], note: str = '', hidden: int = 0,
-                  can_add: bool = False):
-        """The smart shelves after the source rows (Shelves view): a divider,
-        then one row per shelf ({key, title, tip, games}) with a ⋮ menu.
-        A shelf you built shows even with no game, saying so. Nothing at all
-        with no shelf, none hidden and no `can_add` ("New shelf" on the
-        divider). Replaces the last ones, keeping the row (and tiles) of a
-        shelf that's still there and still has games."""
-        old = {}
-        for w in self._smart:
-            self.smart_rows.removeWidget(w)
-            if isinstance(w, ShelfRow):
-                self._untrack(w)
-                old[(w.smart, w.title)] = w
-            else:
-                w.hide()
-                w.deleteLater()
-        self._smart = []
-        if shelves or hidden or can_add:
-            div = SmartDivider(note, hidden, can_add)
-            div.hidden_menu.connect(self.hidden_menu)
-            div.new_shelf.connect(self.new_shelf)
-            self.smart_rows.addWidget(div)
-            self._smart.append(div)
-        for s in shelves:
-            row = old.pop((s['key'], s['title']), None)
-            if row is not None and s['games'] and row.tiles:
-                row.set_games(s['games'], lambda g, r=row: self._tile(g, r.tile_w, r.kind))
-                row.name_label.setToolTip(s.get('tip', ''))
+    def set_groups(self, groups, note: str = '', hidden: int = 0, can_add: bool = False):
+        """Browse's groups (categories.browse()): a kicker each, then one row
+        per category ({see all, ⋮}, at most categories.ROW_CAP tiles, the
+        count says all). A row that's still there with games is kept and
+        re-pointed (its tiles too); one with no game is made fresh, saying
+        so (a shelf of yours). The same rows in the same order touch no
+        layout. `note`, `hidden` and `can_add` are for the head."""
+        if self.head is None:
+            return
+        self.head.set_state([(g.key, g.title) for g in groups], note, hidden, can_add)
+        self.head.setVisible(bool(groups or hidden or can_add))
+        old_rows, self._group_rows = self._group_rows, {}
+        old_kick, self._kickers = self._kickers, {}
+        order: list[QWidget] = []
+        for g in groups:
+            k = old_kick.pop(g.key, None)
+            if k is None:
+                k = BrowseKicker(g.key, g.title)
+                k.hub.connect(self.open_hub)
+            self._kickers[g.key] = k
+            order.append(k)
+            for c in g.cats:
+                kind = 'wide' if c.key in self.WIDE_KEYS else 'cover'
+                look = self._look(c)
+                games = list(c.games[:categories.ROW_CAP])
+                row = old_rows.pop(c.key, None)
+                if row is not None:
+                    self._untrack(row)
+                if row is not None and row.kind == kind and row.look == look and games \
+                        and row.tiles:
+                    row.set_games(games, lambda gm, r=row: self._tile(gm, r.tile_w, r.kind),
+                                  count=len(c.games))
+                    row.set_title(c.title, c.tip)
+                else:
+                    if row is not None:                # was empty, or is now: a fresh row
+                        self._drop(row)
+                    row = self._browse_row(c, kind, look, games)
                 self._track(row)
-            else:
-                if row is not None:                # was empty, or is now: a fresh row
-                    row.hide()
-                    row.deleteLater()
-                row = self.make_shelf(s['title'], s['games'], smart=s['key'],
-                                      tip=s.get('tip', ''))
-                if not s['games']:
-                    row.set_empty("No games match these rules yet")
-            self.smart_rows.addWidget(row)
-            self._smart.append(row)
-        for row in old.values():
-            row.hide()
-            row.deleteLater()
+                self._group_rows[c.key] = row
+                order.append(row)
+        for w in list(old_rows.values()) + list(old_kick.values()):
+            self._drop(w)
+        if order != self._order:
+            self._relayout(order)
+
+    def _relayout(self, order: list[QWidget]):
+        """group_lay in `order`, with a row's gap between rows, a wider one
+        before a kicker and a small one under it. The widgets stay children
+        of the view while they're out."""
+        while self.group_lay.count():
+            self.group_lay.takeAt(0)
+        prev = None
+        for w in order:
+            if prev is not None:
+                self.group_lay.addSpacing(SP['2'] if isinstance(prev, BrowseKicker)
+                                          else SP['6'] if isinstance(w, BrowseKicker)
+                                          else SP['5'])
+            self.group_lay.addWidget(w)
+            prev = w
+        self._order = order
+
+    def _drop(self, w: QWidget):
+        if isinstance(w, ShelfRow):
+            self._untrack(w)
+        if self.group_lay.indexOf(w) >= 0:
+            self.group_lay.removeWidget(w)      # the order differs now: _relayout follows
+        w.hide()                                    # gone now, not at the next event loop
+        w.deleteLater()
+
+    @staticmethod
+    def _look(c) -> tuple | None:
+        """The glyph before a Yours row's title: ★ in gold, a collection's
+        own icon and colour (as its chip)."""
+        if c.kind == 'fav':
+            return (c.glyph, 'col_gold' if 'col_gold' in P else 'accent')
+        if c.kind == 'collection':
+            return collection_look(categories.collection_name(c.key))
+        return None
+
+    def _browse_row(self, c, kind: str, look, games: list[dict]) -> 'ShelfRow':
+        w = self.WIDE_TILE if kind == 'wide' else self.SHELF_TILE
+        row = ShelfRow(c.title, w, kind, count=len(c.games), see_all=True, menu=True,
+                       tip=c.tip, look=look)
+        row.key = c.key
+        row.see_all.connect(lambda k=c.key: self.show_filter.emit(k))
+        row.menu_asked.connect(lambda pos, k=c.key: self.shelf_menu.emit(k, pos))
+        for g in games:
+            row.add(self._tile(g, w, kind))
+        row.finish()
+        if not games:
+            row.set_empty("No games match these rules yet" if c.kind == 'shelf'
+                          else "No games here right now.")
+        return row
+
+    def row_for(self, key: str) -> 'ShelfRow | None':
+        """Browse's row for a category key (None when it isn't shown)."""
+        return self._group_rows.get(key)
+
+    def kicker(self, gkey: str) -> 'BrowseKicker | None':
+        return self._kickers.get(gkey)
+
+    def group_rows(self) -> list['ShelfRow']:
+        """Browse's category rows, in order."""
+        return [w for w in self._order if isinstance(w, ShelfRow)]
+
+    def jump_to(self, gkey: str):
+        """A jump chip: the group's kicker to the top, the focus on its
+        first row's first tile (its ⋮ when it has none)."""
+        k = self._kickers.get(gkey)
+        if k is None:
+            return
+        self.widget().layout().activate()
+        y = k.mapTo(self.widget(), QPoint(0, 0)).y()
+        self.verticalScrollBar().setValue(max(0, y - SP['2']))
+        i = self._order.index(k)
+        row = self._order[i + 1] if i + 1 < len(self._order) else None
+        if isinstance(row, ShelfRow):
+            target = row.tiles[0] if row.tiles else getattr(row, 'btn_menu', None)
+            if target is not None:
+                focus_and_reveal(target)
 
     def make_shelf(self, title, games, kind='cover', link=None, smart: str | None = None,
                    tip: str = '', look: tuple | None = None) -> 'ShelfRow':
@@ -1753,4 +1909,4 @@ from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from .widgets import (clear_layout, empty_state_text, EmptyState, icon_button,
-    icon_label, label, set_glyph_icon)  # noqa: E402
+    icon_label, label, set_glyph_icon, WrapRow)  # noqa: E402

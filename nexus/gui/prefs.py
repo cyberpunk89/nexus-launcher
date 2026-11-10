@@ -207,12 +207,13 @@ class LibraryPrefs:
             or smart.parse_friends_key(show) is not None else 'installed'}
         # Theatre's Discover: the Game-db setup card, hidden with X.
         self.theatre_hide_gamedb = bool(self._data.get('theatre_hide_gamedb', False))
-        # Smart shelves you hid (keys like 'smart:never', 'genre:RPG', 'user:<id>').
+        # Rows you hid from Browse (and the smart shelves on Home): any
+        # category key ('smart:never', 'genre:RPG', 'user:<id>', and since
+        # w-99 'fav', 'col:<name>', 'src:<store>'). An older Nexus drops the
+        # new ones, so those rows just come back there.
         sh = self._data.get('smart_hidden')
         self.smart_hidden = list(dict.fromkeys(
-            k for k in sh if isinstance(k, str)
-            and (k.startswith(('smart:', 'genre:')) or smart.is_user(k))))[:50] \
-            if isinstance(sh, list) else []
+            k for k in sh if categories.is_key(k)))[:50] if isinstance(sh, list) else []
         # Each category page's sort and view (w-98): {key: 'played'|..., key:
         # 'rows'|'grid'|'list'}. New keys, so an older Nexus just keeps them.
         self.category_sort = _per_category(self._data.get('category_sort'), categories.SORTS)
