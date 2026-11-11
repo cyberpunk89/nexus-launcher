@@ -235,6 +235,101 @@ class Forecast(unittest.TestCase):
         self.assertEqual(out[0]['to_write'], 0)
 
 
+class Sections(unittest.TestCase):
+    """The Downloads page's sections (w-94): In progress, Ready to play,
+    Done recently, Other torrents."""
+
+    def setUp(self):
+        self.ready = row(hash='r' * 40, slug='ready-game', done=True, percent=100.0,
+                         installed=True, install_started=iso(NOW - 4000),
+                         installed_at=iso(NOW - 3600))
+        self.going = row()
+
+    def split(self, rows, played=None):
+        cs = P.cards(rows, {}, NOW, set())
+        return P.sections(cs, rows, played or {})
+
+    def keys(self, cards):
+        return [c['hash'] for c in cards]
+
+    def test_ready_moves_to_done_when_played_since(self):
+        s = self.split([self.going, self.ready])
+        self.assertEqual(self.keys(s['progress']), [H])
+        self.assertEqual(self.keys(s['ready']), ['r' * 40])
+        self.assertEqual(s['done'], [])
+        # Played before the install: still Ready.
+        s = self.split([self.going, self.ready], {'ready-game': iso(NOW - 7200)})
+        self.assertEqual(self.keys(s['ready']), ['r' * 40])
+        # Played since: done with, it moves to Done recently.
+        s = self.split([self.going, self.ready], {'ready-game': iso(NOW - 60)})
+        self.assertEqual(s['ready'], [])
+        self.assertEqual([r['hash'] for r in s['done']], ['r' * 40])
+
+    def test_done_after_24h_until_cleared(self):
+        old = {**self.ready, 'installed_at': iso(NOW - 30 * 3600)}
+        newer = {**old, 'hash': 'n' * 40, 'installed_at': iso(NOW - 26 * 3600)}
+        s = self.split([old, newer])
+        self.assertEqual((s['progress'], s['ready']), ([], []))
+        self.assertEqual([r['hash'] for r in s['done']], ['n' * 40, 'r' * 40])  # newest first
+        s = self.split([{**old, 'history_cleared': iso(NOW - 60)}, newer])
+        self.assertEqual([r['hash'] for r in s['done']], ['n' * 40])
+        # Cleared before a newer install of the same download: shown again.
+        s = self.split([{**old, 'history_cleared': iso(NOW - 40 * 3600)}])
+        self.assertEqual([r['hash'] for r in s['done']], ['r' * 40])
+
+    def test_no_installed_at_is_not_history(self):
+        s = self.split([row(hash='o' * 40, installed=True, done=True, percent=100.0)])
+        self.assertEqual(s['done'], [])
+
+    def test_untracked_and_left_rows_go_to_other(self):
+        theirs = row(hash='t' * 40, tracked=False)
+        seeding = {**self.ready, 'installed_at': iso(NOW - 30 * 3600), 'state': 'seeding'}
+        gone_done = {**seeding, 'hash': 'g' * 40, 'gone': True}
+        s = self.split([self.going, theirs, seeding, gone_done])
+        self.assertEqual([r['hash'] for r in s['other']], ['t' * 40, 'r' * 40])
+        self.assertEqual({r['hash'] for r in s['done']}, {'r' * 40, 'g' * 40})
+        # A tracked download that was removed before it finished: other, so
+        # it can be forgotten.
+        lost = row(hash='l' * 40, gone=True)
+        self.assertEqual([r['hash'] for r in self.split([lost])['other']], ['l' * 40])
+
+
+class Stalled(unittest.TestCase):
+    def test_no_new_bytes_20_min(self):
+        seen = {}
+        c = card(row(eta=None))
+        self.assertEqual(P.stalled(seen, [c], NOW), set())
+        self.assertEqual(P.stalled(seen, [c], NOW + P.STALL_S - 1), set())
+        self.assertEqual(P.stalled(seen, [c], NOW + P.STALL_S), {H})
+        # New bytes: the clock starts again.
+        moved = card(row(eta=None, percent=41.0))
+        self.assertEqual(P.stalled(seen, [moved], NOW + P.STALL_S + 5), set())
+        self.assertEqual(P.stalled(seen, [moved], NOW + 2 * P.STALL_S + 5), {H})
+        # An ETA means the client expects to finish: not stalled.
+        self.assertEqual(P.stalled(seen, [card(row(percent=41.0))], NOW + 3 * P.STALL_S),
+                         set())
+
+    def test_unknown_bytes_is_not_stalled(self):
+        # A magnet still fetching its metadata has no size: no bytes to compare.
+        seen = {}
+        c = card(row(eta=None, size=None, repack_bytes=None))
+        c['download']['done'] = None
+        P.stalled(seen, [c], NOW)
+        self.assertEqual(P.stalled(seen, [c], NOW + 2 * P.STALL_S), set())
+        self.assertEqual(seen, {})
+
+    def test_paused_or_moving_is_not(self):
+        seen = {}
+        paused = card(row(state='paused', eta=None))
+        P.stalled(seen, [paused], NOW)
+        self.assertEqual(P.stalled(seen, [paused], NOW + 2 * P.STALL_S), set())
+        self.assertEqual(seen, {})
+        c = card(row(eta=None))
+        P.stalled(seen, [c], NOW)
+        P.stalled(seen, [], NOW + 10)                    # it left the cards
+        self.assertEqual(seen, {})
+
+
 class GrabFit(unittest.TestCase):
     PAGE = {'size_bytes': 10 * GB, 'original_bytes': 30 * GB, 'dest': '/home/u/dl',
             'free_bytes': 100 * GB, 'dest_drive': '1', 'dest_mount': '/home',

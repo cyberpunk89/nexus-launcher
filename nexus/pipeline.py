@@ -69,7 +69,8 @@ def fresh(p, now: float, alive) -> bool:
     return recent(p, now) and p.get('pid') in alive
 
 
-def _epoch(iso) -> float | None:
+def epoch(iso) -> float | None:
+    """An ISO time as epoch seconds, None when missing or unreadable."""
     try:
         return datetime.fromisoformat(str(iso)).timestamp()
     except (TypeError, ValueError):
@@ -149,7 +150,7 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
     error, eta, eta_est, install, step, reason = None, None, False, None, '', None
     left_behind = None                  # a progress file of this install, not current
     if isinstance(p, dict) and not live and started:
-        began = _epoch(started)
+        began = epoch(started)
         try:
             # (an older run's leftover, from before this install started, isn't)
             if began is None or float(p.get('started_at')) >= began - 1:
@@ -159,7 +160,7 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
     verified = bool(live and (live.get('stage') == 'verify' or live.get('total') is not None))
     frac = None
     if r.get('installed'):
-        at = _epoch(r.get('installed_at'))
+        at = epoch(r.get('installed_at'))
         if at is None or now - at > READY_HOURS * 3600:
             return None
         stage = state = 'ready'
@@ -189,7 +190,7 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
         stage, state = 'install', 'failed'
         reason = str(r.get('install_failed_reason') or 'error')
         step = FAILED_STEPS.get(reason, FAILED_STEPS['error'])
-    elif started and (left_behind or now - (_epoch(started) or now) > STUCK_S):
+    elif started and (left_behind or now - (epoch(started) or now) > STUCK_S):
         stage, state, reason = 'install', 'failed', 'stopped'     # killed: no exit mark
         step = FAILED_STEPS['stopped']
     elif started:
@@ -232,6 +233,61 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
          'installed_at': r.get('installed_at')}
     c['overall'] = overall(c)
     return c
+
+
+def _after(a, b) -> bool:
+    """Whether ISO time `a` is at or after ISO time `b` (False if either is
+    missing or unreadable)."""
+    ta, tb = epoch(a), epoch(b)
+    return ta is not None and tb is not None and ta >= tb
+
+
+def sections(cards: list, rows: list, played: dict) -> dict:
+    """What the Downloads page shows where (w-94): `progress` (cards on
+    their way), `ready` (Ready cards whose game wasn't played since the
+    install), `done` (Done recently: tracked rows with an `installed_at`
+    that wasn't cleared since, newest first, minus the Ready cards) and
+    `other` (client rows not shown as a card: someone else's torrents, and
+    Nexus's own that left the cards but are still in the client). `played`
+    is {slug: last_played ISO}."""
+    progress = [c for c in cards if c['state'] != 'ready']
+    ready = [c for c in cards if c['state'] == 'ready'
+             and not _after(played.get(c.get('slug')), c.get('installed_at'))]
+    shown = {c['hash'] for c in progress + ready}
+    done = [r for r in rows if r.get('tracked') and r.get('installed_at')
+            and r.get('hash') not in shown
+            and not _after(r.get('history_cleared'), r.get('installed_at'))]
+    done.sort(key=lambda r: epoch(r.get('installed_at')) or 0, reverse=True)
+    other = [r for r in rows if r.get('hash') not in shown
+             and not (r.get('installed') and r.get('gone'))]
+    return {'progress': progress, 'ready': ready, 'done': done, 'other': other}
+
+
+STALL_S = 1200              # downloading, no ETA and no new bytes this long: stalled
+
+
+def stalled(seen: dict, cards: list, now: float) -> set:
+    """The hashes of downloads that look stuck: the client says
+    downloading, has no ETA, and no new bytes came for STALL_S. `seen` is
+    the caller's {hash: (done_bytes, since)}, updated here; a card that is
+    paused, moved on or gone leaves it."""
+    out, live = set(), set()
+    for c in cards:
+        h = c['hash']
+        if c['state'] != 'downloading':
+            continue
+        live.add(h)
+        done = (c.get('download') or {}).get('done')
+        if done is None:                  # no size yet (a magnet fetching its metadata)
+            continue
+        was = seen.get(h)
+        if was is None or was[0] != done:
+            seen[h] = (done, now)
+        elif c.get('eta') is None and now - was[1] >= STALL_S:
+            out.add(h)
+    for h in [h for h in seen if h not in live]:
+        del seen[h]
+    return out
 
 
 def forecast(cards: list, drives: list) -> list[dict]:

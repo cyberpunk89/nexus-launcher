@@ -831,7 +831,17 @@ class Window(unittest.TestCase):
         self.assertIn("Needs about 40.0 GB on /dl (500.0 GB free)", self.win.sheet.sub.text())
         self.assertNotIn("short by", self.win.sheet.sub.text())
 
-    def test_downloads_page_rows_and_states(self):
+    def _pipeline_data(self, rows, now=None):
+        """`--torrents --all --json` as the CLI builds it (w-93's cards)."""
+        from nexus import pipeline
+        cards = pipeline.cards(rows, {}, now or time.time(), set())
+        return {'torrents': rows, 'pipeline': cards, 'drives': [],
+                'client': {'client': 'Transmission', 'version': '4.1.3', 'down': 0, 'up': 0}}
+
+    def test_downloads_page_pipeline_sections(self):
+        from nexus.gui.details import Disclosure
+        for k in ('downloads_done', 'downloads_other'):
+            Disclosure.OPEN.pop(k, None)
         w = self.win
         dl = w.downloads
         w.go(w.DOWNLOADS)
@@ -842,31 +852,137 @@ class Window(unittest.TestCase):
         self.assertEqual(dl.empty.title.text(), "Connect your torrent client")
         dl.set_detected({'client': 'transmission', 'url': 'http://127.0.0.1:9091'})
         self.assertEqual(dl.empty.button.text(), "Use Transmission")
-        rows = [{'hash': 'a' * 40, 'name': 'Game A', 'percent': 50.0, 'done': False,
-                 'state': 'downloading', 'rate': 2 << 20, 'eta': 600, 'tracked': True,
-                 'auto_install': True, 'size': 5 << 30},
-                {'hash': 'b' * 40, 'name': 'Game B', 'percent': 100.0, 'done': True,
+        a, o = 'a' * 40, 'b' * 40
+        now = time.time()
+        rows = [{'hash': a, 'name': 'Game A', 'title': 'Game A', 'percent': 50.0,
+                 'done': False, 'state': 'downloading', 'rate': 2 << 20, 'eta': 600,
+                 'tracked': True, 'auto_install': True, 'size': 5 << 30, 'installed': False},
+                {'hash': o, 'name': 'Game B', 'percent': 100.0, 'done': True,
                  'state': 'paused', 'ratio': 0.57, 'tracked': False}]
-        dl.set_data({'torrents': rows, 'client': {'client': 'Transmission',
-                                                  'version': '4.1.3', 'down': 0, 'up': 0}})
+        dl.set_data(self._pipeline_data(rows, now))
+        QApplication.processEvents()
         self.assertTrue(dl.empty_host.isHidden())
-        self.assertEqual(len(dl.rows), 2)
-        a = dl.rows['a' * 40]
-        self.assertIn("50%", a.state.text())
-        self.assertIn("10 min left", a.state.text())
-        self.assertEqual(a.tag.text(), "Nexus · installs when done")
-        self.assertTrue(dl.rows['b' * 40].tag.isHidden())
+        card = dl.cards[f'torrent:{a}']
+        self.assertEqual(list(dl.rows), [o])                   # the client's own: Other
+        self.assertFalse(dl.other_box.is_open)                 # starts collapsed
+        self.assertTrue(dl.done_box.isHidden())
+        self.assertEqual(dl.kick_progress.text(), "IN PROGRESS · 1")
+        self.assertTrue(dl.kick_ready.isHidden())
+        self.assertEqual(card.step.text(), "Downloading")
+        self.assertIn("Download done in about 10 min", card.eta.text())
         self.assertEqual(dl.active_count(), 1)
         sent = []
         dl.control.connect(lambda *x: sent.append(x))
-        a.btn_toggle.click()
-        dl.rows['b' * 40].btn_toggle.click()
-        self.assertEqual(sent, [('pause', ['a' * 40], False), ('resume', ['b' * 40], False)])
-        dl._pick_filter('done')
-        self.assertEqual(list(dl.rows), ['b' * 40])
-        same = dl.rows['b' * 40]
-        dl.set_data({'torrents': rows, 'client': {}})              # rows are reused
-        self.assertIs(dl.rows['b' * 40], same)
+        pause = card.btns['pause']
+        pause.click()
+        dl.rows[o].btn_toggle.click()
+        self.assertEqual(sent, [('pause', [a], False), ('resume', [o], False)])
+        # A poll with the same data: the card and the focus stay.
+        w.activateWindow()
+        pause.setFocus()
+        QApplication.processEvents()
+        self.assertTrue(pause.hasFocus())
+        dl.set_data(self._pipeline_data([dict(r) for r in rows], now))
+        QApplication.processEvents()
+        self.assertIs(dl.cards[f'torrent:{a}'], card)
+        self.assertTrue(pause.hasFocus())
+        # The install failed: Retry takes the focus before Pause hides.
+        rows[0] = {**rows[0], 'done': True, 'percent': 100.0, 'state': 'seeding',
+                   'install_started': datetime.fromtimestamp(now - 100).isoformat(),
+                   'install_failed': datetime.fromtimestamp(now - 50).isoformat()}
+        dl.set_data(self._pipeline_data(rows, now))
+        QApplication.processEvents()
+        self.assertIs(dl.cards[f'torrent:{a}'], card)
+        self.assertEqual(card.step.text(), "The install didn't finish")
+        self.assertTrue(pause.isHidden())
+        self.assertTrue(card.btns['retry'].hasFocus())
+        self.assertEqual(card.btns['retry'].objectName(), "Primary")
+        self.assertNotIn('log', card.btns)                     # no job of this window
+
+    def test_pipeline_card_actions_reach_cli(self):
+        import tempfile
+        from pathlib import Path
+        from nexus.gui.common import cli_args
+        w = self.win
+        dl = w.downloads
+        w.go(w.DOWNLOADS)
+        now = time.time()
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d, 'Game A')
+            folder.mkdir()
+            a = 'a' * 40
+            iso = lambda t: datetime.fromtimestamp(t).isoformat(timespec='seconds')  # noqa: E731
+            rows = [{'hash': a, 'name': 'Game A', 'title': 'Game A', 'slug': 'alpha',
+                     'percent': 100.0, 'done': True, 'state': 'seeding', 'tracked': True,
+                     'installed': False, 'path': str(folder),
+                     'install_started': iso(now - 100), 'install_failed': iso(now - 50)},
+                    {'hash': 'c' * 40, 'name': 'Old', 'title': 'Old', 'slug': 'gamma',
+                     'tracked': True, 'installed': True, 'gone': True,
+                     'installed_at': iso(now - 30 * 3600)}]
+            started, asked, launched, revealed = [], [], [], []
+            with mock.patch.object(w, '_start_install',
+                                   lambda cmd, *x: started.append(cli_args(cmd))), \
+                    patch_gui('cli_json', lambda args, cb, *_x, **_k: asked.append(args)), \
+                    mock.patch.object(w, 'on_game_action',
+                                      lambda act, g: launched.append((act, g['slug']))), \
+                    mock.patch.object(w, '_reveal_game', revealed.append):
+                dl.set_data(self._pipeline_data(rows, now))
+                card = dl.cards[f'torrent:{a}']
+                card.btns['retry'].click()
+                card.btns['verify'].click()
+                self.assertEqual(started[0][-2:], ['--from-torrent', a])
+                self.assertEqual(started[1][-3:], ['--from-torrent', a, '--verify'])
+                row = dl.done_rows['c' * 40]
+                self.assertFalse(dl.done_box.isHidden())
+                row.btn_play.click()
+                row.btn_show.click()
+                self.assertEqual((launched, revealed), ([('launch', 'gamma')], ['gamma']))
+                w.activateWindow()
+                dl.btn_clear.setFocus()
+                QApplication.processEvents()
+                dl.btn_clear.click()
+                self.assertIn(['--torrent-clear-history', 'c' * 40, '--json'], asked)
+                self.assertTrue(dl.done_box.isHidden())        # at once, before the poll
+                fw = QApplication.focusWidget()                # not inside the hidden box
+                self.assertTrue(fw is not None and fw.isVisible(), fw)
+            # The CLI said no: a toast, and the row comes back.
+            toasts = []
+            with patch_gui('cli_json', lambda args, cb, *_x, **_k: cb(None, 'disk full')), \
+                    mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a[0])):
+                dl._cleared.clear()                        # the stub above never answered
+                dl.set_data(self._pipeline_data(rows, now))
+                dl.btn_clear.click()
+            self.assertIn('c' * 40, dl.done_rows)
+            self.assertFalse(dl.done_box.isHidden())
+            self.assertIn("disk full", toasts[0])
+            # The poll shows the mark: hidden for good, _cleared forgets it.
+            dl._cleared.add('c' * 40)
+            rows[1] = {**rows[1], 'history_cleared': iso(now)}
+            dl.set_data(self._pipeline_data(rows, now))
+            self.assertEqual(dl._cleared, set())
+            self.assertTrue(dl.done_box.isHidden())
+
+    def test_other_torrents_filter_and_seeding_name(self):
+        dl = self.win.downloads
+        now = time.time()
+        rows = [{'hash': f'{i:040x}', 'name': f'linux-distro-{i}.iso', 'percent': 100.0,
+                 'done': True, 'state': 'seeding', 'tracked': False} for i in range(9)]
+        seed = {'hash': 'e' * 40, 'name': 'Old [x]', 'title': 'Old', 'tracked': True,
+                'installed': True, 'done': True, 'state': 'seeding', 'percent': 100.0,
+                'installed_at': datetime.fromtimestamp(now - 30 * 3600).isoformat()}
+        dl.set_data(self._pipeline_data(rows + [seed], now))
+        self.assertEqual(dl.rows['e' * 40].name.text(), "Old · seeding")
+        self.assertIn("Game installed", dl.rows['e' * 40].state.text())
+        self.assertIn('e' * 40, dl.done_rows)                  # the game; above: its torrent
+        self.assertFalse(dl.other_filter.isHidden())           # 10 rows: a filter
+        dl.other_filter.setText("distro-3")
+        self.assertEqual([h for h, w in dl.rows.items() if not w.isHidden()], [f'{3:040x}'])
+        dl.other_filter.setText("nothing like it")
+        self.assertFalse(dl.other_none.isHidden())
+        dl.set_data(self._pipeline_data(rows[:2], now))        # short again: no filter
+        self.assertTrue(dl.other_filter.isHidden())
+        self.assertEqual(dl.other_filter.text(), '')
+        self.assertTrue(all(not w.isHidden() for w in dl.rows.values()))
 
     def test_torrent_poll_speeds_up_near_the_finish(self):
         w = self.win

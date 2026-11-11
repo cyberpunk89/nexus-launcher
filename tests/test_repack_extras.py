@@ -568,8 +568,8 @@ class Torrents(unittest.TestCase):
         asked = []
 
         def drive_of(path):
-            asked.append(str(path))
-            hit = next((v for k, v in where.items() if str(path).startswith(k)), None)
+            asked.append(Path(path).as_posix())
+            hit = next((v for k, v in where.items() if Path(path).as_posix().startswith(k)), None)
             return {'id': hit[0], 'mount': hit[1]} if hit else None
         usage = namedtuple('usage', 'total used free')
         rows = [{'hash': 'a' * 40, 'tracked': True, 'percent': 50.0, 'state': 'downloading',
@@ -591,6 +591,37 @@ class Torrents(unittest.TestCase):
         self.assertEqual(by_id['3']['to_write'], 5 * G)
         self.assertEqual(by_id['2']['to_write'], 20 * G)
         self.assertEqual(by_id['1']['to_write'], 0)
+
+    def test_clear_history_marks_tracked(self):
+        # Done recently's Clear (w-94): a mark on each download, nothing else
+        # touched; an unknown hash changes nothing and exits 1.
+        from nexus.cli import entry
+        a, b = 'a' * 40, 'b' * 40
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+
+        def run(*argv):
+            args = entry.build_parser().parse_args(list(argv))
+            out = io.StringIO()
+            with mock.patch('sys.stdout', out), mock.patch('sys.stderr', io.StringIO()):
+                cli.cmd_torrent(args, d)
+            return out.getvalue()
+        with mock.patch.object(torrent, 'TRACKED', d / 't.json'):
+            torrent.save_tracked({a: {'name': 'A', 'installed': True,
+                                      'installed_at': '2026-01-01T00:00:00'},
+                                  b: {'name': 'B', 'installed': False}})
+            run('--torrent-clear-history', a.upper())
+            got = torrent.load_tracked()
+            self.assertTrue(got[a]['history_cleared'])
+            self.assertEqual(got[a]['installed_at'], '2026-01-01T00:00:00')
+            self.assertNotIn('history_cleared', got[b])
+            # The known ones are cleared, the unknown ones reported.
+            out = run('--torrent-clear-history', b, 'c' * 40, '--json')
+            self.assertEqual(json.loads(out), {'cleared': [b], 'unknown': ['c' * 40]})
+            self.assertIn('history_cleared', torrent.load_tracked()[b])
+            with self.assertRaises(SystemExit) as e:          # none known: exit 1
+                run('--torrent-clear-history', 'c' * 40)
+            self.assertEqual(e.exception.code, 1)
 
     def test_text_mode_one_line_per_card(self):
         out, (a, b, c, other), _dl = self.poll()

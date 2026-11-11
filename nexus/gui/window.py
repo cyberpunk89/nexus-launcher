@@ -392,7 +392,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
         self.dealspage.repack.connect(self._deal_repack)
         self._add_page(self.DEALS, self.dealspage)
-        self.downloads = DownloadsPage()
+        self.downloads = DownloadsPage(game_of=self._card_game, job_of=self._card_job)
+        self.downloads.card_action.connect(self._pipeline_action)
         self.downloads.toast.connect(self.toast)
         self.downloads.control.connect(self._torrent_control)
         self.downloads.add.connect(self._add_torrent)
@@ -834,6 +835,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._home_sig = None
         self.apply_filter()
         self.dashboard.refresh()
+        self.downloads.restyle()                   # pipeline cards: sizes, in place
         if self.selected:
             self._sync_selection()
         for w in app.allWidgets():

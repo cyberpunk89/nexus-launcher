@@ -460,6 +460,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help=argparse.SUPPRESS)
     g5.add_argument('--torrent-forget', metavar='HASH', dest='torrent_forget',
                     help="Stop following a download (the client keeps it)")
+    g5.add_argument('--torrent-clear-history', nargs='+', metavar='HASH',
+                    dest='torrent_clear_history',
+                    help="Internal (used by the app): hide finished downloads from the "
+                         "Downloads page's Done recently (files and games stay)")
     g5.add_argument('--check-repack', metavar='DIR', dest='check_repack',
                     help="Look a repack folder over before installing it (extra programs, "
                          "disguised names, what the installer runs); --clamav also scans it")
@@ -948,7 +952,7 @@ COMMANDS = (
      lambda a, base: cmd_repack_grab(a.repack_grab, a.appid, a.auto_install, a.json)),
     ('repack_reject', lambda a, base: cmd_repack_reject(a.repack_reject)),
     (lambda a: a.torrent_add or a.torrents or a.torrent_done or
-                a.torrent_forget or a.torrent_pause or a.torrent_resume or
+                a.torrent_forget or a.torrent_clear_history or a.torrent_pause or a.torrent_resume or
                 a.torrent_remove or a.torrent_test or a.torrent_detect,
      lambda a, base: cmd_torrent(a, base)),
     ('check_repack', lambda a, base: cmd_check_repack(a.check_repack, a.json, a.clamav)),

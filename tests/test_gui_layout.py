@@ -305,12 +305,13 @@ class DisplayScaling(unittest.TestCase):
     process."""
 
     TESTS = ['tests.test_gui_layout.SoftWrap', 'tests.test_gui_layout.DetailsPanelWidth',
-             'tests.test_gui_layout.HiDpiArt']
+             'tests.test_gui_layout.HiDpiArt', 'tests.test_gui_layout.PipelineCardFit']
 
-    def _run(self, scale):
+    def _run(self, scale, tests=None):
         import subprocess
         env = {**os.environ, 'QT_SCALE_FACTOR': scale}
-        out = subprocess.run([sys.executable, '-m', 'unittest', *self.TESTS], cwd=REPO,
+        out = subprocess.run([sys.executable, '-m', 'unittest', *(tests or self.TESTS)],
+                             cwd=REPO,
                              env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(out.returncode, 0, out.stderr[-3000:])
         self.assertNotIn('skipped', out.stderr.splitlines()[-1])
@@ -320,6 +321,287 @@ class DisplayScaling(unittest.TestCase):
 
     def test_at_150_percent(self):
         self._run('1.5')
+
+    def test_pipeline_at_140_percent(self):
+        self._run('1.4', ['tests.test_gui_layout.PipelineCardFit'])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class PipelineCardFit(unittest.TestCase):
+    """The Downloads page's pipeline cards (w-94): the track's shares, the
+    buttons per state, and a card that fits without clipping."""
+    NOW = 1_800_000_000.0
+
+    def card(self, **kw):
+        from nexus import pipeline
+        r = {'hash': 'a' * 40, 'name': 'Hollow Quarry', 'title': 'Hollow Quarry',
+             'slug': 'hollow-quarry', 'tracked': True, 'installed': False, 'percent': 62.0,
+             'done': False, 'state': 'downloading', 'rate': 42 << 20, 'eta': 900,
+             'size': 14 << 30, 'repack_bytes': 14 << 30, 'original_bytes': 38 << 30}
+        r.update(kw)
+        return pipeline.cards([r], {}, self.NOW, set())[0], r
+
+    def test_track_weights_and_skipped_verify_label(self):
+        from nexus import pipeline
+        from nexus.gui.pipeline_view import SKIPPED_VERIFY, StageTrack
+        t = StageTrack()
+        self.addCleanup(t.deleteLater)
+        t.resize(604, t.sizeHint().height())
+        c, _r = self.card()
+        t.set_track(c['track'])
+        segs = {s['stage']: s for s in t.segments()}
+        room = 604 - 3 * nx.scaled(4)
+        for name, weight in pipeline.STAGES:           # the skipped Verify keeps its share
+            self.assertAlmostEqual(segs[name]['w'], room * weight, places=3)
+        self.assertEqual(segs['verify']['label'], "VERIFY –")    # short; the why in the tip
+        self.assertEqual(segs['verify']['status'], 'skipped')
+        self.assertEqual(segs['download']['status'], 'active')
+        self.assertAlmostEqual(segs['download']['frac'], 0.62, places=3)
+        self.assertIn(SKIPPED_VERIFY, t.toolTip())
+        c, _r = self.card(done=True, percent=100.0, installed=True,
+                          installed_at='2027-01-15T08:00:00')
+        t.set_track(c['track'])
+        segs = {s['stage']: s for s in t.segments()}
+        self.assertEqual({s['status'] for s in segs.values()}, {'done', 'skipped'})
+        self.assertTrue(segs['download']['label'].startswith("✓ "))
+        t.grab()                                         # paints without a qFatal
+        t.set_track([{'stage': 'download'}, {}])         # a short or odd track still paints
+        self.assertEqual(len(t.segments()), 4)
+        t.grab()
+
+    def test_labels_never_cut(self):
+        # At 900 px (and at 125/140/150% through DisplayScaling) every name
+        # under the track is whole, inside the track and clear of the
+        # others; the current stage's is always there; narrow: only it.
+        from PyQt6.QtGui import QFontMetrics
+        from PyQt6.QtWidgets import QVBoxLayout
+        from nexus.gui.pipeline_view import PipelineCard
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        lay = QVBoxLayout(host)
+        states = [self.card(), self.card(done=True, percent=100.0, state='seeding',
+                                         install_started='2027-01-15T08:00:00',
+                                         install_failed='2027-01-15T08:10:00'),
+                  self.card(done=True, percent=100.0, installed=True,
+                            installed_at='2027-01-15T08:00:00')]
+        cards = []
+        for c, r in states:
+            w = PipelineCard(c, host)
+            lay.addWidget(w)
+            w.set(c, r, client='Transmission')
+            cards.append(w)
+        for width, narrow in ((900, False), (1440, False), (620, True)):
+            host.resize(width, 900)
+            host.show()
+            for w in cards:
+                w.set_narrow(narrow)
+            for _ in range(3):
+                QApplication.processEvents()
+            for w in cards:
+                t = w.track
+                fm = QFontMetrics(t._font())
+                labs = t.labels()
+                with self.subTest(width=width, state=w.c['state']):
+                    for lab in labs:
+                        self.assertGreaterEqual(lab['w'], fm.horizontalAdvance(lab['text']))
+                        self.assertGreaterEqual(lab['x'], 0)
+                        self.assertLessEqual(lab['x'] + lab['w'], t.width() + 0.5)
+                    spans = sorted((lab['x'], lab['x'] + lab['w']) for lab in labs)
+                    for (_a, end), (start, _b) in zip(spans, spans[1:]):
+                        self.assertLessEqual(end, start)
+                    current = [x for x in t.segments() if x['status'] in ('active', 'failed')]
+                    if current:
+                        self.assertIn(current[0]['label'], [lab['text'] for lab in labs])
+                    if narrow:
+                        self.assertEqual(len(labs), len(current))
+
+    def test_forecast_starts_hidden_and_hides_when_empty(self):
+        from nexus.gui.pipeline_view import ForecastStrip
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        f = ForecastStrip(host)
+        self.assertTrue(f.isHidden())
+        f.set_drives([])
+        self.assertTrue(f.isHidden())
+        f.set_drives([{'id': '1', 'mount': '/', 'free': 1, 'total': 9, 'to_write': 1}])
+        self.assertFalse(f.isHidden())
+        f.set_drives([])
+        self.assertTrue(f.isHidden())
+
+    def test_forecast_short_by_in_danger(self):
+        from nexus.gui.pipeline_view import ForecastStrip
+        f = ForecastStrip()
+        self.addCleanup(f.deleteLater)
+        G = 1 << 30
+        f.set_drives([{'id': '1', 'mount': '/home', 'free': 50 * G, 'total': 500 * G,
+                       'to_write': 20 * G, 'free_after': 30 * G, 'short_by': 0},
+                      {'id': '2', 'mount': '/games', 'free': 10 * G, 'total': 500 * G,
+                       'to_write': 30 * G, 'free_after': -20 * G, 'short_by': 20 * G}])
+        self.assertFalse(f.isHidden())
+        _w, head, ok, bar = f.rows['1']
+        self.assertEqual(head.text(), "/HOME FORECAST")
+        self.assertIn("about", ok.text())
+        self.assertIn("free after", ok.text())
+        self.assertFalse(ok.property('short'))
+        _w, _h, short, bar2 = f.rows['2']
+        self.assertIn("short by", short.text())
+        self.assertTrue(short.property('short'))
+        from nexus.gui.theme import P
+        self.assertIn(f'QLabel#PipeFigure[short="true"] {{ color: {P["danger"]}; }}',
+                      nx.build_stylesheet())
+        used, incoming = bar2.parts()
+        self.assertAlmostEqual(incoming, 10 / 500)      # capped at the free space
+        f.grab()
+        f.set_drives([{'id': '1', 'mount': '/home', 'free': 50 * G, 'total': 500 * G,
+                       'to_write': 0, 'free_after': 50 * G, 'short_by': 0}])
+        self.assertTrue(f.isHidden())                    # nothing left to write
+        self.assertEqual(list(f.rows), ['1'])
+
+    def test_actions_per_state(self):
+        from nexus.gui.pipeline_view import buttons
+        def acts(c, **kw):
+            return [(a, t) for a, t, _p in buttons(c, **kw)]
+        for st in ('downloading', 'queued', 'checking'):
+            self.assertEqual(acts({'state': st}), [('pause', "Pause")])
+        self.assertEqual(acts({'state': 'downloading'}, stalled=True), [('pause', "Pause")])
+        self.assertEqual(acts({'state': 'paused'}), [('resume', "Resume")])
+        self.assertEqual(acts({'state': 'error'}), [('resume', "Try again")])
+        failed = {'state': 'failed', 'reason': 'error'}
+        self.assertEqual(acts(failed), [('retry', "Retry"), ('verify', "Verify & retry")])
+        self.assertEqual(acts({**failed, 'reason': 'stopped'}, has_log=True),
+                         [('retry', "Retry"), ('verify', "Verify & retry"), ('log', "Show log")])
+        self.assertEqual(acts({**failed, 'reason': 'uac'}), [('retry', "Try again")])
+        self.assertEqual(acts({**failed, 'reason': 'cancelled'}), [('retry', "Install again")])
+        self.assertEqual(acts({'state': 'downloaded'}), [('install', "Install")])
+        for st in ('waiting', 'verifying', 'installing', 'updating', 'finishing'):
+            self.assertEqual(acts({'state': st}), [])
+        self.assertEqual(acts({'state': 'ready'}), [('play', "Play"), ('show', "Show")])
+        self.assertEqual(acts({'state': 'ready'}, has_game=False), [('show', "Show")])
+        self.assertTrue(buttons({'state': 'downloaded'})[0][2])          # primary
+
+    def _fits(self, w):
+        """Every visible child inside the card, and no button or number
+        narrower than it asks to be."""
+        from PyQt6.QtWidgets import QLabel, QPushButton
+        box = w.rect()
+        for child in w.findChildren(QWidget):
+            if not child.isVisibleTo(w):
+                continue
+            r = child.rect().translated(child.mapTo(w, QPoint(0, 0)))
+            with self.subTest(child=child.objectName() or type(child).__name__):
+                self.assertTrue(box.contains(r), (r, box))
+                if isinstance(child, QPushButton) or child.objectName() in (
+                        'PipePct', 'PipeEta', 'PipeFigure', 'PipeSource'):
+                    self.assertGreaterEqual(child.width(), child.sizeHint().width())
+                if isinstance(child, QLabel) and child.objectName() != 'PipePct':
+                    self.assertGreaterEqual(child.height(), child.sizeHint().height())
+
+    def test_fits_900_px_without_clipping(self):
+        from nexus.gui.pipeline_view import PipelineCard
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        from PyQt6.QtWidgets import QVBoxLayout
+        lay = QVBoxLayout(host)
+        long = "The Very Long Title Of A Game: Definitive Anniversary Edition Plus Every DLC"
+        c, r = self.card(title=long, name=long)
+        failed, fr = self.card(done=True, percent=100.0, state='seeding',
+                               install_started='2027-01-15T08:00:00',
+                               install_failed='2027-01-15T08:10:00')
+        cards = []
+        for cc, rr, kw in ((c, r, {'stalled': True}), (failed, fr, {'has_log': True})):
+            w = PipelineCard(cc, host)
+            lay.addWidget(w)
+            w.set(cc, rr, client='Transmission', **kw)
+            cards.append(w)
+        for width, narrow in ((900, False), (620, True)):
+            host.resize(width, 600)
+            host.show()
+            for w in cards:
+                w.set_narrow(narrow)
+            for _ in range(3):
+                QApplication.processEvents()
+            for w in cards:
+                with self.subTest(width=width, state=w.c['state']):
+                    self._fits(w)
+                    self.assertTrue(w.title.width() > 100)
+        self.assertEqual(cards[0].warn.isHidden(), False)
+        self.assertEqual(cards[1].step.text(), "The install didn't finish")
+        self.assertEqual(cards[1].btns['verify'].text(), "Verify && retry")   # shows one &
+        from nexus.gui.pipeline_view import span
+        self.assertEqual((span(30), span(76), span(1500)), ("under a minute", "1 min", "25 min"))
+
+    def test_queued_dims_and_menu_outlives_the_card(self):
+        from nexus.gui.pipeline_view import PipelineCard
+        got = []
+        c, r = self.card(state='queued')
+        w = PipelineCard(c, None, row_sink=lambda a, row: got.append((a, row['hash'])))
+        w.set(c, r)
+        self.assertIsNotNone(w.graphicsEffect())
+        c2, r2 = self.card()
+        w.set(c2, r2)
+        self.assertIsNone(w.graphicsEffect())
+        items = w.items()
+        w.deleteLater()
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        items[-1][2]()                                   # the sheet's choice, card gone
+        self.assertEqual(got, [('delete', 'a' * 40)])
+
+    def test_restyle_keeps_focus_and_follows_size(self):
+        from nexus.gui import theme
+        from nexus.gui.pipeline_view import ART_PX
+        page = nx.DownloadsPage()
+        self.addCleanup(page.deleteLater)
+        page.resize(1000, 700)
+        page.show()
+        c, r = self.card()
+        page.set_data({'torrents': [r], 'pipeline': [c], 'drives': [], 'client': {}})
+        QApplication.processEvents()
+        card = page.cards[c['key']]
+        page.activateWindow()
+        card.btns['pause'].setFocus()
+        QApplication.processEvents()
+        old = dict(theme.LOOK)
+        self.addCleanup(theme.LOOK.update, old)
+        theme.LOOK['scale'] = 1.25
+        page.restyle()
+        QApplication.processEvents()
+        self.assertIs(page.cards[c['key']], card)
+        self.assertTrue(card.btns['pause'].hasFocus())
+        self.assertEqual(card.art.width(), nx.scaled(ART_PX))
+        theme.LOOK['scale'] = old['scale']
+        page.restyle()
+
+    def test_no_motion_starts_no_timer(self):
+        from nexus.gui import art
+        from nexus.gui.pipeline_view import StageTrack
+        self.assertFalse(art.MOTION)                     # the tests run still
+        page = nx.DownloadsPage()
+        self.addCleanup(page.deleteLater)
+        page.resize(900, 700)
+        page.show()
+        c, r = self.card()
+        page.set_data({'torrents': [r], 'pipeline': [c], 'drives': [], 'client': {}})
+        QApplication.processEvents()
+        card = page.cards[c['key']]
+        self.assertTrue(card.track.shimmer)              # it moves...
+        self.assertFalse(page._shimmer.isActive())       # ...but nothing animates
+        self.assertFalse(card.track._anim.state() == card.track._anim.State.Running)
+        c2, r2 = self.card(percent=80.0)
+        page.set_data({'torrents': [r2], 'pipeline': [c2], 'drives': [], 'client': {}})
+        self.assertAlmostEqual(card.track._shown['download'], 0.8, places=3)  # at once
+        with mock.patch.object(art, 'MOTION', True):
+            page._sync_shimmer()
+            self.assertTrue(page._shimmer.isActive())
+            page.setWindowState(Qt.WindowState.WindowMinimized)   # isVisible stays True
+            page._shimmer_tick()
+            self.assertFalse(page._shimmer.isActive())
+            page.setWindowState(Qt.WindowState.WindowNoState)
+            page._sync_shimmer()
+            self.assertTrue(page._shimmer.isActive())
+            page.hide()
+            self.assertFalse(page._shimmer.isActive())
+        self.assertIsInstance(card.track, StageTrack)
 
 
 _HOST = []

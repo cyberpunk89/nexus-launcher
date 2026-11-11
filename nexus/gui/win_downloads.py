@@ -224,13 +224,70 @@ class DownloadsMixin:
                 ("Stop the install", G['close'], ref.cancel, 'danger')],
                 text="What it has done so far is left as it is.", focus=0)
 
-    def _install_download(self, r: dict):
+    def _install_download(self, r: dict, extra: tuple = ()):
         """Install a finished download; the CLI records on the download that
         it started, and that it's installed once it succeeds."""
         self._torrents_started.add(r['hash'])
         self.repacks.mark_seen(r['path'])
-        self._start_install(self._default_install_cmd(r['path']) + ['--from-torrent', r['hash']],
+        self._start_install(self._default_install_cmd(r['path']) + ['--from-torrent', r['hash']]
+                            + list(extra),
                             r.get('title') or r.get('name') or Path(r['path']).name, '')
+
+    # ---- the Downloads page's pipeline cards (w-94) ----
+    def _card_game(self, c: dict) -> dict | None:
+        """A card's (or a Done recently row's) game: by slug, then by the
+        store appid the Grab saved."""
+        g = self.game(c['slug']) if c.get('slug') else None
+        if g is None and c.get('appid'):
+            appid = str(c['appid'])
+            g = next((x for x in self._games if str(x.get('appid') or '') == appid), None)
+        return g
+
+    def _card_job(self, c: dict):
+        """The install job of this window that failed for a card (Show log)."""
+        h = c.get('hash')
+        return next((j for j in reversed(self.jobs.jobs) if h and j.kind == 'install'
+                     and j.state == 'failed' and h in j.argv), None)
+
+    def _pipeline_action(self, action: str, c: dict):
+        """A pipeline card's button, or Done recently's (Play, Show, Clear)."""
+        if action == 'clear':
+            hashes = list(c['hashes'])
+
+            def done(data, err):
+                if not alive(self):
+                    return
+                if not (data or {}).get('cleared'):
+                    self.downloads.clear_failed(hashes)
+                    self.toast(f"Couldn't clear Done recently — {err or 'it failed'}",
+                               'error', None, 6000)
+                    return
+                self.downloads.clear_failed((data or {}).get('unknown') or [])
+                self._poll_torrents()
+            cli_json(['--torrent-clear-history', *hashes, '--json'], done, 10000)
+        elif action in ('retry', 'verify', 'install'):
+            r = next((x for x in self.downloads.data.get('torrents') or []
+                      if x.get('hash') == c.get('hash')), None)
+            if r is None or not r.get('path') or not Path(r['path']).is_dir():
+                self.toast(f"The downloaded files of {c.get('title') or 'this game'} "
+                           "aren't there any more.", 'warn', None, 6000)
+                return
+            self._install_download(r, ('--verify',) if action == 'verify' else ())
+        elif action == 'play':
+            g = self._card_game(c)
+            if g is not None:
+                self.on_game_action('launch', g)
+        elif action == 'show':
+            g = self._card_game(c)
+            if g is not None:
+                self._reveal_game(g['slug'])
+            else:                                   # not in the library (yet): look for it
+                self.go(self.LIBRARY)
+                self.search.setText(c.get('title') or '')
+        elif action == 'log':
+            job = self._card_job(c)
+            if job is not None:
+                self._open_job(job)
 
     def _agent_message(self, argv: list[str]):
         """From the background agent (nexus/cli/agent.py), which watches the

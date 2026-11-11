@@ -891,6 +891,24 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QFrame#TimeField { background: $surface_2; border: 1px solid $border;
                        border-radius: ${r_control}px; }
     QLabel#TimeValue { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
+    /* Downloads pipeline cards (w-94). */
+    QLabel#PipeTitle { color: $text; font-size: ${fs_base}px; font-weight: 500; }
+    QLabel#PipeRowTitle { color: $text; font-size: ${fs_sm}px; font-weight: 500; }
+    QLabel#PipeSource { color: $muted; font-family: "$mono"; font-size: ${fs_xs}px; }
+    QLabel#PipeStep { color: $text; font-size: ${fs_command}px; font-weight: 500; }
+    QLabel#PipeStep[role="danger"] { color: $danger; }
+    QLabel#PipeFigure { color: $subtext; font-family: "$mono"; font-size: ${fs_xs}px; }
+    QLabel#PipeFigure[short="true"] { color: $danger; }
+    QLabel#PipeWarn { color: $warning; font-size: ${fs_xs}px; }
+    QLabel#PipePct { color: $text; font-family: "$mono"; font-size: ${fs_big}px;
+                     font-weight: 300; }
+    QLabel#PipePctUnit { color: $muted; font-family: "$mono"; font-size: ${fs_lg}px; }
+    QLabel#PipeTag { background: $surface_2; color: $subtext; border-radius: ${r_private}px;
+                     padding: 0 7px; font-family: "$mono"; font-size: ${fs_2xs}px; }
+    QLabel#PipeTag[kind="estimate"] { background: $warning_18; color: $warning; }
+    QLabel#PipeTag[kind="exact"] { background: $success_18; color: $success; }
+    QLabel#PipeEta { color: $subtext; font-family: "$mono"; font-size: ${fs_xs}px; }
+    QLabel#PipeKey { color: $subtext; font-size: ${fs_xs}px; }
     QLabel#DashTitle { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
     QLabel#DashBig { color: $text; font-size: ${fs_big}px; font-weight: 600; }
     QLabel#DashSub { color: $subtext; font-size: ${fs_xs}px; }

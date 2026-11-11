@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .common import drive_of, existing_ancestor, STEAM_ROOT
@@ -299,7 +300,7 @@ def _pipeline(rows: list, s: dict, info: dict | None, base: Path) -> tuple[list,
 
 def cmd_torrent(args, base: Path | None = None) -> None:
     """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove /
-    --torrent-test / --torrent-done / --torrent-forget."""
+    --torrent-test / --torrent-done / --torrent-forget / --torrent-clear-history."""
     from nexus import pipeline, torrent as T
     cards = []
     try:
@@ -330,6 +331,24 @@ def cmd_torrent(args, base: Path | None = None) -> None:
             else:
                 print(f"Added {got['name'] or got['hash']} to your torrent client"
                       + (" — Nexus installs it when it finishes." if args.auto_install else "."))
+            return
+        if args.torrent_clear_history:
+            # Done recently's Clear: a mark only (the agent never reads it).
+            # The known ones are cleared; unknown ones are reported, and only
+            # when none was known does it fail.
+            hashes = [h.lower() for h in args.torrent_clear_history]
+            stamp = datetime.now().isoformat(timespec='seconds')
+            with T.edit_tracked() as tracked:
+                cleared = [h for h in hashes if h in tracked]
+                for h in cleared:
+                    tracked[h]['history_cleared'] = stamp
+            unknown = [h for h in hashes if h not in cleared]
+            if args.json:
+                print(json.dumps({'cleared': cleared, 'unknown': unknown}))
+            if unknown:
+                print(f"Not a torrent Nexus added: {', '.join(unknown)}", file=sys.stderr)
+            if not cleared:
+                sys.exit(1)
             return
         if args.torrent_done or args.torrent_forget:
             h = (args.torrent_done or args.torrent_forget).lower()
