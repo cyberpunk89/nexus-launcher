@@ -1673,7 +1673,12 @@ class Window(unittest.TestCase):
                 self.append(args)
         jobs_seen = Calls()
         w.setup.request.connect(jobs_seen.add)
+        from nexus.gui import window as window_mod
+        start = dict(window_mod.load_config())     # a first run: nothing chosen yet, whatever
+        start.update(torrent_client=None, torrent_url=None, install_base=None,   # earlier
+                     scan_dir=None, repacks=True)  # tests in this process saved
         with patch_gui('cli_json', cli), patch_gui('save_config', saved.append), \
+                mock.patch.object(window_mod, 'load_config', lambda: dict(start)), \
                 mock.patch.object(w, 'set_appearance') as look, \
                 mock.patch.object(w, 'run'):
             w.open_setup()
