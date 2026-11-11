@@ -288,6 +288,50 @@ def drive_of(path) -> dict | None:
     return {'id': str(dev), 'mount': m}
 
 
+def call_timeout(fn, seconds: float) -> tuple[bool, object]:
+    """(True, fn()) or (False, why): why is the exception as text, or
+    "didn't finish within N s" when fn is still running. Runs in a daemon
+    thread that is joined with a timeout, so a probe stuck on a dead network
+    mount is abandoned (it can't hold the process at exit, which a
+    ThreadPoolExecutor's shutdown would)."""
+    import threading
+    box: list = []
+
+    def run():
+        try:
+            box.append((True, fn()))
+        except Exception as e:
+            box.append((False, f"{type(e).__name__}: {e}"))
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(max(0.0, seconds))
+    return box[0] if box else (False, f"didn't finish within {seconds:g} s")
+
+
+def with_timeout(fn, seconds: float, default=None):
+    """fn() or `default` when it raises or times out (see call_timeout, for
+    callers that must tell the two apart from a result)."""
+    ok, val = call_timeout(fn, seconds)
+    return val if ok else default
+
+
+def base_writable(base: Path) -> bool:
+    """Whether games can go under `base`: its nearest existing ancestor is a
+    writable directory. Creates nothing. Windows ignores ACLs in os.access, so
+    there a scratch file is opened (and gone again) in that directory."""
+    p = existing_ancestor(Path(base))
+    if not p.is_dir():
+        return False
+    if nxplatform.OS_NAME == 'windows':
+        import tempfile
+        try:
+            with tempfile.TemporaryFile(dir=p):
+                return True
+        except OSError:
+            return False
+    return os.access(p, os.W_OK | os.X_OK)
+
+
 def existing_ancestor(path: Path) -> Path:
     """Walk up from path to the nearest directory that actually exists, for
     shutil.disk_usage() on a location that hasn't been created yet."""

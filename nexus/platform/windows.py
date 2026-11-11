@@ -158,6 +158,11 @@ def appx_registered(family: str) -> bool:
     return family.lower() in r.stdout.lower().split()
 
 
+def filesystem(mount: str, mounts: str = '') -> str | None:
+    """Not asked on Windows (NTFS in practice)."""
+    return None
+
+
 def long_paths_enabled() -> bool:
     """Whether paths past 260 characters work (HKLM ...\\FileSystem
     LongPathsEnabled; off by default, and many installers ignore it anyway)."""

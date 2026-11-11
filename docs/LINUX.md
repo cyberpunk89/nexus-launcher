@@ -960,6 +960,7 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 | `--use-protongen-default` | Set the game up with protongen's default profile unless it has its own |
 | `--log` | Keep the full install log in `~/.local/share/nexus/logs/<game>-<time>.log` |
 | `--trash-repack-dir PATH` | Move a repack folder to the Trash, without installing |
+| `--setup-facts` | What first-run Setup shows, read-only (nothing is created, not even the install folder): drives with free space and filesystem, the torrent client and its download folder, what blocks an install with the fix. Add `--json` for the app's copy |
 
 **Uninstall, saves and integrity:**
 

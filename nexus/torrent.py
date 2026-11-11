@@ -387,8 +387,15 @@ class QBittorrent:
         st, _h, tr = self._req('/transfer/info')
         t = _json(tr, "qBittorrent") if st == 200 else {}
         t = t if isinstance(t, dict) else {}
+        save = None
+        try:
+            ps, _h, pr = self._req('/app/preferences')
+            prefs = _json(pr, "qBittorrent") if ps == 200 else {}
+            save = (prefs.get('save_path') or None) if isinstance(prefs, dict) else None
+        except TorrentError:
+            pass
         return {'client': 'qBittorrent', 'version': raw.decode(errors='replace').strip(),
-                'download_dir': None, 'down': t.get('dl_info_speed') or 0,
+                'download_dir': save, 'down': t.get('dl_info_speed') or 0,
                 'up': t.get('up_info_speed') or 0}
 
 

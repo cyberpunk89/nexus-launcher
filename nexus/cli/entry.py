@@ -277,6 +277,10 @@ def build_parser() -> argparse.ArgumentParser:
                              'shortcuts would go to, and exit')
     parser.add_argument('--doctor', action='store_true',
                         help='Check that wine/umu/proton/steam/deps are all present and exit')
+    parser.add_argument('--setup-facts', action='store_true', dest='setup_facts',
+                        help='Print what first-run Setup shows (drives and free space, the '
+                             'torrent client and its folder, what blocks an install) and exit; '
+                             'read-only, creates no folder. Use with --json')
     parser.add_argument('--prune', action='store_true',
                         help='List games deleted outside Nexus; with --yes, drop their '
                              'registry, Steam, Heroic and app-menu entries')
@@ -879,6 +883,7 @@ COMMANDS = (
     ('stats_sent', lambda a, base: cmd_stats_sent(a.json)),
     ('list_steam_accounts', lambda a, base: cmd_list_steam_accounts()),
     ('doctor', lambda a, base: cmd_doctor(base, as_json=a.json)),
+    ('setup_facts', lambda a, base: cmd_setup_facts(base, as_json=a.json)),
     ('prune', lambda a, base: sys.exit(cmd_prune(yes=a.yes, as_json=a.json))),
     (lambda a: a.repair_launchers is not None,
      lambda a, base: cmd_repair_launchers(base, load_config(), a.repair_launchers or None)),
@@ -1053,6 +1058,7 @@ from .agent import (cmd_agent, cmd_agent_enable, cmd_agent_status,
 from .apply import (cmd_apply, cmd_from_protongen, cmd_perf, cmd_protongen_default,
     cmd_set_launch, cmd_set_proton, cmd_show_launch)  # noqa: E402
 from .config import load_config, resolve_install_base, resolve_scan_dirs  # noqa: E402
+from .setupfacts import cmd_setup_facts  # noqa: E402
 from .doctor import (cmd_clean_orphan_compatdata, cmd_cleanup, cmd_cleanup_scan, cmd_doctor,
     cmd_list_steam_accounts, cmd_prune, cmd_quarantine_restore, find_orphan_compatdata)  # noqa: E402
 from .downloads import (cmd_check_repack, cmd_repack_feed, cmd_repack_grab, cmd_repack_index,

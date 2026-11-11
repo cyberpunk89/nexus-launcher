@@ -12,8 +12,8 @@ from pathlib import Path
 
 from nexus import features, paths as NX, platform
 
-from .common import (ARTWORK_DIR, atomic_write, CONFIG_PATH, dir_size_bytes, existing_ancestor,
-    LAUNCHERS_DIR, LOG_DIR, SAVES_DIR, STEAM_ROOT, VDF_ERRORS)
+from .common import (ARTWORK_DIR, atomic_write, base_writable, CONFIG_PATH, dir_size_bytes,
+    existing_ancestor, LAUNCHERS_DIR, LOG_DIR, SAVES_DIR, STEAM_ROOT, VDF_ERRORS)
 
 
 def cmd_list_steam_accounts() -> None:
@@ -445,12 +445,7 @@ def doctor_checks(install_base: Path) -> list[dict]:
     add(R, 'ok' if has_vdf else 'warn', 'python-vdf', 'found' if has_vdf else 'missing',
         '' if has_vdf else ("Steam shortcuts are disabled — "
                          + install_hint('python-vdf', 'python3-vdf (or: pip install --user vdf)')))
-    base_ok = False
-    try:
-        install_base.mkdir(parents=True, exist_ok=True)
-        base_ok = os.access(install_base, os.W_OK)
-    except OSError:
-        pass
+    base_ok = base_writable(install_base)             # looks, never creates
     add(R, 'ok' if base_ok else 'fail', 'Install folder', str(install_base),
         '' if base_ok else f'Not writable — set [install] base in {CONFIG_PATH}')
 
@@ -611,12 +606,7 @@ def _windows_checks(install_base: Path, cfg: dict, add) -> None:
         add(R, 'ok', 'python-vdf', 'found')
     except ImportError:
         add(R, 'warn', 'python-vdf', 'missing', 'Steam shortcuts are disabled — pip install vdf')
-    base_ok = False
-    try:
-        install_base.mkdir(parents=True, exist_ok=True)
-        base_ok = os.access(install_base, os.W_OK)
-    except OSError:
-        pass
+    base_ok = base_writable(install_base)             # looks, never creates
     add(R, 'ok' if base_ok else 'fail', 'Install folder', str(install_base),
         '' if base_ok else f'Not writable — set [install] base in {CONFIG_PATH}')
     for why in platform.install_base_warnings(install_base):

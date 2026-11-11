@@ -73,6 +73,19 @@ class Paths(unittest.TestCase):
         self.assertTrue(platform.steam_root(home).name.lower() == 'steam')
 
 
+class Filesystem(unittest.TestCase):
+    @linux_only
+    def test_reads_mounts_with_escaped_spaces(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'mounts'
+            f.write_text('/dev/a / btrfs rw 0 0\n/dev/b /mnt/My\\040Games ext4 rw 0 0\n'
+                         'tmpfs /run tmpfs rw 0 0\n', encoding='utf-8')
+            self.assertEqual(platform.filesystem('/mnt/My Games', mounts=str(f)), 'ext4')
+            self.assertEqual(platform.filesystem('/', mounts=str(f)), 'btrfs')
+            self.assertIsNone(platform.filesystem('/nope', mounts=str(f)))
+            self.assertIsNone(platform.filesystem('/', mounts=str(Path(d) / 'missing')))
+
+
 class Processes(unittest.TestCase):
     def test_finds_this_process(self):
         me = next(p for p in platform.processes() if p.pid == os.getpid())

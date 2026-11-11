@@ -26,6 +26,24 @@ def acf(appid, name, flags=4, size=1000, last=0, installdir=None):
 
 
 @unittest.skipIf(vdf is None, "python-vdf not installed")
+class Counts(unittest.TestCase):
+    def test_installed_counts_skip_tools_and_partial(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / 'Steam'
+            lib2 = Path(d) / 'lib2'
+            for lib in (root, lib2):
+                (lib / 'steamapps').mkdir(parents=True)
+            (root / 'steamapps' / 'libraryfolders.vdf').write_text(vdf.dumps(
+                {'libraryfolders': {'0': {'path': str(root)}, '1': {'path': str(lib2)}}}))
+            (root / 'steamapps' / 'appmanifest_10.acf').write_text(acf(10, 'Game A'))
+            (root / 'steamapps' / 'appmanifest_11.acf').write_text(acf(11, 'Game B'))
+            (root / 'steamapps' / 'appmanifest_12.acf').write_text(acf(12, 'Half', flags=2))
+            (root / 'steamapps' / 'appmanifest_228980.acf').write_text(acf(228980, 'Redist'))
+            (lib2 / 'steamapps' / 'appmanifest_20.acf').write_text(acf(20, 'Game C'))
+            self.assertEqual(steamlib.installed_counts(root), {str(root): 2, str(lib2): 1})
+
+
+@unittest.skipIf(vdf is None, "python-vdf not installed")
 class PlayStatsCache(unittest.TestCase):
     def test_parsed_once_until_the_file_changes(self):
         from unittest import mock

@@ -69,6 +69,23 @@ def transmission_config_dir(kind: str) -> Path | None:
     return base / ('transmission-daemon' if kind == 'daemon' else 'transmission')
 
 
+def filesystem(mount: str, mounts: str = '/proc/mounts') -> str | None:
+    """The filesystem type of the mount point `mount` (btrfs, ext4, ...), from
+    /proc/mounts (spaces are escaped as \\040 there); None when it isn't listed."""
+    try:
+        text = Path(mounts).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    found = None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            point = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), parts[1])
+            if point == str(mount):
+                found = parts[2]            # a later line shadows an earlier one
+    return found
+
+
 def appx_registered(family: str) -> bool:
     return False
 

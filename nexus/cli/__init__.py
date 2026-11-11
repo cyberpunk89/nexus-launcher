@@ -131,6 +131,7 @@ from .doctor import (
     cmd_list_steam_accounts, cmd_prune, cmd_quarantine_restore, doctor_checks,
     find_orphan_compatdata, ORPHAN_HOLDING_DIR, quarantine_path, quarantined,
     stale_registry_entries)  # noqa: F401
+from .setupfacts import cmd_setup_facts, setup_facts  # noqa: F401
 from .entry import (
     _check_slug_args, _cmd_apply_launch, _cmd_gamedb_lookup, _cmd_launch_via,
     _cmd_notify_test, _cmd_orphans, _cmd_pause, _cmd_remove_heroic, _cmd_restore_saves, _main,

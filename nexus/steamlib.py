@@ -55,21 +55,28 @@ def _int(v, default=0) -> int:
         return default
 
 
-def library_folders(steam_root: Path) -> list[Path]:
-    """Every Steam library folder (the root's own first), existing ones only."""
-    out = []
+def library_paths(steam_root: Path) -> list[Path]:
+    """Every Steam library folder libraryfolders.vdf names, the root's own
+    first, without checking that they exist (a dead network mount would hang
+    the check; the caller stats them where it can afford to wait)."""
+    out = [steam_root]
     for cand in (steam_root / 'steamapps' / 'libraryfolders.vdf',
                  steam_root / 'config' / 'libraryfolders.vdf'):
+        found = []
         data = _ci(_load_vdf(cand), 'libraryfolders')
         for entry in data.values() if isinstance(data, dict) else ():
             p = entry.get('path') if isinstance(entry, dict) else entry
-            if p and Path(p).is_dir() and Path(p) not in out:
-                out.append(Path(p))
-        if out:
+            if p and Path(p) not in out and Path(p) not in found:
+                found.append(Path(p))
+        if found:
+            out += found
             break
-    if steam_root.is_dir() and steam_root not in out:
-        out.insert(0, steam_root)
     return out
+
+
+def library_folders(steam_root: Path) -> list[Path]:
+    """Every Steam library folder (the root's own first), existing ones only."""
+    return [p for p in library_paths(steam_root) if p.is_dir()]
 
 
 def is_tool(appid: int, name: str) -> bool:
@@ -260,6 +267,30 @@ def _art_fields(steam_root: Path, appid: int) -> dict:
     }
 
 
+def _manifests(lib: Path):
+    """(manifest file, parsed AppState, appid, name) for each game manifest in
+    a library folder; tools and unreadable manifests left out."""
+    for acf in sorted((lib / 'steamapps').glob('appmanifest_*.acf')):
+        st = _ci(_load_vdf(acf), 'AppState')
+        appid = _int(_ci(st, 'appid'), -1)
+        name = _ci(st, 'name') or ''
+        if appid < 0 or is_tool(appid, name):
+            continue
+        yield acf, st, appid, name
+
+
+def installed_counts(steam_root: Path) -> dict[str, int]:
+    """{library folder: fully installed games} (tools and partial downloads
+    don't count); reads manifests only."""
+    return {str(lib): library_count(lib) for lib in library_folders(steam_root)}
+
+
+def library_count(lib: Path) -> int:
+    """Fully installed games (no tools, no partial downloads) in one library."""
+    return sum(1 for _a, st, _i, _n in _manifests(lib)
+               if _int(_ci(st, 'StateFlags')) & STATE_FULLY_INSTALLED)
+
+
 def scan(steam_root: Path, compat_map: dict[str, str] | None = None,
          installing: bool = False) -> list[dict]:
     """Installed Steam games (tools filtered out), newest-played first. With
@@ -270,11 +301,8 @@ def scan(steam_root: Path, compat_map: dict[str, str] | None = None,
     seen: set[int] = set()
     games = []
     for lib in library_folders(steam_root):
-        for acf in sorted((lib / 'steamapps').glob('appmanifest_*.acf')):
-            st = _ci(_load_vdf(acf), 'AppState')
-            appid = _int(_ci(st, 'appid'), -1)
-            name = _ci(st, 'name') or ''
-            if appid < 0 or appid in seen or is_tool(appid, name):
+        for acf, st, appid, name in _manifests(lib):
+            if appid in seen:
                 continue
             flags = _int(_ci(st, 'StateFlags'))
             done = bool(flags & STATE_FULLY_INSTALLED)

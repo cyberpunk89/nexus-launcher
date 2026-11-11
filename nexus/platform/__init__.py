@@ -103,6 +103,9 @@ antivirus and limits (Windows)
                                             Linux or when it can't be asked
     appx_registered(family)                 a Store (UWP) package is registered
                                             for this user (False on Linux)
+    filesystem(mount) -> str | None         the filesystem type of a mount point
+                                            (btrfs, ext4... from /proc/mounts);
+                                            None if unknown, always on Windows
     long_paths_enabled()                    paths past 260 characters work
                                             (always True on Linux)
     defender_detections(folders) -> [{file, threat, at}]
@@ -254,6 +257,7 @@ create_shortcut = _impl.create_shortcut
 defender_detections = _impl.defender_detections
 defender_status = _impl.defender_status
 long_paths_enabled = _impl.long_paths_enabled
+filesystem = _impl.filesystem
 appx_registered = _impl.appx_registered
 copy_tree = _impl.copy_tree
 replace = _impl.replace
