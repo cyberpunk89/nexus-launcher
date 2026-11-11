@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QProcess, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QDesktopServices
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QStackedWidget,
-    QVBoxLayout, QWidget)
+from PyQt6.QtGui import QColor, QDesktopServices, QPainter
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QSplitterHandle,
+    QStackedWidget, QVBoxLayout, QWidget)
 
 from nexus import __version__, gamedb, paths as NX, platform, stats
 from nexus.features import has
@@ -19,7 +19,8 @@ from nexus.features import has
 from .. import updates
 from .common import alive, CONFIG_PATH, HOME
 from .fmt import fmt_size
-from .theme import apply_appearance, build_stylesheet, FS, G, P, scaled, SP
+from .restyle import Restyler
+from .theme import apply_appearance, FS, G, P, scaled, SP
 from .topbar import _TabHandle, TopBar
 from .win_library import LibraryMixin
 from .win_nav import NavigationMixin
@@ -27,6 +28,23 @@ from .win_controller import ControllerMixin
 from .win_play import PlayMixin
 from .win_downloads import DownloadsMixin
 from .win_actions import ActionsMixin
+
+
+class _PageHandle(QSplitterHandle):
+    """The line between the pages and Details, painted from the live palette:
+    the split is a container, so its stylesheet rule would keep the old
+    border colour after a look change (w-111)."""
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        x = self.width() // 2                       # a 1px line in the middle of the handle
+        p.fillRect(x, 0, 1, self.height(), QColor(P['border']))
+        p.end()
+
+
+class PageSplitter(QSplitter):
+    def createHandle(self):
+        return _PageHandle(self.orientation(), self)
 
 
 class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, DownloadsMixin,
@@ -160,8 +178,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         root.addWidget(gate_wrap)
         # Pages on the left, the game's details docked on the right — shared
         # by Home and Library, hidden on the other pages.
-        self.split = QSplitter(Qt.Orientation.Horizontal)
+        self.split = PageSplitter(Qt.Orientation.Horizontal)
         self.stack = QStackedWidget()
+        self.restyler = Restyler(self)             # the look goes on the roots (w-111)
         self.pages: dict[str, QWidget] = {}
         self._lazy: dict = {}                        # page key -> its builder (_add_lazy_page)
         self.split.addWidget(self.stack)
@@ -821,11 +840,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         f = app.font()
         f.setPixelSize(scaled(FS['sm']))           # Size: the type QSS doesn't set
         app.setFont(f)
-        app.setStyleSheet(build_stylesheet())
-        self.theatre.setStyleSheet(build_stylesheet(THEATRE_SCALE))
+        self.restyler.restyle()                    # not app.setStyleSheet: ~1 s (w-111)
         self._style_title_bar()
-        if self._theatre:
-            self.hints.setStyleSheet(build_stylesheet(THEATRE_SCALE))
         refresh_icons()
         for hero in (self.dashboard.stage.art, self.theatre.hero):
             hero._frames.clear()
@@ -835,8 +851,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if self._theatre:
             self.theatre.refresh_tint()
         self._home_sig = None
-        self.apply_filter()
-        self.dashboard.refresh()
+        self.apply_filter()                        # rebuilds Home (dashboard.refresh) too
         self.downloads.restyle()                   # pipeline cards: sizes, in place
         if self.selected:
             self._sync_selection()

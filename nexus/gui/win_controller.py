@@ -11,7 +11,7 @@ from nexus import platform, winfocus
 
 from .art import anim_ms
 from .common import alive
-from .theme import build_stylesheet, G, GLYPHS
+from .theme import G, GLYPHS
 
 # Settings > Controls "Start Nexus in Theatre: On a TV": a screen this big or
 # bigger. EDID sizes outside 10-120" are made up (projectors report 0, some
@@ -522,7 +522,7 @@ class ControllerMixin:
                 self.newspage.refresh()           # the game page's News card (CLI-cached)
             self.shell.setCurrentWidget(self.theatre)
             self.showFullScreen()
-            self.hints.setStyleSheet(build_stylesheet(THEATRE_SCALE))
+            self.hints.setStyleSheet(self.restyler.sheet('theatre'))
             self.sheet.close_sheet(restore=False)
             self.focus_ring.scale = 1.5
             self.focus_ring.nudge()
@@ -554,7 +554,7 @@ class ControllerMixin:
             self._sync_ribbon()
             art = self.dashboard.stage.art
             self.background.set_tint(self._game_tint(art.game if art.on_art() else None))
-            self.hints.setStyleSheet("")
+            self.hints.setStyleSheet(self.restyler.sheet('desk'))
             self.focus_ring.scale = 1.0
             was = self._was_state
             if not was & Qt.WindowState.WindowFullScreen:
@@ -774,7 +774,7 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
 from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
-from .theatre import THEATRE_SCALE, TheatreDownloadRow  # noqa: E402
+from .theatre import TheatreDownloadRow  # noqa: E402
 from .theatre_discover import TheatreCard, TheatreSetupCard  # noqa: E402
 from .theatre_settings import CouchRow  # noqa: E402
 from .tiles import GameTile  # noqa: E402

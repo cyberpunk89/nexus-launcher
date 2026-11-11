@@ -2382,10 +2382,20 @@ class Window(unittest.TestCase):
             self.win._flush_appearance()                 # skip the debounce
             self.assertEqual(self.win.prefs.appearance['theme'], 'slate')
             self.assertEqual(nx.P['accent'], nx.ACCENTS['foam'])
-            self.assertIn(nx.ACCENTS['foam'], QApplication.instance().styleSheet())
+            self.assertIn(nx.ACCENTS['foam'], self.win.restyler.sheet('desk'))
         finally:
             self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT))
         self.assertEqual(nx.P['accent'], nx.ACCENTS['iris'])
+
+    def test_appearance_rebuilds_home_once(self):
+        from unittest import mock
+        try:
+            with mock.patch.object(self.win.dashboard, 'refresh',
+                                   wraps=self.win.dashboard.refresh) as refresh:
+                self.win.set_appearance({'theme': 'slate', 'accent': 'foam'}, save=False)
+            self.assertEqual(refresh.call_count, 1)
+        finally:
+            self.win.set_appearance(dict(nx.APPEARANCE_DEFAULT), save=False)
 
     def test_settings_and_the_game_page_are_built_on_first_use(self):
         w = self.win

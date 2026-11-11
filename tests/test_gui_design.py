@@ -121,7 +121,10 @@ class Radii(unittest.TestCase):
                 for page in ('home', 'library', 'settings'):
                     win.go(page)
                     QApplication.processEvents()
+                    app_wide = (win.restyler.sheet('desk'), win.restyler.sheet('theatre'))
                     for w in QApplication.allWidgets():
+                        if w.styleSheet() in app_wide:          # the look's own, on a root (w-111)
+                            continue
                         m = re.search(r'border-radius:\s*(\d+)px', w.styleSheet() or '')
                         if not m or not w.isVisible() or min(w.width(), w.height()) <= 2:
                             continue
@@ -1856,3 +1859,154 @@ class HomeLayouts(unittest.TestCase):
         self.assertIsNone(nx.LibraryPrefs().old_home())                 # a layout has the name
         self._prefs({'dashboard': {'version': 2, 'items': nx.dash_default()}})
         self.assertIsNone(nx.LibraryPrefs().old_home())                 # nothing to offer
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Restyle(unittest.TestCase):
+    """w-111: a look change styles what shows (the Restyler), never the whole app."""
+
+    def setUp(self):
+        from unittest import mock
+        from tests.patching import set_gui
+        saved = (nx.cli_json, nx.CliQuery)
+        set_gui('cli_json', lambda *a, **k: None)
+        set_gui('CliQuery', lambda *a, **k: None)
+        self.addCleanup(set_gui, 'cli_json', saved[0])
+        self.addCleanup(set_gui, 'CliQuery', saved[1])
+        p = mock.patch.object(nx.LibraryPrefs, 'save', lambda self: None)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self._back_to_default)
+        self.win = nx.MainWindow()
+        self.addCleanup(self.win.deleteLater)
+        self.win.resize(1400, 850)
+        self.win.show()
+        self.win._on_library({'games': [{'slug': s, 'display_name': s.title(), 'source': 'nexus',
+                                         'launcher': f'/{s}'} for s in ('alpha', 'beta')],
+                              'disks': []}, '')
+        QApplication.processEvents()
+        self.base = dict(self.win.prefs.appearance)
+
+    def _back_to_default(self):
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+        QApplication.instance().setStyleSheet(nx.build_stylesheet())
+
+    def _change(self, **kw):
+        self.win.set_appearance({**self.base, **kw}, save=False)
+        QApplication.processEvents()
+
+    def test_hidden_pages_wait_for_their_show(self):
+        w = self.win
+        w.go('home')
+        w.page_widget('library')
+        QApplication.processEvents()
+        before = w.restyler.sheet('desk')
+        app_sheet = QApplication.instance().styleSheet()
+        self._change(theme='forest')
+        after = w.restyler.sheet('desk')
+        self.assertNotEqual(before, after)
+        self.assertEqual(QApplication.instance().styleSheet(), app_sheet)   # never set again
+        self.assertEqual(w.pages['home'].styleSheet(), after)               # visible: at once
+        self.assertNotEqual(w.pages['library'].styleSheet(), after)         # hidden: waits
+        self.assertNotEqual(w.theatre.styleSheet(), w.restyler.sheet('theatre'))
+        w.go('library')
+        QApplication.processEvents()
+        self.assertEqual(w.pages['library'].styleSheet(), after)
+        w.set_theatre(True)
+        QApplication.processEvents()
+        self.assertEqual(w.theatre.styleSheet(), w.restyler.sheet('theatre'))
+        self.assertEqual(w.hints.styleSheet(), w.restyler.sheet('theatre'))
+        w.set_theatre(False)
+        QApplication.processEvents()
+        self.assertEqual(w.hints.styleSheet(), w.restyler.sheet('desk'))
+
+    def _snapshot(self):
+        from PyQt6.QtWidgets import QWidget
+        out = {}
+        containers = self.win.restyler._containers()      # they paint no text
+        for x in self.win.findChildren(QWidget):
+            if not x.isVisible() or x in containers:
+                continue
+            pal = QWidget.palette(x)
+            f = QWidget.font(x)
+            out[x] = (type(x).__name__, x.objectName(), pal.color(x.backgroundRole()).name(),
+                      pal.color(x.foregroundRole()).name(), f.pixelSize(), f.family(),
+                      x.width(), x.height())
+        return out
+
+    def _full_restyle(self):
+        """The reference: the look set app-wide, as set_appearance used to."""
+        w = self.win
+        for r in w.restyler.roots():
+            r.setStyleSheet('')
+        w.theatre.setStyleSheet(nx.build_stylesheet(nx.THEATRE_SCALE))
+        w.hints.setStyleSheet(nx.build_stylesheet(nx.THEATRE_SCALE) if w._theatre else '')
+        QApplication.instance().setStyleSheet(nx.build_stylesheet())
+        QApplication.processEvents()
+
+    def test_every_page_matches_a_full_restyle(self):
+        w = self.win
+        w.go('library')
+        QApplication.processEvents()
+        self._change(theme='dawn', accent='foam', scale=1.2)    # Settings not built yet; Size too
+        seen = {}
+        for page in ('home', 'library', 'settings', 'system', 'downloads'):
+            w.go(page)
+            QApplication.processEvents()
+            seen[page] = self._snapshot()
+        w.set_theatre(True)
+        QApplication.processEvents()
+        seen['theatre'] = self._snapshot()
+        w.set_theatre(False)
+        QApplication.processEvents()
+        seen['desk again'] = self._snapshot()
+        self._full_restyle()
+        for page in ('home', 'library', 'settings', 'system', 'downloads'):
+            w.go(page)
+            QApplication.processEvents()
+            ref = self._snapshot()
+            diff = [(k, seen[page][k], ref[k]) for k in ref if k in seen[page] and seen[page][k] != ref[k]]
+            with self.subTest(page=page):
+                self.assertEqual(diff[:3], [])
+        w.set_theatre(True)
+        QApplication.processEvents()
+        ref = self._snapshot()
+        diff = [(k, seen['theatre'][k], ref[k]) for k in ref if k in seen['theatre'] and seen['theatre'][k] != ref[k]]
+        self.assertEqual(diff[:3], [])
+        w.set_theatre(False)
+        QApplication.processEvents()
+        ref = self._snapshot()
+        diff = [(k, seen['desk again'][k], ref[k]) for k in ref
+                if k in seen['desk again'] and seen['desk again'][k] != ref[k]]
+        self.assertEqual(diff[:3], [])
+
+    def test_splitter_handle_follows_the_theme(self):
+        w = self.win
+        w.go('library')
+        w.details.setVisible(True)
+        QApplication.processEvents()
+        for theme in ('forest', 'dawn'):
+            self._change(theme=theme)
+            h = w.split.handle(1)
+            img = h.grab().toImage()
+            c = img.pixelColor(img.width() // 2, img.height() // 2)
+            self.assertEqual(c.name(), QColor(nx.P['border']).name(), theme)
+
+    def test_change_is_quick(self):
+        import statistics
+        import time
+        from tests.test_gui_category import lib_games
+        w = self.win
+        games = lib_games(3000)
+        for i, g in enumerate(games):
+            g['appid'] = 100000 + i
+        w._on_library({'games': games, 'disks': []}, '')
+        for _ in range(5):
+            QApplication.processEvents()
+        took = []
+        for theme in ('campfire', 'forest', 'dawn'):
+            t = time.perf_counter()
+            self.win.set_appearance({**self.base, 'theme': theme}, save=False)
+            took.append(time.perf_counter() - t)
+            QApplication.processEvents()
+        self.assertLess(statistics.median(took), 1.0, took)
