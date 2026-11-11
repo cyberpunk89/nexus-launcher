@@ -198,22 +198,30 @@ class Window(unittest.TestCase):
         self.assertFalse(st.categories['installing'].adv.isHidden())
 
     def test_setup_without_repacks_and_skip_saves_nothing(self):
+        """Play the games I have: no Where games go step, [repacks] off is
+        written, the folder and torrent answers are not; Skip keeps nothing."""
         w = self.win
         saved = []
+        facts = {'default_base': '/g/Nexus', 'drives': [], 'needs': [], 'repacks_was': None,
+                 'torrent': {'client': 'transmission', 'url': 'http://127.0.0.1:9091',
+                             'configured': False, 'download_dir': '/d/dl', 'error': None}}
         with patch_gui('cli_json', lambda *a, **k: None), \
                 patch_gui('save_config', saved.append), \
                 mock.patch.object(w, 'set_appearance'):
             w.open_setup()
             st = w.setup
-            st.repacks.setChecked(False)
-            self.assertFalse(st.scan_box.isVisibleTo(st) or st.torrent_box.isVisibleTo(st))
-            st.scan.setText('/d/dl')
+            st.set_facts(facts, '')
+            self.assertIs(st.fork.currentData(), True)          # a client answers: picked
+            st.fork.group.button(st.fork.findData(False)).click()
+            self.assertEqual([k for k, _n in st.steps], ['play', 'look', 'services'])
+            st._set_folder('/g/Games')
             u, _opts = st.answers_now()
             self.assertIs(u[('repacks', 'enabled')], False)
-            self.assertNotIn(('install', 'scan_dir'), u)
-            st.base.setText('/g/Games')
+            self.assertFalse({('install', 'scan_dir'), ('install', 'base'),
+                              ('torrent', 'client')} & set(u))
             st._skip()
         self.assertEqual(saved, [])                         # Skip keeps nothing (w-15)
+        self.assertEqual(w.current(), w.HOME)
 
     def test_setup_preview_writes_no_prefs(self):
         w = self.win

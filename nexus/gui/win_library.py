@@ -841,6 +841,8 @@ class LibraryMixin:
             self.storage.set_library([g for g in self._games if is_installed(g)], self._disks)
         if self._showing('history'):
             self.playhistory.refresh(games=self._games)
+        if data is not None and self.current() == self.SETUP:
+            self.setup.set_found(found_counts(self._games))     # Found here (w-104)
 
     def apply_filter(self):
         if self._loaded and not self._showing(self.LIBRARY) and not self._theatre:
@@ -1877,6 +1879,7 @@ from .category import BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, NO_GA
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
+from .setup import found_counts  # noqa: E402
 from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402

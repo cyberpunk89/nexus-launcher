@@ -383,7 +383,10 @@ def main():
     if instance is not None:
         instance.request.connect(win.handle_remote)
     if "--theatre" in argv:
-        win.set_theatre(True)
+        if win._first_run:
+            win._theatre_wanted = True        # setup first, then Theatre (w-104)
+        else:
+            win.set_theatre(True)
     elif "--hidden" not in argv:
         win.theatre_on_start()                # Settings > Controls "Start Nexus in Theatre"
     # From here a UI thread that stops answering leaves its stack in the

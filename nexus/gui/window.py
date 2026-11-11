@@ -78,6 +78,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.setMinimumSize(720, 480)
         self.resize(1180, 760)
         self.config = load_config()
+        self._theatre_wanted = False            # --theatre on a first run: after setup
         self.prefs = LibraryPrefs()
         self._disks = []
         self._loaded = False
@@ -1118,7 +1119,14 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             empty="No notes for this version here. The release page has them all.")
 
     def open_setup(self):
+        """The Setup page (w-104), with its facts asked in the background:
+        `--setup-facts` (drives, torrent client, what blocks an install) and,
+        once the library has loaded, what it found."""
+        self._setup_first = self._first_run
         self.setup.open(load_config(), self.prefs.appearance)
+        if self._loaded:
+            self.setup.set_found(found_counts(self._games))
+        cli_json(['--setup-facts', '--json'], self.setup.set_facts, 30000)
         self.go(self.SETUP)
 
     def _setup_finished(self, updates: dict, opts: dict):
@@ -1134,13 +1142,20 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if self.page_built(self.SETTINGS):         # else it loads when first opened
             self.settings.load()
         self._apply_repacks()
+        self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))
         self.set_appearance({**self.prefs.appearance, **opts['appearance']})
-        if opts.get('tray'):
-            self._apply_controls({'close_to_tray': True})
         self.go(self.HOME)
         self.reload_library()
+        # Theatre waits for setup on a first run (--theatre, Start in Theatre).
+        first, self._setup_first = getattr(self, '_setup_first', False), False
+        if self._theatre_wanted:
+            self._theatre_wanted = False
+            self.set_theatre(True)
+        elif first:
+            self.theatre_on_start()
         if opts.get('agent'):
-            self._background_changed('agent', True)          # asks first
+            # Step 3 said what it installs, so no second question here.
+            self._background_changed('agent', True, ask=False)
         else:
             self.toast("All set. Settings has everything, and Ctrl+K finds anything.",
                        'success', None, 6000)
@@ -1187,7 +1202,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         QProcess.startDetached(exe, [*args, '--restarted'])
         self.quit_after_jobs()
 
-    def _background_changed(self, what: str, on: bool):
+    def _background_changed(self, what: str, on: bool, ask: bool = True):
         """Settings → Background. The agent is a systemd user service: ask
         before installing one, then let the CLI switch it. On Windows the
         same switch is Start with Windows (a Startup-folder shortcut to
@@ -1223,7 +1238,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
                     self.toast("Nexus keeps working in the background now." if on else
                                "The background agent is off.", 'success', None, 5000)
             cli_json(['--agent-enable' if on else '--agent-disable', '--json'], done, 60000)
-        if not on or startup:
+        if not on or startup or not ask:
             switch()
             return
         self.confirm("Keep Nexus working in the background?",
@@ -1338,7 +1353,7 @@ from .install import InstallPage, RepackWatcher  # noqa: E402
 from .friends import PRESENCE_MS  # noqa: E402
 from .jobs import cli_json, in_thread, JobManager  # noqa: E402
 from .modal import Modal  # noqa: E402
-from .setup import SetupPage  # noqa: E402
+from .setup import found_counts, SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402
 from .tray import Tray, tray_available  # noqa: E402
 from .updater import Updater  # noqa: E402

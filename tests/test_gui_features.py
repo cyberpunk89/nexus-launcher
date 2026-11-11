@@ -20,6 +20,7 @@ if nx is not None:
     from nexus.gui.theme import G
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLabel
 
 WINDOWS = features.WINDOWS
 
@@ -348,38 +349,50 @@ class InstallPages(unittest.TestCase):
                          str(platform.default_install_base(nx.HOME)))
         with windows():
             page = setup.SetupPage()
-        self.addCleanup(page.deleteLater)
-        self.assertEqual(page.base.placeholderText(), nx.INSTALL_BASE_DEFAULT)
+            self.addCleanup(page.deleteLater)
+            page.open({}, {})
+            page.set_facts(None, 'timed out')        # one default card, free space unknown
+        self.assertEqual(page.folder_label.text(), nx.INSTALL_BASE_DEFAULT)
+        self.assertEqual(page.drives.count(), 1)
 
     def test_setup_on_windows(self):
+        """No Heroic tile or switch, the Start Menu, the Windows agent text, a
+        folder warning on the Where games go step."""
+        drives = [{'id': 'c', 'path': 'C:\\', 'fs': 'NTFS', 'free': 9e10, 'total': 5e11,
+                   'folder': r'C:\Program Files\Games', 'default': True, 'steam_games': 3,
+                   'warnings': self.WARN}]
         with windows(), mock.patch.object(platform, 'install_base_warnings',
                                           side_effect=lambda b: self.WARN
                                           if 'Program Files' in str(b) else []):
             page = setup.SetupPage()
             self.addCleanup(page.deleteLater)
             page.open({}, {})
-            self.assertEqual([k for k, _ in page.steps],
-                             ['checks', 'launchers', 'folders', 'extras', 'look'])
-            page.show_step(2)
-            self.assertIs(page.stack.currentWidget(), page.base.parentWidget())
-            self.assertIn("of 5", page.step_note.text())
-            self.assertTrue(page.base_warn.isHidden())
-            page.base.setText(r'C:\Program Files\Games')
-            self.assertFalse(page.base_warn.isHidden())
-            self.assertIn("Program Files", page.base_warn.text())
-            page.show_step(3)
-            self.assertEqual(page.title.text(), "Extras")
-            page.proton.addItem("GE-Proton10-1", "GE-Proton10-1")
-            page.proton.setCurrentIndex(1)
+            page.set_found({'steam': 3, 'heroic': 5, 'heroic_stores': ['Epic']})
+            page.set_facts({'default_base': r'C:\Program Files\Games', 'drives': drives,
+                            'torrent': None, 'needs': [], 'repacks_was': True}, '')
+            self.assertEqual([k for k, _ in page.steps], ['play', 'where', 'look', 'services'])
+            self.assertEqual(sorted(page.integrations), ['desktop', 'steam'])
+            names = [t.findChildren(QLabel)[0].text()
+                     for t in page.found.findChildren(setup.SourceTile)]
+            self.assertEqual(names, ["Steam"])
+            page.show_step(1)
+            self.assertIn("of 3", page.step_note.text())
+            self.assertFalse(page.folder_warn.isHidden())
+            self.assertIn("Program Files", page.folder_warn.text())
+            rows = page._rows(page.need_rows)
+            self.assertEqual(rows[0].need['title'], "Long paths and free space are fine")
+            texts = [w.text() for w in page.findChildren(QLabel)]
+            self.assertIn("Starts with Windows and sits in the tray.", texts)
+            self.assertFalse(any('Heroic' in t or 'systemd' in t for t in texts), texts)
             updates, _ = page.answers_now()
         self.assertNotIn(('runner', 'proton'), updates)
-        self.assertEqual(updates[('install', 'base')], r'C:\Program Files\Games')
+        self.assertNotIn(('install', 'base'), updates)          # the default: nothing to write
 
-    def test_setup_on_linux_keeps_proton(self):
+    def test_setup_on_linux_has_heroic(self):
         with linux():
             page = setup.SetupPage()
         self.addCleanup(page.deleteLater)
-        self.assertEqual(len(page.steps), len(setup.STEPS))
+        self.assertEqual(sorted(page.integrations), ['desktop', 'heroic', 'steam'])
 
     def test_setup_shows_a_few_themes_and_keeps_yours(self):
         """Setup shows a short list of themes (Settings has them all); setting
@@ -398,7 +411,7 @@ class InstallPages(unittest.TestCase):
         self.assertEqual(page.theme.count(), len(nx.SETUP_THEMES) + 1)
 
     def test_setup_cards_answer_like_the_menus(self):
-        """Theme and size are cards now, the switches sit on cards: the same
+        """Theme and size are cards, the switches sit on cards: the same
         answers come out, and a click on a card is a click on its choice."""
         with windows():
             page = setup.SetupPage()
@@ -415,13 +428,19 @@ class InstallPages(unittest.TestCase):
             QTest.mouseClick(card, Qt.MouseButton.LeftButton)
             self.assertTrue(page.agent.isChecked())
             self.assertEqual(card.property('on'), 'true')
-            QTest.mouseClick(page.use_torrent.parentWidget(), Qt.MouseButton.LeftButton)
-            self.assertFalse(page.use_torrent.isChecked())     # disabled: no client found
-            _, opts = page.answers_now()
-            self.assertEqual(opts['appearance'], {'theme': 'moon', 'scale': 1.5})
-            self.assertTrue(opts['agent'])
-            page.show_step(4)
-            self.assertEqual((page.track.current, len(page.track.names)), (4, 5))
+            QTest.mouseClick(page.integrations['steam'].parentWidget(),
+                             Qt.MouseButton.LeftButton)
+            u, opts = page.answers_now()
+            self.assertIs(u[('integrations', 'steam')], False)       # flipped: written
+            self.assertNotIn(('integrations', 'desktop'), u)           # as it was: not
+            self.assertEqual(opts, {'appearance': {'theme': 'moon', 'scale': 1.5},
+                                    'agent': True})
+            page.fork.group.button(page.fork.findData(False)).click()
+            page.show_step(2)                      # play, look, services: look is #2
+            self.assertEqual(page.key(), 'services')
+            self.assertEqual((page.track.current, len(page.track.names),
+                              page.track.optional_from), (2, 3, 2))
+            self.assertEqual(page.step_note.text(), "Optional · Connect services")
             # The stack is as tall as the step shown, not the tallest step.
             self.assertEqual(page.stack.minimumSizeHint(),
                              page.stack.currentWidget().minimumSizeHint())

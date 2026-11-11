@@ -247,6 +247,8 @@ class NavigationMixin:
             self.newspage.close_reader()
         elif self.current() == self.HOME and self.dashboard.editing:
             self.dashboard.set_editing(False)
+        elif self.current() == self.SETUP:
+            self.setup.back()                   # a step back; never out of setup
         elif self.current() == self.INSTALL:
             if not self.go_back():
                 self.go(self.HOME)
@@ -368,6 +370,8 @@ class NavigationMixin:
             return self._first_tile() or (stage.art.btn_details if shown else self.tabs.item(cur))
         if cur == self.LIBRARY:
             return self._first_tile() or self.search
+        if cur == self.SETUP:
+            return self.setup.default_focus()
         page = self.stack.currentWidget()
         for w in page.findChildren(QWidget):
             if w.isVisible() and w.isEnabled() and w.focusPolicy() & Qt.FocusPolicy.TabFocus \

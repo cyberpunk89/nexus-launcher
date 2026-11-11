@@ -989,19 +989,7 @@ class SettingsPage(QWidget):
     @staticmethod
     def _secret(edit: QLineEdit) -> QLineEdit:
         """A password-style field with an eye at its end to show it."""
-        edit.setEchoMode(QLineEdit.EchoMode.Password)
-        eye = edit.addAction(QIcon(glyph_pixmap(G['eye'], P['muted'], 15)),
-                             QLineEdit.ActionPosition.TrailingPosition)
-        eye.setToolTip("Show")
-
-        def flip():
-            hidden = edit.echoMode() == QLineEdit.EchoMode.Password
-            edit.setEchoMode(QLineEdit.EchoMode.Normal if hidden else
-                             QLineEdit.EchoMode.Password)
-            eye.setIcon(QIcon(glyph_pixmap(G['eye_off' if hidden else 'eye'], P['muted'], 15)))
-            eye.setToolTip("Hide" if hidden else "Show")
-        eye.triggered.connect(flip)
-        return edit
+        return secret_field(edit)
 
     def _build_look(self):
         cat = self._add_category('look', "Look and feel", 'palette', 'dusk',
@@ -1457,8 +1445,9 @@ class SettingsPage(QWidget):
         sec = self._group(cat, 'setup', "Setup", 'wrench')
         again = QPushButton("Run setup again")
         again.clicked.connect(self.setup_wanted)
-        self._row(sec, "First-run setup", "The welcome steps: checks, folders, Proton, extras.",
-                  again, keywords="welcome wizard onboarding first run", key='setup')
+        self._row(sec, "First-run setup", "The welcome steps: how you play, where games go, "
+                  "the look, and services to connect.", again,
+                  keywords="welcome wizard onboarding first run", key='setup')
         self._build_privacy(cat)
         self._build_about(cat)
         # config.toml: what Settings doesn't show yet. Usable with a broken
@@ -2088,11 +2077,11 @@ class SettingsPage(QWidget):
         try:
             if not self.gdb_url.text().strip():
                 raise gamedb.GameDbError('config', "Enter your Game-db address first")
-            base = gamedb.check_url(self.gdb_url.text())
+            page = gamedb.account_url(self.gdb_url.text())
         except gamedb.GameDbError as e:
             self.row_of[self.gdb_url].set_error(str(e))
             return
-        QDesktopServices.openUrl(QUrl(base + '/account'))
+        QDesktopServices.openUrl(QUrl(page))
 
     def _test_torrent(self):
         """Save what's typed, then ask the client for its version."""
@@ -2391,4 +2380,4 @@ from .friends import FRIENDS  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402
-    label, NoWheelCombo, open_modal, plain_label, SegmentedControl, set_glyph_icon)
+    label, NoWheelCombo, open_modal, plain_label, secret_field, SegmentedControl, set_glyph_icon)

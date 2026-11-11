@@ -1124,6 +1124,8 @@ def build_stylesheet(scale: float = 1.0) -> str:
                 border-radius: ${r_control}px; }
     QLabel#ChoiceTitle { color: $text; font-size: ${fs_sm}px; font-weight: 500; }
     QLabel#ChoiceNote { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#ChoiceWhy { color: $accent; font-size: ${fs_xs}px; }
+    QLabel#ChoiceWarn { color: $warning; font-size: ${fs_xs}px; }
 
     /* ---- Misc ---------------------------------------------------------- */
     QLabel#Empty { color: $muted; font-size: ${fs_base}px; }

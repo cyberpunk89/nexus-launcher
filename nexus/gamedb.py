@@ -100,6 +100,11 @@ def check_url(url: str) -> str:
     raise GameDbError('config', f"Game-db URL must be https:// (got {url!r})")
 
 
+
+def account_url(url: str) -> str:
+    """The Account page of a Game-db (where desktop app tokens are made)."""
+    return check_url(url) + '/account'
+
 def settings() -> dict:
     """{enabled, url, token, token_source ('env'|'config'|None), url_error}.
     Missing/unparseable config → disabled defaults; never raises."""

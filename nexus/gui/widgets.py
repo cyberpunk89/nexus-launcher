@@ -12,8 +12,8 @@ from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QObject, QPoint, QPr
 from PyQt6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPen,
     QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QComboBox, QFrame,
-    QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout, QMenu, QPushButton, QSizePolicy,
-    QToolButton, QVBoxLayout, QWidget)
+    QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLayout, QLineEdit, QMenu, QPushButton,
+    QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from nexus import paths as NX, platform
 
@@ -546,6 +546,24 @@ def icon_button(glyph: str, tip: str, size: int = 30, name: str | None = None,
     if round_ or name in ('ShelfArrow', 'GlassIcon', 'TopIcon'):
         b.setStyleSheet(f"border-radius: {pill(size)}px;")
     return b
+
+
+def secret_field(edit: QLineEdit) -> QLineEdit:
+    """A password-style field with an eye at its end to show it (Settings'
+    keys and tokens, and Setup's Connect services)."""
+    edit.setEchoMode(QLineEdit.EchoMode.Password)
+    eye = edit.addAction(QIcon(glyph_pixmap(G['eye'], P['muted'], 15)),
+                         QLineEdit.ActionPosition.TrailingPosition)
+    eye.setToolTip("Show")
+
+    def flip():
+        hidden = edit.echoMode() == QLineEdit.EchoMode.Password
+        edit.setEchoMode(QLineEdit.EchoMode.Normal if hidden else
+                         QLineEdit.EchoMode.Password)
+        eye.setIcon(QIcon(glyph_pixmap(G['eye_off' if hidden else 'eye'], P['muted'], 15)))
+        eye.setToolTip("Hide" if hidden else "Show")
+    eye.triggered.connect(flip)
+    return edit
 
 
 def label(text: str = '', name: str | None = None, wrap: bool = False) -> QLabel:

@@ -302,6 +302,8 @@ class ControllerMixin:
                 self.theatre.open_search()
             self._update_hints()
             return
+        if act in ('page-prev', 'page-next') and self.current() == self.SETUP:
+            return                                  # setup's buttons leave it, not LB / RB
         if act in ('page-prev', 'page-next'):
             order = self._nav_order()
             cur = self.current()

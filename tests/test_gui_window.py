@@ -1432,36 +1432,71 @@ class Window(unittest.TestCase):
         self.assertEqual(sleep.call_count, 2)
 
     def test_first_run_setup_walks_through_and_saves(self):
+        """Repack path: facts and the library counts arrive, the client pre-
+        picks repacks, a drive and Connect services are answered, Open my
+        library saves only what changed and lands on Home."""
         import os
         from pathlib import Path
         w = self.win
-        checks = {'checks': [
-            {'group': 'Requirements', 'status': 'fail', 'title': 'Wine', 'detail': 'not found',
-             'fix': 'Install it', 'actions': []},
-            {'group': 'Requirements', 'status': 'ok', 'title': 'umu-run', 'detail': '/usr/bin',
-             'actions': []},
-            {'group': 'Integrations', 'status': 'ok', 'title': 'Heroic', 'detail': '~/.config',
-             'actions': []}]}
-        answers = {'--doctor': checks, '--list-protons': {'protons': [{'name': 'proton-x'}]},
-                   '--torrent-detect': {'found': {'client': 'transmission',
-                                                  'url': 'http://127.0.0.1:9091'}}}
-        saved = []
-        with patch_gui('cli_json', lambda args, cb, *_a, **_k: cb(answers.get(args[0]), None)), \
-                patch_gui('save_config', saved.append), \
-                mock.patch.object(w, 'set_appearance') as look:
+        facts = {'edition': 'linux', 'default_base': '/home/u/Games',
+                 'drives': [{'id': 'r', 'path': '/', 'fs': 'btrfs', 'free': 2e11, 'total': 9e11,
+                             'folder': '/home/u/Games', 'default': True, 'steam_games': 1,
+                             'warnings': []},
+                            {'id': 'g', 'path': '/mnt/g', 'fs': 'ext4', 'free': 1e12,
+                             'total': 2e12, 'folder': '/mnt/g/Games', 'default': False,
+                             'steam_games': 0, 'warnings': []}],
+                 'torrent': {'client': 'transmission', 'url': 'http://127.0.0.1:9091',
+                             'configured': False, 'download_dir': '/home/u/dl', 'error': None},
+                 'needs': [{'status': 'fail', 'title': 'Proton', 'detail': 'none installed',
+                            'fix': 'Install GE-Proton', 'actions': [
+                                {'label': 'Install GE-Proton',
+                                 'args': ['--proton-install', 'latest'], 'steam': False}]}],
+                 'repacks_was': None}
+        asked, saved = [], []
+
+        def cli(args, cb, *_a, **_k):
+            asked.append(args)
+            if args[0] == '--setup-facts':
+                cb(facts, None)
+        class Calls(list):
+            def add(self, *args):
+                self.append(args)
+        jobs_seen = Calls()
+        w.setup.request.connect(jobs_seen.add)
+        with patch_gui('cli_json', cli), patch_gui('save_config', saved.append), \
+                mock.patch.object(w, 'set_appearance') as look, \
+                mock.patch.object(w, 'run'):
             w.open_setup()
             self.assertEqual(w.current(), w.SETUP)
+            self.assertIn(['--setup-facts', '--json'], asked)
             st = w.setup
-            self.assertIn("1 thing(s) to fix first: Wine", st.lead.text())
-            self.assertFalse(st.get_ge.isHidden())                 # no GE-Proton: offer it
-            for _ in range(len(st.steps) - 1):                 # no Proton step on Windows
-                st._next()
-            self.assertEqual(st.btn_next.text(), "Done")
-            st.base.setText('/g/Games')
+            w._on_library({'games': fake_games(), 'disks': []}, '')
+            self.assertTrue(st.found.findChildren(nx.setup.SourceTile))
+            self.assertIs(st.fork.currentData(), True)
+            self.assertTrue(st.btn_next.isEnabled())
+            st._next()
+            self.assertEqual(st.key(), 'where')
+            st.drives.group.button(st.drives.findData('g')).click()
+            self.assertEqual(st.folder_label.text(), '/mnt/g/Games')
+            fix = st._rows(st.need_rows)[0].buttons[0][0]
+            fix.click()
+            self.assertEqual((fix.text(), fix.isEnabled()), ("Started", False))
+            self.assertEqual(jobs_seen[0][0], ['--proton-install', 'latest'])
+            st._next()
             st.theme.setCurrentIndex(st.theme.findData('dawn'))
-            st._next()                                         # Done
-        self.assertEqual(saved[0][('install', 'base')], '/g/Games')
-        self.assertEqual(saved[0][('torrent', 'client')], 'transmission')
+            st._next()
+            self.assertEqual(st.key(), 'services')
+            self.assertTrue(st.btn_skip_all.isHidden())
+            self.assertEqual(st.btn_next.text(), "Open my library")
+            st.services[0].fields[0].setText('sgdbkey')
+            st._next()                                         # Open my library
+        u = saved[0]
+        self.assertEqual(u[('install', 'base')], '/mnt/g/Games')
+        self.assertEqual(u[('torrent', 'client')], 'transmission')
+        self.assertEqual(u[('install', 'scan_dir')], '/home/u/dl')
+        self.assertEqual(u[('steamgriddb', 'api_key')], 'sgdbkey')
+        self.assertNotIn(('repacks', 'enabled'), u)            # on, as the default
+        self.assertNotIn(('steam', 'web_api_key'), u)          # empty: nothing
         self.assertTrue(w.prefs.setup_done)
         self.assertEqual(w.current(), w.HOME)
         self.assertEqual(look.call_args[0][0]['theme'], 'dawn')
@@ -1473,6 +1508,111 @@ class Window(unittest.TestCase):
             self.assertTrue(w._first_run)
             w.prefs.setup_done = True
             self.assertFalse(w._first_run)
+
+    def test_setup_skip_on_step_one_writes_nothing(self):
+        """Skip on How you play ends setup and skips Connect services too."""
+        w = self.win
+        saved = []
+        with patch_gui('cli_json', lambda *a, **k: None), \
+                patch_gui('save_config', saved.append), mock.patch.object(w, 'set_appearance'):
+            w.open_setup()
+            w.setup.services[0].fields[0].setText('typed-but-skipped')
+            w.setup.btn_skip_all.click()
+        self.assertEqual(saved, [])
+        self.assertTrue(w.prefs.setup_done)
+        self.assertEqual(w.current(), w.HOME)
+
+    def test_setup_secrets_go_to_the_private_config(self):
+        """Connect services through the real save_config: the keys land in
+        config.toml, 0600, under the sections CONFIG_SECRETS names; a Steam
+        key turns Friends on, Game-db its switch (user 2026-11-11)."""
+        import stat
+        import tempfile
+        import tomllib
+        from pathlib import Path
+        from nexus.cli.info import CONFIG_SECRETS
+        from nexus.gui import config as gconfig
+        w = self.win
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, d, True)
+        path = Path(d) / 'config.toml'
+        key, token = 'B' * 32, 'gdb_' + 'y' * 43
+        with patch_gui('cli_json', lambda *a, **k: None), \
+                mock.patch.object(gconfig, 'CONFIG_PATH', path), \
+                mock.patch.object(w, 'set_appearance'), mock.patch.object(w, 'reload_library'):
+            w.open_setup()
+            st = w.setup
+            st.fork.group.button(st.fork.findData(False)).click()
+            st.show_step(2)
+            self.assertEqual(st.key(), 'services')
+            _sgdb, steam, gdb = st.services
+            steam.fields[0].setText(key)
+            gdb.fields[0].setText('https://g.lan')
+            gdb.fields[1].setText(token)
+            st.btn_next.click()
+        if os.name == 'posix':
+            self.assertFalse(path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO))
+        data = tomllib.loads(path.read_text())
+        self.assertEqual(data['steam']['web_api_key'], key)
+        self.assertEqual(data['gamedb'], {'url': 'https://g.lan', 'token': token,
+                                          'enabled': True})
+        self.assertIs(data['friends']['enabled'], True)
+        self.assertIs(data['repacks']['enabled'], False)
+        self.assertNotIn('steamgriddb', data)                # left empty: nothing
+        secret = {(s, k) for s, k, _w in CONFIG_SECRETS}
+        self.assertLessEqual({('steam', 'web_api_key'), ('gamedb', 'token')}, secret)
+
+    def test_setup_pad_order_and_back(self):
+        """B goes back a step (never out of setup), LB / RB don't leave it;
+        each step's pad order follows the design and starts on its pick."""
+        w = self.win
+        with patch_gui('cli_json', lambda *a, **k: None), mock.patch.object(w, 'set_appearance'):
+            w.open_setup()
+            st = w.setup
+            st.set_facts({'default_base': '/g', 'drives': [], 'needs': [], 'torrent': None,
+                          'repacks_was': True}, '')
+            self.assertIs(w.default_focus(), st.fork.group.checkedButton())
+            chain = st.focus_chain()
+            self.assertEqual(chain[:2], st.fork.cards())
+            self.assertEqual(chain[2:-2], list(st.integrations.values()))
+            self.assertEqual(chain[-2:], [st.btn_skip_all, st.btn_next])
+            st._next()
+            self.assertEqual(st.key(), 'where')
+            chain = st.focus_chain()
+            self.assertEqual(chain[0], st.drives.cards()[0])
+            self.assertIs(st.default_focus(), st.drives.cards()[0])
+            self.assertIn(st.btn_change, chain)
+            self.assertEqual(chain[-3:], [st.btn_skip_all, st.btn_back, st.btn_next])
+            w._pad_action('page-next')
+            self.assertEqual(w.current(), w.SETUP)
+            w._escape()                                     # B
+            self.assertEqual((w.current(), st.key()), (w.SETUP, 'play'))
+            w._escape()
+            self.assertEqual((w.current(), st.key()), (w.SETUP, 'play'))
+            st._next()
+            st._next()
+            self.assertEqual(st.key(), 'look')
+            self.assertIs(st.default_focus(), st.theme.group.checkedButton())
+            chain = st.focus_chain()
+            self.assertEqual(chain[:len(st.theme.cards())], st.theme.cards())
+            self.assertLess(chain.index(st.agent), chain.index(st.stats.cards()[0]))
+            st._next()
+            self.assertEqual(st.key(), 'services')
+            self.assertIs(st.default_focus(), st.btn_next)
+            self.assertEqual(st.focus_chain()[-2:], [st.btn_back, st.btn_next])
+
+    def test_first_run_theatre_waits_for_setup(self):
+        """--theatre on a first run: setup first, Theatre once it's done."""
+        w = self.win
+        w._theatre_wanted = True
+        with patch_gui('cli_json', lambda *a, **k: None), \
+                mock.patch.object(w, 'set_appearance'), \
+                mock.patch.object(w, 'set_theatre') as theatre:
+            w.open_setup()
+            theatre.assert_not_called()
+            w.setup._skip()
+        theatre.assert_called_once_with(True)
+        self.assertFalse(w._theatre_wanted)
 
     def test_remove_with_files_asks_first(self):
         w = self.win
@@ -2772,6 +2912,21 @@ class Window(unittest.TestCase):
                 w.report.pick.setCurrentIndex(1)
                 w.report._picked()
                 QApplication.processEvents()
+            with patch_gui('cli_json', lambda *a, **k: None):      # w-104: Setup's late rows
+                w.open_setup()
+                QApplication.processEvents()
+                w.setup.set_found({'steam': 2})
+                w.setup.set_facts({'default_base': '/g', 'needs': [], 'repacks_was': True,
+                                   'torrent': None, 'drives': [
+                                       {'id': 'timeout:/n', 'path': '/n', 'free': None,
+                                        'total': None, 'folder': '/n', 'default': False,
+                                        'steam_games': 0, 'warnings': []}]}, '')
+                for i in range(4):
+                    w.setup.show_step(i)
+                    QApplication.processEvents()
+                w.setup.services[1].fields[0].setText('bad')
+                QApplication.processEvents()
+                w.go(w.HOME)
             w.jobs.jobs.clear()
             w.close()
             w.deleteLater()
