@@ -502,6 +502,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._run_timer.timeout.connect(self._poll_running)
         self._run_timer.start()
         QTimer.singleShot(800, self._poll_running)
+        QTimer.singleShot(5000, self._slow_startup)     # a slowdown a crash left behind
         # While a game is starting: poll every 2 s until it's running, and
         # watch for its window to hand focus over.
         self._fast_timer = QTimer(self)
@@ -1265,6 +1266,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._tray_quit = False
         parts = self._quit_reasons()
         if self._quitting or not parts:
+            self._slow_quit()
             ev.accept()
             return
         ev.ignore()

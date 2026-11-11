@@ -300,7 +300,7 @@ def _pipeline(rows: list, s: dict, info: dict | None, base: Path) -> tuple[list,
 
 
 def cmd_torrent(args, base: Path | None = None) -> None:
-    """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove|queue /
+    """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove|queue|while-playing /
     --torrent-test / --torrent-done / --torrent-forget / --torrent-clear-history."""
     from nexus import pipeline, torrent as T
     cards = []
@@ -325,6 +325,13 @@ def cmd_torrent(args, base: Path | None = None) -> None:
                 print(json.dumps({'ok': True}) if args.json else
                       f"{done} {len(hashes)} torrent(s).")
                 return
+        if args.torrent_while_playing:
+            from nexus import slowplay
+            from .agent import playing
+            when = args.torrent_while_playing
+            did = slowplay.sync(playing() if when == 'sync' else when == 'start')
+            print(json.dumps({'did': did}) if args.json else f"Slow while playing: {did}.")
+            return
         if args.torrent_queue:
             T.queue_move(args.torrent_queue[1], args.torrent_queue[0])
             print(json.dumps({'ok': True}) if args.json else

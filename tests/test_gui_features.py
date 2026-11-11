@@ -571,7 +571,7 @@ class SettingsCategories(unittest.TestCase):
         page = self.page()
         rows = [r for cat in page.categories.values() for r in cat.rows]
         self.assertEqual(len(rows), len(set(map(id, rows))))
-        self.assertEqual(len(page.rows), 75)        # w-108: Theatre layout, Ribbon background
+        self.assertEqual(len(page.rows), 76)        # w-96: Slow downloads while playing
         self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
         for key, row in page.rows.items():
             cat, _, short = key.partition('.')
@@ -644,6 +644,28 @@ class SettingsCategories(unittest.TestCase):
                     self.assertNotEqual(saved[-1], saved[before[0] - 1], key)
         self.assertEqual(walked, len(page.rows) - len(self.ACTION_ROWS) - 1)
         return page
+
+    def test_slow_while_playing_saves_to_downloads(self):
+        from tests.patching import patch_gui
+        from nexus.gui.config import load_config
+        base = load_config()
+        self.assertIs(base['slow_while_playing'], False)            # off by default
+        base.update(torrent_client=None, repacks=True)
+        saved = []
+        with patch_gui('save_config', saved.append), \
+                patch_gui('load_config', lambda: dict(base)), \
+                patch_gui('cli_json', lambda *a, **k: None):
+            page = self.page()
+            page.load()
+            self.assertIs(page.tor_slow.isChecked(), False)
+            self.assertFalse(page.row_of[page.tor_slow].available)     # no client chosen
+            page.tor_client.setCurrentIndex(page.tor_client.findData('transmission'))
+            page.tor_client.activated.emit(page.tor_client.currentIndex())
+            self.assertTrue(page.row_of[page.tor_slow].available)
+            saved.clear()
+            page.tor_slow.setChecked(True)                          # saves as it changes
+            self.assertEqual(saved[-1].get(('downloads', 'slow_while_playing')), True)
+            self.assertIn("limits you set in", page.row_of[page.tor_slow].desc.text())
 
     def test_every_control_reaches_save_or_a_signal(self):
         with linux():

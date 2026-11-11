@@ -42,7 +42,7 @@ UNIT_DIR = NX.CONFIG_DIR.parent / 'systemd' / 'user'
 # Seconds between runs of each task (torrents set their own pace).
 EVERY = {'scan': 60, 'scan_waiting': 30, 'scan_full': 600, 'feed': 1800, 'index': 1800,
          'deals': 2700, 'proton': 6 * 3600, 'art': 6 * 3600, 'facts': 900, 'facts_idle': 3600,
-         'stats': 3600}
+         'stats': 3600, 'slowplay': 15}
 FACTS_BATCH = 10          # per site per run: 40 an hour at EVERY['facts']
 TICK = 1.0
 
@@ -74,13 +74,27 @@ def _desktop(title: str, body: str) -> None:
 
 
 def playing() -> bool:
-    """A game is running (Steam's reaper or a Nexus launch tracker)."""
-    from nexus import steamlib
+    """A game is running: Steam's reaper or a Nexus launch tracker, else the
+    same match the window makes (steamlib.match_running) of a repack's exe
+    name or a Heroic/Epic install folder against the library."""
+    from nexus import sources, steamlib
     try:
         r = steamlib.running()
     except OSError:
         return False
-    return bool(r.get('appids') or r.get('slugs'))
+    if r.get('appids') or r.get('slugs'):
+        return True
+    if not (r.get('exes') or r.get('paths')):
+        return False
+    games = [dict(g) for g in load_registry()['games'].values()]
+    for g in games:
+        g.setdefault('source', 'nexus')
+    try:
+        games += steamlib.heroic_store_games(steamlib.find_heroic_config())
+        games += sources.installed_games()
+    except Exception:                       # noqa: BLE001 — the library is a best effort here
+        pass
+    return bool(steamlib.match_running(games, r))
 
 
 def install_cmd(path: str, h: str, config: dict) -> list[str]:
@@ -113,7 +127,7 @@ class Agent:
         now = time.monotonic()
         # Staggered first runs, like the window's startup timers.
         for i, task in enumerate(('torrents', 'scan', 'feed', 'index', 'deals', 'proton',
-                                  'art', 'facts', 'stats')):
+                                  'art', 'facts', 'stats', 'slowplay')):
             self.due[task] = now + 5 + 10 * i
         last_state = 0.0
         while not self.stop:
@@ -282,6 +296,18 @@ class Agent:
         subprocess.run([*NX.cli_command(), '--fill-art', '--if-stale', '--json'],
                        stdin=subprocess.DEVNULL, capture_output=True, timeout=1800)
         return EVERY['art']
+
+    def task_slowplay(self) -> float:
+        # Slow downloads while playing (nexus/slowplay.py). With a window open
+        # it follows the games itself; the agent covers the rest, and puts the
+        # client back when a window quit left a slowdown behind.
+        from nexus import slowplay
+        if instance.window_running() or not (slowplay.option() or slowplay.pending()):
+            return EVERY['slowplay']
+        did = slowplay.sync(playing())
+        if did in ('slowed', 'restored'):
+            _say(f"Downloads {'slowed while you play' if did == 'slowed' else 'back to full speed'}")
+        return EVERY['slowplay']
 
     def task_facts(self) -> float:
         from nexus import facts

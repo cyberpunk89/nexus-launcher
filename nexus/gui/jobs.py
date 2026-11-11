@@ -9,7 +9,8 @@ import time
 from PyQt6.QtCore import (pyqtSignal, QObject, QProcess, QProcessEnvironment, QRunnable,
     QThreadPool, QTimer)
 
-from nexus import platform, steamlib
+from nexus import platform
+from nexus.steamlib import match_running  # noqa: F401  (re-exported; shared with the agent)
 
 from .common import CLI
 from .fmt import fmt_bytes
@@ -502,29 +503,6 @@ def in_thread(fn, callback):
     _DISPATCH.next += 1
     _DISPATCH.callbacks[_DISPATCH.next] = callback
     QThreadPool.globalInstance().start(_Task(fn, _DISPATCH.next))
-
-
-def match_running(games: list[dict], r: dict) -> set:
-    """Slugs of the library games in steamlib.running()'s snapshot: Steam's
-    reaper AppId (Steam games and repack shortcuts), Nexus's own session
-    trackers, a repack's exe name, or a Heroic or Epic game's install folder."""
-    appids, slugs, exes = set(r['appids']), set(r['slugs']), set(r['exes'])
-    out = set()
-    for g in games:
-        src = g.get('source', 'nexus')
-        if src == 'nexus':
-            exe = (g.get('exe') or '').replace('\\', '/').rsplit('/', 1)[-1].lower()
-            if g['slug'] in slugs or int(g.get('steam_appid') or 0) in appids \
-                    or (exe and exe in exes):
-                out.add(g['slug'])
-        elif src == 'steam':
-            if g.get('appid') in appids:
-                out.add(g['slug'])
-        elif src in ('heroic', 'epic'):
-            d = g.get('install_dir')
-            if d and steamlib.in_dir_cmdline(d, r['paths']):
-                out.add(g['slug'])
-    return out
 
 
 _CLI_MEMO: dict[tuple, tuple[float, dict]] = {}     # args -> (when, answer)

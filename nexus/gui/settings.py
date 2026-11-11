@@ -1187,6 +1187,15 @@ class SettingsPage(QWidget):
                                       key='torrent_test')
         self.tor_result = self.tor_test_row.desc
         self.tor_rows.append(self.tor_test_row)
+        self.tor_slow = Switch()
+        self.tor_rows.append(self._row(
+            sec, "Slow downloads while I play",
+            "Nexus switches on the limits you set in the client for the alternative speed "
+            "(turtle mode) while a game runs, and back when it ends; it sets none itself. "
+            "Transmission starts at 50 KB/s. Left alone if the client already has them on "
+            "or runs its own schedule.", self.tor_slow,
+            keywords="slow limit speed bandwidth game playing lag turtle alternative",
+            key='slow_while_playing'))
         self.tor_user = QLineEdit()
         self.tor_user.setPlaceholderText("only if the client asks for one")
         self.tor_rows.append(self._field_row(adv, "Torrent username", "", self.tor_user,
@@ -1713,7 +1722,7 @@ class SettingsPage(QWidget):
         for c in (self.repacks, self.steam, self.desktop, self.heroic, self.news, self.unattended,
                   self.trash_repack, self.gdb_enabled, self.gdb_games, self.gdb_sessions,
                   self.gdb_other, self.gdb_library, self.fr_enabled, self.al_atl, self.al_fitgirl,
-                  self.al_updates, self.al_proton):
+                  self.al_updates, self.al_proton, self.tor_slow):
             c.toggled.connect(self.commit)
         # Not in the loop: while [stats] count is unset, only a real flip may
         # write it, or any other save would answer the ask with "no".
@@ -2207,6 +2216,7 @@ class SettingsPage(QWidget):
         self.tor_dir.setText(c.get('torrent_download_dir') or "")
         r = c.get('torrent_seed_ratio')
         self.tor_ratio.setText("" if r is None else f"{r:g}")
+        self.tor_slow.setChecked(c.get('slow_while_playing', False))
         self.tor_test_row.set_description("")
         for box, k in ((self.al_atl, 'atl'), (self.al_fitgirl, 'fitgirl'),
                        (self.al_updates, 'repack_updates'), (self.al_proton, 'proton')):
@@ -2318,6 +2328,8 @@ class SettingsPage(QWidget):
         put('torrent', 'password', self.tor_pass.text() or None, c.get('torrent_password'))
         put('torrent', 'download_dir', self.tor_dir.text().strip() or None,
             c.get('torrent_download_dir'))
+        put('downloads', 'slow_while_playing', self.tor_slow.isChecked(),
+            c.get('slow_while_playing', False))
         put('integrations', 'steam_account', self.account.text().strip() or None,
             c.get('steam_account'))
         n = len(u)

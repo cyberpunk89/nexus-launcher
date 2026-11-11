@@ -600,6 +600,81 @@ class Window(unittest.TestCase):
         self.assertEqual(job.state, 'cancelled')
         self.assertFalse(self.win.isVisible())
 
+    def test_play_transitions_call_cli_only_when_opted_in_or_pending(self):
+        from nexus import slowplay
+        w = self.win
+        calls = []
+        pending = {'v': False}
+        with patch_gui('cli_json', lambda args, cb, *a, **k: calls.append(args)), \
+                mock.patch.object(slowplay, 'pending', lambda: pending['v']):
+            w.config = dict(w.config, slow_while_playing=False)
+            w._apply_running({'alpha'})
+            w._apply_running(set())
+            self.assertEqual(calls, [])                          # off by default: no call at all
+            w.config = dict(w.config, slow_while_playing=True)
+            w._apply_running({'alpha'})
+            w._apply_running({'alpha', 'gamma'})                 # still playing: no flip
+            w._apply_running(set())
+            self.assertEqual(calls, [['--torrent-while-playing', 'start', '--json'],
+                                     ['--torrent-while-playing', 'end', '--json']])
+            del calls[:]
+            w.config = dict(w.config, slow_while_playing=False)  # switched off mid-game
+            pending['v'] = True                                  # but a slowdown is in place
+            w._apply_running({'alpha'})
+            w._apply_running(set())
+            self.assertEqual([c[1] for c in calls], ['start', 'end'])
+
+    def test_hidden_window_still_polls_for_the_slowdown(self):
+        from nexus import slowplay
+        w = self.win
+        polled, calls = [], []
+        w._playing = set()
+        w.hide()
+        with mock.patch.object(nx.MainWindow, '_poll_running', nx.PlayMixin._poll_running), \
+                patch_gui('in_thread', lambda fn, cb: polled.append(fn)), \
+                patch_gui('cli_json', lambda args, cb, *a, **k: calls.append(args[1])), \
+                mock.patch.object(slowplay, 'pending', lambda: False):
+            w.config = dict(w.config, slow_while_playing=False)
+            w._poll_running()
+            self.assertEqual(polled, [])                      # hidden, nothing to watch
+            w.config = dict(w.config, slow_while_playing=True)
+            w._poll_running()
+            self.assertEqual(len(polled), 1)                  # option on: it looks
+            w._running_query = False
+            w._on_running({'alpha'}, None)                    # a game appears
+            w._on_running(set(), None)                        # and goes
+            self.assertEqual(calls, ['start', 'end'])
+
+    def test_startup_syncs_a_leftover_state(self):
+        from nexus import slowplay
+        w = self.win
+        calls = []
+        with patch_gui('cli_json', lambda args, cb, *a, **k: calls.append(args)), \
+                mock.patch.object(slowplay, 'pending', lambda: False):
+            w._slow_startup()
+            self.assertEqual(calls, [])
+        with patch_gui('cli_json', lambda args, cb, *a, **k: calls.append(args)), \
+                mock.patch.object(slowplay, 'pending', lambda: True):
+            w._slow_startup()
+        self.assertEqual(calls, [['--torrent-while-playing', 'sync', '--json']])
+
+    def test_quit_restores_without_agent(self):
+        from PyQt6.QtGui import QCloseEvent
+        from nexus import instance, slowplay
+        w = self.win
+        for pending, agent, want in ((True, False, 1), (True, True, 0), (False, False, 0)):
+            spawned = []
+            with mock.patch.object(slowplay, 'pending', lambda p=pending: p), \
+                    mock.patch.object(instance, 'agent_running', lambda a=agent: a), \
+                    mock.patch('nexus.platform.spawn_detached',
+                                      lambda cmd, **k: spawned.append(cmd)):
+                ev = QCloseEvent()
+                w.closeEvent(ev)
+                self.assertTrue(ev.isAccepted())
+            self.assertEqual(len(spawned), want, (pending, agent))
+            if want:
+                self.assertEqual(spawned[0][-2:], ['--torrent-while-playing', 'end'])
+
     def test_first_paint_from_the_cached_library(self):
         import json
         import tempfile

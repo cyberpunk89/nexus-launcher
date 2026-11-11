@@ -3,6 +3,7 @@ announces a finished download, who installs a finished torrent, what's
 alerted once, and the systemd unit. Nothing runs for real: the torrent
 client, systemctl, notify-send and the window's socket are stand-ins."""
 
+import io
 import json
 import os
 import socket
@@ -244,6 +245,48 @@ class AgentTasks(unittest.TestCase):
             delay = self.agent.task_torrents()
             self.agent.task_torrents()                           # never twice
         return delay, spawned, sent
+
+    def test_slowplay_runs_only_without_a_window(self):
+        from nexus import slowplay
+        calls = []
+        with mock.patch.object(slowplay, 'sync',
+                               side_effect=lambda playing, **k: calls.append(playing) or 'idle'), \
+                mock.patch.object(slowplay, 'option', return_value=True), \
+                mock.patch.object(slowplay, 'pending', return_value=False), \
+                mock.patch.object(A, 'playing', return_value=True), \
+                mock.patch.object(A, '_say'):
+            with mock.patch.object(instance, 'window_running', return_value=True):
+                self.assertEqual(self.agent.task_slowplay(), 15)
+            self.assertEqual(calls, [])                     # the window does it
+            with mock.patch.object(instance, 'window_running', return_value=False):
+                self.assertEqual(self.agent.task_slowplay(), 15)
+            self.assertEqual(calls, [True])
+            with mock.patch.object(instance, 'window_running', return_value=False), \
+                    mock.patch.object(slowplay, 'option', return_value=False):
+                self.agent.task_slowplay()                  # off and nothing pending: no look
+            self.assertEqual(calls, [True])
+
+    def test_exe_only_game_counts_as_playing_and_keeps_the_slowdown(self):
+        from nexus import slowplay, steamlib
+        r = {'appids': [], 'slugs': [], 'exes': ['game.exe'], 'paths': []}
+        reg = {'games': {'g': {'slug': 'g', 'exe': 'C:\\G\\Game.exe'}}}
+        with mock.patch.object(steamlib, 'running', return_value=r), \
+                mock.patch.object(A, 'load_registry', return_value=reg), \
+                mock.patch.object(steamlib, 'heroic_store_games', return_value=[]), \
+                mock.patch.object(steamlib, 'find_heroic_config', return_value=None), \
+                mock.patch('nexus.sources.installed_games', return_value=[]):
+            self.assertTrue(A.playing())
+            other = dict(r, exes=['other.exe'])
+            with mock.patch.object(steamlib, 'running', return_value=other):
+                self.assertFalse(A.playing())
+            calls = []
+            with mock.patch.object(slowplay, 'sync',
+                                   side_effect=lambda p, **k: calls.append(p) or 'kept'):
+                from nexus.cli import entry
+                args = entry.build_parser().parse_args(['--torrent-while-playing', 'sync'])
+                with mock.patch('sys.stdout', io.StringIO()):
+                    cli.cmd_torrent(args, Path('/nowhere'))
+            self.assertEqual(calls, [True])
 
     def test_hands_the_install_to_an_open_window(self):
         delay, spawned, sent = self._torrents(forwarded=True)

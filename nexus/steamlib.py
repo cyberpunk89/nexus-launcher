@@ -554,3 +554,26 @@ def in_dir_cmdline(install_dir: str, cmdlines: list[str]) -> bool:
         return os.path.normcase(s).replace('\\', '/')
     d = norm(install_dir).rstrip('/') + '/'
     return any(d in norm(c) for c in cmdlines)
+
+
+def match_running(games: list[dict], r: dict) -> set:
+    """Slugs of the library games in steamlib.running()'s snapshot: Steam's
+    reaper AppId (Steam games and repack shortcuts), Nexus's own session
+    trackers, a repack's exe name, or a Heroic or Epic game's install folder."""
+    appids, slugs, exes = set(r['appids']), set(r['slugs']), set(r['exes'])
+    out = set()
+    for g in games:
+        src = g.get('source', 'nexus')
+        if src == 'nexus':
+            exe = (g.get('exe') or '').replace('\\', '/').rsplit('/', 1)[-1].lower()
+            if g['slug'] in slugs or int(g.get('steam_appid') or 0) in appids \
+                    or (exe and exe in exes):
+                out.add(g['slug'])
+        elif src == 'steam':
+            if g.get('appid') in appids:
+                out.add(g['slug'])
+        elif src in ('heroic', 'epic'):
+            d = g.get('install_dir')
+            if d and in_dir_cmdline(d, r['paths']):
+                out.add(g['slug'])
+    return out

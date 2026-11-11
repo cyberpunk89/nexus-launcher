@@ -7,7 +7,7 @@ from datetime import datetime
 
 from PyQt6.QtCore import QEvent, QTimer
 
-from nexus import history, steamlib, winfocus
+from nexus import history, instance, paths as NX, platform, slowplay, steamlib, winfocus
 
 from .art import anim_ms
 from .common import alive
@@ -22,8 +22,11 @@ class PlayMixin:
     def _poll_running(self):
         # Keep polling while minimised if a game is starting or running: that's
         # how Nexus notices it has finished (and comes back).
+        # (Also while the option to slow downloads is on, or a slowdown is in
+        # place: a tray-hidden Nexus still starts and ends it.)
         if (not self.isVisible() or self.isMinimized()) \
-                and not (self._launching or self._playing):
+                and not (self._launching or self._playing
+                         or self.config.get('slow_while_playing') or slowplay.pending()):
             return
         now = time.monotonic()
         expired = [s for s, t0 in self._launching.items() if now - t0 > self.LAUNCH_WAIT]
@@ -48,6 +51,8 @@ class PlayMixin:
         closed (and come back to Nexus), refresh what changed."""
         started = playing - self._playing
         stopped = self._playing - playing
+        if bool(playing) != bool(self._playing):
+            self._slow_sync(bool(playing))
         now = datetime.now()
         for slug in started:
             self._launching.pop(slug, None)
@@ -82,6 +87,33 @@ class PlayMixin:
                 if self.selected:
                     self._sync_selection()
             except RuntimeError:
+                pass
+
+    def _slow_sync(self, playing: bool):
+        """Slow downloads while playing (nexus/slowplay.py): the first game
+        started / the last one ended. Only when the option is on, or a
+        slowdown is still in place from before (it is undone even if the
+        option was switched off since). The CLI does the work."""
+        if self.config.get('slow_while_playing') or slowplay.pending():
+            cli_json(['--torrent-while-playing', 'start' if playing else 'end', '--json'],
+                     self._slow_done, 30000)
+
+    def _slow_startup(self):
+        """A slowdown left by a Nexus that quit or crashed mid-game: look at
+        what runs now and put the client back if nothing does."""
+        if alive(self) and slowplay.pending():
+            cli_json(['--torrent-while-playing', 'sync', '--json'], self._slow_done, 30000)
+
+    def _slow_done(self, data, error):
+        pass                                          # best effort; the agent retries
+
+    def _slow_quit(self):
+        """Quitting with a slowdown in place and no agent to undo it: a
+        detached CLI call restores the client (no console window on Windows)."""
+        if slowplay.pending() and not instance.agent_running():
+            try:
+                platform.spawn_detached([*NX.cli_command(), '--torrent-while-playing', 'end'])
+            except OSError:
                 pass
 
     _session_pending = None       # w-60: the band waiting for its moment

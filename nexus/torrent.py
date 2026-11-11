@@ -255,6 +255,24 @@ class Transmission:
                 'download_dir': got.get('download-dir'), 'down': st.get('downloadSpeed') or 0,
                 'up': st.get('uploadSpeed') or 0, 'config_dir': got.get('config-dir')}
 
+    # The client's alternative ("turtle") speed limits, for slowing downloads
+    # while a game runs (nexus/slowplay.py). 4.1's JSON-RPC 2.0 names too.
+    def _session(self) -> dict:
+        return self.call('session-get', {'fields': [
+            'alt-speed-enabled', 'alt_speed_enabled',
+            'alt-speed-time-enabled', 'alt_speed_time_enabled']})
+
+    def alt_speed(self) -> bool:
+        got = self._session()
+        return bool(self._pick(got, 'alt-speed-enabled', 'alt_speed_enabled'))
+
+    def set_alt_speed(self, on: bool) -> None:
+        self.call('session-set', {'alt-speed-enabled': bool(on)})
+
+    def alt_scheduled(self) -> bool:
+        got = self._session()
+        return bool(self._pick(got, 'alt-speed-time-enabled', 'alt_speed_time_enabled'))
+
 
 class QBittorrent:
     def __init__(self, s: dict):
@@ -397,6 +415,30 @@ class QBittorrent:
         return {'client': 'qBittorrent', 'version': raw.decode(errors='replace').strip(),
                 'download_dir': save, 'down': t.get('dl_info_speed') or 0,
                 'up': t.get('up_info_speed') or 0}
+
+    def alt_speed(self) -> bool:
+        self.login()
+        status, _h, raw = self._req('/transfer/speedLimitsMode')
+        if status != 200:
+            raise TorrentError(f"qBittorrent answered HTTP {status}")
+        return raw.strip() == b'1'
+
+    def set_alt_speed(self, on: bool) -> None:
+        if self.alt_speed() == bool(on):
+            return                      # the call only toggles
+        status, _h, _raw = self._req('/transfer/toggleSpeedLimitsMode', {})
+        if status != 200:
+            raise TorrentError(f"qBittorrent answered HTTP {status}")
+        if self.alt_speed() != bool(on):
+            raise TorrentError("qBittorrent didn't switch its alternative speed limits")
+
+    def alt_scheduled(self) -> bool:
+        self.login()
+        status, _h, raw = self._req('/app/preferences')
+        if status != 200:
+            raise TorrentError(f"qBittorrent answered HTTP {status}")
+        prefs = _json(raw, "qBittorrent")
+        return bool(isinstance(prefs, dict) and prefs.get('scheduler_enabled'))
 
 
 def client(s: dict | None = None):

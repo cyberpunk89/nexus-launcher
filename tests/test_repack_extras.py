@@ -183,6 +183,8 @@ class FakeTransmission(BaseHTTPRequestHandler):
     removed = []
     moves = []
     posts = 0
+    session = {}
+    sets = []
 
     def log_message(self, *a):
         pass
@@ -222,6 +224,12 @@ class FakeTransmission(BaseHTTPRequestHandler):
             out = {}
         elif req['method'] == 'session-get':
             out = {'version': '4.1.3', 'download-dir': '/dl', 'config-dir': '/cfg/daemon'}
+            if 'alt-speed-enabled' in (args.get('fields') or []):
+                out = {k: self.session[k] for k in args['fields'] if k in self.session}
+        elif req['method'] == 'session-set':
+            self.session.update(args)
+            self.sets.append(args)
+            out = {}
         elif req['method'] == 'session-stats':
             out = {'downloadSpeed': 10, 'uploadSpeed': 2}
         else:
@@ -894,3 +902,93 @@ class CliQueue(unittest.TestCase):
                 cli.cmd_torrent(bad, Path('/nowhere'))
             self.assertIn('error', json.loads(out.getvalue()))
             self.assertEqual(len(FakeTransmission.moves), 1)
+
+
+class AltSpeed(unittest.TestCase):
+    """The client's own alternative speed limits (turtle mode), for w-96."""
+    QB = {'client': 'qbittorrent', 'url': 'http://127.0.0.1:1', 'username': '',
+          'password': '', 'download_dir': None, 'seed_ratio': None}
+
+    def _tr(self, **session):
+        FakeTransmission.torrents, FakeTransmission.sets = {}, []
+        FakeTransmission.session = dict(session)
+        srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return torrent.Transmission({'url': f'http://127.0.0.1:{srv.server_port}',
+                                     'username': '', 'password': ''})
+
+    def test_transmission_alt_speed_get_set(self):
+        c = self._tr(**{'alt-speed-enabled': False})
+        self.assertIs(c.alt_speed(), False)
+        c.set_alt_speed(True)
+        self.assertEqual(FakeTransmission.sets, [{'alt-speed-enabled': True}])
+        self.assertIs(c.alt_speed(), True)
+        c.set_alt_speed(False)
+        self.assertIs(c.alt_speed(), False)
+        snake = self._tr(alt_speed_enabled=True)          # 4.1's JSON-RPC 2.0 names
+        self.assertIs(snake.alt_speed(), True)
+
+    def test_qbittorrent_toggles_only_when_different(self):
+        mode = {'v': 0}
+        sent = []
+
+        def req(self, path, form=None, **k):
+            sent.append(path)
+            if path == '/transfer/speedLimitsMode':
+                return 200, {}, str(mode['v']).encode()
+            if path == '/transfer/toggleSpeedLimitsMode':
+                mode['v'] = 1 - mode['v']
+                return 200, {}, b''
+            return 404, {}, b''
+        with mock.patch.object(torrent.QBittorrent, '_req', req):
+            c = torrent.QBittorrent(self.QB)
+            self.assertIs(c.alt_speed(), False)
+            c.set_alt_speed(False)
+            self.assertNotIn('/transfer/toggleSpeedLimitsMode', sent)
+            c.set_alt_speed(True)
+            self.assertEqual(sent.count('/transfer/toggleSpeedLimitsMode'), 1)
+            self.assertIs(c.alt_speed(), True)
+            c.set_alt_speed(True)
+            self.assertEqual(sent.count('/transfer/toggleSpeedLimitsMode'), 1)
+
+    def test_schedule_is_reported(self):
+        c = self._tr(**{'alt-speed-time-enabled': True})
+        self.assertIs(c.alt_scheduled(), True)
+        self.assertIs(self._tr(**{'alt-speed-time-enabled': False}).alt_scheduled(), False)
+        self.assertIs(self._tr().alt_scheduled(), False)
+
+        def req(self, path, form=None, **k):
+            return 200, {}, json.dumps({'scheduler_enabled': True}).encode()
+        with mock.patch.object(torrent.QBittorrent, '_req', req):
+            self.assertIs(torrent.QBittorrent(self.QB).alt_scheduled(), True)
+
+
+class CliSlow(unittest.TestCase):
+    def _run(self, *argv):
+        from nexus.cli import entry
+        args = entry.build_parser().parse_args(['--torrent-while-playing', *argv, '--json'])
+        out = io.StringIO()
+        with mock.patch('sys.stdout', out):
+            cli.cmd_torrent(args, Path('/nowhere'))
+        return json.loads(out.getvalue())
+
+    def test_cli_json_and_sync_reads_running(self):
+        from nexus import slowplay
+        calls = []
+
+        def fake(playing, on=None, c=None):
+            calls.append(playing)
+            return 'slowed' if playing else 'restored'
+        with mock.patch.object(slowplay, 'sync', fake):
+            self.assertEqual(self._run('start'), {'did': 'slowed'})
+            self.assertEqual(self._run('end'), {'did': 'restored'})
+            with mock.patch('nexus.cli.agent.playing', return_value=True):
+                self.assertEqual(self._run('sync'), {'did': 'slowed'})
+            with mock.patch('nexus.cli.agent.playing', return_value=False):
+                self.assertEqual(self._run('sync'), {'did': 'restored'})
+        self.assertEqual(calls, [True, False, True, False])
+        from nexus.cli import entry
+        with mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            entry.build_parser().parse_args(['--torrent-while-playing', 'sideways'])
