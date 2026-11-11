@@ -71,7 +71,8 @@ once. Games you own but haven't installed are there too, with an Install button.
 - **Downloads:** shows and controls your Transmission or qBittorrent downloads, and tells you
   when a repack you have gets an update. Before a download starts, Nexus says how much space
   it needs on the download and install drives. Each game gets one card from download to Play,
-  with the stage it's at, the time left and a Retry when something fails, and a forecast of
+  with the stage it's at, a speed line, the time left to Play (learned from your past installs),
+  queue moves and a Retry when something fails, and a forecast of
   each drive's free space sits on top.
 
 ### Theatre mode, for the couch

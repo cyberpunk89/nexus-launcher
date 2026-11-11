@@ -352,6 +352,20 @@ class DownloadsMixin:
         cli_json([f'--torrent-{action}', *hashes, '--json']
                  + (['--delete-data'] if delete else []), done, 20000)
 
+    def _torrent_queue(self, where: str, h: str):
+        """Move a download in the client's queue (top|up|down|bottom), then
+        poll so the cards follow the client's order."""
+        def done(data, err):
+            if data is None or (data or {}).get('error'):
+                msg = ((data or {}).get('error') or {}).get('message') or err or "it failed"
+                self.toast(f"The torrent client said no — {msg}", 'error', None, 0)
+            self._poll_torrents()
+        cli_json(['--torrent-queue', where, h, '--json'], done, 20000)
+
+    def _apply_downloads_config(self):
+        """[downloads] queue_reorder (config only; old configs mean on)."""
+        self.downloads.reorder = self.config.get('queue_reorder', True) is not False
+
     def _download_action(self, action: str, r: dict):
         path = r.get('path')
         if action == 'folder' and path:

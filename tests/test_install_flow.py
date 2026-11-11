@@ -207,6 +207,59 @@ class BrowserMuted(unittest.TestCase):
         self.assertEqual(self.calls(other)[2][0], 'delete')
 
 
+class VerifyBins(unittest.TestCase):
+    """verify_bins reports bytes as the chunks are hashed, so Verify moves
+    inside a big file instead of jumping per file."""
+
+    def make(self, files):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        (d / 'MD5').mkdir()
+        lines = []
+        import hashlib
+        for name, data in files.items():
+            (d / name).write_bytes(data)
+            lines.append(f'{hashlib.md5(data).hexdigest()} *{name}')
+        (d / 'MD5' / 'fitgirl-bins.md5').write_text('\n'.join(lines))
+        return d
+
+    def test_bytes_move_within_a_file(self):
+        from nexus.cli import repack
+        d = self.make({'a.bin': b'a' * 10_000, 'b.bin': b'b' * 5_000})
+        got = []
+        with mock.patch.object(repack, '_MD5_CHUNK', 1000), mock.patch('sys.stdout', io.StringIO()):
+            self.assertTrue(fi.verify_bins(d, on_bytes=lambda done, total: got.append((done, total))))
+        self.assertEqual(got[0], (0, 15_000))
+        self.assertEqual(got[-1], (15_000, 15_000))
+        self.assertGreater(len(got), 5)                      # more than one per file
+        self.assertTrue(all(t == 15_000 for _d, t in got))
+        self.assertEqual([x for x, _t in got], sorted(x for x, _t in got))   # never backwards
+        self.assertEqual(len({x for x, _t in got}), len(got))                # no repeats
+        # A bad file still fails, and the chunk callback is optional.
+        (d / 'a.bin').write_bytes(b'z' * 10_000)
+        with mock.patch('sys.stdout', io.StringIO()):
+            self.assertFalse(fi.verify_bins(d))
+        self.assertEqual(fi.compute_md5(d / 'b.bin'), __import__('hashlib').md5(b'b' * 5000).hexdigest())
+        seen = []
+        with mock.patch.object(repack, '_MD5_CHUNK', 2000):
+            fi.compute_md5(d / 'b.bin', on_chunk=seen.append)
+        self.assertEqual(seen, [2000, 2000, 1000])
+
+    def test_report_verify_throttle_is_thread_safe(self):
+        rep = fi.InstallReport(None)
+        ticks = iter(x * 0.1 for x in range(100))
+        rep._clock = lambda: next(ticks)
+        sent = []
+        rep.stage = lambda stage, step, **kw: sent.append(kw['done'])
+        for done in range(0, 10):
+            rep.verify(done, 10)
+        rep.verify(10, 10)
+        self.assertEqual(sent[0], 0)
+        self.assertEqual(sent[-1], 10)
+        self.assertLess(len(sent), 11)                       # throttled to about 1 s
+
+
 class Report(unittest.TestCase):
     """InstallReport: the install's events, the progress file the downloads
     pipeline reads, and the torrents.json marks."""
@@ -227,6 +280,115 @@ class Report(unittest.TestCase):
         p = mock.patch('sys.stdout', self.out)
         p.start()
         self.addCleanup(p.stop)
+
+    def stats_setup(self):
+        from nexus import torrent
+        p = mock.patch.object(torrent, 'STATS', self.d / 'stats.json')
+        p.start()
+        self.addCleanup(p.stop)
+        self.target = self.d / 'game'
+        self.target.mkdir()
+        (self.target / 'a.bin').write_bytes(b'x' * 1000)
+
+    def run_install(self, *, update=False, install_s=30.0, hash=True, written=1000,
+                    ok=True, verify=True):
+        """One install on a clock the test sets: verify 100..140, install
+        from 200, last sampled at 200 + install_s, finish 300..304."""
+        class Clock:
+            t = 0.0
+
+            def __call__(self):
+                return self.t
+        clock = Clock()
+        rep = fi.InstallReport(self.H if hash else None, interval=3600, heartbeat=3600)
+        rep._clock = clock
+        (self.target / 'a.bin').write_bytes(b'x' * written)
+        try:
+            with rep:
+                rep.begin()
+                if verify:
+                    clock.t = 100.0
+                    rep.verify(0, 800)
+                    clock.t = 140.0
+                    rep.verify(800, 800)
+                rep.stage('install', 'Installing')
+                clock.t = 200.0
+                with rep.measure(self.target, 5000, update):
+                    clock.t = 200.0 + install_s
+                    rep.walker.tick()
+                clock.t = 300.0
+                rep.stage('finish', 'Finishing')
+                clock.t = 304.0
+                if ok:
+                    rep.installed('test-game')
+                else:
+                    raise RuntimeError('boom')
+        except RuntimeError:
+            pass
+        return rep
+
+    def test_installed_records_stats(self):
+        from nexus import torrent
+        from nexus.cli.common import drive_of
+        self.stats_setup()
+        self.run_install()
+        got = torrent.load_stats()
+        self.assertEqual(len(got), 1)
+        x = got[0]
+        self.assertEqual(set(x), {'at', 'drive', 'written', 'expected', 'install_s',
+                                  'verify_bytes', 'verify_s', 'finish_s'})
+        self.assertEqual((x['written'], x['expected'], x['install_s']), (1000, 5000, 30.0))
+        self.assertEqual((x['verify_bytes'], x['verify_s'], x['finish_s']), (800, 40.0, 4.0))
+        self.assertEqual(x['drive'], drive_of(self.target)['id'])
+        self.assertEqual(json.loads((self.d / 'stats.json').read_text())['v'], 1)
+        # No verify ran (MD5 is opt-in): those two are null.
+        self.run_install(verify=False)
+        self.assertEqual([(y['verify_bytes'], y['verify_s']) for y in torrent.load_stats()[1:]],
+                         [(None, None)])
+        # Not recorded: an update, a failure, no hash, too quick, nothing written.
+        before = len(torrent.load_stats())
+        self.run_install(update=True)
+        self.run_install(ok=False)
+        self.run_install(hash=False)
+        self.run_install(install_s=9.0)
+        self.run_install(written=0)
+        self.assertEqual(len(torrent.load_stats()), before)
+
+    def test_stats_never_fail_an_install(self):
+        from nexus import torrent
+        self.stats_setup()
+        (self.d / 'afile').write_text('')      # a folder that can't be made
+        with mock.patch.object(torrent, 'STATS', self.d / 'afile' / 'stats.json'):
+            rep = self.run_install()
+        self.assertTrue(rep.ok)
+        self.assertTrue(torrent.load_tracked()[self.H]['installed'])
+        self.assertEqual(torrent.load_stats(), [])
+
+    def test_stats_capped_and_atomic(self):
+        from nexus import torrent
+        self.stats_setup()
+        for i in range(55):
+            torrent.record_install({'at': i, 'drive': '1', 'written': 1, 'expected': 2,
+                                    'install_s': 20.0, 'verify_bytes': None, 'verify_s': None,
+                                    'finish_s': 1.0})
+        got = torrent.load_stats()
+        self.assertEqual([x['at'] for x in got], list(range(5, 55)))
+        self.assertEqual([f.name for f in self.d.glob('stats.json*')],
+                         ['stats.json', 'stats.json.lock'])        # no .tmp left behind
+        # Junk is no history; the next sample starts clean.
+        (self.d / 'stats.json').write_text('{nope')
+        self.assertEqual(torrent.load_stats(), [])
+        (self.d / 'stats.json').write_text(json.dumps(
+            {'v': 1, 'installs': [{'at': 1, 'install_s': 'x'}, 'junk', {'at': 2, 'drive': '1',
+             'written': 1, 'install_s': 20.0, 'finish_s': 1.0}]}))
+        self.assertEqual([x['at'] for x in torrent.load_stats()], [2])
+        torrent.record_install({'at': 3, 'drive': '1', 'written': 1, 'install_s': 20.0,
+                                'finish_s': 1.0})
+        self.assertEqual([x['at'] for x in torrent.load_stats()], [2, 3])
+        (self.d / 'stats.json').write_text('[]')
+        torrent.record_install({'at': 4, 'drive': '1', 'written': 1, 'install_s': 20.0,
+                                'finish_s': 1.0})
+        self.assertEqual([x['at'] for x in torrent.load_stats()], [4])
 
     def file(self):
         f = self.d / 'pipeline' / f'{self.H}.json'

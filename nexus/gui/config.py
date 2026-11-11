@@ -32,6 +32,7 @@ def load_config() -> dict:
            'heroic_proton': None, 'install_base': None,
            'scan_dir': None, 'scan_dirs': [], 'unattended': True, 'trash_repack': False,
            'runner': 'auto', 'repacks': True, 'report_relay': True, 'stats_count': None,
+           'queue_reorder': True,
            'error': None}
     try:
         data = _read_config_toml()
@@ -80,6 +81,8 @@ def load_config() -> dict:
         cfg['torrent_seed_ratio'] = float(tr['seed_ratio']) if 'seed_ratio' in tr else None
     except (TypeError, ValueError):
         cfg['torrent_seed_ratio'] = None
+    dl = data.get('downloads') if isinstance(data.get('downloads'), dict) else {}
+    cfg['queue_reorder'] = dl.get('queue_reorder', True) is not False   # config only, no Settings row
     rep = data.get('report') if isinstance(data.get('report'), dict) else {}
     cfg['report_relay'] = rep.get('relay', True) is not False
     # The anonymous install count: None until answered (nexus/stats.py).

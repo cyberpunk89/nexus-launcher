@@ -191,6 +191,30 @@ class Stages(unittest.TestCase):
         self.assertEqual(track(c)['verify'], 'done')
         self.assertAlmostEqual(c['overall'], 0.62 + 0.33 * 0.4)
 
+    def test_client_recheck_is_verify(self):
+        # A finished download the client is re-checking is the Verify stage.
+        c = card(row(state='checking', completed=True, done=True, percent=100.0, check=0.43))
+        self.assertEqual((c['stage'], c['state']), ('verify', 'verifying'))
+        self.assertEqual(track(c), {'download': 'done', 'verify': 'active',
+                                    'install': 'todo', 'finish': 'todo'})
+        self.assertEqual(c['track'][1]['frac'], 0.43)
+        self.assertEqual(c['step'], "Checking files")
+        self.assertIsNone(c['eta'])
+        # No figure from the client (qBittorrent): indeterminate.
+        c = card(row(state='checking', completed=True, done=True, percent=100.0, check=None))
+        self.assertEqual(c['state'], 'verifying')
+        self.assertIsNone(c['track'][1]['frac'])
+        # Never finished: still a Download, with the figure.
+        c = card(row(state='checking', completed=False, percent=60.0, check=0.43))
+        self.assertEqual((c['stage'], c['state'], c['check']), ('download', 'checking', 0.43))
+        # Gone / error / an install in progress keep their own states.
+        self.assertIsNone(card(row(state='checking', completed=True, gone=True)))
+        c = card(row(state='checking', completed=True, done=True, percent=100.0,
+                     error='disk full'))
+        self.assertEqual(c['state'], 'error')
+        c = card(row(state='checking', completed=True, done=True), prog())
+        self.assertEqual(c['state'], 'installing')
+
     def test_overall_capped_99(self):
         r = row(done=True, percent=100.0, install_started=iso(NOW - 100))
         c = card(r, prog(written=40 * GB))                       # more than the label said
@@ -204,6 +228,166 @@ class Stages(unittest.TestCase):
 
 def drive(id_, mount, free, roles):
     return {'id': id_, 'mount': mount, 'free': free, 'total': 1000 * GB, 'roles': roles}
+
+
+def sample(drive='1', **kw):
+    """One recorded install (pipeline-stats.json): 10 GB in 1000 s, 20 s to finish."""
+    x = {'at': NOW - 86400, 'drive': drive, 'written': 10 * GB, 'expected': 10 * GB,
+         'install_s': 1000.0, 'verify_bytes': None, 'verify_s': None, 'finish_s': 20.0}
+    x.update(kw)
+    return x
+
+
+class Eta(unittest.TestCase):
+    """One ETA across the stages that remain, once an install was recorded."""
+    INSTALL = 30 * GB / (10 * GB / 1000)            # 3000 s: 30 GB at 10 GB per 1000 s
+
+    def test_no_history_keeps_stage_eta(self):
+        for stats in (None, [], [{'junk': 1}]):
+            c = card(row(), stats=stats)
+            self.assertEqual((c['eta'], c['eta_est'], c['eta_all']), (600, False, False))
+        c = card(row())
+        self.assertFalse(c['eta_all'])
+
+    def test_one_install_covers_all_stages(self):
+        s = [sample()]
+        c = card(row(), stats=s)
+        self.assertEqual(c['eta'], 600 + self.INSTALL + 20)
+        self.assertTrue(c['eta_all'] and c['eta_est'])
+        self.assertEqual(c['eta_stage'], 600)
+        # Downloaded, waiting: the install and the finish.
+        c = card(row(done=True, percent=100.0, state='seeding', eta=None), stats=s)
+        self.assertEqual((c['state'], c['eta'], c['eta_all']), ('downloaded',
+                                                                self.INSTALL + 20, True))
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 5)), stats=s)
+        self.assertEqual((c['state'], c['eta']), ('waiting', self.INSTALL + 20))
+        # Installing: what is left at the live rate, then the finish.
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)), prog(), stats=s)
+        self.assertEqual(c['state'], 'installing')
+        self.assertEqual(c['eta'], int(18 * GB / (100 << 20)) + 20)
+        self.assertTrue(c['eta_all'])
+        # Installing with no rate yet: the learned one.
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                 prog(rate=None, written=10 * GB), stats=s)
+        self.assertEqual(c['eta'], 20 * GB / (10 * GB / 1000) + 20)
+        # Verifying: the rest of it at the learned check rate, install, finish.
+        v = [sample(verify_bytes=10 * GB, verify_s=100.0)]
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                 prog(stage='verify', step='Checking files', done=4 * GB, total=10 * GB,
+                      written=None, expected=None, rate=None), stats=v)
+        self.assertEqual(c['state'], 'verifying')
+        self.assertEqual(c['eta'], 60 + self.INSTALL + 20)
+        # ... and with no check history, the stage's own (none).
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                 prog(stage='verify', step='Checking files', done=4 * GB, total=10 * GB,
+                      written=None, expected=None, rate=None), stats=s)
+        self.assertEqual((c['eta'], c['eta_all']), (None, False))
+
+    def test_other_states_keep_the_stage_eta(self):
+        s = [sample()]
+        for kw in ({'state': 'paused'}, {'state': 'queued'},
+                   {'state': 'checking', 'completed': True, 'done': True, 'percent': 100.0},
+                   {'state': 'checking'}):
+            c = card(row(**kw), stats=s)
+            self.assertFalse(c['eta_all'], kw)
+            self.assertIsNone(c['eta'], kw)
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                 prog(update=True), stats=s)
+        self.assertEqual(c['state'], 'updating')
+        self.assertFalse(c['eta_all'])
+        c = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                 prog(stage='finish', step='Finishing', written=1, expected=2), stats=s)
+        self.assertFalse(c['eta_all'])
+
+    def test_junk_stats_are_no_history(self):
+        junk = [sample(written=0), sample(expected='big'), sample(install_s=0),
+                sample(verify_bytes='x'), sample(verify_s=True), sample(written=True)]
+        for j in junk:
+            c = card(row(), stats=[j])
+            self.assertEqual((c['eta'], c['eta_all']), (600, False), j)
+        self.assertIsNone(P.learned([sample(written=0)], '1'))
+        self.assertIsNone(P.eta({'state': 'downloading', 'original_bytes': GB, 'eta_stage': 5,
+                                 'drives': {}}, [{'written': 0, 'install_s': 5}]))
+        import tempfile
+        from unittest import mock
+        from nexus import torrent
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, 's.json')
+            import json
+            f.write_text(json.dumps({'v': 1, 'installs': junk}))
+            with mock.patch.object(torrent, 'STATS', f):
+                self.assertEqual(torrent.load_stats(), [])
+                c = card(row(), stats=torrent.load_stats())
+        self.assertEqual((c['eta'], c['eta_all']), (600, False))
+
+    def test_unknown_original_size_keeps_stage_eta(self):
+        c = card(row(original_bytes=None), stats=[sample()])
+        self.assertEqual((c['eta'], c['eta_all']), (600, False))
+        c = card(row(), stats=[sample(expected=None)])           # ratio 1: still fine
+        self.assertTrue(c['eta_all'])
+
+    def test_drive_median_and_fallback(self):
+        # Twelve installs on drive A; only the last ten count. Their medians.
+        a = [sample('A', at=i, written=GB, expected=GB, install_s=1.0 + 99 * (i < 2))
+             for i in range(12)]
+        b = [sample('B', at=100, written=10 * GB, expected=10 * GB, install_s=10000.0,
+                    finish_s=500.0)]
+        learned = P.learned(a + b, 'A')
+        self.assertEqual(learned['n'], 10)
+        self.assertEqual(learned['rate'], GB / 1.0)
+        self.assertEqual(learned['finish_s'], 20.0)
+        self.assertEqual(P.learned(a + b, 'B')['rate'], GB / 1000)
+        self.assertEqual(P.learned(a + b, 'B')['finish_s'], 500.0)
+        # A drive with no installs of its own: every drive's last ten.
+        fb = P.learned(a + b, 'Z')
+        self.assertEqual(fb['n'], 10)
+        self.assertEqual(fb['rate'], GB / 1.0)
+        self.assertIsNone(P.learned([], 'A'))
+        # ratio: written against the label
+        r = P.learned([sample(written=12 * GB, expected=10 * GB)], '1')
+        self.assertAlmostEqual(r['ratio'], 1.2)
+        # The card picks its install drive's history.
+        ids = {'install': 'A', 'download': {}}
+        c = card(row(done=True, percent=100.0, state='seeding', eta=None), stats=a + b,
+                 drive_ids=ids)
+        self.assertEqual(c['eta'], 30 * GB / (GB / 1.0) + 20)
+        c = card(row(done=True, percent=100.0, state='seeding', eta=None), stats=a + b,
+                 drive_ids={'install': 'B', 'download': {}})
+        self.assertEqual(c['eta'], 30 * GB / (GB / 1000) + 500)
+
+
+class Spark(unittest.TestCase):
+    """The sparkline's samples: the download rate while downloading, the
+    disk rate while installing; the last 120 s."""
+    EMPTY = {'kind': None, 'pts': []}
+
+    def test_spark_push_window(self):
+        dl = card(row(rate=5 << 20))
+        sp = P.spark_push(self.EMPTY, dl, 1000.0)
+        self.assertEqual((sp['kind'], sp['pts']), ('download', [(1000.0, 5 << 20)]))
+        for t in (1002.0, 1004.0):
+            sp = P.spark_push(sp, dl, t)
+        self.assertEqual([p[0] for p in sp['pts']], [1000.0, 1002.0, 1004.0])
+        # Only the last 120 s stay; the input is never changed.
+        before = sp
+        sp = P.spark_push(sp, dl, 1121.0)
+        self.assertEqual([p[0] for p in sp['pts']], [1002.0, 1004.0, 1121.0])
+        self.assertEqual(len(before['pts']), 3)
+        # The same moment twice is one sample.
+        self.assertEqual(P.spark_push(sp, dl, 1121.2), sp)
+        # Installing: the disk rate, a new series (the download's is dropped).
+        inst = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                    prog(rate=90 << 20))
+        sp2 = P.spark_push(sp, inst, 1123.0)
+        self.assertEqual((sp2['kind'], sp2['pts']), ('disk', [(1123.0, 90 << 20)]))
+        # No rate yet: nothing to plot. Paused, queued, ready: no series.
+        none = card(row(done=True, percent=100.0, install_started=iso(NOW - 300)),
+                    prog(rate=None))
+        self.assertEqual(P.spark_push(self.EMPTY, none, 1.0), self.EMPTY)
+        for kw in ({'state': 'paused'}, {'state': 'queued'}):
+            self.assertEqual(P.spark_push(sp, card(row(**kw)), 1130.0), self.EMPTY)
+        # A client that reports no rate counts as 0 B/s while downloading.
+        self.assertEqual(P.spark_push(self.EMPTY, card(row(rate=0)), 5.0)['pts'], [(5.0, 0)])
 
 
 class Forecast(unittest.TestCase):
@@ -251,6 +435,22 @@ class Sections(unittest.TestCase):
 
     def keys(self, cards):
         return [c['hash'] for c in cards]
+
+    def test_progress_follows_client_queue(self):
+        def r(h, queue, **kw):
+            return row(hash=h * 40, queue=queue, **kw)
+        rows = [r('c', 2), r('x', None), r('a', 0), r('b', 1),
+                r('i', 5, done=True, percent=100.0, install_started=iso(NOW - 60))]
+        s = self.split(rows)
+        # The install-stage card first (its download is over), then the
+        # downloads in the client's order; unknown positions last.
+        self.assertEqual(self.keys(s['progress']), ['i' * 40, 'a' * 40, 'b' * 40, 'c' * 40,
+                                                    'x' * 40])
+        self.assertEqual(s['progress'][1]['queue'], 0)
+        self.assertIsNone(s['progress'][4]['queue'])
+        # Stable when positions tie or are missing.
+        s = self.split([r('b', None), r('a', None)])
+        self.assertEqual(self.keys(s['progress']), ['b' * 40, 'a' * 40])
 
     def test_ready_moves_to_done_when_played_since(self):
         s = self.split([self.going, self.ready])

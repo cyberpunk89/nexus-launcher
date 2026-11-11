@@ -396,6 +396,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.downloads.card_action.connect(self._pipeline_action)
         self.downloads.toast.connect(self.toast)
         self.downloads.control.connect(self._torrent_control)
+        self.downloads.queue_move.connect(self._torrent_queue)
+        self._apply_downloads_config()
         self.downloads.add.connect(self._add_torrent)
         self.downloads.row_action.connect(self._download_action)
         self.downloads.open_settings.connect(
@@ -868,6 +870,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _settings_saved(self, proton_changed):
         self.config = load_config()
+        self._apply_downloads_config()
         self._sync_stats_ask()                 # answered in Settings: Home stops asking
         self.nav[self.NEWS].setVisible(self.config.get('news', True))
         self.nav[self.DEALS].setVisible(self.config.get('gamedb_enabled', False))

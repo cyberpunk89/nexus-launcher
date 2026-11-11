@@ -446,6 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help='With --torrents: every torrent in the client, not just Nexus\'s')
     g5.add_argument('--torrent-pause', nargs='+', metavar='HASH', dest='torrent_pause',
                     help='Pause torrents in your client')
+    g5.add_argument('--torrent-queue', nargs=2, metavar=('WHERE', 'HASH'),
+                    dest='torrent_queue',
+                    help="Internal (used by the app): move a download in your client's queue, "
+                         "WHERE is top, up, down or bottom")
     g5.add_argument('--torrent-resume', nargs='+', metavar='HASH', dest='torrent_resume',
                     help='Resume torrents in your client')
     g5.add_argument('--torrent-remove', nargs='+', metavar='HASH', dest='torrent_remove',
@@ -953,7 +957,7 @@ COMMANDS = (
     ('repack_reject', lambda a, base: cmd_repack_reject(a.repack_reject)),
     (lambda a: a.torrent_add or a.torrents or a.torrent_done or
                 a.torrent_forget or a.torrent_clear_history or a.torrent_pause or a.torrent_resume or
-                a.torrent_remove or a.torrent_test or a.torrent_detect,
+                a.torrent_remove or a.torrent_queue or a.torrent_test or a.torrent_detect,
      lambda a, base: cmd_torrent(a, base)),
     ('check_repack', lambda a, base: cmd_check_repack(a.check_repack, a.json, a.clamav)),
     ('history', lambda a, base: cmd_history(a.json)),

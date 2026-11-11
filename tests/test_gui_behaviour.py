@@ -520,6 +520,47 @@ class Behaviour(unittest.TestCase):
         self.assertFalse(w._filter_dirty)
         w.go(w.HOME)
 
+    def test_queue_reorder_config(self):
+        from nexus.gui.common import CONFIG_PATH
+        old = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else None
+        self.addCleanup(lambda: CONFIG_PATH.write_text(old) if old is not None
+                        else CONFIG_PATH.unlink(missing_ok=True))
+        w = self.win
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        for text, want in (("", True), ("[torrent]\nclient = 'transmission'\n", True),
+                           ("[downloads]\nqueue_reorder = true\n", True),
+                           ("[downloads]\nqueue_reorder = false\n", False),
+                           ("[downloads]\nqueue_reorder = 'no'\n", True),
+                           ("downloads = 3\n", True)):
+            CONFIG_PATH.write_text(text)
+            with self.subTest(text=text):
+                self.assertIs(nx.load_config()['queue_reorder'], want)
+                w.config = nx.load_config()
+                w._apply_downloads_config()
+                self.assertIs(w.downloads.reorder, want)
+        # A config read without the key (an old saved one) means on.
+        w.config = {k: v for k, v in nx.load_config().items() if k != 'queue_reorder'}
+        w._apply_downloads_config()
+        self.assertTrue(w.downloads.reorder)
+
+    def test_queue_move_goes_to_the_cli_then_polls(self):
+        w = self.win
+        sent, polls = [], []
+        set_gui('cli_json', lambda args, done, *a, **k: sent.append((args, done)))
+        self.addCleanup(set_gui, 'cli_json', lambda *a, **k: None)
+        w._poll_torrents = lambda *a, **k: polls.append(1)
+        self.addCleanup(lambda: w.__dict__.pop('_poll_torrents', None))
+        h = 'a' * 40
+        w.downloads.queue_move.emit('top', h)
+        args, done = sent[-1]
+        self.assertEqual(args, ['--torrent-queue', 'top', h, '--json'])
+        done({'ok': True}, None)
+        self.assertEqual(polls, [1])
+        self.assertEqual(self.toasts, [])
+        done({'error': {'kind': 'torrent', 'message': 'queueing is off in your client'}}, None)
+        self.assertIn('queueing is off', self.toasts[-1][0])
+        self.assertEqual(len(polls), 2)
+
     def test_back_and_forward(self):
         w = self.win
         w.go(w.HOME)

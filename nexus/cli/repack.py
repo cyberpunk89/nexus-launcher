@@ -15,8 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .common import (atomic_write, CANCEL_HOOKS, emit_event, existing_ancestor, log,
-    make_slug)
+from .common import (atomic_write, CANCEL_HOOKS, drive_of, emit_event, existing_ancestor,
+    log, make_slug)
 from nexus import platform
 from nexus.inno import inno_header
 
@@ -370,6 +370,7 @@ class InstallProgress(threading.Thread):
         self.interval, self.on_tick, self._clock, self.backoff = interval, on_tick, clock, backoff
         self.walk_s = 0.0
         self.written = self.rate = None
+        self.sampled_at = None              # `clock` when the last walk ended
         self._last, self._sample = -1, None
         self._stop_evt = threading.Event()
 
@@ -397,7 +398,7 @@ class InstallProgress(threading.Thread):
         self.walk_s = max(0.0, t1 - t0)
         if self._sample and t1 > self._sample[0] and n >= self._sample[1]:
             self.rate = int((n - self._sample[1]) / (t1 - self._sample[0]))
-        self._sample, self.written = (t1, n), n
+        self._sample, self.written, self.sampled_at = (t1, n), n, t1
         if n != self._last:
             self._last = n
             emit_event('progress', {'written': n, **({'expected': self.expected}
@@ -447,6 +448,9 @@ class InstallReport:
         self._begun = self._done = False
         self._before = None                 # install_started as it was before begin()
         self._clock, self._verify_at = time.monotonic, None
+        self._verify_lock = threading.Lock()
+        self._verify_span = [None, None]    # the first and last verify() time
+        self._finish_at = self._install_at = self._drive = None
         now = int(time.time())
         self.data = {'v': 1, 'hash': self.hash, 'slug': None, 'stage': None, 'step': '',
                      'written': None, 'expected': None, 'rate': None, 'done': None,
@@ -541,15 +545,20 @@ class InstallReport:
         with self._lock:
             self.data.update(stage=stage, step=step,
                              **{k: v for k, v in extra.items() if k in ('done', 'total')})
+            if stage == 'finish' and self._finish_at is None:
+                self._finish_at = self._clock()
         emit_event('stage', {'stage': stage, 'step': step, **extra})
         self._write()
 
     def verify(self, done: int, total: int) -> None:
         """verify_bins' bytes: a stage event at most about once a second."""
-        now = self._clock()
-        if self._verify_at is not None and done < total and now - self._verify_at < 1.0:
-            return
-        self._verify_at = now
+        with self._verify_lock:                 # called from the hashing threads
+            now = self._clock()
+            self._verify_span[0] = now if self._verify_span[0] is None else self._verify_span[0]
+            self._verify_span[1] = now
+            if self._verify_at is not None and done < total and now - self._verify_at < 1.0:
+                return
+            self._verify_at = now
         self.stage('verify', "Checking files", done=done, total=total)
 
     @contextlib.contextmanager
@@ -565,7 +574,11 @@ class InstallReport:
             yield self
             return
         self.walker = InstallProgress(target, interval=self.interval, on_tick=self._tick,
-                                      expected=expected, backoff=bool(self.hash))
+                                      expected=expected, backoff=bool(self.hash),
+                                      clock=self._clock)
+        self._install_at = self._clock()
+        d = drive_of(existing_ancestor(target))
+        self._drive = d and d['id']
         self.walker.start()
         try:
             yield self
@@ -573,8 +586,35 @@ class InstallReport:
             self.walker.stop()
             self.walker.join(timeout=1)
 
+    MEASURED_S = 10.0           # an install quicker than this says nothing about the rate
+
+    def _record(self) -> None:
+        """Remember how this install went (torrent.record_install) when it
+        was measured: a download's, not an update, long enough to time."""
+        w = self.walker
+        if (not self.hash or self.data.get('update') or w is None or not w.written
+                or w.sampled_at is None or self._install_at is None):
+            return
+        install_s = w.sampled_at - self._install_at
+        if install_s < self.MEASURED_S:
+            return
+        from nexus import torrent as T
+        first, last = self._verify_span
+        verified = first is not None and self.data.get('total') is not None
+        T.record_install({
+            'at': int(time.time()), 'drive': self._drive, 'written': int(w.written),
+            'expected': self.data.get('expected'), 'install_s': round(install_s, 1),
+            'verify_bytes': int(self.data['total']) if verified else None,
+            'verify_s': round(last - first, 1) if verified else None,
+            'finish_s': round(max(0.0, self._clock() - self._finish_at), 1)
+            if self._finish_at is not None else 0.0})
+
     def installed(self, slug: str) -> None:
         self.ok = True
+        try:
+            self._record()
+        except (OSError, ValueError, TypeError):
+            pass                            # statistics never fail an install
         if self.hash:
             _torrent_mark(self.hash, installed=True, slug=slug, installed_at=_now_iso())
 
@@ -619,15 +659,21 @@ def parse_md5_file(md5_path: Path) -> dict[str, str]:
     return hashes
 
 
-def compute_md5(path: Path) -> str:
+_MD5_CHUNK = 4 * 1024 * 1024
+
+
+def compute_md5(path: Path, on_chunk=None) -> str:
+    """MD5 of a file; `on_chunk(n)` hears each chunk's size as it is hashed."""
     h = hashlib.md5()
     with open(path, 'rb') as f:
-        while chunk := f.read(4 * 1024 * 1024):
+        while chunk := f.read(_MD5_CHUNK):
             h.update(chunk)
+            if on_chunk:
+                on_chunk(len(chunk))
     return h.hexdigest()
 
 
-def _parallel_md5(paths: list[Path]):
+def _parallel_md5(paths: list[Path], on_chunk=None):
     """MD5 every path in `paths`, yielding hex digests in the same order as
     `paths` (not completion order). hashlib releases the GIL, so a thread pool
     genuinely parallelises this — repacks and installed games are tens of GB
@@ -636,12 +682,13 @@ def _parallel_md5(paths: list[Path]):
     workers = max(1, min(6, os.cpu_count() or 4, len(paths)))
     from concurrent.futures import ThreadPoolExecutor   # lazy: ~10 ms import
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        yield from pool.map(compute_md5, paths)
+        yield from pool.map(lambda p: compute_md5(p, on_chunk), paths)
 
 
 def verify_bins(repack_dir: Path, on_bytes=None) -> bool:
     """MD5 every file the repack's MD5 list names. `on_bytes(done, total)`
-    hears the bytes checked so far after each file (the pipeline's Verify)."""
+    hears the bytes checked so far after each chunk of each file (the
+    pipeline's Verify; it can come from any hashing thread, one at a time)."""
     md5_dir = repack_dir / 'MD5'
     md5_files = list(md5_dir.glob('*.md5')) if md5_dir.exists() else []
     if not md5_files:
@@ -675,10 +722,14 @@ def verify_bins(repack_dir: Path, on_bytes=None) -> bool:
 
     all_ok = True
     filepaths = [fp for _, fp, _ in todo]
+    total, seen, lock = sum(sizes), [0], threading.Lock()
+
+    def chunk(n: int) -> None:
+        with lock:                           # hashing threads: one report at a time
+            seen[0] += n
+            on_bytes(min(seen[0], total), total)
     for done, ((filename, _, expected_hash), actual) in enumerate(
-            zip(todo, _parallel_md5(filepaths)), 1):
-        if on_bytes:
-            on_bytes(sum(sizes[:done]), sum(sizes))
+            zip(todo, _parallel_md5(filepaths, chunk if on_bytes else None)), 1):
         if actual == expected_hash:
             log.print(f"  [{done}/{len(todo)}] {filename}: OK")
         else:

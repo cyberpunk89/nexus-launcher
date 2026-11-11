@@ -181,6 +181,7 @@ class Achievements(unittest.TestCase):
 class FakeTransmission(BaseHTTPRequestHandler):
     torrents = {}
     removed = []
+    moves = []
     posts = 0
 
     def log_message(self, *a):
@@ -215,6 +216,9 @@ class FakeTransmission(BaseHTTPRequestHandler):
             self.removed.append((args['ids'], args['delete-local-data']))
             for i in args['ids']:
                 self.torrents.pop(i, None)
+            out = {}
+        elif req['method'].startswith('queue-move-'):
+            self.moves.append((req['method'][len('queue-move-'):], args['ids']))
             out = {}
         elif req['method'] == 'session-get':
             out = {'version': '4.1.3', 'download-dir': '/dl', 'config-dir': '/cfg/daemon'}
@@ -533,6 +537,21 @@ class Torrents(unittest.TestCase):
                 cli.cmd_torrent(args, base)
         return out.getvalue(), (a, b, c, other), dl
 
+    def test_poll_makes_one_eta_from_recorded_installs(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.object(torrent, 'STATS', d / 'stats.json'):
+            out, (a, *_), _dl = self.poll('--json')
+            self.assertFalse(next(x for x in json.loads(out)['pipeline']
+                                  if x['hash'] == a)['eta_all'])
+            torrent.record_install({'at': 1, 'drive': None, 'written': 10 << 30,
+                                    'expected': 10 << 30, 'install_s': 1000.0,
+                                    'verify_bytes': None, 'verify_s': None, 'finish_s': 20.0})
+            out, (a, *_), _dl = self.poll('--json')
+        c = next(x for x in json.loads(out)['pipeline'] if x['hash'] == a)
+        self.assertTrue(c['eta_all'])
+        self.assertEqual(c['eta'], 120 + 3000 + 20)          # 30 GB at 10 GB per 1000 s
+
     def test_all_json_has_pipeline_and_drives(self):
         out, (a, b, c, other), dl = self.poll('--json')
         data = json.loads(out)
@@ -757,3 +776,121 @@ class Attract(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class QueueMove(unittest.TestCase):
+    """Reordering a download in the client's own queue."""
+    H = 'a' * 40
+    QB = {'client': 'qbittorrent', 'url': 'http://127.0.0.1:1', 'username': '',
+          'password': '', 'download_dir': None, 'seed_ratio': None}
+
+    def test_transmission_queue_move(self):
+        FakeTransmission.torrents, FakeTransmission.moves = {}, []
+        srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        s = {'client': 'transmission', 'url': f'http://127.0.0.1:{srv.server_port}',
+             'username': '', 'password': '', 'download_dir': None, 'seed_ratio': None}
+        for where in ('top', 'up', 'down', 'bottom'):
+            torrent.queue_move(self.H.upper(), where, s=s)
+        self.assertEqual(FakeTransmission.moves, [(w, [self.H]) for w in
+                                                  ('top', 'up', 'down', 'bottom')])
+        for bad in ('sideways', '', None):
+            with self.assertRaises(torrent.TorrentError):
+                torrent.queue_move(self.H, bad, s=s)
+        with self.assertRaises(torrent.TorrentError):
+            torrent.queue_move('nothex', 'top', s=s)
+        self.assertEqual(len(FakeTransmission.moves), 4)
+
+    def test_qbittorrent_queue_move_and_409(self):
+        sent = []
+
+        def req(self, path, form=None, **k):
+            sent.append((path, form))
+            return 200, {}, b''
+        with mock.patch.object(torrent.QBittorrent, '_req', req):
+            for where, path in (('top', '/torrents/topPrio'), ('up', '/torrents/increasePrio'),
+                                ('down', '/torrents/decreasePrio'),
+                                ('bottom', '/torrents/bottomPrio')):
+                torrent.queue_move(self.H, where, s=self.QB)
+                self.assertEqual(sent[-1], (path, {'hashes': self.H}))
+        with mock.patch.object(torrent.QBittorrent, '_req', lambda *a, **k: (409, {}, b'')):
+            with self.assertRaises(torrent.TorrentError) as cm:
+                torrent.queue_move(self.H, 'top', s=self.QB)
+            self.assertIn('Torrent Queueing', str(cm.exception))
+        calls = []
+
+        def other(self, path, form=None, **k):
+            calls.append(path)
+            return 500, {}, b''
+        with mock.patch.object(torrent.QBittorrent, '_req', other):
+            with self.assertRaises(torrent.TorrentError):
+                torrent.queue_move(self.H, 'up', s=self.QB)
+        self.assertEqual(calls, ['/torrents/increasePrio'])         # never retried
+
+
+class QueueFields(unittest.TestCase):
+    """The rows carry the queue position, the recheck fraction and whether
+    the download ever finished."""
+    T = {'hashString': 'A' * 40, 'name': 'G', 'percentDone': 1.0, 'status': 2}
+
+    def tr(self, **kw):
+        return torrent.Transmission({'url': 'http://127.0.0.1:1', 'username': ''})._row(
+            {**self.T, **kw})
+
+    def test_transmission_recheck_and_queue_fields(self):
+        self.assertIn('recheckProgress', torrent.Transmission.FIELDS)
+        self.assertIn('queuePosition', torrent.Transmission.FIELDS)
+        r = self.tr(recheckProgress=0.43, queuePosition=2, doneDate=1700000000)
+        self.assertEqual((r['check'], r['queue'], r['completed']), (0.43, 2, True))
+        # JSON-RPC 2.0 names (Transmission 4.1) are read as a fallback
+        r = self.tr(recheck_progress=0.5, queue_position=0, done_date=5)
+        self.assertEqual((r['check'], r['queue'], r['completed']), (0.5, 0, True))
+        # only while checking; never finished; no queue position
+        r = self.tr(status=4, recheckProgress=0.9, doneDate=0)
+        self.assertEqual((r['check'], r['queue'], r['completed']), (None, None, False))
+        # checking, but the client gave no figure
+        self.assertIsNone(self.tr()['check'])
+        self.assertEqual(self.tr(recheckProgress=7)['check'], 1.0)
+
+    def test_qbittorrent_queue_and_checking_fields(self):
+        qb = torrent.QBittorrent({'url': 'http://127.0.0.1:1', 'username': ''})
+        base = {'hash': 'A' * 40, 'name': 'G', 'progress': 1.0, 'state': 'checkingUP'}
+        r = qb._row({**base, 'priority': 3, 'completion_on': 1700000000})
+        self.assertEqual((r['queue'], r['check'], r['completed'], r['state']),
+                         (2, None, True, 'checking'))
+        r = qb._row({**base, 'state': 'downloading', 'priority': 0, 'completion_on': -1})
+        self.assertEqual((r['queue'], r['completed']), (None, False))
+        r = qb._row({**base, 'priority': -1, 'completion_on': 4294967295})
+        self.assertEqual((r['queue'], r['completed']), (None, False))
+        r = qb._row(base)
+        self.assertEqual((r['queue'], r['completed']), (None, False))
+
+
+class CliQueue(unittest.TestCase):
+    def test_cli_torrent_queue(self):
+        from nexus.cli import entry
+        h = 'a' * 40
+        FakeTransmission.torrents, FakeTransmission.moves = {}, []
+        srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        s = {'client': 'transmission', 'url': f'http://127.0.0.1:{srv.server_port}',
+             'username': '', 'password': '', 'download_dir': None, 'seed_ratio': None}
+        with mock.patch.object(torrent, 'settings', return_value=s):
+            args = entry.build_parser().parse_args(['--torrent-queue', 'top', h, '--json'])
+            self.assertEqual(args.torrent_queue, ['top', h])
+            out = io.StringIO()
+            with mock.patch('sys.stdout', out):
+                cli.cmd_torrent(args, Path('/nowhere'))
+            self.assertEqual(json.loads(out.getvalue()), {'ok': True})
+            self.assertEqual(FakeTransmission.moves, [('top', [h])])
+            bad = entry.build_parser().parse_args(['--torrent-queue', 'sideways', h, '--json'])
+            out = io.StringIO()
+            with mock.patch('sys.stdout', out), mock.patch('sys.stderr', io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                cli.cmd_torrent(bad, Path('/nowhere'))
+            self.assertIn('error', json.loads(out.getvalue()))
+            self.assertEqual(len(FakeTransmission.moves), 1)

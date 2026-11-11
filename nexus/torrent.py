@@ -196,12 +196,21 @@ class Transmission:
 
     FIELDS = ['hashString', 'name', 'percentDone', 'eta', 'rateDownload', 'rateUpload',
               'status', 'downloadDir', 'error', 'errorString', 'sizeWhenDone',
-              'uploadRatio', 'addedDate', 'doneDate']
+              'uploadRatio', 'addedDate', 'doneDate', 'recheckProgress', 'queuePosition']
     STATES = {0: 'paused', 1: 'queued', 2: 'checking', 3: 'queued', 4: 'downloading',
               5: 'queued', 6: 'seeding'}
 
+    @staticmethod
+    def _pick(t: dict, legacy: str, snake: str):
+        # Transmission 4.1's JSON-RPC 2.0 uses snake_case; legacy requests are
+        # answered in the old names, so read those first.
+        return t.get(legacy) if t.get(legacy) is not None else t.get(snake)
+
     def _row(self, t: dict) -> dict:
         pct = float(t.get('percentDone') or 0)
+        check = self._pick(t, 'recheckProgress', 'recheck_progress')
+        queue = self._pick(t, 'queuePosition', 'queue_position')
+        done_at = self._pick(t, 'doneDate', 'done_date')
         return {'hash': t['hashString'].lower(), 'name': t.get('name') or '',
                 'percent': round(pct * 100, 1), 'done': pct >= 1.0,
                 'eta': t.get('eta') if (t.get('eta') or -1) >= 0 else None,
@@ -211,6 +220,10 @@ class Transmission:
                 'size': t.get('sizeWhenDone'), 'dir': t.get('downloadDir'),
                 'ratio': max(0.0, round(float(t.get('uploadRatio') or 0), 2)),
                 'added': t.get('addedDate') or None,
+                'queue': queue if isinstance(queue, int) and queue >= 0 else None,
+                'check': (min(1.0, max(0.0, float(check)))
+                          if t.get('status') == 2 and isinstance(check, (int, float)) else None),
+                'completed': isinstance(done_at, (int, float)) and done_at > 0,
                 'error': t.get('errorString') if t.get('error') else None}
 
     def list(self, hashes: list[str]) -> list[dict]:
@@ -228,6 +241,9 @@ class Transmission:
 
     def stop(self, hashes: list[str]) -> None:
         self.call('torrent-stop', {'ids': hashes})
+
+    def queue_move(self, hashes: list[str], where: str) -> None:
+        self.call('queue-move-' + where, {'ids': hashes})
 
     def remove(self, hashes: list[str], delete_data: bool = False) -> None:
         self.call('torrent-remove', {'ids': hashes, 'delete-local-data': bool(delete_data)})
@@ -304,6 +320,7 @@ class QBittorrent:
         pct = float(t.get('progress') or 0)
         state = str(t.get('state') or '')
         paused = 'paused' in state.lower() or 'stopped' in state.lower()
+        prio, done_at = int(t.get('priority') or 0), int(t.get('completion_on') or 0)
         return {'hash': t['hash'].lower(), 'name': t.get('name') or '',
                 'percent': round(pct * 100, 1), 'done': pct >= 1.0,
                 'eta': t.get('eta') if 0 <= (t.get('eta') or -1) < 8640000 else None,
@@ -312,6 +329,8 @@ class QBittorrent:
                 'size': t.get('size'), 'dir': t.get('save_path'),
                 'ratio': max(0.0, round(float(t.get('ratio') or 0), 2)),
                 'added': t.get('added_on') or None,
+                'queue': prio - 1 if prio > 0 else None, 'check': None,
+                'completed': 0 < done_at < 4294967295,
                 'error': 'error' if state in ('error', 'missingFiles') else None}
 
     def _info(self, query: str = '') -> list[dict]:
@@ -343,6 +362,18 @@ class QBittorrent:
 
     def stop(self, hashes: list[str]) -> None:
         self._act(('/torrents/stop', '/torrents/pause'), {'hashes': '|'.join(hashes)})
+
+    QUEUE_PATHS = {'top': '/torrents/topPrio', 'up': '/torrents/increasePrio',
+                   'down': '/torrents/decreasePrio', 'bottom': '/torrents/bottomPrio'}
+
+    def queue_move(self, hashes: list[str], where: str) -> None:
+        self.login()
+        status, _h, _raw = self._req(self.QUEUE_PATHS[where], {'hashes': '|'.join(hashes)})
+        if status == 409:               # qBittorrent answers 409 while queueing is off
+            raise TorrentError("queueing is off in your client "
+                               "(qBittorrent: Options › BitTorrent › Torrent Queueing)")
+        if status != 200:
+            raise TorrentError(f"qBittorrent answered HTTP {status}")
 
     def remove(self, hashes: list[str], delete_data: bool = False) -> None:
         self._act(('/torrents/delete',), {'hashes': '|'.join(hashes),
@@ -456,6 +487,53 @@ def prune_progress(now: float | None = None) -> None:
                 pass
 
 
+STATS = DATA_DIR / 'pipeline-stats.json'
+STATS_KEEP = 50             # install samples remembered
+
+
+def _sample_ok(x) -> bool:
+    if not isinstance(x, dict):
+        return False
+
+    def num(k, positive=False, none=False):
+        v = x.get(k)
+        if v is None:
+            return none
+        return (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and (v > 0 if positive else v >= 0))
+    return (num('at') and num('written', True) and num('install_s', True) and num('finish_s')
+            and num('expected', none=True) and num('verify_bytes', none=True)
+            and num('verify_s', none=True) and isinstance(x.get('drive'), (str, type(None))))
+
+
+def load_stats() -> list[dict]:
+    """The remembered installs (see record_install), oldest first. Read
+    only: it runs on every poll. A missing or unreadable file, or a junk
+    entry, is no history."""
+    try:
+        data = json.loads(STATS.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    rows = data.get('installs') if isinstance(data, dict) else None
+    return [x for x in rows if _sample_ok(x)][-STATS_KEEP:] if isinstance(rows, list) else []
+
+
+def record_install(sample: dict) -> None:
+    """Remember one finished install ({at, drive, written, expected,
+    install_s, verify_bytes, verify_s, finish_s}) in DATA_DIR/pipeline-stats.json,
+    the last STATS_KEEP of them: how long an install takes per byte, which
+    the pipeline's one ETA is made from. Under a lock and replaced
+    atomically, like edit_tracked. Never fails the install: an OSError is
+    swallowed."""
+    try:
+        STATS.parent.mkdir(parents=True, exist_ok=True)
+        with platform.file_lock(STATS.with_name(STATS.name + '.lock')):
+            rows = load_stats() + [sample]
+            net.write_atomic(STATS, json.dumps({'v': 1, 'installs': rows[-STATS_KEEP:]}))
+    except OSError:
+        pass
+
+
 def claim_install(h: str) -> bool:
     """Record that a finished download's install is starting — True only for
     the first caller. The GUI and the background agent both follow the
@@ -567,6 +645,17 @@ def control(action: str, hashes: list[str], delete_data: bool = False,
                 tracked.pop(h, None)
     else:
         raise TorrentError(f"unknown action {action!r}")
+
+
+QUEUE_MOVES = ('top', 'up', 'down', 'bottom')
+
+
+def queue_move(h: str, where: str, s: dict | None = None) -> None:
+    """Move torrent `h` in the client's own queue: to the 'top', 'up' or
+    'down' one place, or to the 'bottom'."""
+    if where not in QUEUE_MOVES:
+        raise TorrentError(f"unknown queue move {where!r}")
+    client(s).queue_move([check_hash(h)], where)
 
 
 TRANSMISSIONS = {'transmission-daemon': 'daemon', 'transmission-qt': 'qt',

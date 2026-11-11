@@ -84,6 +84,14 @@ def _num(v) -> int | None:
         return None
 
 
+def _check(r: dict) -> float | None:
+    """The client's recheck fraction, None when it gives none."""
+    try:
+        return max(0.0, min(1.0, float(r['check'])))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _track(stage: str, *, verified: bool, frac, failed: bool = False,
            ready: bool = False, pending: bool = False) -> list[dict]:
     """The four segments. A Verify that didn't run (Nexus's MD5 check is
@@ -119,12 +127,95 @@ def overall(card: dict) -> float | None:
     return round(min(CAP, total), 4)
 
 
-def cards(rows: list, progress: dict, now: float, alive, drive_ids: dict | None = None
-          ) -> list[dict]:
+LEARN_N = 10                # installs the ETA is learned from, per drive
+
+
+def _median(xs: list):
+    xs = sorted(xs)
+    n = len(xs)
+    return None if not n else xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def learned(stats, drive) -> dict | None:
+    """What the recorded installs (torrent.load_stats) say about this machine,
+    from the last LEARN_N on `drive`, or on any drive when it has none:
+    {n, rate (bytes written per second), ratio (written against the page's
+    Original Size), finish_s, verify_rate (bytes per second, None when no
+    install was checked)}. None without history."""
+    def num(x, k, none=False):
+        v = x.get(k)
+        return none if v is None else (isinstance(v, (int, float)) and not isinstance(v, bool)
+                                       and v > 0)
+    stats = [x for x in stats or () if isinstance(x, dict) and num(x, 'written')
+             and num(x, 'install_s') and num(x, 'expected', True)
+             and num(x, 'verify_bytes', True) and num(x, 'verify_s', True)
+             and isinstance(x.get('finish_s') or 0, (int, float))]
+    mine = [x for x in stats if drive is not None and x.get('drive') == drive]
+    use = (mine or stats)[-LEARN_N:]
+    if not use:
+        return None
+    rates = [x['written'] / x['install_s'] for x in use
+             if x.get('install_s') and x.get('written')]
+    if not rates or not _median(rates):
+        return None
+    ratios = [x['written'] / x['expected'] for x in use if x.get('expected') and x.get('written')]
+    checks = [x['verify_bytes'] / x['verify_s'] for x in use
+              if x.get('verify_bytes') and x.get('verify_s')]
+    return {'n': len(use), 'rate': _median(rates), 'ratio': _median(ratios) or 1.0,
+            'finish_s': _median([x.get('finish_s') or 0 for x in use]),
+            'verify_rate': _median(checks)}
+
+
+def eta(card: dict, stats) -> int | None:
+    """Seconds until Ready across every stage still ahead, from one recorded
+    install onwards: the download's ETA, the rest of a running Verify, the
+    install (the page's Original Size at the learned rate, or what is left
+    at the live rate while it runs) and the finish. A Verify still to come is
+    not counted (Nexus's MD5 check is opt-in). None when any part is
+    unknown: no history, no Original Size, a download queued, paused or
+    checked by the client, an update, a finish already running. The caller
+    then keeps the stage's own ETA."""
+    state, inst = card.get('state'), card.get('install') or {}
+    drive = (card.get('drives') or {}).get('install')
+    ln = learned(stats, drive)
+    if ln is None or state not in ('downloading', 'verifying', 'downloaded', 'waiting',
+                                   'installing'):
+        return None
+    orig = card.get('original_bytes')
+    rate = ln['rate']
+    if not rate:
+        return None
+    if state == 'installing':
+        exp, written = inst.get('expected'), inst.get('written')
+        if not exp or written is None or inst.get('update'):
+            return None
+        left = max(0, exp - written)
+        live = inst.get('rate')
+        return int(left / (live or rate) + ln['finish_s'])
+    if not orig:
+        return None
+    total = orig * ln['ratio'] / rate + ln['finish_s']
+    if state == 'downloading':
+        stage = card.get('eta_stage')
+        if stage is None:
+            return None
+        total += stage
+    elif state == 'verifying':
+        v = card.get('verify') or {}
+        if card.get('check') is not None or not ln['verify_rate'] or not v.get('total'):
+            return None
+        total += max(0, v['total'] - (v.get('done') or 0)) / ln['verify_rate']
+    return int(total)
+
+
+def cards(rows: list, progress: dict, now: float, alive, drive_ids: dict | None = None,
+          stats=None) -> list[dict]:
     """A card for every tracked torrent not yet installed, and a Ready card
     for a day after an install. `progress` is {hash: progress file}; files
     that aren't fresh (see fresh) are ignored. `drive_ids` names the drive
-    each card writes to: {'install': id, 'download': {folder: id}}."""
+    each card writes to: {'install': id, 'download': {folder: id}}. `stats`
+    (torrent.load_stats) makes the ETA one figure for all the stages left
+    (see eta); without it each card keeps its current stage's."""
     ids = drive_ids or {}
     out = []
     for r in rows:
@@ -135,6 +226,11 @@ def cards(rows: list, progress: dict, now: float, alive, drive_ids: dict | None 
             continue
         c['drives'] = {'download': (ids.get('download') or {}).get(r.get('dir')),
                        'install': ids.get('install')}
+        c['eta_stage'] = c['eta']
+        total = eta(c, stats) if stats else None
+        c['eta_all'] = total is not None
+        if c['eta_all']:
+            c['eta'], c['eta_est'] = total, True
         out.append(c)
     return out
 
@@ -146,6 +242,9 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
     pct = max(0.0, min(100.0, float(r.get('percent') or 0)))
     expected = _num(r.get('original_bytes'))
     dl = download_state(r)
+    error_row = bool(r.get('error'))
+    # (a finished download is `done` even while the client re-checks it)
+    checking_done = bool(r.get('completed')) and r.get('state') == 'checking' and dl != 'gone'
     started, failed_at = r.get('install_started'), r.get('install_failed')
     error, eta, eta_est, install, step, reason = None, None, False, None, '', None
     left_behind = None                  # a progress file of this install, not current
@@ -193,6 +292,9 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
     elif started and (left_behind or now - (epoch(started) or now) > STUCK_S):
         stage, state, reason = 'install', 'failed', 'stopped'     # killed: no exit mark
         step = FAILED_STEPS['stopped']
+    elif checking_done and not error_row:
+        stage, state, verified = 'verify', 'verifying', True      # the client re-checks it
+        frac, step = _check(r), "Checking files"
     elif started:
         stage, state, frac, step = 'install', 'waiting', 0.0, "Waiting to install"
     elif dl == 'done':
@@ -230,7 +332,11 @@ def _card(r: dict, p, now: float, alive) -> dict | None:
          'need': {'download': left, 'install': need_install},
          'drives': {'download': None, 'install': None},
          'repack_bytes': _num(r.get('repack_bytes')), 'original_bytes': expected,
-         'installed_at': r.get('installed_at')}
+         'installed_at': r.get('installed_at'),
+         'verify': {'done': _num(live.get('done')), 'total': _num(live.get('total'))}
+         if live and live.get('stage') == 'verify' else None,
+         'queue': r.get('queue') if isinstance(r.get('queue'), int) else None,
+         'check': _check(r) if r.get('state') == 'checking' else None}
     c['overall'] = overall(c)
     return c
 
@@ -251,6 +357,11 @@ def sections(cards: list, rows: list, played: dict) -> dict:
     Nexus's own that left the cards but are still in the client). `played`
     is {slug: last_played ISO}."""
     progress = [c for c in cards if c['state'] != 'ready']
+    # The downloads follow the client's own queue (cards at another stage keep
+    # their order, ahead of them); a position the client didn't give goes last.
+    progress = ([c for c in progress if c['stage'] != 'download']
+                + sorted((c for c in progress if c['stage'] == 'download'),
+                         key=lambda c: (c.get('queue') is None, c.get('queue') or 0)))
     ready = [c for c in cards if c['state'] == 'ready'
              and not _after(played.get(c.get('slug')), c.get('installed_at'))]
     shown = {c['hash'] for c in progress + ready}
@@ -261,6 +372,32 @@ def sections(cards: list, rows: list, played: dict) -> dict:
     other = [r for r in rows if r.get('hash') not in shown
              and not (r.get('installed') and r.get('gone'))]
     return {'progress': progress, 'ready': ready, 'done': done, 'other': other}
+
+
+SPARK_S = 120               # seconds of speed the sparkline keeps
+SPARK_EMPTY = {'kind': None, 'pts': []}
+
+
+def spark_push(spark: dict, c: dict, now: float) -> dict:
+    """The card's speed series after a poll at `now`: {'kind', 'pts'}, kind
+    'download' (the torrent's rate while downloading) or 'disk' (what the
+    install writes while installing or updating) and pts [(time, bytes/s)]
+    of the last SPARK_S seconds. A card that is doing neither has no series;
+    a different kind starts a new one. Pure: `spark` is never changed."""
+    state = c.get('state')
+    kind = ('download' if state == 'downloading'
+            else 'disk' if state in ('installing', 'updating') else None)
+    if kind is None:
+        return SPARK_EMPTY
+    value = (c.get('download') or {}).get('rate') if kind == 'download' \
+        else (c.get('install') or {}).get('rate')
+    pts = list(spark['pts']) if spark.get('kind') == kind else []
+    if value is None:
+        return {'kind': kind, 'pts': pts} if pts else SPARK_EMPTY
+    if pts and now - pts[-1][0] < 0.5:                  # one poll, however often it is drawn
+        return spark
+    pts = [p for p in pts if now - p[0] <= SPARK_S] + [(now, value)]
+    return {'kind': kind, 'pts': pts}
 
 
 STALL_S = 1200              # downloading, no ETA and no new bytes this long: stalled

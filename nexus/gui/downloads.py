@@ -185,10 +185,17 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).isoformat(timespec='seconds')
 
 
-def torrent_items(r: dict, emit) -> list[tuple]:
+QUEUE_MOVES = (("Move to top", 'top', G['chevron_up']), ("Move up", 'up', G['arrow_up']),
+               ("Move down", 'down', G['arrow_down']),
+               ("Move to bottom", 'bottom', G['chevron_down']))
+
+
+def torrent_items(r: dict, emit, reorder: bool = False) -> list[tuple]:
     """A torrent's ⋮ choices, (text, glyph, fn): `emit(action, r)` with
-    folder|install|remove|delete|forget. A download row's and a pipeline
-    card's (w-94)."""
+    folder|install|queue_top|queue_up|queue_down|queue_bottom|remove|delete|forget.
+    A download row's and a pipeline card's (w-94). `reorder` adds the queue
+    moves for a download still coming whose client gave a queue position
+    (the first in line has nothing above it, so no Move up / Move to top)."""
     out = []
     path = r.get('path')
     if r.get('gone'):
@@ -197,6 +204,11 @@ def torrent_items(r: dict, emit) -> list[tuple]:
         out.append(("Open the folder", G['folder'], lambda: emit('folder', r)))
         if r.get('done') and not r.get('installed') and Path(path).is_dir():
             out.append(("Install it now", G['download'], lambda: emit('install', r)))
+    if reorder and not r.get('done') and r.get('queue') is not None:
+        for text, where, glyph in QUEUE_MOVES:
+            if r['queue'] == 0 and where in ('top', 'up'):
+                continue
+            out.append((text, glyph, lambda w=where: emit('queue_' + w, r)))
     out.append(("Remove from the client", G['close'], lambda: emit('remove', r)))
     out.append(("Remove and delete the files", G['trash'], lambda: emit('delete', r)))
     return out
@@ -299,6 +311,7 @@ class DownloadsPage(QWidget):
     control = pyqtSignal(str, list, bool)     # pause|resume|remove, hashes, delete files
     add = pyqtSignal(str, bool)               # magnet/.torrent, install when done
     row_action = pyqtSignal(str, dict)        # folder|install|forget, row
+    queue_move = pyqtSignal(str, str)         # top|up|down|bottom, hash
     card_action = pyqtSignal(str, dict)       # retry|verify|install|play|show|log|clear, card
     open_settings = pyqtSignal()
     use_client = pyqtSignal(dict)             # {'client', 'url'} found by --torrent-detect
@@ -313,6 +326,7 @@ class DownloadsPage(QWidget):
         self.done_rows: dict[str, DoneRow] = {}
         self.game_of = game_of or (lambda c: None)
         self.job_of = job_of or (lambda c: None)
+        self.reorder = True                             # config [downloads] queue_reorder
         self._seen: dict = {}                           # pipeline.stalled's memory
         self._cleared: set[str] = set()                 # Clear pressed, poll not back yet
         self._detected = None
@@ -456,6 +470,8 @@ class DownloadsPage(QWidget):
             self.control.emit(action, [r['hash']], False)
         elif action == 'delete':
             self.control.emit('remove', [r['hash']], True)
+        elif action.startswith('queue_'):
+            self.queue_move.emit(action[len('queue_'):], r['hash'])
         else:
             self.row_action.emit(action, r)
 
@@ -618,9 +634,11 @@ class DownloadsPage(QWidget):
                 self.cards[c['key']] = w
                 self.list.insertWidget(0, w)
                 w.set_narrow(narrow)
+            w.reorder = self.reorder
             w.set(c, by_hash.get(c['hash']), stalled=c['hash'] in stuck,
                   has_log=c['state'] == 'failed' and self.job_of(c) is not None,
                   game=games[c['key']], client=client)
+            w.sample(c, now)
         n_prog, n_ready = len(secs['progress']), len(secs['ready'])
         self.kick_progress.setText(f"IN PROGRESS · {n_prog}")
         self.kick_ready.setText(f"READY TO PLAY · {n_ready}")

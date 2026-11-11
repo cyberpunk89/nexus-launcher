@@ -294,12 +294,13 @@ def _pipeline(rows: list, s: dict, info: dict | None, base: Path) -> tuple[list,
         drives.append({'id': drive, 'mount': mount, 'free': u.free, 'total': u.total,
                        'roles': roles[drive]})
     cards = PL.cards(rows, progress, now, alive,
-                     drive_ids={'install': install and install['id'], 'download': by_dir})
+                     drive_ids={'install': install and install['id'], 'download': by_dir},
+                     stats=T.load_stats())
     return cards, PL.forecast(cards, drives)
 
 
 def cmd_torrent(args, base: Path | None = None) -> None:
-    """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove /
+    """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove|queue /
     --torrent-test / --torrent-done / --torrent-forget / --torrent-clear-history."""
     from nexus import pipeline, torrent as T
     cards = []
@@ -324,6 +325,11 @@ def cmd_torrent(args, base: Path | None = None) -> None:
                 print(json.dumps({'ok': True}) if args.json else
                       f"{done} {len(hashes)} torrent(s).")
                 return
+        if args.torrent_queue:
+            T.queue_move(args.torrent_queue[1], args.torrent_queue[0])
+            print(json.dumps({'ok': True}) if args.json else
+                  f"Moved the download {args.torrent_queue[0]} in your client's queue.")
+            return
         if args.torrent_add:
             got = T.add(args.torrent_add, auto_install=args.auto_install)
             if args.json:

@@ -59,10 +59,15 @@ def state_line(c: dict) -> tuple[str, str, str]:
         if dl.get('rate'):
             fig += f"{' · ' if fig else ''}↓ {fmt_bytes(dl['rate'])}/s"
         return "Downloading", fig, ''
-    if st in ('paused', 'checking'):
+    if st == 'checking':                    # the client re-checks a download not finished
+        check = c.get('check')
+        return "Checking files", f"{check * 100:.0f}%" if check is not None else '', ''
+    if st == 'paused':
         return step, f"at {(frac.get('download') or 0) * 100:.0f}%", ''
     if st == 'verifying':
-        return step or "Checking files", f"{(frac.get('verify') or 0) * 100:.0f}%", 'exact'
+        if frac.get('verify') is None:      # the client gave no figure: indeterminate
+            return step or "Checking files", '', ''
+        return step or "Checking files", f"{frac['verify'] * 100:.0f}%", 'exact'
     if st == 'installing':
         fig = ''
         if inst.get('written') is not None and inst.get('expected'):
@@ -87,11 +92,13 @@ def _about(seconds) -> str:
 
 
 def eta_line(c: dict) -> str:
-    """The pipeline's ETA (no guess across stages): the client's for a
-    download, the install's estimate ("est.") while installing."""
-    if not c.get('eta') or c['state'] not in MOVING:
+    """The pipeline's ETA: one figure across the stages left once an install
+    was recorded (`eta_all`: "Done in about 25 min, est."); before that the
+    client's for a download and the install's estimate ("est.") while
+    installing, with no guess across stages."""
+    if not c.get('eta') or (c['state'] not in MOVING and not c.get('eta_all')):
         return ''
-    if c['stage'] == 'download':
+    if c['stage'] == 'download' and not c.get('eta_all'):
         return f"Download done in {_about(c['eta'])}"
     return f"Done in {_about(c['eta'])}" + (", est." if c.get('eta_est') else '')
 
@@ -232,7 +239,8 @@ class StageTrack(QWidget):
                 text = "✓ " + text
             w = room * weight
             out.append({'stage': name, 'x': x, 'w': w, 'status': status,
-                        'frac': self._shown.get(name, 0.0), 'label': text.upper()})
+                        'frac': self._shown.get(name, 0.0), 'label': text.upper(),
+                        'indeterminate': status == 'active' and t.get('frac') is None})
             x += w + gap
         return out
 
@@ -281,7 +289,10 @@ class StageTrack(QWidget):
                 pt.fillRect(r, _alpha(P['muted'], 0.18))
             elif st in ('active', 'failed'):
                 fw = r.width() * max(0.0, min(1.0, s['frac']))
-                indeterminate = st == 'active' and fw <= 0 and s['stage'] == 'install'
+                indeterminate = st == 'active' and fw <= 0 and (
+                    s['stage'] == 'install' or s['indeterminate'])
+                if indeterminate:
+                    pt.fillRect(r, _alpha(P['accent'], 0.22))
                 if st == 'failed':
                     pt.fillRect(r, _alpha(P['danger'], 0.28))
                     pt.fillRect(QRectF(r.x(), 0.0, fw, h), QColor(P['danger']))
@@ -313,6 +324,78 @@ class StageTrack(QWidget):
             pt.drawText(QRectF(lab['x'], ly, lab['w'] + 1.0, float(fm.height())),
                         int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                         lab['text'])
+        pt.end()
+
+
+class Sparkline(QWidget):
+    """The last two minutes of speed under the ETA: the download rate in the
+    accent, the disk's write rate in the info colour, a faint fill below the
+    line and a dot at the end. Drawn by time (a late poll leaves a gap), from
+    0 to its own peak. All QPointF/QRectF floats: a TypeError in a paint
+    handler is a qFatal."""
+    FILL = 0.16
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.kind: str | None = None
+        self.pts: list[tuple[float, float]] = []
+        self.now = 0.0
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._sizes()
+
+    def _sizes(self):
+        self.setFixedSize(scaled(132), scaled(28))
+
+    def restyle(self):
+        self._sizes()
+        self.update()
+
+    def set_series(self, kind: str | None, pts: list, now: float):
+        self.kind, self.pts, self.now = kind, list(pts), float(now)
+        self.setToolTip({'download': "Download speed, last 2 min",
+                         'disk': "Disk write speed, last 2 min"}.get(kind or '', ''))
+        self.update()
+
+    def points(self) -> list[QPointF]:
+        """The line in widget coordinates: x by time over the last SPARK_S
+        seconds, y from the bottom (0) to the top (the window's peak)."""
+        pad = float(scaled(3))
+        w, h = float(self.width()) - 2 * pad, float(self.height()) - 2 * pad
+        shown = [(float(t), float(v)) for t, v in self.pts if self.now - t <= pipeline.SPARK_S]
+        peak = max((v for _t, v in shown), default=0.0)
+        out = []
+        for t, v in shown:
+            x = pad + w * (1.0 - max(0.0, self.now - t) / pipeline.SPARK_S)
+            y = pad + h * (1.0 - (v / peak if peak > 0 else 0.0))
+            out.append(QPointF(x, y))
+        return out
+
+    def paintEvent(self, ev):
+        pts = self.points()
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = P['info'] if self.kind == 'disk' else P['accent']
+        if len(pts) >= 2:
+            base = float(self.height()) - float(scaled(3))
+            fill = QPainterPath(QPointF(pts[0].x(), base))
+            for p in pts:
+                fill.lineTo(p)
+            fill.lineTo(QPointF(pts[-1].x(), base))
+            fill.closeSubpath()
+            pt.fillPath(fill, _alpha(color, self.FILL))
+            line = QPainterPath(pts[0])
+            for p in pts[1:]:
+                line.lineTo(p)
+            pen = QPen(QColor(color), float(scaled(1.5)))
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pt.setPen(pen)
+            pt.setBrush(Qt.BrushStyle.NoBrush)
+            pt.drawPath(line)
+            pt.setPen(Qt.PenStyle.NoPen)
+            pt.setBrush(QColor(color))
+            r = float(scaled(2.5))
+            pt.drawEllipse(pts[-1], r, r)
         pt.end()
 
 
@@ -551,6 +634,7 @@ class PipelineCard(QFrame):
         self.setObjectName("Card")
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)     # a last resort for focus
         self.row_sink = row_sink or (lambda a, r: None)
+        self.reorder = False                # the ⋮ menu's queue moves (the page sets it)
         self.c: dict = {}
         self.row: dict = {}
         self._sig = None
@@ -627,6 +711,10 @@ class PipelineCard(QFrame):
         self.eta = QLabel(side)
         self.eta.setObjectName("PipeEta")
         self.sidebox.addWidget(self.eta, 0, Qt.AlignmentFlag.AlignRight)
+        self.spark = Sparkline(side)
+        self.spark.setVisible(False)
+        self._spark = pipeline.SPARK_EMPTY
+        self.sidebox.addWidget(self.spark, 0, Qt.AlignmentFlag.AlignRight)
         bw = QWidget(side)
         self.btnrow = QHBoxLayout(bw)
         self.btnrow.setContentsMargins(0, 0, 0, 0)
@@ -647,6 +735,7 @@ class PipelineCard(QFrame):
         self.tag.setFixedHeight(scaled(PILL_H))
         n = scaled(32)
         self.more.setFixedSize(n, n)
+        self.spark.restyle()
         self.side.setMinimumWidth(0 if self.narrow else scaled(SIDE_W))
 
     def restyle(self):
@@ -702,6 +791,14 @@ class PipelineCard(QFrame):
         self.more.setVisible(bool(self.row))
         self._set_buttons(buttons(c, stalled, has_log, bool(game)))
         self._dim(st == 'queued')
+
+    def sample(self, c: dict, now: float):
+        """One poll's speed for the sparkline (the page calls it after set()):
+        shown from two samples on, gone when the card stops moving."""
+        self._spark = pipeline.spark_push(self._spark, c, now)
+        pts = self._spark['pts']
+        self.spark.set_series(self._spark['kind'], pts, now)
+        self.spark.setVisible(len(pts) >= 2)
 
     def _dim(self, on: bool):
         """A queued card fades back (the mockup's .card.dim)."""
@@ -772,20 +869,22 @@ class PipelineCard(QFrame):
             align = Qt.AlignmentFlag.AlignRight
             self.sidebox.setSpacing(SP['1_5'])
         self._sizes()
-        for w in (self.pctbox, self.eta):
+        for w in (self.pctbox, self.eta, self.spark):
             self.sidebox.setAlignment(w, align)
         self.sidebox.setAlignment(self.btnhost, Qt.AlignmentFlag.AlignRight
                                   | Qt.AlignmentFlag.AlignVCenter)
         if on:
-            self.sidebox.insertStretch(2, 1)
+            self.sidebox.insertStretch(self.sidebox.indexOf(self.btnhost), 1)
         else:
-            item = self.sidebox.itemAt(2)
-            if item is not None and item.spacerItem() is not None:
-                self.sidebox.takeAt(2)
+            for i in range(self.sidebox.count()):
+                item = self.sidebox.itemAt(i)
+                if item is not None and item.spacerItem() is not None:
+                    self.sidebox.takeAt(i)
+                    break
 
     # ---- the torrent's own choices ----
     def items(self) -> list[tuple]:
-        return torrent_items(self.row, self.row_sink) if self.row else []
+        return torrent_items(self.row, self.row_sink, self.reorder) if self.row else []
 
     def _menu(self):
         items = self.items()

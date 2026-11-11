@@ -323,7 +323,7 @@ class DisplayScaling(unittest.TestCase):
         self._run('1.5')
 
     def test_pipeline_at_140_percent(self):
-        self._run('1.4', ['tests.test_gui_layout.PipelineCardFit'])
+        self._run('1.4', ['tests.test_gui_layout.PipelineCardFit'])      # incl. the sparkline
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -368,6 +368,93 @@ class PipelineCardFit(unittest.TestCase):
         t.set_track([{'stage': 'download'}, {}])         # a short or odd track still paints
         self.assertEqual(len(t.segments()), 4)
         t.grab()
+
+    def test_eta_line_across_stages(self):
+        from nexus.gui.pipeline_view import eta_line
+        c, _r = self.card()
+        self.assertEqual(eta_line(c), "Download done in about 15 min")
+        c = {**c, 'eta': 3600 + 900, 'eta_all': True, 'eta_est': True}
+        self.assertEqual(eta_line(c), "Done in about 75 min, est.")
+        # Between stages (nothing moving) the one ETA still shows.
+        c2 = {**c, 'state': 'downloaded', 'stage': 'install'}
+        self.assertEqual(eta_line(c2), "Done in about 75 min, est.")
+        self.assertEqual(eta_line({**c2, 'eta_all': False}), '')
+        self.assertEqual(eta_line({**c, 'eta': None}), '')
+
+    def test_checking_verify_is_indeterminate(self):
+        from nexus.gui.pipeline_view import PipelineCard, state_line
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        # The client re-checks a finished download: Verify, with its figure...
+        c, r = self.card(done=True, percent=100.0, state='checking', completed=True, check=0.43)
+        self.assertEqual(c['state'], 'verifying')
+        self.assertEqual(state_line(c)[:2], ("Checking files", "43%"))
+        w = PipelineCard(c, host)
+        w.set(c, r)
+        w.resize(900, 200)
+        segs = {s['stage']: s for s in w.track.segments()}
+        self.assertFalse(segs['verify']['indeterminate'])
+        # ... or without one (qBittorrent): no figure, an indeterminate bar.
+        c, r = self.card(done=True, percent=100.0, state='checking', completed=True, check=None)
+        w.set(c, r)
+        segs = {s['stage']: s for s in w.track.segments()}
+        self.assertTrue(segs['verify']['indeterminate'])
+        self.assertEqual(segs['verify']['status'], 'active')
+        self.assertEqual(state_line(c)[:2], ("Checking files", ''))
+        self.assertTrue(w.track.shimmer)
+        self.assertEqual(w.figure.text(), '')
+        for ph in (0.0, 0.5, 0.99):
+            w.track._phase = ph
+            w.track.grab()                                   # paints without a qFatal
+        # An unfinished download being checked stays Download, with the figure.
+        c, r = self.card(state='checking', check=0.43)
+        self.assertEqual(c['stage'], 'download')
+        self.assertEqual(state_line(c)[:2], ("Checking files", "43%"))
+        w.set(c, r)
+        w.track.grab()
+
+    def test_sparkline_fits(self):
+        from PyQt6.QtWidgets import QVBoxLayout
+        from nexus.gui.pipeline_view import PipelineCard, Sparkline
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        lay = QVBoxLayout(host)
+        c, r = self.card(rate=40 << 20)
+        w = PipelineCard(c, host)
+        lay.addWidget(w)
+        w.set(c, r, client='Transmission')
+        for width, narrow in ((900, False), (620, True)):
+            host.resize(width, 400)
+            host.show()
+            w.set_narrow(narrow)
+            for i in range(30):                             # a few poll ticks
+                w.sample(c, 1000.0 + 2 * i)
+            for _ in range(3):
+                QApplication.processEvents()
+            sp = w.spark
+            with self.subTest(width=width):
+                self.assertIsInstance(sp, Sparkline)
+                self.assertFalse(sp.isHidden())
+                self.assertEqual(sp.parent(), w.side)
+                self.assertTrue(w.side.rect().contains(sp.geometry()))
+                self.assertGreaterEqual(sp.width(), nx.scaled(64))
+                self.assertGreaterEqual(sp.height(), nx.scaled(16))
+                if not narrow:                              # under the ETA, above the buttons
+                    self.assertGreaterEqual(sp.geometry().top(), w.eta.geometry().bottom())
+                    self.assertLessEqual(sp.geometry().bottom(), w.btnhost.geometry().top())
+                self.assertFalse(w.grab().isNull())         # the card paints
+                for kind in ('download', 'disk'):           # flat, empty, spiky: no qFatal
+                    for pts in ([(0.0, 0)] * 3, [(0.0, 5), (1.0, 5)], [(0.0, 1), (60.0, 1e9),
+                                                                      (120.0, 3)]):
+                        sp.set_series(kind, pts, 120.0)
+                        sp.grab()
+        # Fewer than two samples: hidden. A kind change starts a new series.
+        w.sample({**c, 'state': 'paused'}, 2000.0)
+        self.assertTrue(w.spark.isHidden())
+        w.sample(c, 2001.0)
+        self.assertTrue(w.spark.isHidden())
+        w.sample(c, 2003.0)
+        self.assertFalse(w.spark.isHidden())
 
     def test_labels_never_cut(self):
         # At 900 px (and at 125/140/150% through DisplayScaling) every name
@@ -546,6 +633,53 @@ class PipelineCardFit(unittest.TestCase):
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         items[-1][2]()                                   # the sheet's choice, card gone
         self.assertEqual(got, [('delete', 'a' * 40)])
+
+    def test_reorder_items(self):
+        from nexus.gui.downloads import torrent_items
+        from nexus.gui.pipeline_view import PipelineCard
+        got = []
+        emit = lambda a, row: got.append((a, row['hash']))      # noqa: E731
+        _c, r = self.card(queue=2)
+
+        def names(row, **kw):
+            return [t for t, _g, _f in torrent_items(row, emit, **kw)]
+        off = names(r)
+        self.assertEqual(off, names(r, reorder=False))              # the default: no change
+        on = names(r, reorder=True)
+        self.assertEqual([t for t in on if t not in off],
+                         ["Move to top", "Move up", "Move down", "Move to bottom"])
+        for (text, _g, fn), want in zip([i for i in torrent_items(r, emit, reorder=True)
+                                         if i[0].startswith("Move")],
+                                        ('queue_top', 'queue_up', 'queue_down', 'queue_bottom')):
+            fn()
+            self.assertEqual(got[-1], (want, 'a' * 40), text)
+        # First in line: nothing to move up. No position, finished, gone: no reorder at all.
+        first = names({**r, 'queue': 0}, reorder=True)
+        self.assertEqual([t for t in first if t.startswith("Move")],
+                         ["Move down", "Move to bottom"])
+        for odd in ({'queue': None}, {'done': True}, {'gone': True}):
+            self.assertEqual([t for t in names({**r, **odd}, reorder=True)
+                              if t.startswith("Move")], [], odd)
+        # The card follows its flag; the sheet's choices are the same list.
+        c, r = self.card(queue=1)
+        w = PipelineCard(c, None, row_sink=emit)
+        w.set(c, r)
+        self.assertNotIn("Move up", [i[0] for i in w.items()])
+        w.reorder = True
+        self.assertIn("Move up", [i[0] for i in w.items()])
+
+    def test_page_sends_queue_moves(self):
+        page = nx.DownloadsPage()
+        self.addCleanup(page.deleteLater)
+        got = []
+        page.queue_move.connect(lambda where, h: got.append((where, h)))
+        page._row_action('queue_top', {'hash': 'a' * 40})
+        page._row_action('queue_bottom', {'hash': 'b' * 40})
+        self.assertEqual(got, [('top', 'a' * 40), ('bottom', 'b' * 40)])
+        c, r = self.card(queue=1)
+        page.reorder = True
+        page.set_data({'torrents': [r], 'pipeline': [c], 'drives': [], 'client': {}})
+        self.assertTrue(page.cards[c['key']].reorder)
 
     def test_restyle_keeps_focus_and_follows_size(self):
         from nexus.gui import theme
