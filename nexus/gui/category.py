@@ -61,6 +61,22 @@ def story(st: categories.Stats) -> str:
     return "  ·  ".join(parts)
 
 
+def story_lines(text: str, fm, width: int) -> str:
+    """The story in `width` px: on one line, else broken between its parts
+    ("3 games · 6 h played" / "1 finished · 12 GB on disk"), the second line
+    elided if it still doesn't fit (a wider font, e.g. Windows')."""
+    if fm.horizontalAdvance(text) <= width:
+        return text
+    sep = "  ·  "
+    parts, first = text.split(sep), ''
+    for i in range(len(parts), 0, -1):
+        first = sep.join(parts[:i])
+        if fm.horizontalAdvance(first) <= width:
+            rest = sep.join(parts[i:])
+            return first + "\n" + fm.elidedText(rest, Qt.TextElideMode.ElideRight, width)
+    return fm.elidedText(text, Qt.TextElideMode.ElideRight, width)
+
+
 def two_lines(text: str, fm, width: int) -> list[str]:
     """`text` in at most two lines of `width` px: the first breaks between
     words, the second takes the rest, elided. A first word too long for a
@@ -370,7 +386,8 @@ class MosaicHeader(QWidget, _Mosaic):
         self.col.setMaximumWidth(w)
         for lab, text in ((self.title, self._title), (self.story, self._story)):
             lab.ensurePolished()                 # the theme's font, not the default
-            lab.setText(lab.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, w))
+            lab.setText(story_lines(text, lab.fontMetrics(), w) if lab is self.story else
+                        lab.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, w))
         if self._lead_name:
             b = self.btn_continue
             b.ensurePolished()

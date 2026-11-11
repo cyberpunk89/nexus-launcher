@@ -639,7 +639,8 @@ class PipelineCard(QFrame):
         self.row: dict = {}
         self._sig = None
         self._args: tuple = ()
-        self.narrow = False
+        self.narrow = False                 # as laid out: the page's, or too cramped
+        self.page_narrow = False            # what the page asked (set_narrow)
         self.btns: dict[str, QPushButton] = {}
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(SP['4'], SP['4'], SP['4'], SP['4'])
@@ -737,6 +738,7 @@ class PipelineCard(QFrame):
         self.more.setFixedSize(n, n)
         self.spark.restyle()
         self.side.setMinimumWidth(0 if self.narrow else scaled(SIDE_W))
+        self._fit_layout()
 
     def restyle(self):
         """A theme or Size change: sizes, art and paint, keeping the widgets
@@ -791,6 +793,7 @@ class PipelineCard(QFrame):
         self.more.setVisible(bool(self.row))
         self._set_buttons(buttons(c, stalled, has_log, bool(game)))
         self._dim(st == 'queued')
+        self._fit_layout()
 
     def sample(self, c: dict, now: float):
         """One poll's speed for the sparkline (the page calls it after set()):
@@ -851,9 +854,37 @@ class PipelineCard(QFrame):
     # ---- layout ----
     def set_narrow(self, on: bool):
         """Below NARROW the side column goes under the card, in one row,
-        and the track names only the current stage."""
-        if on == self.narrow:
-            return
+        and the track names only the current stage. It does so on its own
+        too when the side column's content (three buttons in a wider font,
+        a long ETA) leaves the text column less than it needs (`cramped`)."""
+        self.page_narrow = on
+        self._fit_layout()
+
+    def cramped(self) -> bool:
+        """True when beside the card the side column would leave the text
+        column too little for its source and figure rows. Judged from the
+        children's own sizes, so it doesn't depend on the current layout."""
+        m, gap = self.grid.contentsMargins(), self.grid.horizontalSpacing()
+        side = max((w.sizeHint().width() for w in (self.pctbox, self.eta, self.btnhost)
+                    if not w.isHidden() or w is self.btnhost), default=0)
+        side = max(side, scaled(SIDE_W), self.spark.width() if not self.spark.isHidden() else 0)
+        top = self.title.minimumWidth() + SP['3'] + self.source.sizeHint().width()
+        line = scaled(80) + SP['3'] + self.figure.sizeHint().width() + (
+            SP['3'] + self.tag.sizeHint().width() if not self.tag.isHidden() else 0)
+        main = max(top, line, scaled(160))
+        return self.width() < m.left() + m.right() + scaled(ART_PX) \
+            + 2 * gap + side + main
+
+    def _fit_layout(self):
+        on = self.page_narrow or (self.width() > 1 and self.cramped())
+        if on != self.narrow:
+            self._place_side(on)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit_layout()
+
+    def _place_side(self, on: bool):
         self.narrow = on
         self.track.compact = on
         self.track.update()

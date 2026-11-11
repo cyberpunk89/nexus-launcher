@@ -208,9 +208,11 @@ class Payload(unittest.TestCase):
     LINUX = {'id': 'cachyos', 'version': 'rolling', 'name': 'CachyOS', 'kernel': '7.0',
              'arch': 'x86_64'}
 
-    def payload(self, env=None, rel=None, lang='de', kind='git', periods=('d',)):
+    def payload(self, env=None, rel=None, lang='de', kind='git', periods=('d',),
+                os_name='linux'):
         env = {'XDG_CURRENT_DESKTOP': 'niri', 'XDG_SESSION_TYPE': 'wayland', **(env or {})}
         with mock.patch.dict(os.environ, env), \
+                mock.patch.object(platform, 'OS_NAME', os_name), \
                 mock.patch.object(platform, 'os_release', lambda: rel or self.LINUX), \
                 mock.patch.object(platform, 'ui_language', lambda: lang), \
                 mock.patch('nexus.report.sysinfo.install_kind', lambda: kind):
@@ -260,9 +262,8 @@ class Payload(unittest.TestCase):
         from nexus import features
         win = {'id': 'windows', 'version': '11', 'name': 'Windows 11 24H2',
                'kernel': '26100.1', 'build': '26100.1', 'arch': 'amd64'}
-        with mock.patch.object(features, 'FEATURES', frozenset()), \
-                mock.patch.object(platform, 'OS_NAME', 'windows'):
-            p = self.payload(rel=win, lang='en', kind='win-installer',
+        with mock.patch.object(features, 'FEATURES', frozenset()):
+            p = self.payload(rel=win, lang='en', kind='win-installer', os_name='windows',
                              env={'XDG_CURRENT_DESKTOP': 'KDE'})
         self.assertEqual({k: p[k] for k in ('edition', 'os', 'os_ver', 'desktop', 'session',
                                              'install', 'lang')},

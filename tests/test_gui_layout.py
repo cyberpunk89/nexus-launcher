@@ -439,7 +439,7 @@ class PipelineCardFit(unittest.TestCase):
                 self.assertTrue(w.side.rect().contains(sp.geometry()))
                 self.assertGreaterEqual(sp.width(), nx.scaled(64))
                 self.assertGreaterEqual(sp.height(), nx.scaled(16))
-                if not narrow:                              # under the ETA, above the buttons
+                if not w.narrow:    # beside the card: under the ETA, above the buttons (a wide font can force the narrow layout)
                     self.assertGreaterEqual(sp.geometry().top(), w.eta.geometry().bottom())
                     self.assertLessEqual(sp.geometry().bottom(), w.btnhost.geometry().top())
                 self.assertFalse(w.grab().isNull())         # the card paints
