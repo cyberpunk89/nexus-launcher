@@ -1,4 +1,4 @@
-"""The tray icon (opt-in, Settings → Background): closing the window then
+"""The tray icon (opt-in, Settings › Alerts › While Nexus is closed): closing the window then
 hides it to the tray instead of quitting, so the window's own watchers keep
 going. QSystemTrayIcon: the notification area on Windows; on Linux a
 StatusNotifierItem — on niri that needs a tray host such as waybar's;

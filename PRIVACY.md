@@ -3,7 +3,7 @@
 Nexus sends nothing about you on its own. Two things can leave your computer, and only
 when you say so:
 
-- **The install count**, if you answer "Count me" (in setup, on Home or in
+- **The install count**, if you answer "Count me" (in Setup, step 3 "Make it yours", on Home or in
   Settings → System → Privacy). It is off until you answer.
 - **A bug report**, each time you press "Send anonymously" on Report a problem. You see
   the whole report before it goes.

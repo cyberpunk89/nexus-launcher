@@ -2,6 +2,12 @@
   "0.5.5": [
     {
       "kind": "new",
+      "icon": "sparkles",
+      "title": "A shorter, friendlier Setup",
+      "text": "A shorter Setup shows what it found beside each choice. Keeping Nexus in the tray is asked when you first close the window."
+    },
+    {
+      "kind": "new",
       "icon": "shield",
       "title": "An install count, if you want it",
       "text": "Nexus can count installs once a day, anonymously and with no id. It asks once; Settings → System → Privacy shows exactly what is sent."

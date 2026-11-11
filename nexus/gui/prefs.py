@@ -154,6 +154,9 @@ class LibraryPrefs:
         # How a tile is activated: a double click and A/Enter each play the
         # game or open its page (Settings → Controls).
         ctl = self._data.get('controls') if isinstance(self._data.get('controls'), dict) else {}
+        # Whether the user ever chose (Settings, or the first-close ask, w-106):
+        # False is a choice too, so the coerced value alone can't tell.
+        self.close_to_tray_set = isinstance(ctl.get('close_to_tray'), bool)
         self.controls = {
             'double_click': ctl.get('double_click') if ctl.get('double_click') in
             ('play', 'details') else 'play',
@@ -162,7 +165,7 @@ class LibraryPrefs:
             'dedupe': ctl.get('dedupe') is not False,
             # Theatre's screensaver after this many idle minutes (0 = never).
             'attract': ctl.get('attract') if ctl.get('attract') in ATTRACT_MINUTES else 5,
-            # Closing the window hides it to the tray (Settings → Background).
+            # Closing the window hides it to the tray (Settings › Alerts › While Nexus is closed).
             'close_to_tray': ctl.get('close_to_tray') is True,
             # Theatre (w-63): start Nexus in it, and switch to it when a pad
             # connects (stored here; w-64 acts on them).
@@ -268,9 +271,11 @@ class LibraryPrefs:
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
-                    'controls': {**(self._data.get('controls')
-                                    if isinstance(self._data.get('controls'), dict) else {}),
-                                 **self.controls},
+                    'controls': {k: v for k, v in
+                                 {**(self._data.get('controls')
+                                     if isinstance(self._data.get('controls'), dict) else {}),
+                                  **self.controls}.items()
+                                 if k != 'close_to_tray' or self.close_to_tray_set},
                     'library_state': self.library_state, 'smart_hidden': self.smart_hidden,
                     'theatre_library': self.theatre_library,
                     'theatre_hide_gamedb': self.theatre_hide_gamedb,

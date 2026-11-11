@@ -704,12 +704,23 @@ def notify_desktop(summary: str, body: str = '') -> None:
 # Toasts and the "Steam is running" banner — in-window, never extra windows
 # --------------------------------------------------------------------------
 
-def empty_state_text(filtered: str | None) -> tuple[str, str]:
-    """(title, hint) for an empty library view."""
+def empty_state_text(filtered: str | None, repacks: bool = True) -> tuple[str, str]:
+    """(title, hint) for an empty library view; `repacks` is Settings > Repack
+    features (off: no mention of installing one)."""
     if filtered:
         return filtered, "Clear the search or pick another filter."
+    if not repacks:
+        return ("Your library is empty",
+                "Add a game you have with ＋ Install, or pick up games you already have with Scan.")
     return ("Your library is empty",
             "Install a repack with ＋ Install, or pick up games you already have with Scan.")
+
+
+def repacks_on(widget) -> bool:
+    """Settings > Repack features, asked of the widget's main window (a
+    widget outside one, a test, counts as on)."""
+    win = widget.window()
+    return win.repacks_on() if hasattr(win, 'repacks_on') else True
 
 
 class EmptyState(QFrame):

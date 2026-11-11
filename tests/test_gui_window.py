@@ -499,6 +499,7 @@ class Window(unittest.TestCase):
         self.addCleanup(p.stop)
         self.win = nx.MainWindow()
         self.win.resize(1300, 850)
+        self.win.prefs.close_to_tray_set = True      # closing must not ask (w-106)
         self.win.show()
         self.win._on_library({'games': fake_games(), 'disks': []}, '')
         QApplication.processEvents()
@@ -1253,6 +1254,71 @@ class Window(unittest.TestCase):
             st.set_agent_status({'enabled': True, 'systemd': True, 'running': True})
             st.agent.setChecked(False)
             self.assertEqual(calls[-1], ['--agent-disable', '--json'])
+
+    def test_first_close_asks_about_the_tray_once(self):
+        """w-106: with a tray available and no choice made, the first close
+        asks in the in-window modal; the answer is remembered either way."""
+        w = self.win
+        w.prefs.close_to_tray_set = False
+        with patch_gui('tray_available', lambda: True), \
+                patch_gui('notify_desktop', lambda *a: None), \
+                mock.patch.object(w.prefs, 'save'):
+            w.close()
+            self.assertTrue(w.modal.isVisible())
+            self.assertEqual(w.modal.primary.text(), "Keep running")
+            self.assertIsNone(w.tray)
+            w.modal.primary.click()                      # Keep running
+            self.assertTrue(w.prefs.close_to_tray_set)
+            self.assertTrue(w.prefs.controls['close_to_tray'])
+            self.assertIsNotNone(w.tray)
+            self.assertFalse(w.isVisible())              # hidden to the tray
+            w.show_from_tray()
+            w.close()                                     # second close: no question
+            self.assertFalse(w.modal.isVisible())
+            w._apply_controls({'close_to_tray': False})
+            w.show()
+        w.prefs.close_to_tray_set = False
+        w.prefs.controls['close_to_tray'] = False
+        with patch_gui('tray_available', lambda: True), \
+                mock.patch.object(w.prefs, 'save'), \
+                mock.patch.object(w, 'quit_after_jobs') as quit_now:
+            w.close()
+            self.assertTrue(w.modal.isVisible())
+            w.modal.btn_extra.click()                    # Quit
+            self.assertTrue(w.prefs.close_to_tray_set)
+            self.assertFalse(w.prefs.controls['close_to_tray'])
+            self.assertIsNone(w.tray)
+            self.assertFalse(w.isVisible())              # really closed
+            w.show()
+            w.close()                                     # remembered: no question
+            self.assertFalse(w.modal.isVisible())
+        w.show()
+
+    def test_empty_library_hint_follows_repack_mode(self):
+        from nexus.gui.widgets import empty_state_text
+        self.assertIn("Install a repack", empty_state_text(None)[1])
+        off = empty_state_text(None, repacks=False)[1]
+        self.assertNotIn("repack", off.lower())
+        self.assertIn("Scan", off)
+        self.assertEqual(empty_state_text("No match", repacks=False)[0], "No match")
+
+    def test_unset_tray_choice_is_told_from_false(self):
+        import tempfile
+        from pathlib import Path
+        from nexus.gui.prefs import LibraryPrefs as Prefs
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'library.json'
+            with mock.patch.object(Prefs, 'PATH', path), \
+                    mock.patch.object(Prefs, 'save', self._saved[1]):
+                p = Prefs()
+                self.assertFalse(p.close_to_tray_set)
+                p.save()                                  # unset stays unset on disk
+                self.assertNotIn('close_to_tray', json.loads(path.read_text())['controls'])
+                self.assertFalse(Prefs().close_to_tray_set)
+                p.close_to_tray_set = True
+                p.save()
+                self.assertIs(json.loads(path.read_text())['controls']['close_to_tray'], False)
+                self.assertTrue(Prefs().close_to_tray_set)
 
     def test_close_goes_to_the_tray_when_asked(self):
         w = self.win

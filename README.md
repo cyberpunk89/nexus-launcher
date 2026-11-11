@@ -72,7 +72,8 @@ once. Games you own but haven't installed are there too, with an Install button.
   when a repack you have gets an update. Before a download starts, Nexus says how much space
   it needs on the download and install drives. Each game gets one card from download to Play,
   with the stage it's at, a speed line, the time left to Play (learned from your past installs),
-  queue moves and a Retry when something fails, and a forecast of
+  queue moves and a Retry when something fails, an opt-in that slows the torrent client
+  while a game runs (and puts your own setting back afterwards), and a forecast of
   each drive's free space sits on top.
 
 ### Theatre mode, for the couch
@@ -94,8 +95,10 @@ and Switch pads). Start it with F11, the controller's Menu button or `nexus --th
   Discover with news and deals. Theatre's own settings are one button away, and Nexus can
   start in Theatre on a TV or when a controller is plugged in.
 - **Ribbon layout:** switch Theatre from tabs to a Ribbon in its settings: a line of
-  categories with the games in a column under it, and a soft ribbon behind that moves when
-  you move (it stays still with reduced motion).
+  categories (Home, Library, Collections, Discover, Downloads, Friends, Settings) with their
+  items in a column under it, folders that open in place, and a soft ribbon behind that
+  moves when you move (it stays still with reduced motion). Downloads show the same stage
+  track as the desktop.
 - **Game page:** Play, favourite, Options, and cards for achievements, compatibility, news
   and trailers, all reachable with the D-pad.
 - **On-screen keyboard** for search, a **screensaver** that shows your games' art or trailers
@@ -197,11 +200,13 @@ Debian/Ubuntu, the Steam Deck and other setups are covered in
 
 ## First run
 
-A short setup walks you through what Nexus found on your machine (Steam, Epic or Heroic,
-your torrent client), where games should go, and the look. It also asks whether to count
-this install anonymously; nothing is sent unless you say yes, and [PRIVACY.md](PRIVACY.md)
-lists every field. Everything can be changed later in Settings. For cover art, add a free [SteamGridDB](https://www.steamgriddb.com/profile/preferences/api)
-API key there.
+A short setup asks how you play (the games you have, or also installing repacks), shows
+what it found on your machine (Steam, Heroic, your torrent client), where games should go
+with each drive's free space and anything that would block an install, and then the look.
+It also asks whether to count this install anonymously; nothing is sent unless you say yes,
+and [PRIVACY.md](PRIVACY.md) lists every field. A last, optional step connects SteamGridDB
+(cover art), the Steam Web API (friends) and Game-db (deals), each with how to get the key.
+Everything can be changed later in Settings.
 
 Settings live in `~/.config/nexus/config.toml` on Linux and `%APPDATA%\nexus-launcher` on
 Windows. [config.example.toml](config.example.toml) lists every option.

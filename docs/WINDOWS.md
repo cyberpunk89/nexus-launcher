@@ -52,7 +52,13 @@ To check a download, compare its SHA-256 with the one in the release notes or th
 certutil -hashfile nexus-launcher-Setup-<version>.exe SHA256
 ```
 
-A setup wizard then checks what this machine has and offers to pick a torrent client. By
+A Setup page then opens, with three steps and an optional fourth: **How you play** (what
+Nexus found here, such as Steam and a torrent client, and whether you only play the games you
+have or also install repacks), **Where games go** (repack mode only: drives with free space and
+the folder), **Make it yours** (theme, size, starting with Windows and the optional anonymous
+install count) and, optionally, **Connect services** (SteamGridDB, Steam Web API, Game-db).
+Whether closing the window keeps Nexus in the tray is asked the first time you close it.
+Settings → System → *Run setup again* opens it later. By
 default games are installed under `<drive>:\Games`, on the local drive with the most free
 space other than the Windows one (else `C:\Games`). Never Program Files: some older games
 write their saves next to the exe, which fails there. You can change the folder in Settings.
@@ -68,7 +74,7 @@ supports two:
   8080 by default).
 
 Nexus finds the client from its settings file, or by trying those two default local ports.
-If it finds none, the wizard says so; you can set one up later in **Settings → Torrent
+If it finds none, Setup says so; you can set one up later in **Settings → Torrent
 client**. Transmission only writes its settings file when it quits, so restart it after
 changing them.
 

@@ -475,7 +475,7 @@ def doctor_checks(install_base: Path) -> list[dict]:
     if not ag['installed']:
         add(I, 'info', 'Background agent',
             'off (optional) — downloads and alerts only while the window is open',
-            'Settings → Background')
+            'Settings › Alerts › While Nexus is closed')
     elif not ag['current']:
         add(I, 'warn', 'Background agent',
             "its service points at another copy of Nexus", 'Set it up again from here',

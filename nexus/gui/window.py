@@ -1254,7 +1254,38 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     # ---- closing ----
     QUIT_GRACE_MS = 6000          # cancelled jobs get this long to stop before SIGKILL
 
+    def _ask_tray_first_close(self) -> bool:
+        """The first close with a tray available and no choice made yet (w-106,
+        asked here, not in Setup): Keep running / Quit, remembered. True when
+        the question is up (the close waits for the answer)."""
+        if self.tray is not None or self._quitting or self._tray_quit \
+                or self.prefs.close_to_tray_set or not tray_available():
+            return False
+        self.raise_()
+        self.activateWindow()
+
+        def keep():
+            self._apply_controls({'close_to_tray': True})       # makes the tray
+            self.close()
+
+        def quit_():
+            self._apply_controls({'close_to_tray': False})
+            self.close()
+
+        self._clear_for_modal()
+        self._modal().open(
+            "Keep Nexus running when you close the window?", None, "Keep running", keep,
+            text="It stays in the tray, so downloads, installs and alerts carry on. "
+                 "Quit it from the tray menu. You can change this in "
+                 "Settings › Alerts › While Nexus is closed.",
+            glyph=G['info'], extra=("Quit", G['close'], quit_), extra_danger=False)
+        self._update_hints()
+        return True
+
     def closeEvent(self, ev):
+        if self._ask_tray_first_close():
+            ev.ignore()
+            return
         if self.tray is not None and not self._quitting and not self._tray_quit:
             ev.ignore()                     # to the tray: the watchers keep going
             self.hide()

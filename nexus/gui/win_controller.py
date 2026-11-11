@@ -49,6 +49,8 @@ class ControllerMixin:
         """Settings → Controls, applied at once (a library preference)."""
         if controls is not None:
             self.prefs.controls = {**self.prefs.controls, **controls}
+            if 'close_to_tray' in controls:
+                self.prefs.close_to_tray_set = True
             self.prefs.save()
             if 'dedupe' in controls:
                 mark_duplicates(self._games, self.prefs.controls['dedupe'])

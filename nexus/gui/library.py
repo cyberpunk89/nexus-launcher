@@ -236,7 +236,7 @@ class LibraryView(QScrollArea, _TileSignals):
                        QSize(self.tile_width, int(self.tile_width * 3 / 2) + TILE_LIFT))
         self._fill()
         shown = bool(games) or bool(pending_jobs)
-        self._empty.set(*empty_state_text(empty_text))
+        self._empty.set(*empty_state_text(empty_text, repacks_on(self)))
         self._empty.setVisible(not shown)
         host.setVisible(shown)
 
@@ -1489,7 +1489,8 @@ class HomeView(QScrollArea, _TileSignals):
         if self.mode == 'shelves' and not games:
             self.set_groups([])
         if not games and not pending_jobs:
-            self.rows.addWidget(EmptyState(G['library'], *empty_state_text(empty_text)))
+            self.rows.addWidget(EmptyState(
+                G['library'], *empty_state_text(empty_text, repacks_on(self))))
 
     def set_groups(self, groups, note: str = '', hidden: int = 0, can_add: bool = False):
         """Browse's groups (categories.browse()): a kicker each, then one row
@@ -1909,5 +1910,5 @@ from .gameinfo import (is_installed, now_playing, play_enabled, play_label, SOUR
 from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import (clear_layout, empty_state_text, EmptyState, icon_button,
+from .widgets import (clear_layout, empty_state_text, repacks_on, EmptyState, icon_button,
     icon_label, label, set_glyph_icon, WrapRow)  # noqa: E402

@@ -903,11 +903,18 @@ the rare game that needs one. `--doctor` flags any prefix still carrying a winet
   add to a collection, Steam / Heroic, protongen defaults, artwork, snapshot, move, uninstall (saves
   backed up first). Games that are running or busy are skipped, and the toast says how many.
 
-- **First-run setup.** The very first time Nexus starts (no settings yet), a welcome page walks
-  through six skippable steps: the checks (with fix buttons), your Steam account and Heroic,
-  where games install and repacks download, the Proton to play with (and GE-Proton if there's
-  none), a SteamGridDB key and a torrent client found on the machine, then the theme, size, the
-  background agent and the tray. Settings → Back up & move → *Run setup again*.
+- **First-run setup.** The very first time Nexus starts (no settings yet), a Setup page (not
+  a dialog) asks only what changes how Nexus behaves, with the facts for each answer beside it.
+  Three steps and an optional fourth: **How you play** (what Nexus found here: Steam, Heroic,
+  a torrent client; *Play the games I have* or *Also install repacks*, and whether new games
+  are added to Steam, the app menu and Heroic), **Where games go** (repack mode only: drives
+  with free space, the folder and where downloads come from), **Make it yours** (theme, size,
+  the background agent, and the optional anonymous install count, which stays off until you
+  pick) and, optionally, **Connect services** (SteamGridDB, the Steam Web API key and Game-db,
+  with why each is asked and where to get the key). *Skip, use the defaults* writes nothing.
+  Whether closing the window should keep Nexus running in the tray is asked the first time you
+  close it, not in Setup. A Proton build is picked up from what is installed; to add one, use
+  the Proton page. Settings → System → *Run setup again* opens it later.
 - **Back up & move** (Settings): *Export…* saves your settings, favourites, collections,
   notes, dashboard, the look, the game list, play history and art picks to one `.tar.gz`
   (images with *Include artwork images*; keys and passwords only with *Include keys and
@@ -1066,7 +1073,7 @@ addresses and tokens before you see it:
 | `--exclude GROUP[,GROUP]`, `--remove-line N`, `--with-game`, `--describe TEXT` | With preview / url / send: leave groups out (`--exclude ""` adds the Proton log tail), blank a line, include the game's name, add what happened |
 | `--report-dismiss ID` | Forget one crash report |
 
-**Install count** (opt-in: nothing is sent until you say yes in Setup, on Home or in
+**Install count** (opt-in: nothing is sent until you say yes in Setup (step 3, Make it yours), on Home or in
 Settings → System → Privacy, which writes `[stats] count`). At most once a day the app sends
 one small ping with no id: the version, edition, install kind, distro and its version, desktop,
 session, language, Python version and a rough age. Every field is in
