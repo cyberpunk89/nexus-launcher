@@ -279,6 +279,35 @@ def qt_message(mode, context, message) -> None:
         pass
 
 
+class StallWatch(QObject):
+    """The UI thread's heartbeat (w-101). Each beat re-arms faulthandler's
+    timeout (crash.stall_beat), so if this thread stops answering for
+    crash.STALL_SECONDS every thread's stack lands in native-<pid>.txt. A
+    window that answers again marks the file so; stop() ends it when the
+    event loop does, and a clean exit deletes the file (crash.disable_native).
+    faulthandler's own thread does the waiting: no thread of ours."""
+
+    def __init__(self, parent: QObject):
+        super().__init__(parent)
+        self.timer = QTimer(self)
+        self.timer.setInterval(crash.BEAT_SECONDS * 1000)
+        self.timer.timeout.connect(self._beat)
+
+    def start(self) -> bool:
+        """False when there's no native file to dump into."""
+        if not crash.watch_stalls():
+            return False
+        self.timer.start()
+        return True
+
+    def stop(self):
+        self.timer.stop()
+        crash.stall_cancel()
+
+    def _beat(self):
+        crash.stall_beat()
+
+
 def refresh_desktop_entry(icon: str, argv) -> bool:
     """Write the freedesktop launcher when it's missing, old or asked for.
     Not on Windows, where that file would only land in the Start Menu folder
@@ -357,7 +386,12 @@ def main():
         win.set_theatre(True)
     elif "--hidden" not in argv:
         win.theatre_on_start()                # Settings > Controls "Start Nexus in Theatre"
+    # From here a UI thread that stops answering leaves its stack in the
+    # native file (w-101); the window's own build isn't watched.
+    watch = StallWatch(app)
+    watch.start()                         # nothing without the native file (enable_native)
     code = app.exec()
+    watch.stop()                          # teardown isn't watched: a kill there is no freeze
     # Tear the window down while Qt is still fully alive: left to PyQt's
     # atexit cleanup, a large widget tree can segfault in sip on the way out.
     win.deleteLater()

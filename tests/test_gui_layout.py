@@ -147,6 +147,53 @@ class DetailsPanelWidth(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class StallWatchTimer(unittest.TestCase):
+    """w-101: the UI heartbeat is a child QTimer (bound method) that re-arms
+    the faulthandler watchdog every BEAT_SECONDS, and only with a native file."""
+
+    def setUp(self):
+        import tempfile
+        from nexus.report import crash
+        self.crash = crash
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(crash, '_dir', lambda: Path(self.tmp.name))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_beats_re_arm_and_stop_with_the_file(self):
+        from PyQt6.QtCore import QObject
+        from nexus.gui.app import StallWatch
+        owner = QObject()
+        self.addCleanup(owner.deleteLater)
+        watch = StallWatch(owner)
+        self.assertIs(watch.timer.parent(), watch)
+        self.assertEqual(watch.timer.interval(), self.crash.BEAT_SECONDS * 1000)
+        self.assertLess(self.crash.BEAT_SECONDS * 2, self.crash.STALL_SECONDS)
+        self.assertFalse(watch.start())                   # no native file: off
+        self.assertFalse(watch.timer.isActive())
+        self.crash.enable_native()
+        try:
+            with mock.patch.object(self.crash, 'stall_beat') as beat:
+                self.assertTrue(watch.start())          # arms at once
+                self.assertTrue(watch.timer.isActive())
+                n = beat.call_count
+                watch.timer.timeout.emit()
+                self.assertEqual(beat.call_count, n + 1)
+            # The event loop ended: stop() stops beating and cancels the
+            # pending dump, so a slow teardown then a kill is no freeze.
+            import faulthandler
+            with mock.patch.object(faulthandler, 'cancel_dump_traceback_later') as cancel:
+                watch.stop()
+            self.assertFalse(watch.timer.isActive())
+            cancel.assert_called_once_with()
+            self.assertFalse(self.crash._native['watch'])
+        finally:
+            watch.stop()
+            self.crash.disable_native()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class HeroBlend(unittest.TestCase):
     """The game page's hero art runs edge to edge, fades into the panel and
     tints the page with its colour (w-21)."""

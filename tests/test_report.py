@@ -413,6 +413,212 @@ class CrashFiles(unittest.TestCase):
         self.assertIsNone(crash.native_path())
         self.assertEqual(faulthandler.is_enabled(), was)
 
+    # ---- the UI watchdog (w-101) ----
+    STALL = ('Timeout (0:00:15)!\n'
+             'Thread 0x00000000000000a1 (most recent call first):\n'
+             '  File "/home/zelda/nexus/nexus/gui/jobs.py", line 478 in run\n'
+             '\n'
+             'Thread 0x00000000000000b2 (most recent call first):\n'
+             '  File "/home/zelda/nexus/nexus/gui/dashboard.py", line 2392 in relayout\n'
+             '  File "/home/zelda/nexus/nexus/gui/win_library.py", line 1513 in _selection_changed\n'
+             '  File "/home/zelda/nexus/nexus/gui/app.py", line 353 in main\n')
+    UI = '# Nexus UI thread 0xb2: a dump after "Timeout" means it didn\'t answer for 15 s\n'
+
+    def test_watchdog_arms_on_each_beat_and_a_clean_exit_cancels_it(self):
+        import faulthandler
+        path = crash.enable_native()
+        try:
+            with mock.patch.object(faulthandler, 'dump_traceback_later') as arm:
+                self.assertTrue(crash.watch_stalls())
+                crash.stall_beat()
+            self.assertEqual(arm.call_count, 2)
+            args, kw = arm.call_args
+            self.assertEqual(args, (crash.STALL_SECONDS,))
+            self.assertEqual((kw['repeat'], kw['exit']), (False, False))
+            self.assertIs(kw['file'], crash._native['fh'])
+            self.assertIn(crash.UI_MARK, path.read_text(encoding='utf-8'))
+        finally:
+            with mock.patch.object(faulthandler, 'cancel_dump_traceback_later') as cancel:
+                crash.disable_native()
+        cancel.assert_called_once_with()
+        self.assertFalse(path.exists())                  # no misleading file left
+        crash.stall_beat()                               # off now: nothing armed, no error
+
+    def test_no_watchdog_without_a_native_file(self):
+        self.assertIsNone(crash.native_path())
+        self.assertFalse(crash.watch_stalls())
+
+    def test_a_real_stall_dumps_and_the_beat_after_it_says_so(self):
+        """faulthandler for real, at 0.3 s: the dump lands in the native
+        file, the next beat marks it answered, and that file would not be a
+        report even if the process died afterwards."""
+        import time
+        path = crash.enable_native()
+        try:
+            with mock.patch.object(crash, 'STALL_SECONDS', 0.3):
+                self.assertTrue(crash.watch_stalls())
+                time.sleep(0.8)                          # the UI thread "stalls"
+                text = path.read_text(encoding='utf-8')
+                self.assertRegex(text, r'(?m)^Timeout \(0:00:00\.\d+\)!')
+                self.assertIn('test_a_real_stall_dumps', text)
+                self.assertIsNotNone(crash.native_reading(text))   # killed now: a freeze
+                crash.stall_beat()
+                crash.stall_cancel()                     # no second dump on a slow runner
+            text = path.read_text(encoding='utf-8')
+            self.assertIn(crash.RECOVERED, text)
+            self.assertIsNone(crash.native_reading(text))
+        finally:
+            crash.disable_native()
+        self.assertFalse(path.exists())
+
+    def test_a_freeze_never_answered_is_reported_as_one(self):
+        self.native(999994, self.UI + self.STALL)
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            [cid] = crash.harvest()
+        rec = crash.load(cid)
+        self.assertEqual((rec['kind'], rec['type']), ('native-crash', 'Nexus stopped answering'))
+        self.assertTrue(rec['freeze'])
+        self.assertTrue(crash.pending()[0]['freeze'])            # the window reads the summary
+        # The UI thread's frames, not the job thread's, and its stack first.
+        self.assertEqual(rec['frames'], ['nexus/gui/app.py:main',
+                                         'nexus/gui/win_library.py:_selection_changed',
+                                         'nexus/gui/dashboard.py:relayout'])
+        tb = rec['traceback']
+        self.assertLess(tb.index('in relayout'), tb.index('in run'))
+        self.assertNotIn(crash.UI_MARK, tb)
+
+    def test_a_freeze_report_is_tagged_freeze(self):
+        froze = {'id': '20261105T120000Z-abcd', 'kind': 'native-crash', 'freeze': True,
+                 'type': 'Nexus stopped answering', 'frames': ['nexus/gui/dashboard.py:relayout'],
+                 'traceback': 'Freeze: Nexus stopped answering\n', 'log': []}
+        title = sysinfo._title(froze, 'native-crash')
+        old = sysinfo._title(dict(froze, freeze=None, type='Segmentation fault'), 'native-crash')
+        self.assertTrue(title.startswith('[freeze] Nexus stopped answering in '
+                                         'nexus/gui/dashboard.py:relayout'), title)
+        self.assertTrue(old.startswith('[crash] Segmentation fault'), old)
+
+    def test_old_and_crash_records_are_no_freeze(self):
+        self.native(999981, self.DUMP)
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            [cid] = crash.harvest()
+        self.assertFalse(crash.load(cid).get('freeze'))
+        self.assertIn('freeze', crash.SUMMARY)
+
+    def test_a_note_from_another_thread_after_a_dump_keeps_it_noticed(self):
+        """(a) A Qt warning written after a dump must not hide the dump: the
+        next beat still says the UI thread answered."""
+        import faulthandler
+        path = crash.enable_native()
+        try:
+            with mock.patch.object(faulthandler, 'dump_traceback_later'), \
+                    mock.patch.object(faulthandler, 'cancel_dump_traceback_later'):
+                crash.watch_stalls()
+                os.write(crash._native['fh'].fileno(), self.STALL.encode())   # "faulthandler"
+                crash.native_note('Qt critical: something')                  # any thread
+                crash.stall_beat()
+            self.assertIn(crash.RECOVERED, path.read_text(encoding='utf-8'))
+            self.assertIsNone(crash.native_reading(path.read_text(encoding='utf-8')))
+        finally:
+            crash.disable_native()
+
+    def test_a_beat_joins_a_running_dump_before_it_writes(self):
+        """(b) The beat cancels (which waits for faulthandler's thread) before
+        it looks at the file or writes, so the line never lands mid-dump."""
+        import faulthandler
+        crash.enable_native()
+        order = []
+        try:
+            with mock.patch.object(faulthandler, 'dump_traceback_later',
+                                   side_effect=lambda *a, **k: order.append('arm')), \
+                    mock.patch.object(faulthandler, 'cancel_dump_traceback_later',
+                                      side_effect=lambda: order.append('cancel')):
+                crash.watch_stalls()
+                order.clear()
+                real = crash._fd_pos
+                with mock.patch.object(crash, '_fd_pos',
+                                       side_effect=lambda fh: order.append('look') or real(fh)):
+                    crash.stall_beat()
+            self.assertEqual(order[0], 'cancel')
+            self.assertLess(order.index('cancel'), order.index('look'))
+            self.assertEqual(order[-1], 'arm')
+        finally:
+            crash.disable_native()
+
+    def test_no_spurious_answer_line_from_our_own_notes(self):
+        """(c) Our own notes, from any thread, never look like a dump."""
+        import faulthandler
+        import threading
+        path = crash.enable_native()
+        try:
+            with mock.patch.object(faulthandler, 'dump_traceback_later'), \
+                    mock.patch.object(faulthandler, 'cancel_dump_traceback_later'):
+                crash.watch_stalls()
+                ts = [threading.Thread(target=lambda: [crash.native_note('Qt critical: x')
+                                                       for _ in range(200)]) for _ in range(3)]
+                for t in ts:
+                    t.start()
+                for _ in range(200):
+                    crash.stall_beat()
+                for t in ts:
+                    t.join()
+                crash.stall_beat()
+            text = path.read_text(encoding='utf-8')
+            self.assertNotIn(crash.RECOVERED, text)
+            self.assertEqual(text.count('Qt critical: x'), 600)
+        finally:
+            crash.disable_native()
+
+    def test_a_stack_fragment_without_a_header_is_no_report(self):
+        """What follows an answer line with no Timeout or Fatal line is the
+        rest of a dump the beat raced, not a crash of its own."""
+        frag = ('  File "/home/zelda/nexus/nexus/gui/app.py", line 353 in main\n'
+                '\nThread 0x00000000000000a1 (most recent call first):\n'
+                '  File "/home/zelda/nexus/nexus/gui/jobs.py", line 478 in run\n')
+        text = self.UI + self.STALL[:60] + '\n' + crash.RECOVERED + ' after 16 s\n' + frag
+        self.assertIsNone(crash.native_reading(text))
+        self.assertIsNotNone(crash.native_reading(text + self.DUMP))
+
+    def test_a_freeze_reads_the_same_with_windows_line_ends(self):
+        text = (self.UI.replace('\n', '\r\r\n') + self.STALL.replace('\n', '\r\n'))
+        out, frames = crash.native_reading(text)
+        self.assertTrue(out.startswith(crash.FREEZE))
+        self.assertEqual(frames[-1], 'nexus/gui/dashboard.py:relayout')
+        self.assertEqual(len(frames), 3)
+        answered = text + (crash.RECOVERED + ' after 11 s\n').replace('\n', '\r\r\n')
+        self.assertIsNone(crash.native_reading(answered))
+
+    def test_a_freeze_that_answered_again_is_no_report(self):
+        p = self.native(999995, self.UI + self.STALL + crash.RECOVERED + ' after 12 s\n')
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            self.assertEqual(crash.harvest(), [])
+        self.assertFalse(p.exists())
+        self.assertEqual(self.files(), [])
+
+    def test_only_the_watchdog_header_is_no_report(self):
+        """A kill -9 with nothing dumped: the header alone isn't a crash."""
+        self.native(999996, self.UI)
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            self.assertEqual(crash.harvest(), [])
+        self.assertEqual(self.files(), [])
+
+    def test_a_crash_after_an_answered_freeze_is_the_crash(self):
+        self.native(999997, self.UI + self.STALL + crash.RECOVERED + ' after 12 s\n' + self.DUMP)
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            [cid] = crash.harvest()
+        rec = crash.load(cid)
+        self.assertEqual(rec['type'], 'Segmentation fault')
+        self.assertEqual(rec['frames'], ['nexus/gui/app.py:main', 'nexus/gui/tiles.py:paintEvent'])
+        self.assertNotIn('Timeout', rec['traceback'])
+
+    def test_a_crash_during_a_freeze_is_the_crash(self):
+        self.native(999998, self.UI + self.STALL + '\n' + self.DUMP)
+        with mock.patch.object(crash, '_alive_pids', return_value=set()):
+            [cid] = crash.harvest()
+        rec = crash.load(cid)
+        self.assertEqual(rec['type'], 'Segmentation fault')
+        self.assertEqual(rec['frames'], ['nexus/gui/app.py:main', 'nexus/gui/tiles.py:paintEvent'])
+        self.assertIn('stopped answering', rec['traceback'])
+
     def test_ids_are_checked(self):
         for bad in ('../x', '20261105T120000Z-abcd/../../y', '', 'a' * 12 + '/'):
             self.assertIsNone(crash.load(bad))

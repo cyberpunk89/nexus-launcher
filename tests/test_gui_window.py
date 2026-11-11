@@ -5586,6 +5586,140 @@ class ForYou(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class HomeColumns(unittest.TestCase):
+    """w-101: Home froze for good after a click. The Dashboard chose its
+    columns from its own width, but that width is the scroll area's
+    viewport or the Dashboard's own minimum, whichever is wider, and both
+    the minimum and (through the content height) the vertical scroll bar
+    follow the column count. Near a breakpoint one column made it wide
+    enough for two and two narrow enough for one, forever, on the UI
+    thread. Each test gives the Stage a size that depends on the column
+    count, as the fuzz recorded (707 px wide in one column at a 698 px
+    viewport), and asserts the columns settle. A runaway is cut off after
+    CAP relayouts so a regression fails instead of hanging the suite."""
+    setUpClass = Window.__dict__['setUpClass']
+    tearDownClass = Window.__dict__['tearDownClass']
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+    CAP = 40
+
+    def _home(self):
+        w = self.win
+        w.prefs.dashboard = nx.dash_default()
+        w.go(w.HOME)
+        w.dashboard.refresh()
+        QApplication.processEvents()
+        return w, w.dashboard
+
+    def _count(self, dash):
+        """Count column changes; past CAP, relayout stops doing anything."""
+        D = type(dash)
+        real = D.relayout
+        seen = {'changes': 0, 'calls': 0}
+
+        def relayout(this, force=False):
+            seen['calls'] += 1
+            if seen['calls'] > self.CAP:
+                return
+            before = this._cols
+            real(this, force)
+            if this._cols != before:
+                seen['changes'] += 1
+        p = mock.patch.object(D, 'relayout', relayout)
+        p.start()
+        self.addCleanup(p.stop)
+        return seen
+
+    def _stage_follows_cols(self, dash, width=None, height=None):
+        """The Stage's minimum follows the column count `relayout` just set."""
+        stage = dash.stage
+        real = type(stage).set_editing
+
+        def set_editing(this, on, size, shelf=None):
+            real(this, on, size, shelf)
+            if this is stage:
+                if width:
+                    this.setMinimumWidth(width.get(dash._cols, 0))
+                if height:
+                    this.setMinimumHeight(height.get(dash._cols, 0))
+        p = mock.patch.object(type(stage), 'set_editing', set_editing)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _resize_to(self, dash, target):
+        """Window width that gives the Dashboard `target` px (as it is now)."""
+        w = self.win
+        w.resize(w.width() + target - dash.width(), w.height())
+        QApplication.processEvents()
+
+    def test_a_minimum_wider_than_the_breakpoint_settles(self):
+        w, dash = self._home()
+        self._resize_to(dash, 900)
+        self.assertEqual(dash._cols, 2)
+        self._stage_follows_cols(dash, width={1: 707})
+        dash.relayout(force=True)
+        QApplication.processEvents()
+        seen = self._count(dash)
+        w.resize(w.width() - (dash.width() - 698), w.height())
+        for _ in range(3):
+            QApplication.processEvents()
+        self.assertLessEqual(seen['calls'], 3, seen)
+        self.assertLessEqual(seen['changes'], 1, seen)
+
+    def test_the_scroll_bar_coming_and_going_settles(self):
+        """Two columns taller than the viewport, one shorter: the bar comes
+        with two and takes the width two needed."""
+        w, dash = self._home()
+        view = w.homeview
+        w.resize(w.width(), 1600)                 # one column fits without the bar
+        self._resize_to(dash, 900)
+        self._stage_follows_cols(dash, height={2: 4000, 3: 4000})
+        dash.relayout(force=True)
+        for _ in range(3):
+            QApplication.processEvents()
+        bar = view.verticalScrollBar()
+        self.assertTrue(bar.isVisible())
+        seen = self._count(dash)
+        # Just wide enough for two without the bar, too narrow with it.
+        sb = bar.width()
+        self.assertGreater(sb, 0)
+        no_bar = dash.width() + sb
+        w.resize(w.width() + (700 + sb // 2) - no_bar, w.height())
+        for _ in range(10):                       # one flip per pass: a busy loop
+            QApplication.processEvents()
+        self.assertLessEqual(seen['calls'], 3, seen)
+        self.assertLessEqual(seen['changes'], 1, seen)
+
+    def test_a_restyle_or_scale_change_checks_the_columns_again(self):
+        """Size (Appearance) changes the bar and margins without resizing
+        the view: a restyle alone, and set_appearance, re-run the choice."""
+        w, dash = self._home()
+        self._resize_to(dash, 900)
+        self.assertEqual(dash._cols, 2)
+        D = type(dash)
+        with mock.patch.object(D, 'avail_width', return_value=600):
+            QApplication.instance().setStyleSheet(nx.build_stylesheet())
+            for _ in range(3):
+                QApplication.processEvents()
+            self.assertEqual(dash._cols, 1)
+        before = dict(w.prefs.appearance)
+        try:
+            with mock.patch.object(D, 'avail_width', return_value=1200):
+                w.set_appearance(dict(before, scale=1.25), save=False)
+                for _ in range(3):
+                    QApplication.processEvents()
+                self.assertEqual(dash._cols, 3)
+        finally:
+            w.set_appearance(before, save=False)
+
+    def test_columns_follow_the_window_as_before(self):
+        """Normal widths still give 1, 2 and 3 columns."""
+        w, dash = self._home()
+        for target, cols in ((1200, 3), (900, 2), (600, 1)):
+            self._resize_to(dash, target)
+            self.assertEqual(dash._cols, cols, (target, dash.width()))
+
+
 class HomeAsk(unittest.TestCase):
     """The install count ask on Home (w-102): from the 3rd start, while
     [stats] count is unset; answered once, never again."""

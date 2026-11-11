@@ -288,8 +288,9 @@ def _title(crash: dict | None, kind: str) -> str:
     where = f"({__version__}, {platform.OS_NAME})"
     if crash:
         frame = (crash.get('frames') or ['?'])[-1]
-        tag = {'native-crash': 'crash', 'gui-exception': 'crash', 'cli-internal': 'cli',
-               'game-failure': 'game'}.get(kind, 'report')
+        tag = 'freeze' if crash.get('freeze') else \
+            {'native-crash': 'crash', 'gui-exception': 'crash', 'cli-internal': 'cli',
+             'game-failure': 'game'}.get(kind, 'report')
         return f"[{tag}] {crash.get('type') or 'error'} in {frame} {where}"[:200]
     return f"[report] Problem report {where}"
 

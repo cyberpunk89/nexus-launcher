@@ -50,7 +50,12 @@ def when_text(stamp: str | None) -> str:
     return f"{t.day} {t.strftime('%b, %H:%M')}"        # no %-d: Windows has none
 
 
+FREEZE_TEXT = "Nexus stopped answering"   # a native-crash record with freeze: true (w-101)
+
+
 def crash_title(r: dict) -> str:
+    if r.get('freeze'):
+        return FREEZE_TEXT                 # its type says the same
     kind = KIND_TEXT.get(r.get('kind'), "Problem report")
     typ = str(r.get('type') or '').strip()
     return f"{kind}: {typ}" if typ and typ != 'unknown' else kind

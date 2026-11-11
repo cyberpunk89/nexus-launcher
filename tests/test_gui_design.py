@@ -615,6 +615,23 @@ class DashboardModel(unittest.TestCase):
                          'activity')
         self.assertIsNone(nx.system_status([], [], [], {}, crash=None)['attention'])
 
+    @linux_features
+    def test_a_freeze_says_it_froze(self):
+        """w-101: a freeze record (native-crash with freeze: true) reads as
+        one on Home; an old record without the key is still a crash."""
+        froze = {'id': '20261105T120000Z-abcd', 'kind': 'native-crash', 'freeze': True}
+        att = nx.system_status([], [], [], {}, crash=froze)['attention']
+        self.assertTrue(att['text'].startswith("Nexus stopped answering"), att)
+        self.assertEqual(att['crash'], froze['id'])
+        old = {'id': '20261105T120000Z-abcd', 'kind': 'native-crash'}
+        self.assertTrue(nx.system_status([], [], [], {}, crash=old)['attention']['text']
+                        .startswith("Nexus closed unexpectedly"))
+        from nexus.gui.report_page import crash_title
+        self.assertEqual(crash_title(dict(froze, type='Nexus stopped answering')),
+                         "Nexus stopped answering")
+        self.assertEqual(crash_title(dict(old, type='Segmentation fault')),
+                         "Nexus crashed: Segmentation fault")
+
     def test_cols(self):
         self.assertEqual([nx.dash_cols(w) for w in (500, 800, 1200, 2000)], [1, 2, 3, 3])
 

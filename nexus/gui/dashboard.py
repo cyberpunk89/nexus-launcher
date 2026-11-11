@@ -9,7 +9,7 @@ from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
     QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+    QLabel, QProgressBar, QPushButton, QSizePolicy, QStyle, QToolButton, QVBoxLayout, QWidget)
 
 from nexus import gamedb, smart, storeinfo
 from nexus.features import has
@@ -338,7 +338,8 @@ def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict]
     if crash and crash.get('kind') == 'native-crash' and crash.get('id'):
         n = int(crash.get('count') or 1)
         attention = {'key': 'report', 'glyph': 'fail', 'role': 'danger',
-                     'text': "Nexus closed unexpectedly" + (f" ({n} times)" if n > 1 else ""),
+                     'text': ("Nexus stopped answering" if crash.get('freeze') else
+                              "Nexus closed unexpectedly") + (f" ({n} times)" if n > 1 else ""),
                      'sub': "Report it: you see every line before anything is sent",
                      'crash': crash['id']}
     elif running:
@@ -2338,6 +2339,13 @@ class Dashboard(QWidget):
         lay.addLayout(self.grid)
         lay.addLayout(foot)
         self._cols = 0
+        self._laying = False                      # inside relayout (w-101)
+        self._relayout_pending = False            # ... and asked for another
+        self._cols_timer = QTimer(self)           # a column check for the next pass
+        self._cols_timer.setSingleShot(True)
+        self._cols_timer.setInterval(0)
+        self._cols_timer.timeout.connect(self._check_cols)
+        self._view = getattr(hub, 'homeview', None)
         self._skipped: set | None = None          # what the last relayout left out
         for kind, cls in DASH_WIDGETS.items():
             w = cls()
@@ -2353,6 +2361,10 @@ class Dashboard(QWidget):
         self._beside: set = set()             # widgets in a Wide Stage's row (as tall as its art)
         self.stage.on_height = self._fit_beside
         self.set_density(getattr(hub.prefs, 'density', 'comfortable'))
+        if self._view is not None:
+            # Last, once everything it reads exists: the view's size, not
+            # ours, sets the columns (w-101).
+            self._view.installEventFilter(self)
 
     @property
     def stage(self) -> StageWidget:
@@ -2406,13 +2418,66 @@ class Dashboard(QWidget):
         self.foryou.sync_pill()
 
     # ---- layout ----
+    # Columns come from the width Home's scroll area offers, never from our
+    # own width (w-101). The scroll area makes us as wide as its viewport or
+    # our minimum, whichever is more, and the vertical bar comes and goes
+    # with our height: both follow the column count. Near a breakpoint one
+    # column came out wide enough for two and two narrow enough for one, and
+    # resizeEvent -> relayout flipped them forever on the UI thread.
+    def avail_width(self) -> int:
+        """Home's width for the grid: the scroll area as if the vertical bar
+        were always there, less the page margins. Nothing in the grid moves it."""
+        view = self._view
+        host = view.widget() if view is not None else None
+        if host is None or not host.isAncestorOf(self):
+            return self.width()
+        w = view.maximumViewportSize().width()
+        bar = view.verticalScrollBar()
+        if view.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded and \
+                not view.style().styleHint(QStyle.StyleHint.SH_ScrollBar_Transient, None, bar):
+            w -= bar.sizeHint().width()
+        m = host.layout().contentsMargins() if host.layout() is not None else None
+        if m is not None:
+            w -= m.left() + m.right()
+        return w if w > 0 else self.width()
+
+    def eventFilter(self, obj, ev):
+        if obj is self._view:
+            if ev.type() == QEvent.Type.Resize:
+                self._check_cols()
+            elif ev.type() == QEvent.Type.StyleChange:
+                # Size (Appearance) moves the bar and margins without a
+                # resize: look again once the restyle is done.
+                self._cols_timer.start()
+        return False
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        if dash_cols(self.width()) != self._cols:
-            self.relayout()
+        self._check_cols()
+
+    def _check_cols(self):
+        if not self._relayout_pending and dash_cols(max(self.avail_width(), 1)) == self._cols:
+            return
+        if self._laying:
+            # A resize that relayout itself caused: look again on the next
+            # pass rather than lay out inside a layout.
+            self._cols_timer.start()
+            return
+        self.relayout()
 
     def relayout(self, force=False):
-        cols = dash_cols(max(self.width(), 1))
+        if self._laying:
+            self._relayout_pending = True
+            self._cols_timer.start()
+            return
+        self._laying, self._relayout_pending = True, False
+        try:
+            self._relayout()
+        finally:
+            self._laying = False
+
+    def _relayout(self):
+        cols = dash_cols(max(self.avail_width(), 1))
         while self.grid.count():
             self.grid.takeAt(0)
         for c in range(6):
