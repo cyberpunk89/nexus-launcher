@@ -38,6 +38,17 @@ class Events(unittest.TestCase):
         self.assertEqual(job.events['exe-candidates']['chosen'], '/a.exe')
         self.assertNotIn('@nexus', job.detail)
 
+    def test_progress_shows_of_about(self):
+        # A download with an Original Size: "of about" that, never a percent.
+        job = nx.Job(['nexus-cli', '/r', '--yes'], "Installing T", None, 'install', 'T')
+        feed(job, '@nexus progress {"written": 1500000000, "expected": 38000000000}')
+        self.assertTrue(job.detail.startswith("1.5 GB of about 38.0 GB written"), job.detail)
+        self.assertIsNone(job.progress)
+        feed(job, '@nexus stage {"stage": "finish", "step": "Looking for the game"}')
+        self.assertEqual(job.events['stage']['stage'], 'finish')
+        feed(job, '@nexus progress {"written": 5, "expected": "junk"}')
+        self.assertTrue(job.detail.startswith("5 B written"), job.detail)
+
     def test_move_shows_how_much_is_copied(self):
         job = nx.Job(['nexus-cli', '--move', 't', '/mnt/b'], "Moving T", 't', 'task')
         feed(job, '@nexus move {"done": 500000000, "total": 2000000000}')

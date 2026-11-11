@@ -15,7 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .common import atomic_write, emit_event, existing_ancestor, log, make_slug
+from .common import (atomic_write, CANCEL_HOOKS, emit_event, existing_ancestor, log,
+    make_slug)
 from nexus import platform
 from nexus.inno import inno_header
 
@@ -353,25 +354,253 @@ def incomplete_installs(install_base: Path) -> list[dict]:
 
 
 class InstallProgress(threading.Thread):
-    """While the silent installer runs: how much it has written, every few
-    seconds, as a `progress` event (the size of the target dir)."""
+    """Measures the folder setup writes into: each tick sends a `progress`
+    event when the size changed ({written, expected when known}) and calls
+    `on_tick`. With `backoff` (a download's install, see InstallReport) the
+    next tick waits max(interval, 10x the last walk), at most MAX_WAIT, so a
+    slow disk (Defender scanning each new file on Windows) isn't walked
+    nonstop; otherwise every `interval`."""
 
-    def __init__(self, target: Path, interval: float = 3.0):
+    MAX_WAIT = 20.0
+
+    def __init__(self, target: Path | None = None, interval: float = 3.0, on_tick=None,
+                 expected: int | None = None, clock=time.monotonic, backoff: bool = True):
         super().__init__(daemon=True)
-        self.target, self.interval = target, interval
+        self.target, self.expected = target, expected
+        self.interval, self.on_tick, self._clock, self.backoff = interval, on_tick, clock, backoff
+        self.walk_s = 0.0
+        self.written = self.rate = None
+        self._last, self._sample = -1, None
         self._stop_evt = threading.Event()
 
+    def wait_s(self) -> float:
+        if not self.backoff:
+            return self.interval
+        return min(self.MAX_WAIT, max(self.interval, 10 * self.walk_s))
+
     def run(self):
+        while not self._stop_evt.wait(self.wait_s()):
+            self.tick()
+
+    def tick(self):
+        if self.target is None:
+            return
         from nexus import cleanup as C
-        last = -1
-        while not self._stop_evt.wait(self.interval):
+        t0 = self._clock()
+        try:
             n = C.dir_size(self.target) if self.target.exists() else 0
-            if n != last:
-                last = n
-                emit_event('progress', {'written': n})
+        except OSError:
+            n = 0
+        t1 = self._clock()
+        if self._stop_evt.is_set():         # stopped during a long walk: say nothing
+            return
+        self.walk_s = max(0.0, t1 - t0)
+        if self._sample and t1 > self._sample[0] and n >= self._sample[1]:
+            self.rate = int((n - self._sample[1]) / (t1 - self._sample[0]))
+        self._sample, self.written = (t1, n), n
+        if n != self._last:
+            self._last = n
+            emit_event('progress', {'written': n, **({'expected': self.expected}
+                                                     if self.expected else {})})
+        if self.on_tick:
+            self.on_tick(self)
 
     def stop(self):
         self._stop_evt.set()
+
+
+def _now_iso() -> str:
+    return time.strftime('%Y-%m-%dT%H:%M:%S')
+
+
+class InstallReport:
+    """What an install tells the world while it runs, in one place: `stage`
+    and `progress` events for the GUI's job, and with --from-torrent HASH
+    also the progress file of the downloads pipeline
+    (DATA_DIR/pipeline/<hash>.json, see nexus/pipeline.py: how an install the
+    agent runs shows up in a window) and the marks in torrents.json.
+
+        with InstallReport(args.from_torrent) as report:
+            ...the folder and the safety gate check out...
+            report.begin()                       # install_started
+            report.stage('install', "Installing")
+            with report.measure(target, report.expected, update):
+                run setup.exe
+            report.installed(slug)               # installed + installed_at
+
+    Leaving the block any other way after begin() marks install_failed with
+    install_failed_reason ('error', or what failed() said); a plain exit 0
+    (the user said no at a prompt) puts install_started back instead. Cancel
+    (SIGTERM, Windows' cancel event) ends the process with os._exit, so a
+    cancel hook marks it 'cancelled' first. A heartbeat thread rewrites the
+    file every `heartbeat` seconds whatever the folder walk is doing.
+    Never fails an install: a file it can't write is skipped."""
+
+    def __init__(self, h: str | None, *, interval: float = 3.0, heartbeat: float = 3.0):
+        from nexus import torrent as T
+        try:
+            self.hash = T.check_hash(h) if h else None
+        except T.TorrentError:
+            self.hash = None
+        self.interval, self.ok, self.meta, self.reason = interval, False, {}, None
+        self.walker = None
+        self._begun = self._done = False
+        self._before = None                 # install_started as it was before begin()
+        self._clock, self._verify_at = time.monotonic, None
+        now = int(time.time())
+        self.data = {'v': 1, 'hash': self.hash, 'slug': None, 'stage': None, 'step': '',
+                     'written': None, 'expected': None, 'rate': None, 'done': None,
+                     'total': None, 'update': False, 'dest': None, 'started_at': now,
+                     'updated_at': now, 'pid': os.getpid()}
+        self._lock = threading.Lock()
+        self._beat = threading.Event()
+        self._heart = threading.Thread(target=self._heartbeat, args=(heartbeat,), daemon=True)
+
+    @property
+    def slug(self):
+        return self.data['slug']
+
+    @slug.setter
+    def slug(self, slug):
+        self.data['slug'] = slug
+
+    @property
+    def expected(self) -> int | None:
+        """The download's "Original Size" (saved at Grab), if it had one."""
+        try:
+            return int(self.meta['original_bytes']) or None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def __enter__(self):
+        return self
+
+    def begin(self) -> None:
+        """The install really starts (after the folder and safety checks)."""
+        if self._begun:
+            return
+        self._begun = True
+        if not self.hash:
+            return
+        from nexus import torrent as T
+        T.prune_progress()                  # the old leftovers of killed installs
+        meta = T.load_tracked().get(self.hash)
+        self.meta = meta if isinstance(meta, dict) else {}
+        self._before = self.meta.get('install_started')
+        _torrent_mark(self.hash, install_started=_now_iso())
+        self.data['started_at'] = int(time.time())
+        CANCEL_HOOKS.append(self._cancelled)
+        self._heart.start()
+
+    def __exit__(self, et, ev, tb):
+        if self.hash and self._cancelled in CANCEL_HOOKS:
+            CANCEL_HOOKS.remove(self._cancelled)
+        if self._done:
+            return False
+        aborted = et is SystemExit and not ev.code
+        self._end()
+        if self.hash and self._begun and not self.ok:
+            if aborted:                     # "Proceed? n": as if it never started
+                _torrent_mark(self.hash, install_started=self._before)
+            else:
+                _torrent_mark(self.hash, install_failed=_now_iso(),
+                              install_failed_reason=self.reason or 'error')
+        return False
+
+    def _end(self) -> None:
+        """Stop the threads and remove the progress file."""
+        self._done = True
+        self._beat.set()
+        if self.walker:
+            self.walker.stop()
+        with self._lock:
+            self._closed = True
+        if self.hash and self._begun:
+            from nexus import torrent as T
+            try:
+                T.clear_progress(self.hash)
+            except OSError:
+                pass
+
+    def _cancelled(self) -> None:
+        """Cancel hook (before os._exit): the install ended, cancelled."""
+        if self._done:
+            return
+        self._end()
+        if not self.ok:
+            _torrent_mark(self.hash, install_failed=_now_iso(),
+                          install_failed_reason='cancelled')
+
+    def failed(self, reason: str) -> None:
+        """Why the install is about to fail ('uac'), for its card."""
+        self.reason = reason
+
+    def stage(self, stage: str, step: str, **extra) -> None:
+        """verify | install | finish, with a step in words; verify also gives
+        done/total in bytes."""
+        with self._lock:
+            self.data.update(stage=stage, step=step,
+                             **{k: v for k, v in extra.items() if k in ('done', 'total')})
+        emit_event('stage', {'stage': stage, 'step': step, **extra})
+        self._write()
+
+    def verify(self, done: int, total: int) -> None:
+        """verify_bins' bytes: a stage event at most about once a second."""
+        now = self._clock()
+        if self._verify_at is not None and done < total and now - self._verify_at < 1.0:
+            return
+        self._verify_at = now
+        self.stage('verify', "Checking files", done=done, total=total)
+
+    @contextlib.contextmanager
+    def measure(self, target: Path | None, expected: int | None = None, update: bool = False):
+        """Measure the folder setup writes while the block runs. An update
+        goes on top of a full folder, so it has nothing to expect."""
+        expected = None if update or target is None else expected
+        with self._lock:
+            self.data.update(dest=str(target) if target else None, expected=expected,
+                             update=bool(update), written=0 if target else None, rate=None)
+        self._write()
+        if target is None:
+            yield self
+            return
+        self.walker = InstallProgress(target, interval=self.interval, on_tick=self._tick,
+                                      expected=expected, backoff=bool(self.hash))
+        self.walker.start()
+        try:
+            yield self
+        finally:
+            self.walker.stop()
+            self.walker.join(timeout=1)
+
+    def installed(self, slug: str) -> None:
+        self.ok = True
+        if self.hash:
+            _torrent_mark(self.hash, installed=True, slug=slug, installed_at=_now_iso())
+
+    def _tick(self, walker: InstallProgress) -> None:
+        with self._lock:
+            self.data.update(written=walker.written, rate=walker.rate)
+        self._write()
+
+    def _heartbeat(self, every: float) -> None:
+        while not self._beat.wait(every):
+            self._write()
+
+    _closed = False
+
+    def _write(self) -> None:
+        if not self.hash or not self._begun:
+            return
+        from nexus import torrent as T
+        with self._lock:                    # so nothing lands after _end's clear
+            if self._closed or not self.data['stage']:
+                return
+            self.data['updated_at'] = int(time.time())
+            try:
+                T.write_progress(self.hash, dict(self.data))
+            except (OSError, T.TorrentError):
+                pass
 
 
 def parse_md5_file(md5_path: Path) -> dict[str, str]:
@@ -410,7 +639,9 @@ def _parallel_md5(paths: list[Path]):
         yield from pool.map(compute_md5, paths)
 
 
-def verify_bins(repack_dir: Path) -> bool:
+def verify_bins(repack_dir: Path, on_bytes=None) -> bool:
+    """MD5 every file the repack's MD5 list names. `on_bytes(done, total)`
+    hears the bytes checked so far after each file (the pipeline's Verify)."""
     md5_dir = repack_dir / 'MD5'
     md5_files = list(md5_dir.glob('*.md5')) if md5_dir.exists() else []
     if not md5_files:
@@ -436,13 +667,18 @@ def verify_bins(repack_dir: Path) -> bool:
     if not todo:
         return True
 
-    total_mb = sum(fp.stat().st_size for _, fp, _ in todo) / 1024 / 1024
+    sizes = [fp.stat().st_size for _, fp, _ in todo]
+    total_mb = sum(sizes) / 1024 / 1024
     log.print(f"  Hashing {len(todo)} file(s), {total_mb:.0f} MB...")
+    if on_bytes:
+        on_bytes(0, sum(sizes))
 
     all_ok = True
     filepaths = [fp for _, fp, _ in todo]
     for done, ((filename, _, expected_hash), actual) in enumerate(
             zip(todo, _parallel_md5(filepaths)), 1):
+        if on_bytes:
+            on_bytes(sum(sizes[:done]), sum(sizes))
         if actual == expected_hash:
             log.print(f"  [{done}/{len(todo)}] {filename}: OK")
         else:
@@ -655,4 +891,5 @@ def preflight_hard_disk_check(install_base: Path, repack_size: int, skip: bool =
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .config import load_config  # noqa: E402
+from .downloads import _torrent_mark  # noqa: E402
 from .registry import load_registry, registry_get  # noqa: E402

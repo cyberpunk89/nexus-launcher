@@ -4,9 +4,10 @@ import json
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
-from .common import STEAM_ROOT
+from .common import drive_of, existing_ancestor, STEAM_ROOT
 
 
 def cmd_repack_feed(refresh: bool, as_json: bool) -> None:
@@ -95,9 +96,32 @@ def _torrent_dest(s: dict) -> str | None:
         return None
 
 
-def cmd_repack_page(slug: str, as_json: bool) -> None:
+def _committed(s: dict, base: Path) -> dict | None:
+    """{drive id: bytes} that the downloads and installs in flight still
+    need on each drive (the pipeline's cards), or None when the torrent
+    client can't be asked."""
+    from nexus import torrent as T
+    if not s['client']:
+        return None
+    try:
+        c = T.client(s)
+        cards, _drives = _pipeline(T.all_status(s, c), s, None, base)
+    except T.TorrentError:
+        return None
+    out = {}
+    for card in cards:
+        for role in ('download', 'install'):
+            drive = card['drives'][role]
+            if drive is not None and card['need'][role]:
+                out[drive] = out.get(drive, 0) + card['need'][role]
+    return out
+
+
+def cmd_repack_page(slug: str, as_json: bool, base: Path | None = None) -> None:
     """What a grab would download: sizes, where it goes and the free space
-    there. The magnet links themselves aren't printed."""
+    there, and on the drive the game installs to (`base`), with what the
+    downloads already in flight still need (`committed`). The magnet links
+    themselves aren't printed."""
     from nexus import net, repackindex as RI, torrent as T
     try:
         page = RI.fetch_page(slug)
@@ -114,9 +138,21 @@ def cmd_repack_page(slug: str, as_json: bool) -> None:
             free = None
     out = {'slug': slug, 'title': page['title'], 'url': page['url'],
            'repack_size': page['repack_size'], 'original_size': page['original_size'],
-           'size_bytes': _size_bytes(page['repack_size']), 'magnets': len(page['magnets']),
+           'size_bytes': _size_bytes(page['repack_size']),
+           'original_bytes': _size_bytes(page['original_size']), 'magnets': len(page['magnets']),
            'hv': page.get('hv'),
            'client': s['client'], 'dest': dest, 'free_bytes': free}
+    if base is not None:                    # the install side (Grab's pre-flight check)
+        root = existing_ancestor(Path(base).expanduser())
+        dl, inst = drive_of(dest) if dest else None, drive_of(root)
+        try:
+            inst_free = shutil.disk_usage(root).free
+        except OSError:
+            inst_free = None
+        out.update({'install_dest': str(base), 'install_free': inst_free,
+                    'dest_drive': dl and dl['id'], 'dest_mount': dl and dl['mount'],
+                    'install_drive': inst and inst['id'],
+                    'install_mount': inst and inst['mount'], 'committed': _committed(s, base)})
     if as_json:
         print(json.dumps(out))
         return
@@ -127,6 +163,9 @@ def cmd_repack_page(slug: str, as_json: bool) -> None:
         print(f"  {hypervisor.note(page['hv'])}")
     if dest:
         print(f"  downloads to {dest}" + (f" ({free / (1 << 30):.1f} GB free)" if free else ''))
+    if out.get('install_free') is not None:
+        print(f"  installs to {out['install_dest']} "
+              f"({out['install_free'] / (1 << 30):.1f} GB free)")
 
 
 def cmd_repack_grab(slug: str, appid: str | None, auto_install: bool, as_json: bool) -> None:
@@ -139,6 +178,13 @@ def cmd_repack_grab(slug: str, appid: str | None, auto_install: bool, as_json: b
         meta = {'source': 'fitgirl', 'slug': slug, 'title': page['title']}
         if appid:
             meta['appid'] = appid
+        # Sizes for the downloads pipeline (nexus/pipeline.py): what comes
+        # down, and what the install should write ("about": a label).
+        for key, text in (('repack_bytes', page.get('repack_size')),
+                          ('original_bytes', page.get('original_size'))):
+            n = _size_bytes(text)
+            if n:
+                meta[key] = n
         got = T.add(page['magnets'][0]['uri'], auto_install=auto_install, meta=meta)
     except (net.NetError, T.TorrentError) as e:
         if as_json:
@@ -199,10 +245,63 @@ def _torrent_mark(h: str, **fields) -> None:
         pass
 
 
-def cmd_torrent(args) -> None:
+def _pipeline(rows: list, s: dict, info: dict | None, base: Path) -> tuple[list, list]:
+    """The downloads pipeline's cards and drives for `rows` (all_status):
+    the install progress files folded in (a pid snapshot only when some
+    file is recent), and every drive a card still writes to, with its free
+    space. Runs on every poll (2 s while the page shows), so a folder is
+    looked up only for a download still coming: a finished, gone or other
+    torrent's folder (maybe a network share that's down) is never touched.
+    Windows: realpath turns a mapped drive (Z:) into its UNC path, so its
+    "mount" is the share. See nexus/pipeline.py."""
+    from nexus import pipeline as PL, platform, torrent as T
+    now = time.time()
+    progress = T.load_progress()
+    alive = set()
+    if any(PL.recent(p, now) for p in progress.values()):
+        try:                                       # never os.kill(pid, 0): Windows kills
+            alive = {p.pid for p in platform.processes()}
+        except OSError:
+            pass
+    found = {}                                     # id -> mount
+    install = drive_of(existing_ancestor(Path(base).expanduser()))
+    dest = s.get('download_dir') or (info or {}).get('download_dir')
+    download = drive_of(dest) if dest else None
+    roles = {}
+    for role, d in (('download', download), ('install', install)):
+        if d:
+            found[d['id']] = d['mount']
+            roles.setdefault(d['id'], []).append(role)
+    by_dir = {}
+    for r in rows:
+        folder = r.get('dir')
+        if (not r.get('tracked') or not folder or folder in by_dir
+                or PL.download_state(r) in ('done', 'gone') or r.get('installed')):
+            continue
+        d = drive_of(folder)
+        by_dir[folder] = d and d['id']
+        if d:
+            found[d['id']] = d['mount']
+            if 'download' not in roles.setdefault(d['id'], []):
+                roles[d['id']].append('download')
+    drives = []
+    for drive, mount in found.items():
+        try:
+            u = shutil.disk_usage(mount)
+        except OSError:
+            continue
+        drives.append({'id': drive, 'mount': mount, 'free': u.free, 'total': u.total,
+                       'roles': roles[drive]})
+    cards = PL.cards(rows, progress, now, alive,
+                     drive_ids={'install': install and install['id'], 'download': by_dir})
+    return cards, PL.forecast(cards, drives)
+
+
+def cmd_torrent(args, base: Path | None = None) -> None:
     """--torrent-add / --torrents [--all] / --torrent-pause|resume|remove /
     --torrent-test / --torrent-done / --torrent-forget."""
-    from nexus import torrent as T
+    from nexus import pipeline, torrent as T
+    cards = []
     try:
         if args.torrent_test or args.torrent_detect:
             if args.torrent_detect:
@@ -249,8 +348,10 @@ def cmd_torrent(args) -> None:
             rows, info = T.all_status(s, c), c.info()     # one client: one session-id handshake
             if info.get('config_dir'):
                 info['others'] = T.other_transmissions(info['config_dir'])
+            cards, drives = _pipeline(rows, s, info, base) if base else ([], [])
             if args.json:
-                print(json.dumps({'torrents': rows, 'client': info}))
+                print(json.dumps({'torrents': rows, 'client': info, 'pipeline': cards,
+                                  'drives': drives}))
                 return
             for o in info.get('others') or []:
                 print(f"  [!] {o['name']} (pid {o['pid']}, {o['config_dir']}) is another "
@@ -269,7 +370,11 @@ def cmd_torrent(args) -> None:
         return
     if not rows:
         print("No downloads added from Nexus." if not args.all else "No torrents.")
+    by_hash = {c['hash']: c for c in cards} if args.all else {}
     for r in rows:
+        if r.get('hash') in by_hash:               # a download on its way to Play
+            print(f"  {pipeline.describe(by_hash[r['hash']])}")
+            continue
         state = ("gone from the client" if r.get('gone') else "installed" if r.get('installed')
                  else "done" if r.get('done') else f"{r['percent']:.0f}%")
         print(f"  {r['name'] or r['hash']}: {state}")

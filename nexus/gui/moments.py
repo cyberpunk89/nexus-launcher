@@ -28,7 +28,7 @@ whole kinds (a kind or an alert kind)."""
 import time
 from datetime import date, datetime, timedelta
 
-from nexus import achievements, alerts, smart
+from nexus import achievements, alerts, pipeline, smart
 from nexus.features import has
 
 KINDS = ('broken', 'running', 'friends', 'store', 'update', 'achievements', 'idle', 'disk')
@@ -44,7 +44,7 @@ QUIET_HOUR = 4                      # Quiet until tomorrow ends at 04:00 local
 IDLE_MOMENT_DAYS = 5                # Pick up again (the Unfinished shelf waits 30)
 DISK_CRITICAL = 0.05                # free share under this: something broken
 DISK_FULL = 0.80                    # used share over this: almost full (System tile warns too)
-READY_HOURS = 24                    # a finished install stays "Ready to play" this long
+READY_HOURS = pipeline.READY_HOURS  # a finished install stays "Ready to play" this long
 ENDING_HOURS = 48                   # a sale ending this soon goes first
 ACH_CLOSE = 0.75                    # "close to 100 %" from this share
 

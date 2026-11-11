@@ -69,7 +69,8 @@ once. Games you own but haven't installed are there too, with an Install button.
   before an uninstall, and a running game is never uninstalled.
 - **Health checks:** a checklist of what's ready and what's missing, with a fix for each.
 - **Downloads:** shows and controls your Transmission or qBittorrent downloads, and tells you
-  when a repack you have gets an update.
+  when a repack you have gets an update. Before a download starts, Nexus says how much space
+  it needs on the download and install drives, and an install shows how far along it is.
 
 ### Theatre mode, for the couch
 

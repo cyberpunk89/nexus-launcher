@@ -269,6 +269,25 @@ def dir_size_bytes(path: Path) -> int:
     return C.dir_size(path)
 
 
+def drive_of(path) -> dict | None:
+    """{'id', 'mount'} of the drive an existing path is on: id is st_dev as
+    text (Windows: the volume serial), mount the nearest mount point above
+    it. None when the path isn't on this machine (a NAS folder the torrent
+    client names from elsewhere)."""
+    try:
+        p = os.path.realpath(os.path.expanduser(str(path)))
+        dev = os.stat(p).st_dev
+    except (OSError, ValueError, TypeError):
+        return None
+    m = p
+    while not os.path.ismount(m):
+        parent = os.path.dirname(m)
+        if parent == m:
+            break
+        m = parent
+    return {'id': str(dev), 'mount': m}
+
+
 def existing_ancestor(path: Path) -> Path:
     """Walk up from path to the nearest directory that actually exists, for
     shutil.disk_usage() on a location that hasn't been created yet."""
@@ -294,12 +313,26 @@ def _terminate_active_proc() -> None:
     nxplatform.kill_tree(proc)
 
 
+# Called on Cancel before os._exit, which skips `with` blocks and atexit:
+# how an install records that it ended (InstallReport). Each must be quick.
+CANCEL_HOOKS: list = []
+
+
+def run_cancel_hooks() -> None:
+    for fn in list(CANCEL_HOOKS):
+        try:
+            fn()
+        except Exception:                                 # noqa: BLE001 — exiting anyway
+            pass
+
+
 def _handle_sigterm(signum, frame) -> None:
     try:
         log.print("\n\n  [!] Cancelled — stopping the running step...")
     except Exception:
         pass
     _terminate_active_proc()
+    run_cancel_hooks()
     os._exit(130)  # 128+SIGTERM, the usual shell convention for "killed"
 
 

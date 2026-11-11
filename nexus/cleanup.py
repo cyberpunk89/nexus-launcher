@@ -37,21 +37,34 @@ CATEGORIES = {
 
 
 def dir_size(path: Path) -> int:
-    """Bytes under path (stats only, symlinks not followed)."""
-    total = 0
+    """Bytes under path (stats only; symlinks are neither followed nor
+    counted). os.scandir: on Windows a DirEntry carries its size from the
+    directory listing, so the walk costs no extra call per file; the install
+    progress walks a folder that setup writes into every few seconds."""
     try:
         if path.is_symlink():
             return 0
         if path.is_file():
             return path.stat().st_size
-        for root, dirs, files in os.walk(path, followlinks=False):
-            for f in files:
+    except OSError:
+        return 0
+    total, todo = 0, [os.fspath(path)]
+    while todo:
+        try:
+            it = os.scandir(todo.pop())
+        except OSError:
+            continue
+        with it:
+            for e in it:
                 try:
-                    total += os.lstat(os.path.join(root, f)).st_size
+                    if e.is_symlink():
+                        continue
+                    if e.is_dir(follow_symlinks=False):
+                        todo.append(e.path)
+                    else:
+                        total += e.stat(follow_symlinks=False).st_size
                 except OSError:
                     pass
-    except OSError:
-        pass
     return total
 
 

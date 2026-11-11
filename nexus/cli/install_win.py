@@ -28,18 +28,25 @@ _AV_SIGNS = re.compile(r'isdone\.dll|unarc\.dll|archive data (?:is )?corrupted|'
 
 
 def cmd_install_win(args, install_base: Path) -> None:
+    """With --from-torrent the download's stages go to the downloads
+    pipeline (InstallReport), as on Linux."""
+    with InstallReport(args.from_torrent) as report:
+        _install_win(args, install_base, report)
+
+
+def _install_win(args, install_base: Path, report: 'InstallReport') -> None:
     repack_dir = Path(args.repack_dir).resolve()
     if not repack_dir.is_dir():
         print(f"Error: '{repack_dir}' is not a directory", file=sys.stderr)
         sys.exit(1)
     safety_gate(args, repack_dir)
-    if args.from_torrent:
-        _torrent_mark(args.from_torrent, install_started=time.strftime('%Y-%m-%dT%H:%M:%S'))
+    report.begin()
 
     info = repack_info(repack_dir)
     display_name, slug = ((args.name, make_slug(args.name)) if args.name
                           else (info['name'], info['slug']))
     slug = _case_free_slug(slug, install_base)
+    report.slug = slug
     game_dir = install_base / slug
     unattended = args.unattended or (not args.interactive and
                                      load_config().get('unattended', True))
@@ -81,7 +88,7 @@ def cmd_install_win(args, install_base: Path) -> None:
     log.print("\n[1/3] Verifying files..." if args.verify
               else "\n[1/3] Skipping file verification (use --verify to enable).")
     if args.verify:
-        if not verify_bins(repack_dir):
+        if not verify_bins(repack_dir, on_bytes=report.verify):
             log.print("\nVerification FAILED. Re-download the corrupted files.")
             sys.exit(1)
         log.print("  All checked files OK.")
@@ -117,14 +124,18 @@ def cmd_install_win(args, install_base: Path) -> None:
     _install_session(slug, display_name, game_dir)
 
     log.print(f"\n[2/3] Running {setup_exe.name} as administrator...")
+    report.stage('install', "Installing" if unattended else "Installing in the setup window")
     setup_started = datetime.now().isoformat(timespec='seconds')
-    rc = _run_setup(setup_exe, game_dir, setup_log, unattended)
+    # An update goes on top of the installed game: no size to expect.
+    with report.measure(game_dir, report.expected, update=not created):
+        rc = _run_setup(setup_exe, game_dir, setup_log, unattended)
     if rc is None:                          # declined at the UAC prompt
         log.print("\n  Install cancelled at the admin prompt. Nothing was installed.")
         clear_incomplete_marker(game_dir)
         if created:
             _remove_if_empty(game_dir)
         emit_event('install-cancelled', {'slug': slug, 'why': 'uac'})
+        report.failed('uac')
         log.close()
         sys.exit(1)
     if rc == 0:
@@ -134,6 +145,7 @@ def cmd_install_win(args, install_base: Path) -> None:
                   f"Checking for the game anyway...")
 
     log.print("\n[3/3] Searching for the game executable...")
+    report.stage('finish', "Looking for the game")
     cands = exe_candidates(game_dir)
     game_exe = cands[0][1] if cands else None
     # Defender may take a game file mid-install (FF XV Pocket Edition's
@@ -159,6 +171,7 @@ def cmd_install_win(args, install_base: Path) -> None:
     emit_event('exe-candidates', {'slug': slug, 'chosen': str(game_exe), 'candidates': [
         {'path': str(p), 'size': n} for n, p in cands[:3]]})
 
+    report.stage('finish', "Adding it to your library")
     done = _finish_install_win(args, slug=slug, display_name=display_name, game_dir=game_dir,
                                game_exe=game_exe, install_base=install_base, repack={
                                    'repack_fingerprint': repack_fingerprint(repack_dir),
@@ -178,8 +191,7 @@ def cmd_install_win(args, install_base: Path) -> None:
             log.print(f"\nMoved the repack folder to the Recycle Bin: {repack_dir}")
         except OSError as e:
             log.print(f"\n  [!] Could not move the repack to the Recycle Bin ({e}).")
-    if args.from_torrent:
-        _torrent_mark(args.from_torrent, installed=True, slug=slug)
+    report.installed(slug)
     emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(repack_dir),
                              'repack_trashed': trashed, 'steam_pending': done['steam_pending']})
 
@@ -418,8 +430,8 @@ def _case_free_slug(slug: str, install_base: Path) -> str:
 
 
 def _run_setup(setup_exe: Path, game_dir: Path, setup_log: Path, unattended: bool) -> int | None:
-    """setup.exe through the UAC prompt, into game_dir, while the folder's
-    size is reported as `progress` events. The exit code, or None when the
+    """setup.exe through the UAC prompt, into game_dir (the caller measures
+    the folder: InstallReport.measure). The exit code, or None when the
     prompt was declined. Inno keeps its own log at setup_log. A silent one
     runs quiet (platform.quiet_setup): FitGirl's plays music, opens her site
     and shows a console window for its hosts-file step otherwise, since
@@ -446,8 +458,6 @@ def _run_setup(setup_exe: Path, game_dir: Path, setup_log: Path, unattended: boo
     except OSError as e:
         log.print(f"  [!] Couldn't start {setup_exe.name}: {e}")
         return 1
-    progress = InstallProgress(game_dir)
-    progress.start()
     try:
         while proc.poll() is None:
             time.sleep(0.5)
@@ -456,8 +466,6 @@ def _run_setup(setup_exe: Path, game_dir: Path, setup_log: Path, unattended: boo
             log.print("\n  [!] The installer runs as administrator and keeps going; close its "
                       "window to stop it.")
         raise
-    finally:
-        progress.stop()
     return proc.returncode
 
 
@@ -506,12 +514,11 @@ def explain_failed_install(setup_log: Path, folders: list[Path], slug: str,
 # below is inside a function, so the cycle resolves at call time.
 from .config import load_config  # noqa: E402
 from .desktop import write_start_menu_entry  # noqa: E402
-from .downloads import _torrent_mark  # noqa: E402
 from .importgame import guess_name  # noqa: E402
 from .install import _best_effort, safety_gate  # noqa: E402
 from .registry import load_registry, register_game, registry_get  # noqa: E402
 from .repack import (_install_session, clear_incomplete_marker, exe_candidates, find_setup_exe,
-    INNO_SILENT, InstallProgress, preflight_hard_disk_check, preflight_hard_memory_check,
+    INNO_SILENT, InstallReport, preflight_hard_disk_check, preflight_hard_memory_check,
     repack_fingerprint, repack_info, verify_bins, write_incomplete_marker)  # noqa: E402
 from .sgdb import fetch_artwork  # noqa: E402
 from nexus.inno import inno_header  # noqa: E402

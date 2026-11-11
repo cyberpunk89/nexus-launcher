@@ -943,14 +943,14 @@ COMMANDS = (
      lambda a, base: cmd_perf(require_slug(a.perf[0], '--perf'), a.perf[1:], load_config())),
     ('repack_feed', lambda a, base: cmd_repack_feed(a.refresh, a.json)),
     ('repack_index', lambda a, base: cmd_repack_index(a.refresh, a.json)),
-    ('repack_page', lambda a, base: cmd_repack_page(a.repack_page, a.json)),
+    ('repack_page', lambda a, base: cmd_repack_page(a.repack_page, a.json, base)),
     ('repack_grab',
      lambda a, base: cmd_repack_grab(a.repack_grab, a.appid, a.auto_install, a.json)),
     ('repack_reject', lambda a, base: cmd_repack_reject(a.repack_reject)),
     (lambda a: a.torrent_add or a.torrents or a.torrent_done or
                 a.torrent_forget or a.torrent_pause or a.torrent_resume or
                 a.torrent_remove or a.torrent_test or a.torrent_detect,
-     lambda a, base: cmd_torrent(a)),
+     lambda a, base: cmd_torrent(a, base)),
     ('check_repack', lambda a, base: cmd_check_repack(a.check_repack, a.json, a.clamav)),
     ('history', lambda a, base: cmd_history(a.json)),
     ('store_info', lambda a, base: cmd_store_info(a.store_info, a.json, a.refresh)),

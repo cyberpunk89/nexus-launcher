@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -63,16 +62,20 @@ def cmd_install(args, install_base: Path) -> None:
     """Install a repack: verify, prefix, setup.exe (silent unless
     --interactive), launch.sh, then register the game and add it to Steam,
     Heroic and the app menu. What nexus-cli does when no command flag is
-    given (args.repack_dir is the repack folder)."""
+    given (args.repack_dir is the repack folder). With --from-torrent the
+    download's stages go to the downloads pipeline (InstallReport)."""
+    with InstallReport(args.from_torrent) as report:
+        _install(args, install_base, report)
+
+
+def _install(args, install_base: Path, report: 'InstallReport') -> None:
     repack_dir = Path(args.repack_dir).resolve()
 
     if not repack_dir.is_dir():
         print(f"Error: '{repack_dir}' is not a directory", file=sys.stderr)
         sys.exit(1)
     safety_gate(args, repack_dir)
-
-    if args.from_torrent:
-        _torrent_mark(args.from_torrent, install_started=time.strftime('%Y-%m-%dT%H:%M:%S'))
+    report.begin()
 
     # Warn about characters that break Wine's internal shell path handling
     BAD_CHARS = set('&|;<>()^%!')
@@ -124,6 +127,7 @@ def cmd_install(args, install_base: Path) -> None:
         slug = make_slug(args.name)
     else:
         display_name, slug = info['name'], info['slug']
+    report.slug = slug
     # Silent by default: FitGirl's Inno installer runs with no window into a
     # known folder (see inno_args). --interactive shows the setup window.
     unattended = args.unattended or (not args.interactive and
@@ -198,7 +202,7 @@ def cmd_install(args, install_base: Path) -> None:
     # 1. Verify
     if args.verify:
         log.print("\n[1/4] Verifying files...")
-        if not verify_bins(repack_dir):
+        if not verify_bins(repack_dir, on_bytes=report.verify):
             log.print("\nVerification FAILED. Re-download the corrupted files.")
             sys.exit(1)
         log.print("  All checked files OK.")
@@ -213,6 +217,7 @@ def cmd_install(args, install_base: Path) -> None:
 
     # 3. Prefix
     log.print("\n[2/4] Setting up prefix...")
+    report.stage('install', "Getting ready")
     if args.force and game_dir.exists():
         # "Wipe" without destroying anything irrecoverable: saves live in the
         # old prefix, so move it aside for the user to delete once the fresh
@@ -335,10 +340,8 @@ def cmd_install(args, install_base: Path) -> None:
                 log.print("  The installer GUI will open. Follow the on-screen steps.")
                 log.print("  You can install to any path — it stays inside this prefix.\n")
 
-            progress = InstallProgress(target) if target else None
-            if progress:
-                progress.start()
-            try:
+            report.stage('install', "Installing" if target else "Installing in the setup window")
+            with report.measure(target, report.expected, update=already_installed):
                 if runner == 'umu':
                     rc = run(['umu-run', str(setup_exe), *setup_extra],
                               extra_env=_umu_env(setup_env, wine_prefix, proton),
@@ -350,9 +353,6 @@ def cmd_install(args, install_base: Path) -> None:
                 else:
                     rc = run(['wine', str(setup_exe), *setup_extra], extra_env=setup_env,
                               capture=True, diagnose=True, label="setup.exe (via Wine)")
-            finally:
-                if progress:
-                    progress.stop()
 
             if rc >= 0:
                 if rc == 0:
@@ -398,6 +398,7 @@ def cmd_install(args, install_base: Path) -> None:
 
     # 6. Launch script
     log.print("\nSearching for game executable...")
+    report.stage('finish', "Looking for the game")
     cands = exe_candidates(target) if target else []
     if not cands:
         cands = exe_candidates(wine_prefix / 'drive_c')
@@ -448,6 +449,7 @@ def cmd_install(args, install_base: Path) -> None:
         log.close()
         sys.exit(1)
 
+    report.stage('finish', "Adding it to your library")
     done = _finish_install(args, slug=slug, display_name=display_name, game_dir=game_dir,
                            wine_prefix=wine_prefix, game_exe=game_exe,
                            install_base=install_base, runner=runner, proton=proton,
@@ -468,8 +470,7 @@ def cmd_install(args, install_base: Path) -> None:
             log.print(f"\nMoved the repack folder to the Trash: {repack_dir}")
         except OSError as e:
             log.print(f"\n  [!] Could not move the repack to the Trash ({e}).")
-    if args.from_torrent:
-        _torrent_mark(args.from_torrent, installed=True, slug=slug)
+    report.installed(slug)
     emit_event('installed', {'slug': slug, 'name': display_name, 'source': str(repack_dir),
                              'repack_trashed': trashed, 'steam_pending': steam_pending})
 
@@ -587,12 +588,11 @@ def _finish_install(args, *, slug: str, display_name: str, game_dir: Path, wine_
 from .apply import _proton_is_explicit, _save_profile, profile_owns_options  # noqa: E402
 from .config import load_config  # noqa: E402
 from .desktop import write_desktop_entry  # noqa: E402
-from .downloads import _torrent_mark  # noqa: E402
 from .heroic import add_heroic_entry  # noqa: E402
 from .launchprofile import format_launch_options, protongen_default_profile  # noqa: E402
 from .registry import register_game, registry_get  # noqa: E402
 from .repack import (_install_session, clear_incomplete_marker, DISK_SPACE_WARN_MULTIPLIER,
-    exe_candidates, existing_install_root, find_setup_exe, inno_args, InstallProgress,
+    exe_candidates, existing_install_root, find_setup_exe, inno_args, InstallReport,
     MAX_SETUP_RETRIES, preflight_hard_disk_check, preflight_hard_memory_check,
     read_meminfo, repack_fingerprint, repack_info, setup_redists, silent_setup_overrides,
     silent_target, verify_bins, write_incomplete_marker)  # noqa: E402

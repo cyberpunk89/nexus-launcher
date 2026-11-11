@@ -398,6 +398,64 @@ def edit_tracked():
             save_tracked(data)
 
 
+PIPELINE_DIR = DATA_DIR / 'pipeline'
+_PRUNE_S = 86400            # a progress file older than a day is a crashed install's
+
+
+def write_progress(h: str, data: dict) -> None:
+    """The install of download `h` as it runs (nexus/pipeline.py reads it):
+    DATA_DIR/pipeline/<hash>.json, replaced atomically. Raises OSError."""
+    net.write_atomic(PIPELINE_DIR / f'{check_hash(h)}.json', json.dumps(data))
+
+
+def clear_progress(h: str) -> None:
+    """Remove the progress file of `h` (none: fine). Raises OSError."""
+    (PIPELINE_DIR / f'{check_hash(h)}.json').unlink(missing_ok=True)
+
+
+def _progress_files():
+    try:
+        return [f for f in PIPELINE_DIR.glob('*.json') if HASH_RE.match(f.stem)]
+    except OSError:
+        return []
+
+
+def load_progress() -> dict:
+    """{hash: progress} of the installs that wrote a file (junk skipped).
+    Read only: it runs on every poll. Whether a file is current is
+    pipeline.fresh's call; prune_progress deletes the old ones."""
+    out = {}
+    for f in _progress_files():
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get('hash') == f.stem:
+            out[f.stem] = data
+    return out
+
+
+def prune_progress(now: float | None = None) -> None:
+    """Delete progress files older than a day (their updated_at, or the
+    mtime of one that can't be read): installs that were killed. Called when
+    an install starts, not on every poll."""
+    now = time.time() if now is None else now
+    for f in _progress_files():
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+            stamp = float(data['updated_at'])
+        except (OSError, ValueError, TypeError, KeyError):
+            try:
+                stamp = f.stat().st_mtime
+            except OSError:
+                continue
+        if now - stamp > _PRUNE_S:
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def claim_install(h: str) -> bool:
     """Record that a finished download's install is starting — True only for
     the first caller. The GUI and the background agent both follow the

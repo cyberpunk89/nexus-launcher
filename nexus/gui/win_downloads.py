@@ -13,8 +13,7 @@ from nexus import alerts, hypervisor, instance, net, paths as NX, steamlib, torr
 from nexus.features import has
 
 from .common import alive, CLI, cli_args, DATA_DIR
-from .fmt import fmt_bytes
-from .downloads import finishing, theatre_rows
+from .downloads import finishing, grab_fit_line, theatre_rows
 from .theme import G
 
 UAC_TITLE = "Windows will ask for permission"
@@ -332,15 +331,13 @@ class DownloadsMixin:
                        f"{(page or {}).get('error') or err}", 'error', None, 0)
             return
         title = item.get('title') or match.get('title')
-        bits = [f"{page.get('repack_size') or '?'} download",
-                f"{page.get('original_size') or '?'} installed"]
-        need, free = page.get('size_bytes'), page.get('free_bytes')
-        if page.get('dest'):
-            bits.append(f"{fmt_bytes(free)} free in {page['dest']}" if free is not None
-                        else f"to {page['dest']}")
-        sub = " · ".join(bits)
-        if need and free is not None and free < need:
-            sub += " — not enough space"
+        sub = (f"{page.get('repack_size') or '?'} download · "
+               f"{page.get('original_size') or '?'} installed")
+        fit = grab_fit_line(page)
+        if fit:
+            sub += "\n" + fit
+        elif page.get('dest'):
+            sub += f" · to {page['dest']}"
         hv = page.get('hv') or match.get('hv')
         if hv:
             sub += "\n" + hypervisor.note(hv)

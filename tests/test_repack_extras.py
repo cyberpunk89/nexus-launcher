@@ -2,6 +2,7 @@
 achievements from Steam-emulator files, and the torrent-client hand-off.
 Files live in temp dirs; the torrent client is a fake local HTTP server."""
 
+import io
 import json
 import shutil
 import os
@@ -413,6 +414,195 @@ class Torrents(unittest.TestCase):
             torrent.all_status(s, c), c.info()
             self.assertEqual(FakeTransmission.posts, 4)       # 409, torrent-get, session-get, stats
 
+    def serve(self, torrents=None):
+        """A FakeTransmission on a free port: its settings dict."""
+        FakeTransmission.torrents = dict(torrents or {})
+        FakeTransmission.removed = []
+        srv = HTTPServer(('127.0.0.1', 0), FakeTransmission)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return {'client': 'transmission', 'url': f'http://127.0.0.1:{srv.server_port}',
+                'username': '', 'password': '', 'download_dir': None, 'seed_ratio': None}
+
+    def test_grab_keeps_sizes_never_magnet(self):
+        from nexus import repackindex
+        s = self.serve()
+        page = {'url': 'https://fitgirl-repacks.site/test-game/', 'title': 'Test Game',
+                'magnets': [{'hash': torrent.infohash(self.MAGNET), 'uri': self.MAGNET}],
+                'repack_size': 'from 12.5 GB [Selective Download]',
+                'original_size': '38 GB', 'hv': None}
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'TRACKED', Path(d, 't.json')), \
+                mock.patch.object(torrent, 'settings', return_value=s), \
+                mock.patch.object(repackindex, 'fetch_page', return_value=page), \
+                mock.patch('sys.stdout'):
+            cli.cmd_repack_grab('test-game', '7', True, True)
+            meta = torrent.load_tracked()[torrent.infohash(self.MAGNET)]
+            raw = Path(d, 't.json').read_text()
+        self.assertEqual(meta['repack_bytes'], int(12.5 * (1 << 30)))
+        self.assertEqual(meta['original_bytes'], 38 << 30)
+        self.assertNotIn('magnet', raw)
+        self.assertNotIn('urn:btih', raw)
+        # A page with no "Original Size" leaves the key out.
+        page['original_size'] = None
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'TRACKED', Path(d, 't.json')), \
+                mock.patch.object(torrent, 'settings', return_value=s), \
+                mock.patch.object(repackindex, 'fetch_page', return_value=page), \
+                mock.patch('sys.stdout'):
+            cli.cmd_repack_grab('test-game', None, False, True)
+            meta = torrent.load_tracked()[torrent.infohash(self.MAGNET)]
+        self.assertNotIn('original_bytes', meta)
+
+    def test_progress_file_roundtrip_ignores_junk_prunes_old(self):
+        # Reading (every poll) never deletes; pruning is its own call (made
+        # when an install starts).
+        h, old = 'a' * 40, 'b' * 40
+        now = time.time()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'PIPELINE_DIR', Path(d, 'pipeline')):
+            self.assertEqual(torrent.load_progress(), {})               # no folder yet
+            torrent.prune_progress(now)                                 # nor here: fine
+            torrent.write_progress(h, {'hash': h, 'stage': 'install', 'updated_at': now})
+            torrent.write_progress(old, {'hash': old, 'stage': 'install',
+                                         'updated_at': now - 2 * 86400})
+            pipe = Path(d, 'pipeline')
+            (pipe / ('c' * 40 + '.json')).write_text('{not json')
+            (pipe / ('e' * 40 + '.json')).write_text('[1, 2]')
+            (pipe / ('f' * 40 + '.json')).write_text(json.dumps({'hash': 'd' * 40}))
+            (pipe / 'notes.json').write_text('{}')
+            stale_junk = pipe / ('9' * 40 + '.json')
+            stale_junk.write_text('{')
+            os.utime(stale_junk, (now - 2 * 86400, now - 2 * 86400))
+            got = torrent.load_progress()
+            self.assertEqual(sorted(got), [h, old])
+            self.assertEqual(got[h]['stage'], 'install')
+            self.assertTrue(stale_junk.exists())                       # read only
+            torrent.prune_progress(now)
+            self.assertEqual(list(torrent.load_progress()), [h])
+            self.assertFalse((pipe / f'{old}.json').exists())          # a day old: pruned
+            self.assertFalse(stale_junk.exists())
+            self.assertTrue((pipe / ('c' * 40 + '.json')).exists())    # fresh junk: left
+            self.assertEqual([p.name for p in pipe.glob('*.part')], [])
+            torrent.clear_progress(h)
+            torrent.clear_progress(h)                                  # gone already: fine
+            self.assertEqual(torrent.load_progress(), {})
+
+    def poll(self, *flags):
+        """`--torrents --all [flags]` against a FakeTransmission with three
+        tracked downloads: one downloading, one installing (a fresh progress
+        file), one whose install was killed (a stale file), plus one untracked."""
+        from nexus.cli import entry
+        GBb = 1 << 30
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        dl, base = d / 'dl', d / 'Games'
+        dl.mkdir()
+        a, b, c, other = 'a' * 40, 'b' * 40, 'c' * 40, 'f' * 40
+
+        def t(h, name, pct, status):
+            return {'hashString': h, 'name': name, 'percentDone': pct, 'eta': 120 if pct < 1
+                    else -1, 'rateDownload': 1 << 20, 'status': status,
+                    'downloadDir': str(dl), 'error': 0, 'sizeWhenDone': 10 * GBb,
+                    'addedDate': 100}
+        s = self.serve({a: t(a, 'Test Game', 0.4, 4), b: t(b, 'Test Game Two', 1.0, 6),
+                        c: t(c, 'Test Game Three', 1.0, 6), other: t(other, 'Other', 0.5, 4)})
+        s['download_dir'] = str(dl)
+        now = time.time()
+        tracked = {a: {'name': 'Test Game', 'title': 'Test Game', 'installed': False,
+                       'original_bytes': 30 * GBb},
+                   b: {'name': 'Test Game Two', 'title': 'Test Game Two', 'installed': False,
+                       'install_started': '2026-01-01T00:00:00', 'original_bytes': 20 * GBb},
+                   c: {'name': 'Test Game Three', 'title': 'Test Game Three',
+                       'installed': False, 'install_started': '2026-01-01T00:00:00'}}
+        prog = {'v': 1, 'hash': b, 'slug': 'test-game-two', 'stage': 'install',
+                'step': 'Installing', 'written': 5 * GBb, 'expected': 20 * GBb,
+                'rate': 50 << 20, 'done': None, 'total': None, 'update': False,
+                'dest': str(base / 'test-game-two'), 'started_at': now - 100,
+                'updated_at': now - 1, 'pid': os.getpid()}
+        with mock.patch.object(torrent, 'TRACKED', d / 't.json'), \
+                mock.patch.object(torrent, 'PIPELINE_DIR', d / 'pipeline'), \
+                mock.patch.object(torrent, 'settings', return_value=s):
+            torrent.save_tracked(tracked)
+            torrent.write_progress(b, prog)
+            torrent.write_progress(c, {**prog, 'hash': c, 'updated_at': now - 300})
+            args = entry.build_parser().parse_args(['--torrents', '--all', *flags])
+            out = io.StringIO()
+            with mock.patch('sys.stdout', out), mock.patch('sys.stderr', io.StringIO()):
+                cli.cmd_torrent(args, base)
+        return out.getvalue(), (a, b, c, other), dl
+
+    def test_all_json_has_pipeline_and_drives(self):
+        out, (a, b, c, other), dl = self.poll('--json')
+        data = json.loads(out)
+        self.assertEqual({r['hash'] for r in data['torrents']}, {a, b, c, other})
+        self.assertIn('client', data)
+        cards = {x['hash']: x for x in data['pipeline']}
+        self.assertEqual(set(cards), {a, b, c})                # not the untracked one
+        self.assertEqual((cards[a]['stage'], cards[a]['state']), ('download', 'downloading'))
+        self.assertEqual((cards[b]['state'], cards[b]['install']['written']),
+                         ('installing', 5 << 30))
+        self.assertTrue(cards[b]['eta_est'])
+        self.assertEqual((cards[c]['state'], cards[c]['reason']),
+                         ('failed', 'stopped'))           # its file is stale: killed
+        drives = data['drives']
+        self.assertEqual(len(drives), 1)                       # one temp folder: one drive
+        dr = drives[0]
+        self.assertEqual(sorted(dr['roles']), ['download', 'install'])
+        self.assertEqual(dr['id'], str(os.stat(dl).st_dev))
+        self.assertTrue(dr['about'])
+        self.assertEqual(cards[a]['drives'], {'download': dr['id'], 'install': dr['id']})
+        # 6 GB still to download + 30 GB to install, 15 GB left to write.
+        self.assertEqual(dr['to_write'], (6 << 30) + (30 << 30) + (15 << 30))
+        self.assertEqual(dr['free_after'], dr['free'] - dr['to_write'])
+
+    def test_every_drive_a_card_writes_to_is_counted(self):
+        # A download in a folder on a third drive is forecast there too; and
+        # folders are looked up only for downloads still coming (a dead
+        # network folder of a finished or gone one is never touched).
+        from collections import namedtuple
+        from nexus.cli import downloads as D
+        G = 1 << 30
+        where = {'/dl': ('1', '/'), '/games': ('2', '/games'), '/other': ('3', '/other')}
+        asked = []
+
+        def drive_of(path):
+            asked.append(str(path))
+            hit = next((v for k, v in where.items() if str(path).startswith(k)), None)
+            return {'id': hit[0], 'mount': hit[1]} if hit else None
+        usage = namedtuple('usage', 'total used free')
+        rows = [{'hash': 'a' * 40, 'tracked': True, 'percent': 50.0, 'state': 'downloading',
+                 'size': 10 * G, 'dir': '/other', 'original_bytes': 20 * G},
+                {'hash': 'b' * 40, 'tracked': True, 'done': True, 'percent': 100.0,
+                 'dir': '/nas/dead', 'installed': False},
+                {'hash': 'c' * 40, 'tracked': True, 'gone': True, 'dir': '/nas/gone'},
+                {'hash': 'd' * 40, 'tracked': False, 'dir': '/nas/theirs', 'percent': 1.0}]
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(torrent, 'PIPELINE_DIR', Path(d, 'pipeline')), \
+                mock.patch.object(D, 'drive_of', drive_of), \
+                mock.patch.object(D, 'existing_ancestor', lambda p: Path('/games')), \
+                mock.patch.object(D.shutil, 'disk_usage', lambda m: usage(100 * G, 0, 50 * G)):
+            cards, drives = D._pipeline(rows, {'download_dir': '/dl'}, None, Path('/games'))
+        self.assertFalse([a for a in asked if a.startswith('/nas')], asked)
+        by_id = {x['id']: x for x in drives}
+        self.assertEqual(set(by_id), {'1', '2', '3'})
+        self.assertEqual(by_id['3']['roles'], ['download'])
+        self.assertEqual(by_id['3']['to_write'], 5 * G)
+        self.assertEqual(by_id['2']['to_write'], 20 * G)
+        self.assertEqual(by_id['1']['to_write'], 0)
+
+    def test_text_mode_one_line_per_card(self):
+        out, (a, b, c, other), _dl = self.poll()
+        lines = [x.strip() for x in out.splitlines() if x.strip()]
+        self.assertEqual(len(lines), 4)
+        self.assertIn("Test Game · Downloading 40% · 2 min left", lines)
+        two = next(x for x in lines if x.startswith("Test Game Two"))
+        self.assertTrue(two.startswith("Test Game Two · Installing 5.4 of about 21 GB · est."),
+                        two)
+        self.assertIn("Test Game Three · The install stopped", lines)
+        self.assertIn("Other: 50%", lines)                     # untracked: as before
+
     def test_other_transmissions_are_found(self):
         from types import SimpleNamespace as P
         with tempfile.TemporaryDirectory() as d:
@@ -446,6 +636,57 @@ class Torrents(unittest.TestCase):
                     mock.patch.object(torrent.platform, 'transmission_config_dir',
                                       lambda kind: None):
                 self.assertEqual(torrent.other_transmissions(str(daemon)), [])
+
+
+class RepackPage(unittest.TestCase):
+    PAGE = {'url': 'https://fitgirl-repacks.site/test-game/', 'title': 'Test Game',
+            'magnets': [{'hash': 'a' * 40, 'uri': Torrents.MAGNET}],
+            'repack_size': 'from 12 GB', 'original_size': '38 GB', 'hv': None}
+
+    def page(self, s):
+        """`--repack-page --json` with one tracked download in flight (40% of
+        10 GB, 30 GB to install) in a temp folder: (answer, that folder)."""
+        from nexus import repackindex
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / 'dl').mkdir()
+        if s.get('client'):
+            s = dict(s, download_dir=str(d / 'dl'))
+            FakeTransmission.torrents['b' * 40]['downloadDir'] = str(d / 'dl')
+        out = io.StringIO()
+        with mock.patch.object(torrent, 'TRACKED', d / 't.json'), \
+                mock.patch.object(torrent, 'PIPELINE_DIR', d / 'pipeline'), \
+                mock.patch.object(torrent, 'settings', return_value=s), \
+                mock.patch.object(repackindex, 'fetch_page', return_value=self.PAGE), \
+                mock.patch('sys.stdout', out):
+            torrent.save_tracked({'b' * 40: {'name': 'Test Game Two', 'installed': False,
+                                             'original_bytes': 30 << 30}})
+            cli.cmd_repack_page('test-game', True, d / 'Games')
+        return json.loads(out.getvalue()), d
+
+    def test_page_reports_install_drive_and_committed(self):
+        s = Torrents.serve(self, {'b' * 40: {
+            'hashString': 'b' * 40, 'name': 'Test Game Two', 'percentDone': 0.4, 'eta': 60,
+            'rateDownload': 5, 'status': 4, 'error': 0, 'sizeWhenDone': 10 << 30,
+            'downloadDir': None, 'addedDate': 1}})
+        got, d = self.page(s)
+        drive = str(os.stat(d).st_dev)
+        self.assertEqual((got['size_bytes'], got['original_bytes']), (12 << 30, 38 << 30))
+        self.assertEqual(got['install_dest'], str(d / 'Games'))
+        self.assertEqual((got['dest_drive'], got['install_drive']), (drive, drive))
+        self.assertIsInstance(got['install_free'], int)
+        self.assertTrue(got['install_mount'] and got['dest_mount'])
+        self.assertNotIn('magnet:', json.dumps(got))
+        # What the download in flight still needs: 6 GB to come, 30 GB to install.
+        self.assertEqual(got['committed'], {drive: (6 << 30) + (30 << 30)})
+
+    def test_no_client_means_no_committed(self):
+        got, d = self.page({'client': None, 'url': '', 'username': '', 'password': '',
+                            'download_dir': None, 'seed_ratio': None})
+        self.assertIsNone(got['committed'])
+        self.assertIsNone(got['dest'])
+        self.assertIsNone(got['dest_drive'])
+        self.assertEqual(got['install_drive'], str(os.stat(d).st_dev))
 
 
 try:

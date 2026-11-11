@@ -188,6 +188,63 @@ class WindowsInstall(Harness):
         self.assertEqual(self.events(out, 'install-cancelled'), [{'slug': 'test-game',
                                                                   'why': 'uac'}])
 
+    H = 'cd' * 20
+
+    def tracked_install(self, *extra, setup=None):
+        """An install --from-torrent of a tracked download: (code, out,
+        every progress file written, torrents.json meta afterwards)."""
+        from nexus import torrent
+        d = self.root / 'data'
+        written = []
+        real = torrent.write_progress
+
+        def spy(h, data):
+            written.append(dict(data))
+            real(h, data)
+        with mock.patch.object(torrent, 'TRACKED', d / 't.json'), \
+                mock.patch.object(torrent, 'PIPELINE_DIR', d / 'pipeline'), \
+                mock.patch.object(torrent, 'write_progress', spy):
+            torrent.save_tracked({self.H: {'name': 'Test Game', 'installed': False,
+                                           'original_bytes': 7_000_000}})
+            with (mock.patch.object(platform, 'run_elevated', setup) if setup
+                  else contextlib.nullcontext()):
+                code, out = self.install('--from-torrent', self.H)
+            left = list((d / 'pipeline').glob('*')) if (d / 'pipeline').exists() else []
+            return code, out, written, torrent.load_tracked()[self.H], left
+
+    def test_from_torrent_reports_expected_and_stages(self):
+        code, out, written, meta, left = self.tracked_install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([e['stage'] for e in self.events(out, 'stage')],
+                         ['install', 'finish', 'finish'])
+        installing = [w for w in written if w['stage'] == 'install']
+        self.assertTrue(installing)
+        self.assertEqual((installing[-1]['expected'], installing[-1]['update'],
+                          installing[-1]['dest'], installing[-1]['slug']),
+                         (7_000_000, False, str(self.base / 'test-game'), 'test-game'))
+        self.assertTrue(meta['installed'] and meta['installed_at'])
+        self.assertNotIn('install_failed', meta)
+        self.assertEqual(left, [])
+
+    def test_update_on_top_has_no_expected(self):
+        (self.base / 'test-game').mkdir(parents=True)          # installed before
+        code, out, written, meta, left = self.tracked_install()
+        self.assertEqual(code, 0, out)
+        installing = [w for w in written if w['stage'] == 'install']
+        self.assertEqual((installing[-1]['expected'], installing[-1]['update']), (None, True))
+        self.assertEqual(left, [])
+
+    def test_uac_declined_removes_progress_file(self):
+        def declined(*a, **kw):
+            raise platform.ElevationCancelled(1223, 'cancelled')
+        code, out, written, meta, left = self.tracked_install(setup=declined)
+        self.assertEqual(code, 1)
+        self.assertTrue(written)                    # it said "installing" first
+        self.assertEqual(left, [])
+        self.assertTrue(meta['install_failed'])
+        self.assertEqual(meta['install_failed_reason'], 'uac')
+        self.assertFalse(meta['installed'])
+
     def test_antivirus_is_named_when_the_install_comes_up_empty(self):
         self.setup_kw = {'make_game': False, 'rc': 4,
                          'log_text': 'Extracting...\nISDone.dll: An error occurred when '

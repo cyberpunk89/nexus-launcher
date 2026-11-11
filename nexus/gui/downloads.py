@@ -6,6 +6,8 @@ from PyQt6.QtCore import pyqtSignal, QPoint, Qt
 from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QMenu,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
+from nexus import pipeline
+
 from .fmt import fmt_bytes, fmt_eta
 from .theme import FS, G, P, SP
 
@@ -68,7 +70,24 @@ def finishing(rows: list) -> bool:
                and r.get('eta') is not None and r['eta'] <= FINISH_SOON for r in rows)
 
 
-READY_HOURS = 24            # a finished download or install stays a row this long
+def grab_fit_line(page: dict) -> str:
+    """The Grab sheet's space line (pipeline.grab_fit): "Needs about 13 GB
+    on /home (12 GB free) · short by 1 GB", or each drive named when the
+    download and the install go to different ones. "Short by" counts what
+    the downloads in flight still need. '' when the free space is unknown."""
+    fit = pipeline.grab_fit(page)
+    if not fit['drives']:
+        return ''
+    parts = [f"{'about ' if d['role'] != 'download' and fit['install_known'] else ''}"
+             f"{fmt_bytes(d['need'])} on {d['where']} ({fmt_bytes(d['free'])} free)"
+             for d in fit['drives']]
+    line = "Needs " + " and ".join(parts)
+    if fit['short_by']:
+        line += f" · short by {fmt_bytes(fit['short_by'])}"
+    return line
+
+
+READY_HOURS = pipeline.READY_HOURS   # a finished download or install stays a row
 PRIMARY_LABELS = {'install': "Install", 'play': "Play", 'pause': "Pause", 'resume': "Resume",
                   'retry': "Retry", 'show': "Show game"}
 
@@ -108,15 +127,16 @@ def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: f
         title = r.get('name') or r.get('title') or str(r.get('hash', ''))[:12]
         key = f"torrent:{r.get('hash')}"
         pct = float(r.get('percent') or 0)
-        if r.get('error'):
+        state = pipeline.download_state(r)
+        if state == 'error':
             row('progress', key, 'torrent', title, torrent_state(r), "Error", pct / 100, ref=r)
-        elif r.get('done'):
+        elif state == 'done':
             row('ready', key, 'torrent', title, torrent_state(r), "Downloaded", 1.0,
                 primary='install' if r.get('path') else None, ref=r)
-        elif (r.get('state') == 'paused') or (r.get('paused') and not r.get('state')):
+        elif state == 'paused':
             row('progress', key, 'torrent', title, torrent_state(r), f"{pct:.0f}%", pct / 100,
                 paused=True, primary='resume', ref=r)
-        elif r.get('state') in ('queued', 'checking'):
+        elif state in ('queued', 'checking'):
             row('queue', key, 'torrent', title, torrent_state(r), f"{pct:.0f}%", pct / 100,
                 primary='pause', ref=r)
         else:

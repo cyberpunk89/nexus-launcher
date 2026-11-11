@@ -3,11 +3,13 @@ that "installs" a game wherever Inno's /DIR points (or a fixed folder when
 the setup window is used), plus the helpers behind it: name cleanup, the
 installer's ProductName, fingerprints, download completeness."""
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -17,7 +19,7 @@ CLI = REPO / 'bin' / 'nexus-cli'
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from tests.oskind import linux_only  # noqa: E402
-from nexus import cli as fi  # noqa: E402
+from nexus import cli as fi, features  # noqa: E402
 from nexus.cli import runner  # noqa: E402
 
 FAKE_WINE = r'''#!/bin/sh
@@ -27,7 +29,10 @@ if [ "$1" = wineboot ]; then mkdir -p "$WINEPREFIX/drive_c/windows"; exit 0; fi
 printf '%s\n' "$*" >> "$FAKE_LOG"
 [ "$1" = reg ] && exit 0
 printf '%s\n' "$WINEDLLOVERRIDES" >> "$FAKE_LOG.dll"
+# What the downloads pipeline sees while setup runs (--from-torrent).
+[ -n "$FAKE_PIPE" ] && cat "$FAKE_PIPE"/*.json >> "$FAKE_LOG.pipe" 2>/dev/null
 [ "$FAKE_MODE" = fail ] && exit 5
+if [ "$FAKE_MODE" = hang ]; then touch "$FAKE_LOG.hang"; sleep 30; fi
 dir=""
 for a in "$@"; do case "$a" in /DIR=*) dir="${a#/DIR=}";; esac; done
 if [ -n "$dir" ]; then
@@ -202,6 +207,200 @@ class BrowserMuted(unittest.TestCase):
         self.assertEqual(self.calls(other)[2][0], 'delete')
 
 
+class Report(unittest.TestCase):
+    """InstallReport: the install's events, the progress file the downloads
+    pipeline reads, and the torrents.json marks."""
+    H = 'c' * 40
+
+    def setUp(self):
+        from nexus import torrent
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.d = Path(tmp.name)
+        for p in (mock.patch.object(torrent, 'TRACKED', self.d / 't.json'),
+                  mock.patch.object(torrent, 'PIPELINE_DIR', self.d / 'pipeline')):
+            p.start()
+            self.addCleanup(p.stop)
+        torrent.save_tracked({self.H: {'name': 'Test Game', 'original_bytes': 5000,
+                                       'installed': False}})
+        self.out = io.StringIO()
+        p = mock.patch('sys.stdout', self.out)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def file(self):
+        f = self.d / 'pipeline' / f'{self.H}.json'
+        return json.loads(f.read_text()) if f.exists() else None
+
+    def events(self, name):
+        return [json.loads(line.split(' ', 2)[2]) for line in self.out.getvalue().splitlines()
+                if line.startswith(f'@nexus {name} ')]
+
+    def test_heartbeat_backoff_and_cleanup(self):
+        from nexus import torrent
+        target = self.d / 'game'
+        target.mkdir()
+        (target / 'a.bin').write_bytes(b'x' * 1000)
+        rep = fi.InstallReport(self.H, interval=3600, heartbeat=3600)   # ticks by hand only
+        with rep:
+            rep.slug = 'test-game'
+            rep.begin()
+            self.assertIsNone(self.file())                       # nothing to say yet
+            self.assertTrue(torrent.load_tracked()[self.H]['install_started'])
+            rep.stage('install', 'Installing')
+            self.assertEqual(self.events('stage'), [{'stage': 'install', 'step': 'Installing'}])
+            self.assertEqual(rep.expected, 5000)
+            with rep.measure(target, rep.expected, update=False):
+                self.assertEqual(self.file()['written'], 0)
+                rep.walker.tick()
+                self.assertEqual((self.file()['written'], self.file()['expected']), (1000, 5000))
+                self.assertEqual(self.events('progress'), [{'written': 1000, 'expected': 5000}])
+                # No change: no event (the file is still rewritten).
+                (self.d / 'pipeline' / f'{self.H}.json').unlink()
+                rep.walker.tick()
+                self.assertEqual(self.file()['written'], 1000)
+                self.assertEqual(len(self.events('progress')), 1)
+                (target / 'b.bin').write_bytes(b'y' * 500)
+                rep.walker.tick()
+                self.assertEqual(self.events('progress')[-1]['written'], 1500)
+            p = self.file()
+            self.assertEqual((p['v'], p['hash'], p['slug'], p['stage'], p['pid']),
+                             (1, self.H, 'test-game', 'install', os.getpid()))
+            self.assertEqual(set(p), {'v', 'hash', 'slug', 'stage', 'step', 'written',
+                                      'expected', 'rate', 'done', 'total', 'update', 'dest',
+                                      'started_at', 'updated_at', 'pid'})
+            rep.installed('test-game')
+        self.assertIsNone(self.file())
+        meta = torrent.load_tracked()[self.H]
+        self.assertTrue(meta['installed'] and meta['installed_at'])
+        self.assertNotIn('install_failed', meta)
+        self.assertFalse(rep.walker.is_alive())
+
+        # A download's install backs off on a slow walk: 10x its own time,
+        # at least the interval, at most 20 s.
+        clock = iter([0.0, 0.1, 10.0, 15.0, 20.0, 20.05])
+        t = fi.InstallProgress(target, interval=3.0, clock=lambda: next(clock))
+        t.tick()
+        self.assertEqual(t.wait_s(), 3.0)
+        t.tick()
+        self.assertEqual(t.wait_s(), 20.0)
+        t.tick()
+        self.assertEqual(t.wait_s(), 3.0)
+        # Any other install keeps the plain 3 s.
+        clock = iter([10.0, 15.0])
+        t = fi.InstallProgress(target, interval=3.0, clock=lambda: next(clock), backoff=False)
+        t.tick()
+        self.assertEqual(t.wait_s(), 3.0)
+
+    def test_heartbeat_survives_a_slow_walk(self):
+        import threading
+        from nexus import cleanup
+        target = self.d / 'game'
+        target.mkdir()
+        walking, release = threading.Event(), threading.Event()
+
+        def slow(path):
+            walking.set()
+            release.wait(10)
+            return 7
+        f = self.d / 'pipeline' / f'{self.H}.json'
+        with mock.patch.object(cleanup, 'dir_size', slow), \
+                fi.InstallReport(self.H, interval=0.01, heartbeat=0.05) as rep:
+            rep.begin()
+            rep.stage('install', 'Installing')
+            with rep.measure(target, 5000):
+                self.assertTrue(walking.wait(5))
+                f.unlink()                       # the walk hangs: the heartbeat goes on
+                deadline = time.monotonic() + 5
+                while not f.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(f.exists())
+                release.set()
+            rep.installed('test-game')
+
+    def test_nothing_marked_before_begin_and_an_abort_restores(self):
+        from nexus import torrent
+        before = torrent.load_tracked()
+        with self.assertRaises(SystemExit):     # not a folder, the safety gate said no
+            with fi.InstallReport(self.H):
+                sys.exit(1)
+        self.assertEqual(torrent.load_tracked(), before)
+        with torrent.edit_tracked() as t:
+            t[self.H]['install_started'] = '2026-01-01T00:00:00'     # claimed by the GUI
+        with self.assertRaises(SystemExit):     # "Proceed? n": Aborted
+            with fi.InstallReport(self.H) as rep:
+                rep.begin()
+                rep.stage('install', 'Getting ready')
+                sys.exit(0)
+        meta = torrent.load_tracked()[self.H]
+        self.assertEqual(meta['install_started'], '2026-01-01T00:00:00')
+        self.assertNotIn('install_failed', meta)
+        self.assertIsNone(self.file())
+
+    def test_a_failed_exit_marks_and_cleans_up(self):
+        from nexus import torrent
+        with self.assertRaises(SystemExit):
+            with fi.InstallReport(self.H) as rep:
+                rep.begin()
+                rep.stage('verify', 'Checking files', done=1, total=2)
+                self.assertEqual((self.file()['done'], self.file()['total']), (1, 2))
+                sys.exit(1)
+        self.assertIsNone(self.file())
+        meta = torrent.load_tracked()[self.H]
+        self.assertTrue(meta['install_failed'])
+        self.assertEqual(meta['install_failed_reason'], 'error')
+        self.assertFalse(meta['installed'])
+        with self.assertRaises(SystemExit):
+            with fi.InstallReport(self.H) as rep:
+                rep.begin()
+                rep.failed('uac')
+                sys.exit(1)
+        self.assertEqual(torrent.load_tracked()[self.H]['install_failed_reason'], 'uac')
+
+    def test_cancel_records_the_end(self):
+        # The GUI's Stop (SIGTERM, or Windows' cancel event) ends the process
+        # with os._exit, past __exit__: the report's cancel hook runs first.
+        from nexus import torrent
+        from nexus.cli import common
+        with fi.InstallReport(self.H) as rep:
+            rep.begin()
+            rep.stage('install', 'Installing')
+            self.assertIsNotNone(self.file())
+            common.run_cancel_hooks()
+        self.assertIsNone(self.file())
+        meta = torrent.load_tracked()[self.H]
+        self.assertEqual(meta['install_failed_reason'], 'cancelled')
+        self.assertFalse(meta['installed'])
+        common.run_cancel_hooks()                # unregistered on exit: nothing runs
+
+    def test_verify_events_are_throttled(self):
+        rep = fi.InstallReport(None)
+        clock = iter([0.0, 0.2, 1.5, 1.6])
+        rep._clock = lambda: next(clock)
+        with rep:
+            for done in (0, 10, 20, 100):
+                rep.verify(done, 100)
+        self.assertEqual([e['done'] for e in self.events('stage')], [0, 20, 100])
+
+    def test_the_report_never_fails_an_install(self):
+        from nexus import torrent
+        (self.d / 'pipeline').write_text('a file where the folder goes')
+        with fi.InstallReport(self.H) as rep:
+            rep.begin()
+            rep.stage('install', 'Installing')                   # can't write: no matter
+            with rep.measure(self.d, None):
+                rep.walker.tick()
+            rep.installed('test-game')
+        with fi.InstallReport('not-a-hash') as rep:              # events only
+            rep.begin()
+            rep.stage('install', 'Installing')
+        with fi.InstallReport(None) as rep:
+            rep.begin()
+            rep.stage('finish', 'Adding it to your library')
+        self.assertEqual(len(self.events('stage')), 3)
+        self.assertTrue(torrent.load_tracked()[self.H]['installed'])
+
+
 @linux_only
 class InstallFlow(unittest.TestCase):
     def setUp(self):
@@ -232,7 +431,8 @@ class InstallFlow(unittest.TestCase):
     def cli(self, *args, mode='ok', check=True):
         env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': '',
                'PATH': f"{self.bin}:/usr/bin:/bin", 'FAKE_LOG': str(self.log),
-               'FAKE_MODE': mode, 'XDG_CACHE_HOME': str(self.home / 'cache')}
+               'FAKE_MODE': mode, 'XDG_CACHE_HOME': str(self.home / 'cache'),
+               'FAKE_PIPE': str(tests.sandbox.data_dir(self.home) / 'pipeline')}
         env.pop('PYTHONDONTWRITEBYTECODE', None)
         r = subprocess.run([sys.executable, str(CLI), *args], env=env, text=True,
                            capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
@@ -364,6 +564,105 @@ class InstallFlow(unittest.TestCase):
         self.assertTrue(other.exists())
         self.cli('--trash-repack-dir', str(self.repack))
         self.assertFalse(self.repack.exists())
+
+    HASH = 'ab' * 20
+    # The Wine/Proton installer's reports; the Windows one: test_install_win.
+    linux_installer = unittest.skipUnless(features.has('proton'),
+                                          "the Windows feature set installs with setup.exe")
+
+    def track(self, **meta):
+        f = tests.sandbox.data_dir(self.home) / 'torrents.json'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({self.HASH: {'name': 'Test Game', 'installed': False,
+                                             'install_started': '2026-01-01T00:00:00',
+                                             **meta}}))
+        return f
+
+    @linux_installer
+    def test_from_torrent_stage_events_and_no_file_left(self):
+        tracked = self.track(original_bytes=5_000_000)
+        r = self.install('--from-torrent', self.HASH)
+        stages = [(e['stage'], e['step']) for e in self.events(r.stdout, 'stage')]
+        self.assertEqual([s for s, _ in stages], ['install', 'install', 'finish', 'finish'])
+        self.assertIn(('install', 'Installing'), stages)
+        # While setup ran, the progress file said so, with the size to expect.
+        seen = json.loads(Path(f'{self.log}.pipe').read_text())
+        self.assertEqual((seen['v'], seen['hash'], seen['slug'], seen['stage']),
+                         (1, self.HASH, 'test-game', 'install'))
+        self.assertEqual((seen['expected'], seen['update'], seen['written']),
+                         (5_000_000, False, 0))
+        self.assertTrue(seen['dest'].endswith('drive_c/Games/test-game'), seen['dest'])
+        self.assertIsInstance(seen['pid'], int)
+        self.assertLessEqual(seen['started_at'], seen['updated_at'])
+        meta = json.loads(tracked.read_text())[self.HASH]
+        self.assertTrue(meta['installed'])
+        self.assertTrue(meta['installed_at'])
+        self.assertNotIn('install_failed', meta)
+        self.assertEqual(list((tests.sandbox.data_dir(self.home) / 'pipeline').glob('*')), [])
+        # Installed on top (an update): no size to expect.
+        Path(f'{self.log}.pipe').unlink()
+        self.install('--from-torrent', self.HASH)
+        seen = json.loads(Path(f'{self.log}.pipe').read_text())
+        self.assertEqual((seen['expected'], seen['update']), (None, True))
+
+    @linux_installer
+    def test_failed_install_marks_torrent(self):
+        tracked = self.track(original_bytes=5_000_000)
+        r = self.install('--from-torrent', self.HASH, mode='fail', check=False)
+        self.assertEqual(r.returncode, 1)
+        meta = json.loads(tracked.read_text())[self.HASH]
+        self.assertFalse(meta['installed'])
+        self.assertGreaterEqual(meta['install_failed'], meta['install_started'])
+        self.assertEqual(list((tests.sandbox.data_dir(self.home) / 'pipeline').glob('*')), [])
+        # Without --from-torrent nothing is written or marked.
+        self.install(mode='fail', check=False)
+        self.assertEqual(json.loads(tracked.read_text())[self.HASH], meta)
+
+    @linux_installer
+    def test_stop_from_the_gui_records_the_end(self):
+        import signal
+        tracked = self.track(original_bytes=5_000_000)
+        env = {**os.environ, **tests.sandbox.home_env(self.home), 'STEAMGRIDDB_API_KEY': '',
+               'PATH': f"{self.bin}:/usr/bin:/bin", 'FAKE_LOG': str(self.log),
+               'FAKE_MODE': 'hang', 'XDG_CACHE_HOME': str(self.home / 'cache')}
+        proc = subprocess.Popen(
+            [sys.executable, str(CLI), str(self.repack), '--yes', '--no-artwork',
+             '--skip-mem-check', '--skip-disk-check', '--from-torrent', self.HASH],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        try:
+            hang = Path(f'{self.log}.hang')
+            deadline = time.monotonic() + 30
+            while not hang.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(hang.exists())
+            proc.send_signal(signal.SIGTERM)
+            self.assertEqual(proc.wait(timeout=20), 130)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        meta = json.loads(tracked.read_text())[self.HASH]
+        self.assertEqual(meta['install_failed_reason'], 'cancelled')
+        self.assertEqual(list((tests.sandbox.data_dir(self.home) / 'pipeline').glob('*')), [])
+
+    def test_nothing_marked_when_the_folder_is_missing(self):
+        tracked = self.track()
+        before = tracked.read_text()
+        r = self.cli(str(self.home / 'nope'), '--yes', '--from-torrent', self.HASH, check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(tracked.read_text(), before)
+
+    @linux_installer
+    def test_verify_reports_bytes(self):
+        self.track()
+        md5 = __import__('hashlib').md5(b'x' * 10).hexdigest()
+        (self.repack / 'MD5' / 'fitgirl-bins.md5').write_text(f'{md5} *..\\fg-01.bin\n')
+        r = self.install('--from-torrent', self.HASH, '--verify')
+        verify = [e for e in self.events(r.stdout, 'stage') if e['stage'] == 'verify']
+        self.assertEqual(verify[-1], {'stage': 'verify', 'step': 'Checking files',
+                                      'done': 10, 'total': 10})
+        seen = json.loads(Path(f'{self.log}.pipe').read_text())
+        self.assertEqual((seen['stage'], seen['total']), ('install', 10))     # it ran
 
     def test_scan_dirs_list(self):
         cfg = tests.sandbox.config_dir(self.home) / 'config.toml'

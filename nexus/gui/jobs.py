@@ -180,7 +180,11 @@ class Job(QObject):
                 return
             self.events[m.group(1)] = data
             if m.group(1) == 'progress':
-                self._on_progress(int(data.get('written') or 0))
+                try:
+                    expected = int(data.get('expected') or 0) or None
+                except (TypeError, ValueError):
+                    expected = None
+                self._on_progress(int(data.get('written') or 0), expected)
             elif m.group(1) == 'move' and data.get('total'):
                 self.detail = (f"{fmt_bytes(int(data.get('done') or 0))} of "
                                f"{fmt_bytes(int(data['total']))} copied")
@@ -223,10 +227,13 @@ class Job(QObject):
         if text and not text.startswith(('$ ', '=')):
             self.detail = text[:160]
 
-    def _on_progress(self, written: int):
-        """Silent installs report bytes written; show that and the speed."""
+    def _on_progress(self, written: int, expected: int | None = None):
+        """Silent installs report bytes written; show that and the speed,
+        and "of about" the download's Original Size when it's known (a
+        label, so never a percent)."""
         now = time.monotonic()
-        text = f"{fmt_bytes(written)} written"
+        text = (f"{fmt_bytes(written)} of about {fmt_bytes(expected)} written" if expected
+                else f"{fmt_bytes(written)} written")
         if self._rate and now > self._rate[0] and written >= self._rate[1]:
             speed = (written - self._rate[1]) / (now - self._rate[0])
             if speed > 0:

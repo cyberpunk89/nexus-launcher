@@ -26,7 +26,7 @@ from .repack import (
     detect_game_name, DISK_SPACE_WARN_MULTIPLIER, DISK_SWAP_CREDIT, exe_candidates,
     existing_install_root, find_exe_in_dir, find_game_exe, find_setup_exe, FITGIRL_PATTERNS, HARD_MIN_AVAILABLE_MB,
     HARD_MIN_EFFECTIVE_MB, incomplete_installs, INCOMPLETE_MARKER, inno_args, INNO_SILENT,
-    InstallProgress, MAX_SETUP_RETRIES, parse_md5_file, preflight_hard_disk_check,
+    InstallProgress, InstallReport, MAX_SETUP_RETRIES, parse_md5_file, preflight_hard_disk_check,
     preflight_hard_memory_check, read_incomplete_marker, read_meminfo, REDIST_EXES,
     repack_complete, repack_fingerprint, repack_info, setup_product_name, setup_redists,
     silent_setup_overrides, silent_target, SKIP_EXE_DIRS, SKIP_EXE_NAMES, verify_bins,

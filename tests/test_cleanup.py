@@ -98,5 +98,40 @@ class Rules(unittest.TestCase):
             C.trash(self.d / 'not there')
 
 
+class Sizes(unittest.TestCase):
+    def test_dir_size_skips_links_matches_walk(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d, 'game')
+            (root / 'bin' / 'deep').mkdir(parents=True)
+            (root / 'a.dat').write_bytes(b'x' * 1000)
+            (root / 'bin' / 'b.exe').write_bytes(b'y' * 2500)
+            (root / 'bin' / 'deep' / 'c.pak').write_bytes(b'z' * 7)
+            outside = Path(d, 'outside')
+            outside.mkdir()
+            (outside / 'big.bin').write_bytes(b'q' * 50_000)
+            linked = False
+            try:                     # Windows needs a privilege for symlinks
+                (root / 'link-dir').symlink_to(outside, target_is_directory=True)
+                (root / 'link-file').symlink_to(outside / 'big.bin')
+                linked = True
+            except OSError:
+                pass
+            walked = 0
+            for top, _dirs, files in os.walk(root, followlinks=False):
+                for f in files:
+                    p = os.path.join(top, f)
+                    if not os.path.islink(p):
+                        walked += os.lstat(p).st_size
+            self.assertEqual(C.dir_size(root), 3507)
+            self.assertEqual(C.dir_size(root), walked)
+            self.assertEqual(C.dir_size(root / 'a.dat'), 1000)
+            self.assertEqual(C.dir_size(Path(d, 'missing')), 0)
+            if linked:
+                self.assertEqual(C.dir_size(root / 'link-dir'), 0)
+            # It walks with scandir (one stat per entry, cached on Windows).
+            with mock.patch.object(C.os, 'walk', side_effect=AssertionError("os.walk")):
+                self.assertEqual(C.dir_size(root), 3507)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -794,7 +794,8 @@ class Window(unittest.TestCase):
             card.grab.click()
             self.assertEqual(calls[0][:2], ['--repack-page', 'hollow-knight-silksong'])
             self.assertTrue(self.win.sheet.isVisible())
-            self.assertIn("not enough space", self.win.sheet.sub.text())
+            # An older page (no install keys): the download's drive alone.
+            self.assertIn("on /dl (1.1 GB free) · short by 4.3 GB", self.win.sheet.sub.text())
             rows = [b for b in self.win.sheet.findChildren(QPushButton)
                     if b.objectName() == 'SheetRow']
             self.assertEqual(rows[0].text(), "Download — install when it's done")
@@ -802,6 +803,33 @@ class Window(unittest.TestCase):
             grab = next(a for a in calls if a[0] == '--repack-grab')
             self.assertEqual(grab, ['--repack-grab', 'hollow-knight-silksong', '--appid', '10',
                                     '--json', '--auto-install'])
+
+    def test_grab_sheet_names_both_drives(self):
+        d = self._deals()
+        page = {'title': 'Test Game', 'repack_size': '10 GB', 'original_size': '30 GB',
+                'size_bytes': 10 * 10**9, 'original_bytes': 30 * 10**9, 'magnets': 1,
+                'client': 'transmission', 'dest': '/dl/x', 'free_bytes': 50 * 10**9,
+                'dest_drive': '1', 'dest_mount': '/dl', 'install_dest': '/games/x',
+                'install_free': 20 * 10**9, 'install_drive': '2', 'install_mount': '/games',
+                'committed': {'2': 5 * 10**9}}
+        with patch_gui('cli_json', lambda a, cb, *_x, **_k: cb(page, None)):
+            card = next(c for c in d._cards if c.item['appid'] == 10)
+            card.grab.click()
+        sub = self.win.sheet.sub.text()
+        self.assertIn("Needs 10.0 GB on /dl (50.0 GB free) and about 30.0 GB on /games "
+                      "(20.0 GB free) · short by 15.0 GB", sub)
+        self.assertNotIn("repack", sub.split("\n", 1)[1].lower())
+        rows = [b for b in self.win.sheet.findChildren(QPushButton)
+                if b.objectName() == 'SheetRow']
+        self.assertEqual([r.text() for r in rows[:2]],
+                         ["Download — install when it's done", "Download only"])
+        self.assertTrue(all(r.isEnabled() for r in rows[:2]))       # say it, don't block
+        # Same drive, enough room: one "about" line, no shortfall.
+        page.update(install_drive='1', install_mount='/dl', committed={}, free_bytes=500 * 10**9)
+        with patch_gui('cli_json', lambda a, cb, *_x, **_k: cb(page, None)):
+            card.grab.click()
+        self.assertIn("Needs about 40.0 GB on /dl (500.0 GB free)", self.win.sheet.sub.text())
+        self.assertNotIn("short by", self.win.sheet.sub.text())
 
     def test_downloads_page_rows_and_states(self):
         w = self.win
