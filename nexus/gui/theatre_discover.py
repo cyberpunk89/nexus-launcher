@@ -20,6 +20,31 @@ from .theme import FS, G, R, SP
 MAX_CARDS = 12                  # per shelf: a couch isn't a feed reader
 
 
+def shelves(news: list[dict], res: dict, ctx: dict) -> list[tuple[str, str, list[dict]]]:
+    """The shelves, (title, kind, items) in order, each cut to MAX_CARDS and
+    those with nothing left out: News for your games, On sale from your
+    wishlist, Coming soon, Latest news. Pure (the Ribbon's Discover folders
+    use it too). `ctx`: owned_appids, news_on, gamedb_on."""
+    owned = ctx.get('owned_appids') or set()
+    out: list[tuple[str, str, list[dict]]] = []
+    rest: list[dict] = []
+    if ctx.get('news_on'):
+        mine = [n for n in news if n.get('kind') == 'steam' and n.get('appid') in owned]
+        rest = [n for n in news if n not in mine]
+        out.append(("News for your games", 'news', mine))
+    summary = (res or {}).get('summary') or {}
+    if ctx.get('gamedb_on'):
+        wish = [g for g in summary.get('wishlist') or []
+                if isinstance(g, dict) and (g.get('price') or {}).get('cutPct')
+                and not g.get('comingSoon')]
+        wish.sort(key=lambda g: -(g['price'].get('cutPct') or 0))
+        out.append(("On sale from your wishlist", 'deal', wish))
+        out.append(("Coming soon", 'upcoming', gamedb.upcoming(summary)))
+    if ctx.get('news_on'):
+        out.append(("Latest news", 'news', rest))
+    return [(t, k, items[:MAX_CARDS]) for t, k, items in out if items[:MAX_CARDS]]
+
+
 class TheatreCard(QFrame):
     """One story or deal: art on top, a line of facts, a title. A opens it
     (the reader, the deal sheet), X its options."""
@@ -151,6 +176,8 @@ class TheatreDiscover(QScrollArea):
         self.col.setSpacing(SP['6'])
         self.setWidget(host)
         self.shelves: list = []
+        self.found: list = []                  # the shelves last shown: (title, kind, items)
+        self.gamedb_off = False                # no Game-db and the setup card not hidden
         self.setup: TheatreSetupCard | None = None
         self.empty = None
         self.cards: list[TheatreCard] = []
@@ -177,26 +204,11 @@ class TheatreDiscover(QScrollArea):
         self._clear()
         owned = ctx.get('owned_appids') or set()
         images = ctx.get('images')
-        shelves: list[tuple[str, str, list[dict]]] = []
-        if ctx.get('news_on'):
-            mine = [n for n in news if n.get('kind') == 'steam' and n.get('appid') in owned]
-            rest = [n for n in news if n not in mine]
-            shelves.append(("News for your games", 'news', mine))
-        summary = (res or {}).get('summary') or {}
-        if ctx.get('gamedb_on'):
-            wish = [g for g in summary.get('wishlist') or []
-                    if isinstance(g, dict) and (g.get('price') or {}).get('cutPct')
-                    and not g.get('comingSoon')]
-            wish.sort(key=lambda g: -(g['price'].get('cutPct') or 0))
-            shelves.append(("On sale from your wishlist", 'deal', wish))
-            shelves.append(("Coming soon", 'upcoming', gamedb.upcoming(summary)))
-        if ctx.get('news_on'):
-            shelves.append(("Latest news", 'news', rest))
+        found = shelves(news, res, ctx)
+        self.found = found
+        self.gamedb_off = not ctx.get('gamedb_on') and not ctx.get('hide_setup')
         any_cards = False
-        for title, kind, items in shelves:
-            items = items[:MAX_CARDS]
-            if not items:
-                continue
+        for title, kind, items in found:
             any_cards = True
             from .library import ShelfRow
             cards = []

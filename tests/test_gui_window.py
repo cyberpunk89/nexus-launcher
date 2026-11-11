@@ -98,6 +98,11 @@ def fake_report_cli(url_clip=None, calls=None, relay=None, send=None, sent=None,
     return cli
 
 
+def _iso_ago(now, seconds):
+    from datetime import datetime
+    return datetime.fromtimestamp(now - seconds).isoformat(timespec='seconds')
+
+
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Pure(unittest.TestCase):
     def test_shelf_page_target(self):
@@ -179,6 +184,70 @@ class Pure(unittest.TestCase):
         self.assertEqual(by['game:heroic']['frac'], None)    # no total: a busy bar
         self.assertNotIn('game:run', [k for k in by if by[k]['kind'] == 'game'
                                       and by[k]['group'] == 'progress'])   # its install job has it
+
+    def test_theatre_rows_from_pipeline_cards(self):
+        import time as _t
+        from nexus import pipeline
+        now, mono = _t.time(), _t.monotonic()
+
+        def raw(h, **kw):
+            r = {'hash': h, 'name': h.upper(), 'title': h.title(), 'slug': h, 'tracked': True,
+                 'percent': 40.0, 'state': 'downloading', 'rate': 5e6, 'eta': 600,
+                 'size': 4 << 30, 'repack_bytes': 4 << 30}
+            r.update(kw)
+            return r
+        torrents = [raw('dl'), raw('pa', state='paused'), raw('qu', state='queued', percent=0),
+                    raw('fin', done=True, percent=100.0, path='/p'),
+                    raw('rdy', done=True, percent=100.0, installed=True,
+                        installed_at=_iso_ago(now, 60))]
+        cards = pipeline.cards(torrents, {}, now, set())
+        job = nx.Job(['x', '--from-torrent', 'fin'], "Installing Fin", 'fin', 'install', 'Fin')
+        job.state = 'running'
+        job.progress = (1, 4)
+        games = [{'slug': 'rdy', 'display_name': 'Rdy'}, {'slug': 'zzz', 'display_name': 'Zzz'}]
+        ready_at = {'rdy': now - 30, 'zzz': now - 30}
+        rows = nx.theatre_rows(torrents, [job], games, ready_at, now, mono, cards=cards)
+        by = {r['key']: r for r in rows}
+        for h in ('dl', 'pa', 'qu', 'fin', 'rdy'):
+            self.assertEqual(by[f'torrent:{h}']['kind'], 'card', h)
+        self.assertEqual(by['torrent:dl']['group'], 'progress')
+        self.assertTrue(by['torrent:dl']['big'].endswith('%'))
+        self.assertEqual(by['torrent:dl']['primary'], 'pause')
+        self.assertTrue(by['torrent:dl']['track'])
+        self.assertEqual(by['torrent:pa']['primary'], 'resume')
+        self.assertTrue(by['torrent:pa']['paused'])
+        self.assertEqual(by['torrent:qu']['group'], 'queue')
+        self.assertEqual((by['torrent:fin']['group'], by['torrent:fin']['primary']),
+                         ('ready', 'install'))
+        self.assertEqual((by['torrent:rdy']['big'], by['torrent:rdy']['group'],
+                          by['torrent:rdy']['primary']), ("Ready", 'ready', 'play'))
+        self.assertNotIn('game:rdy', by)                     # its Ready card has it
+        self.assertIn('game:zzz', by)                        # no card: still a game row
+        self.assertFalse([r for r in rows if r['kind'] == 'job'])   # the card shows the install
+        self.assertEqual(by['torrent:dl']['ref']['hash'], 'dl')
+        self.assertEqual([r['group'] for r in rows],
+                         sorted((r['group'] for r in rows),
+                                key=('ready', 'progress', 'queue').index))
+
+    def test_a_played_ready_card_leaves_theatre_downloads(self):
+        import time as _t
+        from nexus import pipeline
+        now = _t.time()
+        raw = [{'hash': 'rdy', 'name': 'Rdy', 'title': 'Rdy', 'slug': 'rdy', 'tracked': True,
+                'done': True, 'percent': 100.0, 'installed': True,
+                'installed_at': _iso_ago(now, 600)}]
+        cards = pipeline.cards(raw, {}, now, set())
+        played = [{'slug': 'rdy', 'display_name': 'Rdy', 'last_played': _iso_ago(now, 60)}]
+        fresh = [{'slug': 'rdy', 'display_name': 'Rdy', 'last_played': _iso_ago(now, 6000)}]
+        self.assertEqual(nx.theatre_rows(raw, [], played, {}, now, 1.0, cards=cards), [])
+        rows = nx.theatre_rows(raw, [], fresh, {}, now, 1.0, cards=cards)
+        self.assertEqual([r['key'] for r in rows], ['torrent:rdy'])
+
+    def test_theatre_rows_without_cards_have_no_track(self):
+        rows = nx.theatre_rows([{'hash': 'h', 'name': 'N', 'tracked': True, 'percent': 5}],
+                               [], [], {}, 1e9, 1.0)
+        self.assertEqual(rows[0]['kind'], 'torrent')
+        self.assertNotIn('track', rows[0])
 
     def test_fmt_duration(self):
         f = nx.fmt_duration
@@ -4460,6 +4529,87 @@ class Window(unittest.TestCase):
             lab.text() for lab in sheet.findChildren(QLabel)))
         sheet.close_sheet()
         w.jobs.jobs.clear()
+        w.set_theatre(False)
+
+    def test_theatre_download_row_has_the_track_and_routes_card_actions(self):
+        from nexus import pipeline
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th, sheet = w.theatre, w.theatre_sheet
+        raw = [{'hash': 'h1', 'name': 'Repack', 'title': 'Repack', 'slug': 'repack',
+                'tracked': True, 'percent': 40.0, 'size': 4 << 30, 'repack_bytes': 4 << 30,
+                'eta': 600, 'rate': 5e6},
+               {'hash': 'h3', 'name': 'Finished', 'title': 'Finished', 'slug': 'finished',
+                'tracked': True, 'done': True, 'percent': 100.0, 'path': '/p', 'size': 1 << 30}]
+        w.downloads.data = {'torrents': raw,
+                            'pipeline': pipeline.cards(raw, {}, time.time(), set())}
+        self._downloads(w, raw)
+        th.tabs.set_current('downloads', emit=True)
+        QApplication.processEvents()
+        rows = th.downloads_page.rows
+        row = rows['torrent:h1']
+        self.assertEqual(row.r['kind'], 'card')
+        self.assertTrue(row.track.isVisibleTo(row))
+        self.assertFalse(row.bar.isVisibleTo(row))
+        self.assertEqual(len(row.track.segments()), 4)
+        self.assertEqual(row.track.scale, nx.THEATRE_SCALE)
+        row.grab()                                           # paints without a qFatal
+        names = lambda: [b.text() for b in sheet.findChildren(QPushButton) if b.isVisible()]  # noqa: E731
+        sent, acted = [], []
+        with mock.patch.object(w, '_torrent_send', lambda *a: sent.append(a)), \
+                mock.patch.object(w, '_pipeline_action', lambda *a: acted.append(a)):
+            row.action.emit('pause', row.r)
+            self.assertEqual(sent, [('pause', ['h1'], False)])
+            row.action.emit('options', row.r)
+            self.assertEqual(names(), ["Pause", "Stop…"])
+            sheet.close_sheet()
+            rows['torrent:h3'].action.emit('install', rows['torrent:h3'].r)
+            self.assertEqual([a[0] for a in acted], ['install'])
+            self.assertEqual(acted[0][1]['hash'], 'h3')
+        # without a card the row is the plain one: no track
+        w.downloads.data = {'torrents': raw}
+        self._downloads(w, raw)
+        self.assertFalse(th.downloads_page.rows['torrent:h1'].track.isVisibleTo(row))
+        self.assertTrue(th.downloads_page.rows['torrent:h1'].bar.isVisibleTo(row))
+        w.set_theatre(False)
+
+    def test_card_options_keep_queue_controls_and_never_fail_silently(self):
+        from nexus import pipeline
+        w = self.win
+        w.activateWindow()
+        w.set_theatre(True)
+        th, sheet = w.theatre, w.theatre_sheet
+        raw = [{'hash': 'h3', 'name': 'Finished', 'title': 'Finished', 'slug': 'finished',
+                'tracked': True, 'done': True, 'percent': 100.0, 'path': '/p', 'size': 1 << 30},
+               {'hash': 'h4', 'name': 'Done', 'title': 'Done', 'slug': 'nolib', 'tracked': True,
+                'done': True, 'percent': 100.0, 'installed': True,
+                'installed_at': time.strftime('%Y-%m-%dT%H:%M:%S')}]
+        w.downloads.data = {'torrents': raw,
+                            'pipeline': pipeline.cards(raw, {}, time.time(), set())}
+        blocker = nx.Job(['x'], "Installing B", 'b', 'install', 'B')
+        mine = nx.Job(['x', '--from-torrent', 'h3'], "Installing Finished", 'finished', 'install',
+                      'Finished')
+        other = nx.Job(['x'], "Installing O", 'o', 'install', 'O')
+        for j in (blocker, mine, other):
+            j.state = 'queued'
+        self._downloads(w, raw, [blocker, mine, other])
+        names = lambda: [b.text() for b in sheet.findChildren(QPushButton) if b.isVisible()]  # noqa: E731
+        row = th.downloads_page.rows['torrent:h3']
+        with mock.patch.object(w, '_install_download') as inst, \
+                mock.patch.object(w, '_pipeline_action') as acted:
+            row.action.emit('install', row.r)               # A: it is already waiting
+            inst.assert_not_called()
+            acted.assert_not_called()
+            self.assertEqual(names(), ["Move up", "Move down", "Remove from the queue"])
+            sheet.close_sheet()
+        toasts = []
+        with mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a)):
+            r4 = th.downloads_page.rows['torrent:h4']
+            r4.action.emit('show', r4.r)                    # not in the library
+        self.assertEqual(len(toasts), 1)
+        w.jobs.jobs.clear()
+        w.downloads.data = {}
         w.set_theatre(False)
 
     def test_theatre_moment_banner_never_takes_focus(self):

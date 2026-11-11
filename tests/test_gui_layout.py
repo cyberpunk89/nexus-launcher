@@ -369,6 +369,28 @@ class PipelineCardFit(unittest.TestCase):
         self.assertEqual(len(t.segments()), 4)
         t.grab()
 
+    def test_stage_track_scales_for_theatre(self):
+        from nexus.gui.pipeline_view import StageTrack, paint_track
+        a, b = StageTrack(), StageTrack(scale=1.4)
+        self.addCleanup(a.deleteLater)
+        self.addCleanup(b.deleteLater)
+        self.assertAlmostEqual(b._bar_h(), a._bar_h() * 1.4, places=3)
+        self.assertAlmostEqual(b._gap(), a._gap() * 1.4, places=3)
+        self.assertGreater(b._font().pixelSize(), a._font().pixelSize())
+        self.assertGreater(b.sizeHint().height(), a.sizeHint().height())
+        c, _r = self.card()
+        for t in (a, b):
+            t.resize(604, t.sizeHint().height())
+            t.set_track(c['track'])
+        self.assertAlmostEqual(sum(s['w'] for s in b.segments()) + 3 * b._gap(), 604, places=3)
+        b.grab()
+        # the shared painter draws onto any paint device (the Ribbon's items)
+        from PyQt6.QtGui import QImage, QPainter
+        img = QImage(300, 60, QImage.Format.Format_ARGB32)
+        pt = QPainter(img)
+        paint_track(pt, b.segments(), b.labels(), 8.0, b._font(), 14.0, False, 0.0, 5.0)
+        pt.end()
+
     def test_eta_line_across_stages(self):
         from nexus.gui.pipeline_view import eta_line
         c, _r = self.card()

@@ -17,6 +17,7 @@ from .theme import build_stylesheet, collection_look, FONTS, FS, G, P, SP
 # The spotlight subclasses Home's carousel, so this one is needed up front
 # (library.py imports nothing from here).
 from .library import FollowHero
+from .pipeline_view import StageTrack
 
 
 THEATRE_SCALE = 1.4
@@ -489,7 +490,7 @@ class TheatreDownloadRow(QFrame):
     it has none), X always its options."""
     action = pyqtSignal(str, dict)
 
-    GLYPHS = {'torrent': 'download', 'job': 'download', 'game': 'play'}
+    GLYPHS = {'torrent': 'download', 'job': 'download', 'game': 'play', 'card': 'download'}
 
     def __init__(self, r: dict):
         super().__init__()
@@ -506,12 +507,17 @@ class TheatreDownloadRow(QFrame):
         col.setSpacing(SP['1'])
         self.title = plain_label("", "TheatreMeta")
         self.state = plain_label("", "TheatreSub")
+        self.state.setWordWrap(True)           # a card's line (state, figures, ETA) is long
         self.bar = QProgressBar()
         self.bar.setObjectName("CardProgress")
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(int(SP['2'] * 1.25))
         self.bar.setRange(0, 1000)
-        for w in (self.title, self.state, self.bar):
+        # A pipeline card's four stages (w-96), the Downloads page's track bigger;
+        # made here, in the layout, and only shown for a row that has one.
+        self.track = StageTrack(self, scale=THEATRE_SCALE)
+        self.track.hide()
+        for w in (self.title, self.state, self.bar, self.track):
             col.addWidget(w)
         lay.addLayout(col, 1)
         self.big = label("", "TheatreBig")
@@ -525,7 +531,11 @@ class TheatreDownloadRow(QFrame):
         self.title.setText(r['title'])
         self.state.setText(r['state'])
         self.big.setText(r['big'])
-        self.bar.setVisible(r['frac'] is not None or r['group'] == 'progress')
+        has_track = bool(r.get('track'))
+        self.track.setVisible(has_track)
+        if has_track:
+            self.track.set_track(r['track'])
+        self.bar.setVisible(not has_track and (r['frac'] is not None or r['group'] == 'progress'))
         self.bar.setRange(0, 1000 if r['frac'] is not None else 0)   # 0..0: busy
         if r['frac'] is not None:
             self.bar.setValue(int(max(0.0, min(1.0, r['frac'])) * 1000))
@@ -569,6 +579,7 @@ class TheatreDownloads(QScrollArea):
         for head in self.heads.values():
             head.setParent(host)               # never a window of its own while unplaced
         self.rows: dict[str, TheatreDownloadRow] = {}
+        self.shown: list[dict] = []            # the rows last given, in order (the Ribbon's)
         self.empty = EmptyState(G['download'], "Nothing downloading",
                                 "Repacks you download and games Steam is fetching show up here")
         self.empty.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -578,6 +589,7 @@ class TheatreDownloads(QScrollArea):
 
     def set_downloads(self, rows: list[dict]):
         """`rows` from downloads.theatre_rows, in order."""
+        self.shown = list(rows)
         for key in [k for k in self.rows if k not in {r['key'] for r in rows}]:
             w = self.rows.pop(key)
             f = QApplication.focusWidget()
@@ -1914,7 +1926,10 @@ class TheatreView(QWidget):
             downloads=not self.tabs.item('downloads').isHidden(), downloads_sub=down,
             fact=fact_text, a_plays=self.a_plays,
             pins=[(c.key, c.title, len(c.games))
-                  for c in self._pin_cats])
+                  for c in self._pin_cats],
+            groups=categories.browse(self._cat_groups, self.category_prefs().hidden, caps={}),
+            shelves=self.discover.found, gamedb_off=self.discover.gamedb_off,
+            dl_rows=self.downloads_page.shown)
 
     def ribbon_home(self):
         """Home's first item (Now playing while a game runs): entering
@@ -1967,6 +1982,19 @@ class TheatreView(QWidget):
             self._ribbon_tab(item.primary[4:])
         elif item.primary.startswith('cat:'):      # a pinned category (w-100)
             self.open_category(item.primary[4:])
+        elif item.kind == 'folder':
+            self.ribbon.enter()
+        elif item.kind == 'news':
+            col = ribbon_model.column(self.ribbon.state, self.ribbon.cats)[1]
+            stories = [it.value for it in col if it.kind == 'news']
+            self._open_reader(stories, next((i for i, it in enumerate(
+                [x for x in col if x.kind == 'news']) if it.key == item.key), 0), self.ribbon)
+        elif item.kind == 'deal':
+            self.deal_asked.emit(item.value, item.primary.partition(':')[2] or 'deal')
+        elif item.kind == 'download':
+            row = self._ribbon_row(item)
+            if row is not None:
+                self.download_action.emit(item.primary[3:] or 'options', row.r)
         elif item.kind == 'setting' and item.primary == 'step':
             self.ribbon_setting.emit(item.key[4:], ribbon_model.step_value(item))
         elif item.primary == 'sheet':
@@ -1974,9 +2002,24 @@ class TheatreView(QWidget):
         elif item.primary == 'all_settings':
             self.all_settings.emit()
 
+    def _ribbon_row(self, item):
+        """The Downloads row a Ribbon download item stands for."""
+        return self.downloads_page.rows.get(item.key[3:])
+
     def _ribbon_options(self, item):
-        """X: a game's options sheet; a setting's row in Theatre's settings."""
-        if item.kind == 'game':
+        """X: a game's options sheet; a setting's row in Theatre's settings;
+        a download's options; a category folder's page; a story's article."""
+        if item.kind == 'download':
+            row = self._ribbon_row(item)
+            if row is not None:
+                self.download_action.emit('options', row.r)
+        elif item.kind == 'folder' and item.key.startswith('col:'):
+            self.open_category(item.key[4:])
+        elif item.kind == 'news':
+            self.reader_options(item.value)
+        elif item.kind == 'deal':
+            self.deal_asked.emit(item.value, item.primary.partition(':')[2] or 'deal')
+        elif item.kind == 'game':
             g = self._by_slug.get(item.slug)
             if g is not None:
                 self.menu.emit(g, QPoint())
@@ -2000,6 +2043,8 @@ class TheatreView(QWidget):
         if self._ribbon_sub is not None:
             return
         self._mirror_tabs(key if key in ('home', 'library') else 'home')
+        if key == 'discover':
+            self.discover_shown.emit()           # the window fetches (skips while loaded or busy)
 
     def _mirror_tabs(self, key: str):
         """Put the hidden tabs on `key` (their `changed` still goes out, for
@@ -2309,6 +2354,8 @@ class TheatreView(QWidget):
             return True
         if self.layout_mode == 'ribbon':
             if self._ribbon_close_page():
+                return True
+            if self.ribbon.leave():             # a folder: up one, before Home
                 return True
             if self.ribbon.state.cat != 'home':
                 self.ribbon.select('home')

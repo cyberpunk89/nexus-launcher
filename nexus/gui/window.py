@@ -963,6 +963,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             'hide_setup': self.prefs.theatre_hide_gamedb, 'images': self.newspage._image_for,
             'loading': loading or not (items or getattr(self.dealspage, 'res', None)),
             'error': str(getattr(self.newspage, 'error', '') or '')})
+        self.theatre.refresh_ribbon()               # the Ribbon's Discover folders
 
     def _hide_theatre_gamedb(self):
         self.prefs.theatre_hide_gamedb = True
@@ -1044,7 +1045,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     def _ribbon_moved(self, d: int):
         """A move in Theatre's Ribbon: the move sound, the background's
         ribbon glides a step, the hints follow the item."""
-        self.sounds.play('move')
+        self.sounds.play('category' if self.theatre.ribbon.last_move == 'category' else 'move')
         self.background.ribbon_step(d)
         self._update_hints()
 

@@ -617,6 +617,16 @@ class ControllerMixin:
             elif it.key.startswith('friend:'):
                 hints = [('a', 'Open'), ('x', 'Options')] if g is not None else \
                     [('a', 'Options')]
+            elif it.kind == 'folder':
+                hints = [('a', 'Open')] + ([('x', 'See all')] if it.key.startswith('col:')
+                                           else [])
+            elif it.kind == 'news':
+                hints = [('a', 'Read'), ('x', 'Options')]
+            elif it.kind == 'deal':
+                hints = [('a', 'Options')]
+            elif it.kind == 'download':
+                from .downloads import PRIMARY_LABELS
+                hints = [('a', PRIMARY_LABELS.get(it.primary[3:], 'Options')), ('x', 'Options')]
             elif it.primary == 'sheet':
                 hints = [('a', 'Sort & filter')]
             elif it.primary == 'all_settings':
@@ -628,7 +638,9 @@ class ControllerMixin:
                           else "Show it"))
         elif cat == 'library':
             hints.append(('View', 'Sort & filter'))
-        if cat != 'home':
+        if th.ribbon.depth():
+            hints.append(('b', 'Back'))
+        elif cat != 'home':
             hints.append(('b', 'Home'))
         return hints + [('y', 'Search'), ('LB RB', 'Category'), ('Menu', 'Quick menu')]
 

@@ -16,7 +16,8 @@ from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QLinearGradient, Q
     QPainterPath, QPen, QStaticText)
 from PyQt6.QtWidgets import QWidget
 
-from .ribbon_model import clamp, current, find, nav, RibbonState
+from .ribbon_model import (clamp, column, columns, crumbs, current, find, nav, resolve,
+                           RibbonState)
 from .theme import FONTS, FS, G, GRAD, LOOK, P, R
 
 
@@ -180,15 +181,22 @@ class RibbonView(QWidget):
         self._hits: list = []                    # (rect, 'cat'|'item', index), from the last paint
         self._off = QPointF()                    # the slide still to go
         self._col_x: tuple | None = None         # the column's painted x range (last paint)
+        self._folder_slide = False               # the slide in progress moves the column, not the bar
+        self.last_move = 'item'                  # item, folder or category (the last move's sound)
         self._anim = QVariantAnimation(self)
         self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
         self._anim.valueChanged.connect(self._slide)
 
     # ---- data ----
     def set_categories(self, cats: list):
-        """New categories; the category and each one's focused item stay
-        (by key), falling back to Home when a category went away."""
+        """New categories; the category, its open folders and each column's
+        focused item stay (by key), falling back to Home when a category
+        went away."""
         keys = {c.key: c.items[self.state.item_index(c)].key for c in self.cats if c.items}
+        inner = {}                               # the open folders' columns: id -> focused key
+        for cid, items in columns(self.state, self.cats)[1:]:
+            if items:
+                inner[cid] = items[clamp(self.state.focus.get(cid, 0), len(items))].key
         old_cat = self.state.cat
         focus = {}
         for c in cats:
@@ -196,8 +204,12 @@ class RibbonView(QWidget):
             focus[c.key] = i if i is not None else \
                 clamp(self.state.focus.get(c.key, 0), len(c.items))
         cat = old_cat if any(c.key == old_cat for c in cats) else 'home'
+        state = resolve(RibbonState(cat, focus, self.state.path if cat == old_cat else ()), cats)
+        for cid, items in columns(state, cats)[1:]:
+            j = next((k for k, it in enumerate(items) if it.key == inner.get(cid)), None)
+            focus[cid] = j if j is not None else clamp(self.state.focus.get(cid, 0), len(items))
         self.cats = cats
-        self.state = RibbonState(cat, focus)
+        self.state = state
         self._texts.clear()
         self._sync_accessible()
         self._prefetch()
@@ -215,7 +227,9 @@ class RibbonView(QWidget):
         if i is not None:
             focus[cat_key] = i
         changed = cat_key != self.state.cat
-        self.state = RibbonState(cat_key, focus)
+        self.state = RibbonState(cat_key, focus)         # folders closed
+        if changed:
+            self.last_move = 'category'
         self._anim.stop()
         self._off = QPointF()
         self._sync_accessible()
@@ -233,34 +247,55 @@ class RibbonView(QWidget):
 
     # ---- moving ----
     def move(self, action: str) -> bool:
-        """left, right, up, down, next, prev or home (ribbon_model.nav).
-        False when nothing moved (an end)."""
+        """left, right, up, down, next, prev, home, in or out
+        (ribbon_model.nav). False when nothing moved (an end)."""
         if not self.cats:
             return False
-        old = self.state
+        old = resolve(self.state, self.cats)
         new = nav(old, self.cats, action)
         i0, i1 = old.index(self.cats), new.index(self.cats)
-        c1 = self.cats[i1]
-        j0 = old.item_index(c1) if i0 == i1 else None
-        j1 = new.item_index(c1)
-        if i0 == i1 and j0 == j1:
+        (cid0, items0), (cid1, items1) = column(old, self.cats), column(new, self.cats)
+        j0 = clamp(old.focus.get(cid0, 0), len(items0))
+        j1 = clamp(new.focus.get(cid1, 0), len(items1))
+        if (i0, cid0, j0) == (i1, cid1, j1):
             return False
         self.state = new
         gm = geometry(self.width(), self.height(), self.scale)
         off = QPointF(self._off)
+        folder = i0 == i1 and cid0 != cid1
         if i0 != i1:
             off.setX(off.x() + (i1 - i0) * gm['gap'])
             off.setY(0)
+            self.last_move = 'category'
+        elif folder:                             # in: the new column comes from the right
+            deeper = len(new.path) > len(old.path)
+            off = QPointF(gm['gap'] * (1 if deeper else -1) * 1.2, 0)
+            self.last_move = 'folder'
         else:
             off.setY(off.y() + (j1 - j0) * (gm['art_off'][1] + gm['step']))
+            self.last_move = 'item'
+        self._folder_slide = folder
         self._start_slide(off)
         self._sync_accessible()
         self._prefetch()
         self.update()
-        self.moved.emit(1 if (i1 > i0 or (i0 == i1 and j1 > j0)) else -1)
+        down = i1 > i0 or (i0 == i1 and (len(new.path) > len(old.path) if folder else j1 > j0))
+        self.moved.emit(1 if down else -1)
         if i0 != i1:
             self.category_changed.emit(new.cat)
         return True
+
+    def enter(self) -> bool:
+        """A on a folder: open it (its own column, the focus on its first
+        or on where you left it)."""
+        return self.move('in')
+
+    def leave(self) -> bool:
+        """B inside a folder: up one."""
+        return self.move('out')
+
+    def depth(self) -> int:
+        return len(resolve(self.state, self.cats).path)
 
     def cycle(self, d: int) -> bool:
         """LB / RB: the next or previous category, wrapping round."""
@@ -282,6 +317,9 @@ class RibbonView(QWidget):
         """One frame of a slide: repaint only what moves, the bar during a
         category move, the column during an item move."""
         old, self._off = self._off, QPointF(v)
+        if self._folder_slide:
+            self.update(self._col_rect())
+            return
         if self._off.x() != old.x():
             self.update(self._bar_rect())
         if self._off.y() != old.y():
@@ -296,7 +334,7 @@ class RibbonView(QWidget):
     def _col_rect(self) -> QRect:
         """The column's x range from the last paint, full height (items
         slide in and out at the top and the bottom)."""
-        if self._col_x is None:
+        if self._col_x is None or self._folder_slide:
             return self.rect()
         x0, x1 = self._col_x
         return QRect(int(x0) - 1, 0, int(x1 - x0) + 2, self.height())
@@ -310,7 +348,8 @@ class RibbonView(QWidget):
         c, it = self.category(), self.current()
         if c is None or it is None:
             return
-        self.setAccessibleName(f"{c.title}: {it.title}")
+        where = " › ".join([c.title] + [f.title for f in crumbs(self.state, self.cats)])
+        self.setAccessibleName(f"{where}: {it.title}")
         self.setAccessibleDescription(it.value_text if it.kind == 'setting' else plain(it.sub))
 
     # ---- input ----
@@ -329,6 +368,10 @@ class RibbonView(QWidget):
             it = self.current()
             if it is not None:
                 self.options.emit(it)
+        elif k in (Qt.Key.Key_PageDown, Qt.Key.Key_BracketRight):
+            self.cycle(1)                        # the keyboard's RB (Right opens a folder)
+        elif k in (Qt.Key.Key_PageUp, Qt.Key.Key_BracketLeft):
+            self.cycle(-1)
         else:
             super().keyPressEvent(ev)
 
@@ -348,13 +391,14 @@ class RibbonView(QWidget):
                 self.select(self.cats[i].key)
                 self.moved.emit(1 if i > cur else -1)
             return
-        c = self.category()
-        fi = self.state.item_index(c)
+        cid, items = column(self.state, self.cats)
+        fi = clamp(self.state.focus.get(cid, 0), len(items))
         if i == fi:
-            self.activated.emit(c.items[i])
+            self.activated.emit(items[i])
         else:
-            focus = {**self.state.focus, c.key: i}
-            self.state = RibbonState(c.key, focus)
+            focus = {**self.state.focus, cid: i}
+            self.state = RibbonState(self.state.cat, focus, self.state.path)
+            self.last_move = 'item'
             self._sync_accessible()
             self._prefetch()
             self.update()
@@ -406,12 +450,12 @@ class RibbonView(QWidget):
     def _prefetch(self):
         """Decode the art either side of the focus ahead (while it fits the
         cache's budget), so Up/Down never shows an empty frame."""
-        c = self.category()
-        if c is None or not self.isVisible():
+        if not self.cats or not self.isVisible():
             return
         gm = geometry(self.width(), self.height(), self.scale)
-        fi = self.state.item_index(c)
-        for it in c.items[max(0, fi - self.PREFETCH):fi + self.PREFETCH + 1]:
+        cid, items = column(self.state, self.cats)
+        fi = clamp(self.state.focus.get(cid, 0), len(items))
+        for it in items[max(0, fi - self.PREFETCH):fi + self.PREFETCH + 1]:
             if it.kind == 'game' and it.slug and ART.has_room():
                 key = self._art_key(it.slug, *gm['art_on'])
                 if key is not None and ART.get(key) is None:
@@ -456,7 +500,8 @@ class RibbonView(QWidget):
         self._col_x = (min(a, x0), max(b, x1))
 
     def _bar(self, p, gm):
-        u, ax, by = gm['u'], gm['ax'] + self._off.x(), gm['by']
+        u, by = gm['u'], gm['by']
+        ax = gm['ax'] + (0.0 if self._folder_slide else self._off.x())
         cur = self.state.index(self.cats)
         for i, c in enumerate(self.cats):
             x = ax + (i - cur) * gm['gap']
@@ -476,10 +521,13 @@ class RibbonView(QWidget):
             lh, sh = QFontMetrics(f).height(), QFontMetrics(fs).height()
             ly = by + px * 0.5 + 8 * u
             half = min(300 * u, max(gm['gap'], x - 8))
-            self._text(p, QRectF(x - half, ly, 2 * half, lh), c.title, f, color('text'),
+            open_f = crumbs(self.state, self.cats)
+            title = " › ".join([c.title] + [f.title for f in open_f])
+            sub = open_f[-1].sub if open_f else c.sub
+            self._text(p, QRectF(x - half, ly, 2 * half, lh), title, f, color('text'),
                        Qt.AlignmentFlag.AlignCenter)
-            if c.sub:
-                self._text(p, QRectF(x - half, ly + lh, 2 * half, sh), c.sub, fs,
+            if sub:
+                self._text(p, QRectF(x - half, ly + lh, 2 * half, sh), sub, fs,
                            color('muted'), Qt.AlignmentFlag.AlignCenter)
 
     def _art_rect(self, it, on: bool, gm: dict, y: float) -> QRectF:
@@ -487,14 +535,14 @@ class RibbonView(QWidget):
             w, h = gm['art_on'] if on else gm['art_off']
         else:
             w = h = gm['glyph_on'] if on else gm['glyph_off']
-        return QRectF(gm['ax'] - w / 2, y, w, h)
+        dx = self._off.x() if self._folder_slide else 0.0
+        return QRectF(gm['ax'] + dx - w / 2, y, w, h)
 
     def _column(self, p, gm):
-        c = self.category()
-        items = c.items
+        cid, items = column(self.state, self.cats)
         if not items:
             return
-        fi = self.state.item_index(c)
+        fi = clamp(self.state.focus.get(cid, 0), len(items))
         u, dy, ht = gm['u'], self._off.y(), self.height()
         self._col_x = None
         # Above the bar: up to two of the items you came from, dimmer further up.
@@ -563,10 +611,15 @@ class RibbonView(QWidget):
             base = font('base', self.scale)
             end = self._text(p, QRectF(tx, r.y(), tw, r.height()), it.title, base,
                              color('subtext'))
-            if it.kind == 'setting':
+            if it.kind in ('setting', 'download'):
                 vx = tx + min(tw * 0.6, QFontMetrics(base).horizontalAdvance(it.title) + 24 * u)
                 end = self._text(p, QRectF(vx, r.y(), tx + tw - vx, r.height()),
-                                 "·  " + it.value_text, base, color('muted'))
+                                 "·  " + (it.value_text if it.kind == 'setting' else it.figure),
+                                 base, color('muted'))
+            elif it.kind == 'folder':
+                vx = tx + min(tw * 0.6, QFontMetrics(base).horizontalAdvance(it.title) + 24 * u)
+                end = self._text(p, QRectF(vx, r.y(), tx + tw - vx, r.height()),
+                                 "·  " + it.sub, base, color('muted'))
             self._span(tx, end + 2)
         p.restore()
         return bottom
@@ -578,7 +631,12 @@ class RibbonView(QWidget):
         sf = font('base', self.scale)
         hh, sh = QFontMetrics(hf).height(), QFontMetrics(sf).height()
         pill = 46 * u if it.primary in PILLS else 0
-        block = (26 * u if it.kicker else 0) + hh + 6 * u + sh + (16 * u + pill if pill else 0)
+        tf = self._track_font(u) if it.track else None
+        track_h = 0.0
+        if tf is not None:
+            track_h = 10 * u + 8 * u + QFontMetrics(tf).height() + 16 * u
+        block = (26 * u if it.kicker else 0) + hh + 6 * u + sh + (16 * u + pill if pill else 0) \
+            + track_h
         y = r.center().y() - block / 2 if r.height() > block else r.y()
         ends = [tx]
         if it.kicker:
@@ -608,11 +666,47 @@ class RibbonView(QWidget):
             p.drawStaticText(QPointF(tx, y), st)
             ends.append(tx + tw)                 # wrapped rich text: its whole width
             y += max(sh, st.size().height()) + 16 * u
+        if tf is not None:
+            y = self._download_track(p, it, tf, tx, y, tw, u, ends)
+        elif it.kind == 'download' and it.figure:
+            ends.append(self._text(p, QRectF(tx, y, tw, sh), it.figure,
+                                   font('headline', self.scale, QFont.Weight.DemiBold),
+                                   color('accent')))
+            y += hh
         if pill:
             ends.append(self._pill(p, PILLS[it.primary], QPointF(tx, y), u))
             y += pill
         self._span(tx, max(ends) + 2)
         return y
+
+    def _track_font(self, u: float) -> QFont:
+        f = QFont(FONTS.mono)
+        f.setPixelSize(max(1, int(FS['xs'] * self.scale * LOOK['scale'])))
+        f.setWeight(QFont.Weight.Medium)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        return f
+
+    def _download_track(self, p, it, tf: QFont, tx: float, y: float, tw: float, u: float,
+                        ends: list) -> float:
+        """A download's four stages as the pipeline paints them (no
+        shimmer), its one big number to the right. Returns the next y."""
+        from .pipeline_view import paint_track, track_labels, track_segments   # (a cycle at import)
+        bar_h, gap = 10.0 * u, 4.0 * u
+        fig = font('headline', self.scale, QFont.Weight.DemiBold)
+        fw = float(QFontMetrics(fig).horizontalAdvance(it.figure)) if it.figure else 0.0
+        bw = max(120.0, min(560.0 * u, tw - fw - 28 * u))
+        segs = track_segments(list(it.track), bw, gap)
+        labels = track_labels(segs, bw, gap, tf)
+        p.save()
+        p.translate(tx, 0.0)
+        paint_track(p, segs, labels, bar_h, tf, bar_h + 8.0 * u, False, 0.0, y)
+        p.restore()
+        if it.figure:
+            ends.append(self._text(p, QRectF(tx + bw + 20 * u, y + bar_h / 2 - QFontMetrics(fig).height() / 2,
+                                             fw + 4, QFontMetrics(fig).height()),
+                                   it.figure, fig, color('accent')))
+        ends.append(tx + bw)
+        return y + bar_h + 8 * u + QFontMetrics(tf).height() + 16 * u
 
     def _pill(self, p, label: str, at: QPointF, u: float) -> float:
         """Play / Resume: the one action that earns a pill. Returns its right."""

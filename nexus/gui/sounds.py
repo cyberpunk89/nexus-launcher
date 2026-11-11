@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import QApplication, QLineEdit
 from .common import _REPO
 
 SOUND_DIR = _REPO / 'assets' / 'sounds'
-NAMES = ('move', 'select', 'back', 'error', 'launch')
+NAMES = ('move', 'select', 'back', 'error', 'launch', 'category')
 CEILING = 0.7                 # full volume is 70 % of the system's
 RANGE_DB = 30.0               # volume 10 is 27 dB under volume 100
 
@@ -200,6 +200,7 @@ class UiSounds(QObject):
 
     MOVE_GAP = 0.06           # s between two moves (a held D-pad repeats every 85 ms)
     QUIET_AFTER = 0.15        # s: a move this soon after another sound is its echo
+    CATEGORY_GAP = 0.12       # s between two category moves (LB/RB held; Right at the bar)
     SAME_GAP = 0.05           # s: the same sound twice (Steam's Desktop layout doubling a key)
 
     def __init__(self, parent, in_theatre):
@@ -274,6 +275,9 @@ class UiSounds(QObject):
             if now - self._last.get('move', -1.0) < self.MOVE_GAP:
                 return False
             if last_name != 'move' and now - last_t < self.QUIET_AFTER:
+                return False
+        elif name == 'category':
+            if now - self._last.get('category', -1.0) < self.CATEGORY_GAP:
                 return False
         elif name == last_name and now - last_t < self.SAME_GAP:
             return False

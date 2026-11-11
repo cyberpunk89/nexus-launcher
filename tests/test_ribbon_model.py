@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
 from nexus.gui import ribbon_model as rm
+from nexus import categories as cats_mod
 from nexus.gui.ribbon_model import categories, Feed, find, nav, RibbonState, step_value
 
 
@@ -32,6 +33,25 @@ def feed(**kw):
     return Feed(**{**base, **kw})
 
 
+def ccat(key, title, games, kind='genre'):
+    return cats_mod.Category(key, kind, title, '', 'x', None, tuple(games))
+
+
+GROUPS = [cats_mod.Group('for_you', "For you", (ccat('smart:continue', "Continue", GAMES[:2],
+                                                    'smart'),)),
+          cats_mod.Group('yours', "Yours", (ccat('fav', "Favourites", GAMES[:1], 'fav'),
+                                            ccat('col:Couch', "Couch", GAMES[1:], 'collection'))),
+          cats_mod.Group('genres', "Genres", (ccat('genre:RPG', "RPG", GAMES),)),
+          cats_mod.Group('stores', "Stores", (ccat('src:steam', "Steam", GAMES[1:2], 'store'),))]
+DL_ROWS = [{'group': 'ready', 'key': 'torrent:h3', 'kind': 'card', 'title': "Finished",
+            'state': "Downloaded", 'big': "99%", 'primary': 'install',
+            'track': [{'stage': 'download', 'status': 'done', 'frac': 1.0}]},
+           {'group': 'progress', 'key': 'torrent:h1', 'kind': 'torrent', 'title': "Repack",
+            'state': "40% · 5 MB/s", 'big': "10 min left", 'primary': 'pause'},
+           {'group': 'queue', 'key': 'job:1', 'kind': 'job', 'title': "Waiting",
+            'state': "Waiting for the current job", 'big': "#1 in line", 'primary': None}]
+
+
 def cat(cats, key):
     return next(c for c in cats if c.key == key)
 
@@ -39,12 +59,12 @@ def cat(cats, key):
 class Categories(unittest.TestCase):
     def test_every_category_with_both_gates_on(self):
         cats = categories(feed())
-        self.assertEqual([c.key for c in cats], ['home', 'library', 'discover', 'downloads',
-                                                 'settings'])
-        self.assertEqual([c.title for c in cats], ["Home", "Library", "Discover", "Downloads",
-                                                   "Settings"])
-        self.assertEqual([it.primary for it in cat(cats, 'discover').items], ['tab:discover'])
-        self.assertEqual([it.primary for it in cat(cats, 'downloads').items], ['tab:downloads'])
+        self.assertEqual([c.key for c in cats], ['home', 'library', 'collections', 'discover',
+                                                 'downloads', 'settings'])
+        self.assertEqual([c.title for c in cats], ["Home", "Library", "Collections", "Discover",
+                                                   "Downloads", "Settings"])
+        self.assertEqual(cat(cats, 'discover').items[0].primary, 'tab:discover')
+        self.assertEqual(cat(cats, 'downloads').items[-1].primary, 'tab:downloads')
 
     def test_discover_and_downloads_follow_the_tab_gates(self):
         """The same gates as Theatre's tabs (sync_tabs): the Windows feature
@@ -54,7 +74,8 @@ class Categories(unittest.TestCase):
             keys = [c.key for c in categories(feed(discover=discover, downloads=downloads))]
             self.assertEqual('discover' in keys, discover)
             self.assertEqual('downloads' in keys, downloads)
-            self.assertEqual((keys[0], keys[1], keys[-1]), ('home', 'library', 'settings'))
+            self.assertEqual((keys[0], keys[1], keys[2], keys[-1]),
+                             ('home', 'library', 'collections', 'settings'))
 
     def test_home_recent_first_without_the_running_game_twice(self):
         cats = categories(feed())
@@ -140,6 +161,92 @@ class Categories(unittest.TestCase):
         self.assertIn('ribbon_motion', [k for _g, k, _t, _c in ROWS])
         self.assertEqual(set(rm.SETTING_GLYPH), {k for _g, k, _t, _c in ROWS})
 
+    def test_collections_yours_then_group_folders(self):
+        """Yours' categories are folders of games; For you, Genres and Stores
+        are folders of category folders (the Library's Show filter via the
+        groups Theatre hands in)."""
+        col = cat(categories(feed(groups=GROUPS)), 'collections')
+        self.assertEqual([it.key for it in col.items],
+                         ['col:fav', 'col:col:Couch', 'group:for_you', 'group:genres',
+                          'group:stores'])
+        self.assertTrue(all(it.kind == 'folder' for it in col.items))
+        fav, couch, for_you = col.items[0], col.items[1], col.items[2]
+        self.assertEqual((fav.title, fav.sub), ("Favourites", "1 game"))
+        self.assertEqual([c.key for c in couch.children], ['game:beta', 'game:gamma'])
+        self.assertEqual(couch.children[0].sub, "facts of beta")
+        self.assertEqual((for_you.title, for_you.sub), ("For you", "1 category"))
+        inner = for_you.children[0]
+        self.assertEqual((inner.key, inner.kind, inner.title, inner.sub),
+                         ('col:smart:continue', 'folder', "Continue", "2 games"))
+        self.assertEqual([c.slug for c in inner.children], ['alpha', 'beta'])
+
+    def test_a_big_category_is_capped_with_a_way_to_its_page(self):
+        many = [game(f"g{i:03}") for i in range(200)]
+        col = cat(categories(feed(groups=[cats_mod.Group('genres', "Genres", (
+            ccat('genre:RPG', "RPG", many),))])), 'collections')
+        kids = col.items[0].children[0].children
+        self.assertEqual(len(kids), rm.FOLDER_CAP + 1)
+        self.assertEqual((kids[-1].key, kids[-1].primary, kids[-1].sub),
+                         ('seeall:genre:RPG', 'cat:genre:RPG', "All 200 games"))
+
+    def test_discover_shelves_as_folders(self):
+        news = [{'title': "Story A", 'link': 'http://a', 'source': "Src"},
+                {'title': "Story B", 'link': 'http://b'}]
+        deals = [{'title': "Cheap", 'appid': 5, 'price': {'cutPct': 50}}]
+        shelves = [("News for your games", 'news', news), ("On sale", 'deal', deals),
+                   ("Empty shelf", 'upcoming', [])]
+        d = cat(categories(feed(shelves=shelves)), 'discover')
+        self.assertEqual(d.items[0].key, 'page:discover')
+        self.assertEqual(d.items[0].title, "All of Discover")
+        folders = [it for it in d.items if it.kind == 'folder']
+        self.assertEqual([f.title for f in folders], ["News for your games", "On sale"])
+        a, b = folders[0].children
+        self.assertEqual((a.kind, a.title, a.primary, a.value),
+                         ('news', "Story A", 'open', news[0]))
+        self.assertEqual(len({a.key, b.key}), 2)
+        cheap = folders[1].children[0]
+        self.assertEqual((cheap.kind, cheap.primary, cheap.value),
+                         ('deal', 'deal:deal', deals[0]))
+        self.assertEqual(folders[0].sub, "2 stories")
+        self.assertNotIn('action:gamedb_setup', [it.key for it in d.items])
+        off = cat(categories(feed(shelves=shelves, gamedb_off=True)), 'discover')
+        self.assertEqual(off.items[-1].key, 'action:gamedb_setup')
+        self.assertEqual(off.items[-1].primary, 'all_settings')
+
+    def test_downloads_items_from_rows(self):
+        dl = cat(categories(feed(dl_rows=DL_ROWS)), 'downloads')
+        self.assertEqual([it.key for it in dl.items],
+                         ['dl:torrent:h3', 'dl:torrent:h1', 'dl:job:1', 'page:downloads'])
+        a, b, c, page = dl.items
+        self.assertEqual((a.kind, a.kicker, a.title, a.figure, a.primary),
+                         ('download', "READY TO PLAY", "Finished", "99%", 'dl:install'))
+        self.assertEqual(a.sub, "Downloaded")
+        self.assertEqual(len(a.track), 1)
+        self.assertEqual((b.kicker, b.figure, b.track), ("IN PROGRESS", "10 min left", ()))
+        self.assertEqual((c.kicker, c.primary), ("UP NEXT", 'dl:options'))   # X's sheet
+        self.assertEqual(page.primary, 'tab:downloads')
+        nothing = cat(categories(feed()), 'downloads')
+        self.assertEqual([it.key for it in nothing.items], ['page:downloads'])
+
+    def test_an_empty_folder_is_not_a_blank_column(self):
+        col = cat(categories(feed(groups=[cats_mod.Group('yours', "Yours", (
+            ccat('col:Empty', "Empty", [], 'collection'),))])), 'collections')
+        kids = col.items[0].children
+        self.assertEqual([(k.kind, k.title, k.primary) for k in kids],
+                         [('empty', "Nothing here yet", 'none')])
+        s = nav(RibbonState('collections'), categories(feed(groups=[cats_mod.Group(
+            'yours', "Yours", (ccat('col:Empty', "Empty", [], 'collection'),))])), 'in')
+        self.assertEqual(len(s.path), 1)
+
+    def test_friends_only_with_data(self):
+        keys = lambda f: [c.key for c in categories(f)]  # noqa: E731
+        self.assertNotIn('friends', keys(feed()))
+        friends = [{'key': 'friend:7', 'title': "Seven", 'sub': "Ana · 1 h", 'slug': 'beta'}]
+        self.assertEqual(keys(feed(friends=friends))[-2:], ['friends', 'settings'])
+        fr = cat(categories(feed(friends=friends)), 'friends')
+        self.assertEqual((fr.items[0].key, fr.items[0].kind, fr.items[0].slug),
+                         ('friend:7', 'card', 'beta'))
+
 
 class EmptyStates(unittest.TestCase):
     def test_no_games(self):
@@ -157,6 +264,11 @@ class EmptyStates(unittest.TestCase):
                          ('empty', "No games under Not installed", 'sheet'))
         self.assertEqual(it.sub, "Pick another filter in Sort & filter.")
         self.assertTrue(lib.sub.endswith("0 games"))
+
+    def test_no_collections(self):
+        col = cat(categories(feed()), 'collections')
+        self.assertEqual([(it.key, it.kind, it.title) for it in col.items],
+                         [('empty:collections', 'empty', "No collections yet")])
 
     def test_downloads_line(self):
         dl = cat(categories(feed(downloads_sub="2 downloading")), 'downloads')
@@ -195,6 +307,64 @@ class Nav(unittest.TestCase):
         s = RibbonState('settings', {'home': 1, 'settings': 2})
         s = nav(s, self.cats, 'home')
         self.assertEqual((s.cat, s.focus['home'], s.focus['settings']), ('home', 0, 2))
+
+    def folders(self):
+        return categories(feed(groups=GROUPS, dl_rows=DL_ROWS))
+
+    def test_a_or_right_opens_a_folder_left_goes_up(self):
+        cats = self.folders()
+        s = RibbonState('collections')
+        self.assertEqual(s.path, ())
+        for how in ('in', 'right'):
+            o = nav(s, cats, how)
+            self.assertEqual((o.cat, o.path), ('collections', ('col:fav',)))
+            self.assertEqual(rm.current(o, cats).key, 'game:alpha')
+            self.assertEqual(rm.column(o, cats)[0], 'collections>col:fav')
+            back = nav(o, cats, 'left')
+            self.assertEqual((back.cat, back.path), ('collections', ()))
+            self.assertEqual(rm.current(back, cats).key, 'col:fav')
+        # Right on a column that is no folder: at the top it moves on, inside it stays
+        lib = RibbonState('library')
+        self.assertEqual(nav(lib, cats, 'in'), lib)
+        self.assertEqual(nav(lib, cats, 'right').cat, 'collections')
+        inside = nav(RibbonState('collections'), cats, 'right')
+        self.assertEqual(nav(inside, cats, 'right'), inside)     # a game: nothing to open
+        self.assertEqual(nav(RibbonState('collections'), cats, 'out'),
+                         RibbonState('collections'))             # already at the top
+        two = nav(nav(nav(RibbonState('collections'), cats, 'down'), cats, 'down'), cats, 'in')
+        two = nav(two, cats, 'in')                               # For you > Continue
+        self.assertEqual(two.path, ('group:for_you', 'col:smart:continue'))
+        self.assertEqual(nav(two, cats, 'out').path, ('group:for_you',))
+
+    def test_each_column_remembers_its_focus(self):
+        cats = self.folders()
+        s = nav(RibbonState('collections'), cats, 'down')        # Couch
+        s = nav(s, cats, 'in')
+        s = nav(s, cats, 'down')                                 # gamma
+        self.assertEqual(rm.current(s, cats).key, 'game:gamma')
+        s = nav(s, cats, 'out')
+        self.assertEqual(rm.current(s, cats).key, 'col:col:Couch')   # the folder column kept it
+        s = nav(s, cats, 'in')
+        self.assertEqual(rm.current(s, cats).key, 'game:gamma')      # and the inner one
+        self.assertEqual(s.focus['collections'], 1)
+
+    def test_next_prev_home_close_folders(self):
+        cats = self.folders()
+        s = nav(RibbonState('collections'), cats, 'in')
+        for how, cat_key in (('next', 'discover'), ('prev', 'library'), ('home', 'home')):
+            o = nav(s, cats, how)
+            self.assertEqual((o.cat, o.path), (cat_key, ()), how)
+        self.assertEqual(nav(s, cats, 'left').path, ())
+
+    def test_vanished_folder_truncates_the_path(self):
+        cats = self.folders()
+        s = nav(RibbonState('collections'), cats, 'in')
+        self.assertEqual(s.path, ('col:fav',))
+        gone = categories(feed(groups=GROUPS[2:]))              # favourites went away
+        fixed = rm.resolve(s, gone)
+        self.assertEqual((fixed.cat, fixed.path), ('collections', ()))
+        self.assertEqual(rm.current(s, gone).key, rm.column(fixed, gone)[1][0].key)
+        self.assertEqual(rm.resolve(RibbonState('friends', {}, ('x',)), gone).cat, 'friends')
 
     def test_find(self):
         self.assertEqual(find(self.cats, 'library', 'game:beta'), 1)

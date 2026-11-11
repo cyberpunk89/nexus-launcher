@@ -5,12 +5,14 @@ Qt's QSoundEffect plays as they are (nexus/gui/sounds.py).
 
     python3 tools/make_sounds.py [out_dir]      (default: assets/sounds)
 
-Five sounds, about 125 KB together:
+Six sounds, about 150 KB together:
     move    a tiny high tick, the quietest (it plays on every D-pad step)
     select  two notes up (E6, A6)
     back    the same two notes down
     error   a low, soft double bump (never harsh)
     launch  a rising arpeggio that settles (C6 E6 G6 C7)
+    category  a lower, longer, soft two-note step (A4, E5) for a move between
+            the Ribbon's categories
 
 The output is deterministic (no randomness), so running it again gives the
 same files byte for byte.
@@ -24,7 +26,7 @@ import wave
 RATE = 48000
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(ROOT, 'assets', 'sounds')
-NAMES = ('move', 'select', 'back', 'error', 'launch')
+NAMES = ('move', 'select', 'back', 'error', 'launch', 'category')
 
 
 def tone(freq, ms, gain=0.5, decay=30.0, attack_ms=2.0, harm=0.18, glide=0.0):
@@ -79,6 +81,8 @@ def sounds():
                        (70, tone(1318.5, 380, decay=10, glide=0.01)),
                        (140, tone(1568.0, 360, decay=11, glide=0.01)),
                        (210, tone(2093.0, 420, decay=10, glide=0.01, gain=0.35))), 0.45),
+        'category': (mix((0, tone(440.0, 220, decay=16, harm=0.12)),
+                         (70, tone(659.25, 260, decay=14, harm=0.12))), 0.3),
     }
 
 

@@ -153,8 +153,9 @@ class StageTrack(QWidget):
     and dimmed. When a name doesn't fit its segment (or the card is
     narrow) only the current stage is named, as in the mockup."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, scale: float = 1.0):
         super().__init__(parent)
+        self.scale = float(scale)       # the Theatre draws it bigger (THEATRE_SCALE)
         self.track: list[dict] = []
         self.shimmer = False            # the page's timer repaints it while True
         self.compact = False            # narrow card: only the current stage's name
@@ -170,19 +171,22 @@ class StageTrack(QWidget):
 
     def _font(self) -> QFont:
         f = QFont(FONTS.mono)
-        f.setPixelSize(scaled(FS['2xs']))
+        f.setPixelSize(max(1, round(scaled(FS['2xs']) * self.scale)))
         f.setWeight(QFont.Weight.Medium)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6 * self.scale)
         return f
 
     def _bar_h(self) -> float:
-        return float(scaled(SP['2_5']))
+        return float(scaled(SP['2_5'])) * self.scale
 
     def _gap(self) -> float:
-        return float(scaled(SP['1']))
+        return float(scaled(SP['1'])) * self.scale
+
+    def _label_dy(self) -> float:
+        return self._bar_h() + scaled(SP['1_5']) * self.scale
 
     def sizeHint(self) -> QSize:
-        h = int(self._bar_h()) + scaled(SP['1_5']) + QFontMetrics(self._font()).height()
+        h = int(self._bar_h()) + int(scaled(SP['1_5']) * self.scale) + QFontMetrics(self._font()).height()
         return QSize(scaled(320), h)
 
     def minimumSizeHint(self) -> QSize:
@@ -227,22 +231,7 @@ class StageTrack(QWidget):
     def segments(self) -> list[dict]:
         """Where each stage is drawn: stage, x, w, status ('skipped' for a
         Verify that didn't run), frac and its name."""
-        by_stage = {t.get('stage'): t for t in self.track}
-        gap = self._gap()
-        room = max(0.0, self.width() - gap * (len(pipeline.STAGES) - 1))
-        x, out = 0.0, []
-        for name, weight in pipeline.STAGES:
-            t = by_stage.get(name) or {}
-            status = t.get('status') or 'todo'
-            text = LABELS[name] + (" –" if status == 'skipped' else '')
-            if status == 'done':
-                text = "✓ " + text
-            w = room * weight
-            out.append({'stage': name, 'x': x, 'w': w, 'status': status,
-                        'frac': self._shown.get(name, 0.0), 'label': text.upper(),
-                        'indeterminate': status == 'active' and t.get('frac') is None})
-            x += w + gap
-        return out
+        return track_segments(self.track, self.width(), self._gap(), self._shown)
 
     def labels(self) -> list[dict]:
         """The names drawn under the bar, never cut: text, x, w, status.
@@ -250,81 +239,116 @@ class StageTrack(QWidget):
         as it needs; every other one only when it fits its segment, isn't
         in the current one's way and the card isn't narrow (the mockup
         hides the others there)."""
-        fm = QFontMetrics(self._font())
-        out, cur = [], None
-        for s in self.segments():
-            tw = float(fm.horizontalAdvance(s['label']))
-            lab = {'text': s['label'], 'x': s['x'], 'w': tw, 'status': s['status']}
-            if s['status'] in ('active', 'failed'):
-                lab['x'] = max(0.0, min(s['x'], self.width() - tw))
-                cur = lab
-                out.append(lab)
-            elif not self.compact and tw <= s['w']:
-                out.append(lab)
-        if cur is not None:
-            gap = self._gap()
-            out = [lab for lab in out if lab is cur or lab['x'] + lab['w'] + gap <= cur['x']
-                   or lab['x'] >= cur['x'] + cur['w'] + gap]
-        return out
+        return track_labels(self.segments(), self.width(), self._gap(), self._font(),
+                            self.compact)
 
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        h = self._bar_h()
-        rad = h / 2
-        done = QColor(_mix(P['bg'], P['accent'], 0.7))
-        for s in self.segments():
-            r = QRectF(s['x'], 0.0, s['w'], h)
-            if r.width() < 1:
-                continue
-            clip = QPainterPath()
-            clip.addRoundedRect(r, rad, rad)
-            pt.save()
-            pt.setClipPath(clip)
-            pt.fillRect(r, QColor(P['surface_2']))
-            st = s['status']
-            if st == 'done':
-                pt.fillRect(r, done)
-            elif st == 'skipped':
-                pt.fillRect(r, _alpha(P['muted'], 0.18))
-            elif st in ('active', 'failed'):
-                fw = r.width() * max(0.0, min(1.0, s['frac']))
-                indeterminate = st == 'active' and fw <= 0 and (
-                    s['stage'] == 'install' or s['indeterminate'])
-                if indeterminate:
-                    pt.fillRect(r, _alpha(P['accent'], 0.22))
-                if st == 'failed':
-                    pt.fillRect(r, _alpha(P['danger'], 0.28))
-                    pt.fillRect(QRectF(r.x(), 0.0, fw, h), QColor(P['danger']))
-                elif fw > 0:
-                    g = QLinearGradient(QPointF(r.x(), 0.0), QPointF(r.x() + max(fw, 1.0), 0.0))
-                    a, b = GRAD['dusk']
-                    g.setColorAt(0.0, QColor(a))
-                    g.setColorAt(1.0, QColor(b))
-                    pt.fillRect(QRectF(r.x(), 0.0, fw, h), g)
-                if st == 'active' and self.shimmer and (fw > 0 or indeterminate):
-                    width = fw if fw > 0 else r.width()
-                    cx = r.x() - width * 0.5 + width * 2.0 * self._phase
-                    g = QLinearGradient(QPointF(cx - width * 0.25, 0.0),
-                                        QPointF(cx + width * 0.25, 0.0))
-                    g.setColorAt(0.0, _alpha(P['on_art'], 0.0))
-                    g.setColorAt(0.5, _alpha(P['on_art'], 0.38))
-                    g.setColorAt(1.0, _alpha(P['on_art'], 0.0))
-                    pt.fillRect(QRectF(r.x(), 0.0, width, h), g)
-            pt.restore()
-        font = self._font()
-        pt.setFont(font)
-        fm = QFontMetrics(font)
-        ly = h + scaled(SP['1_5'])
-        for lab in self.labels():
-            st = lab['status']
-            color = {'active': QColor(P['text']), 'failed': QColor(P['danger']),
-                     'skipped': _alpha(P['muted'], 0.6)}.get(st, QColor(P['muted']))
-            pt.setPen(color)
-            pt.drawText(QRectF(lab['x'], ly, lab['w'] + 1.0, float(fm.height())),
-                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                        lab['text'])
+        paint_track(pt, self.segments(), self.labels(), self._bar_h(), self._font(),
+                    self._label_dy(), self.shimmer, self._phase)
         pt.end()
+
+
+def track_segments(track: list[dict], width, gap, shown: dict | None = None) -> list[dict]:
+    """The stages laid out over `width` (pure; the widget and the Theatre
+    Ribbon share it): stage, x, w, status, frac, label, indeterminate."""
+    by_stage = {t.get('stage'): t for t in track}
+    room = max(0.0, float(width) - gap * (len(pipeline.STAGES) - 1))
+    x, out = 0.0, []
+    for name, weight in pipeline.STAGES:
+        t = by_stage.get(name) or {}
+        status = t.get('status') or 'todo'
+        text = LABELS[name] + (" –" if status == 'skipped' else '')
+        if status == 'done':
+            text = "✓ " + text
+        w = room * weight
+        frac = float(t.get('frac') or 0) if shown is None else shown.get(name, 0.0)
+        out.append({'stage': name, 'x': x, 'w': w, 'status': status,
+                    'frac': float(frac), 'label': text.upper(),
+                    'indeterminate': status == 'active' and t.get('frac') is None})
+        x += w + gap
+    return out
+
+
+def track_labels(segs: list[dict], width, gap, font: QFont, compact=False) -> list[dict]:
+    fm = QFontMetrics(font)
+    out, cur = [], None
+    for s in segs:
+        tw = float(fm.horizontalAdvance(s['label']))
+        lab = {'text': s['label'], 'x': s['x'], 'w': tw, 'status': s['status']}
+        if s['status'] in ('active', 'failed'):
+            lab['x'] = max(0.0, min(s['x'], float(width) - tw))
+            cur = lab
+            out.append(lab)
+        elif not compact and tw <= s['w']:
+            out.append(lab)
+    if cur is not None:
+        out = [lab for lab in out if lab is cur or lab['x'] + lab['w'] + gap <= cur['x']
+               or lab['x'] >= cur['x'] + cur['w'] + gap]
+    return out
+
+
+def paint_track(pt: QPainter, segs: list[dict], labels: list[dict], bar_h, font: QFont,
+                label_y, shimmer=False, phase=0.0, y0=0.0):
+    """Draw the bar and its names with `pt` (module-level so the Theatre
+    Ribbon's download items paint the same track). All numbers are floats;
+    the painter is left as it was."""
+    h = float(bar_h)
+    y0 = float(y0)
+    rad = h / 2
+    done = QColor(_mix(P['bg'], P['accent'], 0.7))
+    for s in segs:
+        r = QRectF(s['x'], y0, s['w'], h)
+        if r.width() < 1:
+            continue
+        clip = QPainterPath()
+        clip.addRoundedRect(r, rad, rad)
+        pt.save()
+        pt.setClipPath(clip)
+        pt.fillRect(r, QColor(P['surface_2']))
+        st = s['status']
+        if st == 'done':
+            pt.fillRect(r, done)
+        elif st == 'skipped':
+            pt.fillRect(r, _alpha(P['muted'], 0.18))
+        elif st in ('active', 'failed'):
+            fw = r.width() * max(0.0, min(1.0, s['frac']))
+            indeterminate = st == 'active' and fw <= 0 and (
+                s['stage'] == 'install' or s['indeterminate'])
+            if indeterminate:
+                pt.fillRect(r, _alpha(P['accent'], 0.22))
+            if st == 'failed':
+                pt.fillRect(r, _alpha(P['danger'], 0.28))
+                pt.fillRect(QRectF(r.x(), y0, fw, h), QColor(P['danger']))
+            elif fw > 0:
+                g = QLinearGradient(QPointF(r.x(), y0), QPointF(r.x() + max(fw, 1.0), y0))
+                a, b = GRAD['dusk']
+                g.setColorAt(0.0, QColor(a))
+                g.setColorAt(1.0, QColor(b))
+                pt.fillRect(QRectF(r.x(), y0, fw, h), g)
+            if st == 'active' and shimmer and (fw > 0 or indeterminate):
+                width = fw if fw > 0 else r.width()
+                cx = r.x() - width * 0.5 + width * 2.0 * phase
+                g = QLinearGradient(QPointF(cx - width * 0.25, y0), QPointF(cx + width * 0.25, y0))
+                g.setColorAt(0.0, _alpha(P['on_art'], 0.0))
+                g.setColorAt(0.5, _alpha(P['on_art'], 0.38))
+                g.setColorAt(1.0, _alpha(P['on_art'], 0.0))
+                pt.fillRect(QRectF(r.x(), y0, width, h), g)
+        pt.restore()
+    pt.save()
+    pt.setFont(font)
+    fm = QFontMetrics(font)
+    ly = y0 + float(label_y)
+    for lab in labels:
+        st = lab['status']
+        color = {'active': QColor(P['text']), 'failed': QColor(P['danger']),
+                 'skipped': _alpha(P['muted'], 0.6)}.get(st, QColor(P['muted']))
+        pt.setPen(color)
+        pt.drawText(QRectF(lab['x'], ly, lab['w'] + 1.0, float(fm.height())),
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                    lab['text'])
+    pt.restore()
 
 
 class Sparkline(QWidget):

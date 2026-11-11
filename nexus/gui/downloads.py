@@ -97,8 +97,34 @@ PRIMARY_LABELS = {'install': "Install", 'play': "Play", 'pause': "Pause", 'resum
                   'retry': "Retry", 'show': "Show game"}
 
 
+def _card_row(c: dict, games_by_slug: dict) -> tuple:
+    """(group, primary, big, state line, paused) for a pipeline card."""
+    from .pipeline_view import eta_line, state_line
+    st = c['state']
+    what, fig, _tag = state_line(c)
+    state = " · ".join(x for x in (what, fig, eta_line(c)) if x)
+    ov = c.get('overall')
+    if st == 'ready':
+        has_game = c.get('slug') in games_by_slug
+        return 'ready', 'play' if has_game else 'show', "Ready", state, False
+    big = f"{float(ov):.0%}" if ov is not None else "Updating"
+    if st == 'downloaded':
+        return 'ready', 'install', big, state, False
+    if st == 'failed':
+        return 'progress', 'retry', "Failed", state, False
+    if st == 'error':
+        return 'progress', 'resume', "Error", state, False
+    if st == 'paused':
+        return 'progress', 'resume', big, state, True
+    if st == 'queued':
+        return 'queue', 'pause', big, state, False
+    if st in ('downloading', 'checking'):
+        return 'progress', 'pause', big, state, False
+    return 'progress', None, big, state, False
+
+
 def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: float,
-                 mono: float) -> list[dict]:
+                 mono: float, cards: list | None = None) -> list[dict]:
     """What Theatre's Downloads tab lists, grouped Ready to play / In progress
     / Up next. Pure, so each source is tested with fake data. Rows:
     group, key, kind (torrent|job|game), title, state (a line), big (the one
@@ -106,9 +132,18 @@ def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: f
     slug, ref (what the action needs: the torrent row, the job, the game).
     `torrents` are Nexus's own (tracked); `jobs` all of them (installs are
     looked at); `ready_at` is {slug: epoch} for installs that just finished;
-    `mono` is time.monotonic() (jobs stamp their end with it)."""
+    `mono` is time.monotonic() (jobs stamp their end with it). `cards` (the
+    Downloads page's pipeline cards, w-94) turn a torrent they cover into one
+    row of kind 'card' with its stage `track` (ref is the card), and drop the
+    install job that card shows and the ready game its Ready card shows;
+    without them the rows are as they always were."""
     rows: list[dict] = []
     by_slug = {g.get('slug'): g for g in games}
+    by_hash = {c.get('hash'): c for c in cards or () if c.get('hash')
+               and not (c.get('state') == 'ready' and pipeline._after(
+                   (by_slug.get(c.get('slug')) or {}).get('last_played'), c.get('installed_at')))}
+    ready_cards = {c.get('slug') for c in by_hash.values()
+                   if c.get('state') == 'ready' and c.get('slug')}
 
     def row(group, key, kind, title, state, big, frac=None, paused=False, primary=None,
             slug=None, ref=None):
@@ -118,7 +153,7 @@ def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: f
 
     for slug, t in ready_at.items():                   # installs that finished
         g = by_slug.get(slug)
-        if g is None or now - t > READY_HOURS * 3600:
+        if g is None or now - t > READY_HOURS * 3600 or slug in ready_cards:
             continue
         played = g.get('last_played') or ''
         if played and played >= _iso(t):
@@ -126,8 +161,14 @@ def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: f
         row('ready', f'game:{slug}', 'game', g.get('display_name') or slug,
             "Installed · ready to play", "Ready", 1.0, primary='play', slug=slug, ref=g)
     installing = {j.slug for j in jobs if j.kind == 'install' and j.active}
+    for c in by_hash.values():
+        group, primary, big, state, paused = _card_row(c, by_slug)
+        row(group, f"torrent:{c['hash']}", 'card', c.get('title') or str(c['hash'])[:12], state,
+            big, c.get('overall'), paused=paused, primary=primary, slug=c.get('slug'), ref=c)
+        rows[-1]['track'] = c.get('track') or []
     for r in torrents:
-        if not r.get('tracked') or r.get('gone') or r.get('installed'):
+        if not r.get('tracked') or r.get('gone') or r.get('installed') \
+                or r.get('hash') in by_hash:
             continue
         title = r.get('name') or r.get('title') or str(r.get('hash', ''))[:12]
         key = f"torrent:{r.get('hash')}"
@@ -150,7 +191,7 @@ def theatre_rows(torrents: list, jobs: list, games: list, ready_at: dict, now: f
                 primary='pause', ref=r)
     waiting = [j for j in jobs if j.kind == 'install' and j.state == 'queued']
     for j in jobs:
-        if j.kind != 'install':
+        if j.kind != 'install' or any(h in j.argv for h in by_hash):
             continue
         key = f'job:{id(j)}'
         title = j.name or j.title

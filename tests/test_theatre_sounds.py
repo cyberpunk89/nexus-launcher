@@ -125,6 +125,22 @@ class Sounds(unittest.TestCase):
         total = sum((sounds.SOUND_DIR / f'{n}.wav').stat().st_size for n in NAMES)
         self.assertLess(total, 200_000)
 
+    def test_make_sounds_matches_shipped(self):
+        """tools/make_sounds.py is deterministic and the shipped WAVs are its
+        output, byte for byte (an original synthesis, no samples)."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'make_sounds', sounds.SOUND_DIR.parent.parent / 'tools' / 'make_sounds.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(tuple(mod.NAMES), tuple(NAMES))
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch('builtins.print'):
+                self.assertEqual(mod.main(['make_sounds', d]), 0)
+            for n in NAMES:
+                self.assertEqual((Path(d) / f'{n}.wav').read_bytes(),
+                                 (sounds.SOUND_DIR / f'{n}.wav').read_bytes(), n)
+
     def test_silent_under_no_sound(self):
         """The sandbox sets NEXUS_NO_SOUND=1: no effect is ever made, no key
         filter installed, even with sounds on in Theatre."""

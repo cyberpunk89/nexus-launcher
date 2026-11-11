@@ -8,8 +8,11 @@ result, so the tests read this module, not pixels."""
 
 from dataclasses import dataclass, field, replace
 
-KINDS = ('game', 'card', 'page', 'setting', 'action', 'folder', 'empty')
+KINDS = ('game', 'card', 'page', 'setting', 'action', 'folder', 'empty', 'news', 'deal',
+         'download')
 HOME_PLAYED = 8                       # Jump back in: this many recently played games
+FOLDER_CAP = 40                       # games in a category folder (then: See all)
+GROUP_KICKER = {'ready': "READY TO PLAY", 'progress': "IN PROGRESS", 'queue': "UP NEXT"}
 
 # The glyph of each Theatre setting on the Ribbon (theatre_settings.ROWS).
 SETTING_GLYPH = {'theatre_layout': 'grid', 'ribbon_motion': 'sparkles', 'pad_a': 'gamepad',
@@ -37,7 +40,9 @@ class Item:
     value: object = None              # a setting's value
     choices: tuple = ()               # a setting's ((value, text), ...)
     kicker: str = ''                  # small caps over the title: 'NOW PLAYING'
-    children: tuple = ()              # a folder's own column (later phases)
+    children: tuple = ()              # a folder's own column
+    track: tuple = ()                 # a download's pipeline stages (pipeline.cards track)
+    figure: str = ''                  # a download's one big number
 
     @property
     def value_text(self) -> str:
@@ -74,6 +79,10 @@ class Feed:
     fact: object = None                                # game -> its fact line (fact_text)
     a_plays: bool = False                              # Settings: A plays a game
     pins: list = field(default_factory=list)           # [(category key, title, games)] (w-100)
+    groups: list = field(default_factory=list)         # categories.browse(...) with no caps
+    shelves: list = field(default_factory=list)        # theatre_discover.shelves: (title, kind, items)
+    gamedb_off: bool = False                           # Discover: Game-db isn't on (setup item)
+    dl_rows: list = field(default_factory=list)        # downloads.theatre_rows
 
 
 def clamp(i: int, n: int) -> int:
@@ -154,18 +163,107 @@ def _settings(feed: Feed) -> Category:
     return Category('settings', "Settings", 'settings', tuple(items))
 
 
+def _count(n: int, one: str, many: str | None = None) -> str:
+    return f"{n} {one if n == 1 else many or one + 's'}"
+
+
+def _cat_folder(c, feed: Feed) -> Item:
+    """A category (categories.Category) as a folder of its games; a long one
+    ends with an item that opens its page (w-100)."""
+    games = list(c.games)
+    kids = [_game(g, feed) for g in games[:FOLDER_CAP]]
+    if len(games) > FOLDER_CAP:
+        kids.append(Item(key=f"seeall:{c.key}", kind='action', title="See all",
+                         sub=f"All {len(games)} games", glyph='grid', primary=f"cat:{c.key}"))
+    if not kids:
+        kids = [Item(key=f"empty:{c.key}", kind='empty', title="Nothing here yet", glyph='folder',
+                     primary='none')]
+    return Item(key=f"col:{c.key}", kind='folder', title=c.title, glyph='folder',
+                sub=_count(len(games), 'game'), children=tuple(kids))
+
+
+def _collections(feed: Feed) -> Category:
+    """Yours (favourites, collections, shelves) as folders of games, then
+    For you, Genres and Stores as folders of category folders."""
+    items = []
+    for g in feed.groups:                       # Yours first, whatever the groups' order
+        if g.key == 'yours':
+            items += [_cat_folder(c, feed) for c in g.cats]
+    for g in feed.groups:
+        if g.key != 'yours' and g.cats:
+            items.append(Item(key=f"group:{g.key}", kind='folder', title=g.title,
+                              glyph='folder', sub=_count(len(g.cats), 'category', 'categories'),
+                              children=tuple(_cat_folder(c, feed) for c in g.cats)))
+    if not items:
+        items.append(Item(key='empty:collections', kind='empty', glyph='folder',
+                          title="No collections yet",
+                          sub="Collections, genres and stores appear as your library grows.",
+                          primary='none'))
+    return Category('collections', "Collections", 'folder', tuple(items),
+                    sub=_count(sum(len(g.cats) for g in feed.groups), 'category', 'categories'))
+
+
+SHELF_NOUN = {'news': ("story", "stories"), 'deal': ("deal", "deals"),
+              'upcoming': ("game", "games")}
+
+
+def _story_key(n: dict, i: int) -> str:
+    return f"news:{n.get('link') or n.get('url') or n.get('title') or i}"
+
+
+def _discover(feed: Feed) -> Category:
+    items = [Item(key='page:discover', kind='page', title="All of Discover", glyph='news',
+                  sub="Every shelf, with its pictures.", primary='tab:discover')]
+    for title, kind, found in feed.shelves:
+        if not found:
+            continue
+        if kind == 'news':
+            kids = tuple(Item(key=_story_key(n, i), kind='news', title=n.get('title') or "",
+                              sub=" · ".join(x for x in (n.get('source'),) if x), glyph='news',
+                              value=n) for i, n in enumerate(found))
+        else:
+            kids = tuple(Item(key=f"{kind}:{d.get('appid') or d.get('title') or i}", kind='deal',
+                              title=d.get('title') or "", glyph='sparkles', value=d,
+                              primary=f"deal:{kind}") for i, d in enumerate(found))
+        one, many = SHELF_NOUN.get(kind, ("item", "items"))
+        items.append(Item(key=f"shelf:{title}", kind='folder', title=title, glyph='folder',
+                          sub=_count(len(found), one, many), children=kids))
+    if feed.gamedb_off:
+        items.append(Item(key='action:gamedb_setup', kind='action', title="Sales and coming soon",
+                          sub="Connect Game-db to see your wishlist's sales here. "
+                              "Leaves Theatre for the desktop's Settings.",
+                          glyph='external', primary='all_settings'))
+    return Category('discover', "Discover", 'news', tuple(items))
+
+
+def _downloads(feed: Feed) -> Category:
+    items = [Item(key=f"dl:{r['key']}", kind='download', title=r['title'], sub=r.get('state', ''),
+                  glyph='download', kicker=GROUP_KICKER.get(r.get('group'), ''),
+                  track=tuple(r.get('track') or ()), figure=r.get('big') or '',
+                  primary=f"dl:{r.get('primary') or 'options'}") for r in feed.dl_rows]
+    items.append(Item(key='page:downloads', kind='page', title="All downloads", glyph='download',
+                      sub=feed.downloads_sub or "Nothing downloading.", primary='tab:downloads'))
+    return Category('downloads', "Downloads", 'download', tuple(items), sub=feed.downloads_sub)
+
+
+def _friends(feed: Feed) -> Category:
+    items = [Item(key=e['key'], kind='card', title=e['title'], sub=e.get('sub', ''),
+                  slug=e.get('slug'), glyph='friends', kicker='FRIENDS PLAYING')
+             for e in feed.friends]
+    return Category('friends', "Friends", 'friends', tuple(items))
+
+
 def categories(feed: Feed) -> list[Category]:
-    """The Ribbon's categories, left to right. Discover and Downloads follow
-    the same gates as Theatre's tabs; each opens that tab's page for now."""
-    cats = [_home(feed), _library(feed)]
+    """The Ribbon's categories, left to right: Home, Library, Collections,
+    Discover and Downloads (the same gates as Theatre's tabs), Friends (only
+    with someone playing), Settings."""
+    cats = [_home(feed), _library(feed), _collections(feed)]
     if feed.discover:
-        cats.append(Category('discover', "Discover", 'news', (
-            Item(key='page:discover', kind='page', title="News and deals", glyph='news',
-                 sub="Stories about your games and deals on them.", primary='tab:discover'),)))
+        cats.append(_discover(feed))
     if feed.downloads:
-        cats.append(Category('downloads', "Downloads", 'download', (
-            Item(key='page:downloads', kind='page', title="Downloads", glyph='download',
-                 sub=feed.downloads_sub or "Nothing downloading.", primary='tab:downloads'),)))
+        cats.append(_downloads(feed))
+    if feed.friends:
+        cats.append(_friends(feed))
     cats.append(_settings(feed))
     return cats
 
@@ -182,10 +280,12 @@ def step_value(item: Item, d: int = 1, wrap: bool = True):
 
 @dataclass
 class RibbonState:
-    """Where the Ribbon is: the category, and each category's focused item
-    (kept while you visit the others)."""
+    """Where the Ribbon is: the category, the folders opened in it (`path`,
+    their keys) and each column's focused item (kept while you visit
+    others). A column's id is the category key, then 'cat>folder>folder'."""
     cat: str = 'home'
     focus: dict = field(default_factory=dict)
+    path: tuple = ()
 
     def index(self, cats: list[Category]) -> int:
         return next((i for i, c in enumerate(cats) if c.key == self.cat), 0)
@@ -194,33 +294,104 @@ class RibbonState:
         return clamp(self.focus.get(cat.key, 0), len(cat.items))
 
 
+def column_id(cat_key: str, path) -> str:
+    return ">".join((cat_key, *path))
+
+
+def resolve(state: RibbonState, cats: list[Category]) -> RibbonState:
+    """`state` with its path cut at the first folder that is gone (a refresh
+    can remove one); the same state when it is fine."""
+    if not state.path:
+        return state
+    cat = next((c for c in cats if c.key == state.cat), None)
+    items, keep = (cat.items if cat else ()), []
+    for key in state.path:
+        f = next((it for it in items if it.key == key and it.kind == 'folder'), None)
+        if f is None:
+            break
+        keep.append(key)
+        items = f.children
+    return state if len(keep) == len(state.path) else RibbonState(state.cat, state.focus,
+                                                                  tuple(keep))
+
+
+def columns(state: RibbonState, cats: list[Category]) -> list[tuple[str, tuple]]:
+    """The open columns, left to right: [(column id, items)], the category's
+    own first, then one per opened folder (a vanished one cuts the rest)."""
+    if not cats:
+        return []
+    cat = cats[state.index(cats)]
+    state = resolve(RibbonState(cat.key, state.focus, state.path), cats)
+    out, items = [(cat.key, cat.items)], cat.items
+    for k, key in enumerate(state.path):
+        items = next(it.children for it in items if it.key == key)
+        out.append((column_id(cat.key, state.path[:k + 1]), items))
+    return out
+
+
+def column(state: RibbonState, cats: list[Category]) -> tuple[str, tuple]:
+    """The innermost open column: (id, items)."""
+    cols = columns(state, cats)
+    return cols[-1] if cols else ('', ())
+
+
+def crumbs(state: RibbonState, cats: list[Category]) -> list[Item]:
+    """The folders opened in the current category, outermost first."""
+    out, items = [], (cats[state.index(cats)].items if cats else ())
+    for key in resolve(state, cats).path:
+        f = next(it for it in items if it.key == key)
+        out.append(f)
+        items = f.children
+    return out
+
+
 def current(state: RibbonState, cats: list[Category]) -> Item | None:
     if not cats:
         return None
-    c = cats[state.index(cats)]
-    return c.items[state.item_index(c)] if c.items else None
+    cid, items = column(state, cats)
+    return items[clamp(state.focus.get(cid, 0), len(items))] if items else None
 
 
 def nav(state: RibbonState, cats: list[Category], action: str) -> RibbonState:
-    """One move: left and right (the category, stopping at the ends), next
-    and prev (the category, wrapping: LB/RB), up and down (the item,
-    stopping at the ends), home (Home's first item). A new state."""
+    """One move: left and right (the category, stopping at the ends; inside a
+    folder Left goes up and Right opens a folder), in (open the focused
+    folder) and out (up one), next and prev (the category, wrapping: LB/RB),
+    up and down (the item, stopping at the ends), home (Home's first item).
+    Next, prev, home and a category move close every folder. A new state."""
     if not cats:
         return state
+    state = resolve(state, cats)
     i = state.index(cats)
     focus = dict(state.focus)
+    path = state.path
+    if action in ('in', 'right'):
+        cid, items = column(state, cats)
+        it = items[clamp(focus.get(cid, 0), len(items))] if items else None
+        if it is not None and it.kind == 'folder':
+            return RibbonState(state.cat, focus, path + (it.key,))
+        if action == 'in' or path:
+            return state                        # nothing to open (inside a folder: stays)
+    elif action in ('out', 'left') and path:
+        return RibbonState(state.cat, focus, path[:-1])
+    elif action == 'out':
+        return state
     if action in ('left', 'right'):
         i = clamp(i + (1 if action == 'right' else -1), len(cats))
+        path = ()
     elif action in ('next', 'prev'):
         i = (i + (1 if action == 'next' else -1)) % len(cats)
+        path = ()
     elif action in ('up', 'down'):
-        c = cats[i]
-        j = state.item_index(c) + (1 if action == 'down' else -1)
-        focus[c.key] = clamp(j, len(c.items))
+        cid, items = column(state, cats)
+        j = clamp(focus.get(cid, 0), len(items)) + (1 if action == 'down' else -1)
+        focus[cid] = clamp(j, len(items))
     elif action == 'home':
         i = next((k for k, c in enumerate(cats) if c.key == 'home'), 0)
         focus[cats[i].key] = 0
-    return RibbonState(cats[i].key, focus)
+        path = ()
+    if cats[i].key != state.cat:
+        path = ()
+    return RibbonState(cats[i].key, focus, path)
 
 
 def find(cats: list[Category], cat_key: str, item_key: str | None) -> int | None:

@@ -141,7 +141,8 @@ class DownloadsMixin:
         """Rebuild the rows from the last torrent poll, the install jobs and
         Steam/Heroic's downloads, and give them to Theatre."""
         rows = theatre_rows(self._mine_torrents, self.jobs.jobs, self._games, self._ready_at,
-                            time.time(), time.monotonic())
+                            time.time(), time.monotonic(),
+                            cards=self.downloads.data.get('pipeline') or None)
         had = bool(self._theatre_rows)
         self._theatre_rows = rows
         if had != bool(rows):
@@ -153,7 +154,9 @@ class DownloadsMixin:
     def _theatre_download(self, action: str, r: dict):
         """A Downloads row's action (A) or options (X)."""
         ref = r['ref']
-        if action == 'options':
+        if r['kind'] == 'card' and action != 'options':
+            self._theatre_card_action(action, r)
+        elif action == 'options':
             self._download_options(r)
         elif action in ('pause', 'resume'):
             self._torrent_send(action, [ref['hash']], False)
@@ -166,18 +169,82 @@ class DownloadsMixin:
         elif action == 'retry':
             self._resubmit(ref, ref.argv)
 
+    def _theatre_card_action(self, action: str, r: dict):
+        """A pipeline card's row (w-96): the same actions the page's buttons run."""
+        c = r['ref']
+        if action in ('pause', 'resume'):
+            self._torrent_send(action, [c['hash']], False)
+        elif action in ('install', 'retry', 'verify'):
+            if self._card_queued_job(c) is not None:     # already waiting: its queue controls
+                self._download_options(r)
+            else:
+                self._pipeline_action(action, c)
+        elif action in ('play', 'show'):
+            g = self._card_game(c)
+            if g is None:                                # never a silent no-op
+                self.toast(f"{c.get('title') or 'This game'} isn't in your library yet.",
+                           'warn', None, 5000)
+            elif action == 'play':
+                self.on_game_action('launch', g)
+            else:
+                self.theatre.open_game(g)
+        elif action == 'log':
+            self._pipeline_action('log', c)
+
+    def _card_queued_job(self, c: dict):
+        """The install job of this window that waits in the queue for a card."""
+        queued = self.jobs.queued_installs()
+        return next((j for j in queued if c.get('hash') and c['hash'] in j.argv), None)
+
     def _download_options(self, r: dict, focus: int = 0):
         """X on a row: its choices in the sheet. Move up / down keep it open
         (the row moves, the sheet follows it)."""
         sheet, ref, items, text = self.theatre_sheet, r['ref'], [], ''
         title = r['title']
-        if r['primary'] and r['primary'] != 'options':
+        card = r['kind'] == 'card'
+        qjob = self._card_queued_job(ref) if card else None
+        labels = {}
+        if card:                                         # the page's own words ("Try again")
+            from .pipeline_view import buttons
+            labels = {a: t for a, t, _p in buttons(
+                ref, has_log=self._card_job(ref) is not None,
+                has_game=self._card_game(ref) is not None)}
+        if r['primary'] and r['primary'] != 'options' and not (qjob and r['primary'] == 'install'):
             from .downloads import PRIMARY_LABELS
             glyph = {'pause': 'pause', 'resume': 'play', 'play': 'play', 'install': 'download',
                      'show': 'search', 'retry': 'reset'}.get(r['primary'], 'check')
-            items.append((PRIMARY_LABELS[r['primary']], G.get(glyph, G['check']),
+            items.append((labels.get(r['primary'], PRIMARY_LABELS[r['primary']]),
+                          G.get(glyph, G['check']),
                           lambda: self._theatre_download(r['primary'], r)))
-        if r['kind'] == 'torrent' and not ref.get('done'):
+        if card:
+            if ref['state'] == 'failed' and ref.get('reason') not in ('uac', 'cancelled'):
+                items.append((labels.get('verify', "Verify & retry"), G['check'],
+                              lambda: self._theatre_card_action('verify', r)))
+            if 'log' in labels:
+                items.append((labels['log'], G['search'],
+                              lambda: self._theatre_card_action('log', r)))
+            if ref['state'] == 'ready' and r['primary'] != 'show':
+                items.append((labels.get('show', "Show"), G['search'],
+                              lambda: self._theatre_card_action('show', r)))
+            if qjob is not None:
+                queued = self.jobs.queued_installs()
+                i = queued.index(qjob)
+                jr = {**r, 'kind': 'job', 'ref': qjob}
+                if i > 0:
+                    items.append(("Move up", G['chevron_up'],
+                                  lambda: self._move_install(jr, i - 1)))
+                if i < len(queued) - 1:
+                    items.append(("Move down", G['chevron_down'],
+                                  lambda: self._move_install(jr, i + 1)))
+                items.append(("Remove from the queue", G['close'], lambda: qjob.cancel()))
+            if ref['stage'] == 'download' and ref['state'] != 'ready':
+                items.append(("Stop…", G['close'], lambda: self._ask_stop_download(r)))
+            job = next((j for j in self.jobs.jobs if j.kind == 'install' and j.active
+                        and j.state != 'queued' and ref['hash'] in j.argv), None)
+            if job is not None and job.stoppable:         # the install this card shows
+                jr = {**r, 'kind': 'job', 'ref': job}
+                items.append(("Stop…", G['close'], lambda: self._ask_stop_download(jr)))
+        elif r['kind'] == 'torrent' and not ref.get('done'):
             items.append(("Stop…", G['close'], lambda: self._ask_stop_download(r)))
         elif r['kind'] == 'job':
             queued = self.jobs.queued_installs()
@@ -210,7 +277,7 @@ class DownloadsMixin:
         """Stop on a torrent or an install, asked in the sheet with Keep
         downloading focused (A out of habit changes nothing)."""
         sheet, ref = self.theatre_sheet, r['ref']
-        if r['kind'] == 'torrent':
+        if r['kind'] in ('torrent', 'card'):
             h = ref['hash']
             sheet.choose(f"Stop {r['title']}?", [
                 ("Keep downloading", G['check'], lambda: None),

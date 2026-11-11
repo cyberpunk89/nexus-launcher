@@ -19,7 +19,7 @@ from tests.patching import set_gui  # noqa: E402
 if nx is not None:
     from PyQt6.QtCore import QEvent, QObject, Qt
     from PyQt6.QtGui import QKeyEvent
-    from PyQt6.QtWidgets import QApplication, QMenu, QWidget
+    from PyQt6.QtWidgets import QApplication, QMenu, QPushButton, QWidget
     from nexus.gui import art
     from nexus.gui.tiles import GameTile
 
@@ -156,6 +156,7 @@ class Ribbon(unittest.TestCase):
         self._press(Qt.Key.Key_Right)
         self.assertEqual(self._where(rb), ('library', 'game:steam-1'))   # and Library
         keys = [c.key for c in rb.cats]
+        rb.select('discover')                                     # (Right in Collections opens a folder)
         for _ in range(len(keys)):
             self._press(Qt.Key.Key_Right)
         self.assertEqual(rb.state.cat, keys[-1])                  # Right stops at the end
@@ -477,25 +478,227 @@ class Ribbon(unittest.TestCase):
         th = w.theatre
         rb = self._ribbon()
         tabs = [k for k in th.tabs.keys() if not th.tabs.item(k).isHidden()]
-        self.assertEqual([c.key for c in rb.cats], tabs + ['settings'])
+        self.assertEqual([c.key for c in rb.cats],
+                         tabs[:2] + ['collections'] + tabs[2:] + ['settings'])
         th.sync_tabs(False, False)
         self._pump()
-        self.assertEqual([c.key for c in rb.cats], ['home', 'library', 'settings'])
+        self.assertEqual([c.key for c in rb.cats], ['home', 'library', 'collections',
+                                                    'settings'])
         th.sync_tabs(True, True)
         self._pump()
-        self.assertEqual([c.key for c in rb.cats], ['home', 'library', 'discover', 'downloads',
-                                                    'settings'])
+        self.assertEqual([c.key for c in rb.cats], ['home', 'library', 'collections',
+                                                    'discover', 'downloads', 'settings'])
+        w.set_theatre(False)
+
+    def test_seven_categories_follow_the_gates(self):
+        """Home, Library, Collections, Discover, Downloads, Friends, Settings;
+        Friends only while someone plays. The Windows feature set has no
+        smart:linux or src:heroic folder."""
+        from nexus import features
+        w = self.win
+        th = w.theatre
+        rb = self._ribbon()
+        th.sync_tabs(True, True)
+        th._friend_entries = [{'appid': 1, 'title': "Beta", 'slug': 'steam-1', 'minutes': 80,
+                               'people': [{'name': "Ana"}]}]
+        th.refresh_ribbon()
+        th._ribbon_flush()
+        self.assertEqual([c.key for c in rb.cats], ['home', 'library', 'collections', 'discover',
+                                                    'downloads', 'friends', 'settings'])
+        self.assertEqual(rb.cats[5].items[0].key, 'friend:1')
+        th._friend_entries = []
+        th._ribbon_flush()
+        th.refresh_ribbon()
+        th._ribbon_flush()
+        self.assertNotIn('friends', [c.key for c in rb.cats])
+        folders = set()
+
+        def walk(items):
+            for it in items:
+                if it.kind == 'folder':
+                    folders.add(it.key)
+                    walk(it.children)
+        walk(next(c for c in rb.cats if c.key == 'collections').items)
+        if not features.has('proton'):
+            self.assertNotIn('col:smart:linux', folders)
+        if not features.has('heroic'):
+            self.assertNotIn('col:src:heroic', folders)
+        self.assertIn('group:stores', folders)
+        w.set_theatre(False)
+
+    def _into(self, rb, cat, *keys):
+        """Select `cat` and open the folders `keys` (A on each)."""
+        rb.select(cat, keys[0] if keys else None)
+        for i, k in enumerate(keys):
+            rb.select(cat, k) if i == 0 else self._focus_key(rb, k)
+            self._press(Qt.Key.Key_Return, rb)
+            self._pump()
+
+    def _focus_key(self, rb, key):
+        from nexus.gui import ribbon_model as rm
+        cid, items = rm.column(rb.state, rb.cats)
+        rb.state = rm.RibbonState(rb.state.cat, {**rb.state.focus, cid: [
+            i for i, it in enumerate(items) if it.key == key][0]}, rb.state.path)
+
+    def test_nested_column_b_goes_up_then_home(self):
+        w = self.win
+        th = w.theatre
+        rb = self._ribbon()
+        self._into(rb, 'collections', 'group:stores')
+        self.assertEqual(rb.state.path, ('group:stores',))
+        self.assertEqual(rb.depth(), 1)
+        first = rb.current()
+        self.assertEqual(first.kind, 'folder')
+        self._press(Qt.Key.Key_Return, rb)                        # A: into the store
+        self._pump()
+        self.assertEqual(rb.depth(), 2)
+        self.assertEqual(rb.current().kind, 'game')
+        self.assertIn("›", rb.accessibleName())
+        self.assertIs(QApplication.focusWidget(), rb)
+        self.assertEqual(w.hints._shown[1][-4], ('b', 'Back'))
+        w._escape()                                               # B: up to the stores
+        self.assertEqual(rb.depth(), 1)
+        self.assertEqual(rb.current().key, first.key)             # on the folder it came from
+        self._press(Qt.Key.Key_Left, rb)                          # Left goes up too
+        self.assertEqual((rb.state.cat, rb.depth()), ('collections', 0))
+        self.assertEqual(rb.current().key, 'group:stores')
+        w._escape()                                               # B at the top: Home
+        self.assertEqual(rb.state.cat, 'home')
+        self._into(rb, 'collections', 'group:stores')
+        w._pad_action('page-next')                                # RB closes folders
+        self.assertEqual((rb.state.cat, rb.depth()), ('discover', 0))
+        w.set_theatre(False)
+
+    def test_download_item_a_runs_its_action_x_options(self):
+        w = self.win
+        th = w.theatre
+        raw = [{'hash': 'h1', 'name': 'Repack', 'title': 'Repack', 'slug': 'repack',
+                'tracked': True, 'percent': 40.0, 'size': 4 << 30, 'repack_bytes': 4 << 30,
+                'eta': 600, 'rate': 5e6}]
+        import time
+        from nexus import pipeline
+        w.downloads.data = {'torrents': raw, 'pipeline': pipeline.cards(raw, {}, time.time(),
+                                                                       set())}
+        w._mine_torrents = raw
+        rb = self._ribbon()
+        w._feed_theatre_downloads()
+        self._pump()
+        th._ribbon_flush()
+        dl = next(c for c in rb.cats if c.key == 'downloads')
+        self.assertEqual([it.key for it in dl.items], ['dl:torrent:h1', 'page:downloads'])
+        item = dl.items[0]
+        self.assertEqual((item.kind, item.kicker, item.primary), ('download', "IN PROGRESS",
+                                                                  'dl:pause'))
+        self.assertEqual(len(item.track), 4)
+        rb.select('downloads', 'dl:torrent:h1')
+        rb.grab()                                                 # paints the track, no qFatal
+        sent = []
+        names = lambda: [b.text() for b in w.theatre_sheet.findChildren(  # noqa: E731
+            QPushButton) if b.isVisible()]
+        with mock.patch.object(w, '_torrent_send', lambda *a: sent.append(a)):
+            self._press(Qt.Key.Key_Return, rb)                    # A: its action
+            self.assertEqual(sent, [('pause', ['h1'], False)])
+            self._press(Qt.Key.Key_Menu, rb)                      # X: its options
+            self._pump()
+            self.assertEqual(names(), ["Pause", "Stop…"])
+            w._escape()
+            self._pump()
+        self.assertIs(QApplication.focusWidget(), rb)
+        w.downloads.data = {}
+        w._mine_torrents = []
+        w.set_theatre(False)
+
+    def test_news_item_opens_reader_and_b_returns(self):
+        w = self.win
+        th = w.theatre
+        w.config = {**w.config, 'news': True}
+        w.newspage.data = {'items': [{'kind': 'feed', 'title': "Story one", 'source': "Site",
+                                      'link': "https://n/1", 'summary': "One."},
+                                     {'kind': 'feed', 'title': "Story two", 'source': "Site",
+                                      'link': "https://n/2", 'summary': "Two."}]}
+        rb = self._ribbon()
+        th.sync_tabs(True, False)
+        w._feed_theatre_discover()
+        self._pump()
+        th._ribbon_flush()
+        self._into(rb, 'discover', 'shelf:Latest news')
+        self.assertEqual(rb.depth(), 1)
+        self._focus_key(rb, rb.current().key)
+        self._press(Qt.Key.Key_Down, rb)                          # the second story
+        self.assertEqual(rb.current().title, "Story two")
+        self._press(Qt.Key.Key_Return, rb)
+        self._pump()
+        self.assertTrue(th.reader.isVisible())
+        self.assertEqual(th.reader.item['title'], "Story two")
+        w._escape()                                               # B closes the reader
+        self._pump()
+        self.assertFalse(th.reader.isVisible())
+        self.assertIs(QApplication.focusWidget(), rb)
+        self.assertEqual((rb.depth(), rb.current().title), (1, "Story two"))
+        w.set_theatre(False)
+
+    def test_keyboard_reaches_every_category_without_a_pad(self):
+        """Right opens a folder, so the keyboard has PageDown/PageUp (and
+        [ ]) for the categories: arrows and PageDown alone reach Settings."""
+        w = self.win
+        rb = self._ribbon()
+        for _ in range(len(rb.cats)):
+            self._press(Qt.Key.Key_PageDown, rb)
+        self.assertEqual(rb.state.cat, rb.cats[0].key)           # wrapped round
+        self._press(Qt.Key.Key_PageUp, rb)
+        self.assertEqual(rb.state.cat, 'settings')
+        self._press(Qt.Key.Key_PageUp, rb)
+        self._press(Qt.Key.Key_BracketRight, rb)
+        self.assertEqual(rb.state.cat, 'settings')
+        rb.select('home')
+        seen = []
+        while rb.state.cat != 'settings' and len(seen) < 12:
+            self._press(Qt.Key.Key_PageDown, rb)
+            seen.append(rb.state.cat)
+        self.assertEqual(rb.state.cat, 'settings')
+        self._press(Qt.Key.Key_Down, rb)                         # arrows still move items
+        w.set_theatre(False)
+
+    def test_ribbon_landing_on_discover_asks_for_the_fetch(self):
+        w = self.win
+        th = w.theatre
+        rb = self._ribbon()
+        th.sync_tabs(True, False)
+        th._ribbon_flush()
+        asked = []
+        th.discover_shown.connect(lambda: asked.append(1))
+        self._press(Qt.Key.Key_PageDown, rb)                     # Library
+        self.assertEqual(asked, [])
+        rb.select('collections')
+        self._press(Qt.Key.Key_PageDown, rb)                     # Discover
+        self.assertEqual(rb.state.cat, 'discover')
+        self.assertEqual(asked, [1])
+        w.set_theatre(False)
+
+    def test_category_move_plays_category_sound(self):
+        w = self.win
+        rb = self._ribbon()
+        played = []
+        with mock.patch.object(w.sounds, 'play', lambda name: played.append(name) or True):
+            self._press(Qt.Key.Key_Right, rb)                     # Home > Library
+            self._press(Qt.Key.Key_Down, rb)                      # an item
+            w._pad_action('page-next')                            # RB
+            self._press(Qt.Key.Key_Right, rb)                     # into a folder (Collections)
+        self.assertEqual(played, ['category', 'move', 'category', 'move'])
+        self.assertEqual(rb.last_move, 'folder')
         w.set_theatre(False)
 
     def test_a_click_reports_its_real_direction(self):
         w = self.win
         rb = self._ribbon()
-        rb.select('discover')
+        rb.select('library')
         rb.grab()                                                  # a paint: the hit rects
         moved = []
         rb.moved.connect(moved.append)
         from PyQt6.QtTest import QTest
-        for want, i in ((-1, 0), (1, len(rb.cats) - 1)):
+        for want, i, start in ((-1, 0, 'library'), (1, len(rb.cats) - 1, 'downloads')):
+            rb.select(start)
+            rb.grab()
             r = next(r for r, kind, j in rb._hits if kind == 'cat' and j == i)
             QTest.mouseClick(rb, Qt.MouseButton.LeftButton, pos=r.center().toPoint())
             self.assertEqual(moved[-1], want)
