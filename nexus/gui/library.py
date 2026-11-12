@@ -69,6 +69,8 @@ class _GridHost(QWidget):
     FlowLayout's with `justify` for same-size items: full rows reach both
     edges and the last row keeps their columns."""
 
+    MAX_GAP = 2                                 # the widest gap, in spacings
+
     def __init__(self, margin: int, spacing: int):
         super().__init__()
         self.margin, self.spacing = margin, spacing
@@ -96,10 +98,15 @@ class _GridHost(QWidget):
     def xs(self, width: int) -> list[int]:
         """Each column's left edge, rounded the way FlowLayout rounds."""
         cols, cw = self.columns(width), self.cell.width()
-        gap = float(self.spacing)
+        gap, x = float(self.spacing), float(self.margin)
         if self.rows(width) > 1 and cols > 1:      # one row only: plain spacing
-            gap = max(gap, (width - 2 * self.margin - cols * cw) / (cols - 1))
-        out, x = [], float(self.margin)
+            # Spread the spare width, but at most to MAX_GAP x spacing: past
+            # that (few big tiles in a narrow window) the rest goes to both
+            # sides, so the columns stay together instead of drifting apart.
+            free = width - 2 * self.margin - cols * cw
+            gap = min(max(gap, free / (cols - 1)), self.spacing * self.MAX_GAP)
+            x += max(0.0, (free - gap * (cols - 1)) / 2)
+        out = []
         for _ in range(cols):
             out.append(round(x))
             x += cw + gap

@@ -1000,17 +1000,27 @@ class CategoryCard(_Card):
                 pt.setClipRect(QRectF(sw * i, 0, sw + 1, h), Qt.ClipOperation.IntersectClip)
                 pt.drawPixmap(QPointF(sw * i + (sw - cw) / 2, 0), self._cover(g, cw, ch))
                 pt.restore()
-        # The genre colour over the collage, deep at the bottom for the text.
+        # The covers stay clear at the top; a dark scrim under the text, and
+        # the genre colour only as a band along the bottom (a full wash read
+        # as fog over the art).
         deep = QColor(P['scrim'])
         grad = QLinearGradient(0.0, float(h), 0.0, 0.0)
-        for at, alpha, base in ((0.0, 0.90, deep), (0.5, 0.50, tint), (1.0, 0.30, tint)):
-            c = QColor(base)
+        for at, alpha in ((0.0, 0.92), (0.38, 0.62), (0.72, 0.0)):
+            c = QColor(deep)
             c.setAlphaF(alpha)
             grad.setColorAt(at, c)
         pt.fillRect(self.rect(), QBrush(grad))
-        wash = QColor(tint)
-        wash.setAlphaF(0.18)
-        pt.fillRect(self.rect(), wash)
+        band = QLinearGradient(0.0, float(h), 0.0, h * 0.4)
+        for at, alpha in ((0.0, 0.34), (1.0, 0.0)):
+            c = QColor(tint)
+            c.setAlphaF(alpha)
+            band.setColorAt(at, c)
+        pt.fillRect(self.rect(), QBrush(band))
+        if n > 1:                                        # a thin seam between covers
+            seam = QColor(P['scrim'])
+            seam.setAlphaF(0.55)
+            for i in range(1, n):
+                pt.fillRect(QRectF(sw * i - 0.5, 0, 1.0, h), seam)
         pt.restore()
         pad = SP['3']
         pt.setFont(_font(FS['xs']))

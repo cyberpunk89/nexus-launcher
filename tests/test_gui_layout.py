@@ -808,6 +808,54 @@ class FlowJustify(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class GridGap(unittest.TestCase):
+    """The Library grid spreads spare width only up to MAX_GAP spacings; the
+    rest centres the columns (few big tiles in a narrow window)."""
+    def host(self, n=12):
+        from PyQt6.QtCore import QSize
+        from nexus.gui.library import _GridHost
+        h = _GridHost(20, 16)
+        h.set_shape(n, QSize(200, 300))
+        return h
+
+    def test_small_spare_fills_edge_to_edge(self):
+        xs = self.host().xs(20 + 4 * 200 + 3 * 20 + 20)     # 4 columns, 20 px gaps
+        self.assertEqual(xs, [20, 240, 460, 680])
+
+    def test_wide_spare_caps_gap_and_centres(self):
+        xs = self.host().xs(820)                       # 780 avail: 3 columns, 180 spare
+        self.assertEqual(len(xs), 3)
+        self.assertEqual(xs[1] - xs[0] - 200, 32)      # capped at 2 x 16
+        right = 820 - (xs[-1] + 200)
+        self.assertLessEqual(abs(xs[0] - right), 1)    # centred
+
+    def test_one_row_keeps_plain_spacing(self):
+        xs = self.host(2).xs(900)
+        self.assertEqual(xs[:2], [20, 236])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class SoftTagCorners(unittest.TestCase):
+    """Qt draws a QSS box square once 2 x radius is more than its height:
+    the Library's soft tags keep a capsule at every Size."""
+    def test_tag_is_tall_enough_for_its_radius(self):
+        import re
+        from nexus.gui import theme as th
+        from nexus.gui.widgets import label
+        for scale in (0.9, 1.0, 1.25, 1.5):
+            qss = th.build_stylesheet(scale)
+            m = re.search(r'QLabel#SoftTag, QLabel#SoftTagAccent \{ border-radius: (\d+)px;'
+                          r'.*?min-height: (\d+)px', qss, re.S)
+            self.assertIsNotNone(m, "soft tag rule")
+            r, h = int(m.group(1)), int(m.group(2))
+            self.assertLessEqual(2 * r, h, f"Size {scale}")
+        tag = label("48 games", "SoftTagAccent")
+        self.addCleanup(tag.deleteLater)
+        tag.ensurePolished()
+        self.assertEqual(tag.sizeHint().height(), int(th.SOFT_TAG_H * th.LOOK['scale']))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class GameContextBlock(unittest.TestCase):
     """The game page's context block, now at the top of Overview (w-40,
     w-54): built from the facts index the CLI writes, each row only when its
@@ -1040,7 +1088,9 @@ class Caching(unittest.TestCase):
         self.assertLess(len(built), 8 * cols)
         self.assertLess(len(view.findChildren(nx.GameTile)), 12 * cols)   # spares included
         self.assertEqual(len(view.games), 3000)
-        # The canvas is as tall as every row; positions match FlowLayout's.
+        # The canvas is as tall as every row; rows match FlowLayout's, and the
+        # columns are the host's (FlowLayout's when the spare is small, else
+        # gaps capped at MAX_GAP spacings and the rest centred).
         ref_host = QWidget()
         self.addCleanup(ref_host.deleteLater)
         flow = nx.FlowLayout(ref_host, margin=nx.SP['5'], spacing=nx.SP['4'], justify=True)
@@ -1052,8 +1102,12 @@ class Caching(unittest.TestCase):
         width = view.flow_host.width()
         ref_host.resize(width, flow.heightForWidth(width))
         flow.setGeometry(QRect(0, 0, width, flow.heightForWidth(width)))
+        xs = view.flow_host.xs(width)
         for i in range(3 * cols):
-            self.assertEqual(view.tiles[f'g{i}'][0].pos(), flow.itemAt(i).geometry().topLeft())
+            pos = view.tiles[f'g{i}'][0].pos()
+            self.assertEqual(pos.y(), flow.itemAt(i).geometry().top())
+            self.assertEqual(pos.x(), xs[i % cols])
+        self.assertLessEqual(xs[1] - xs[0] - cell.width(), 2 * nx.SP['4'])
         rows = -(-3000 // cols)
         self.assertEqual(view.flow_host.height(),
                          2 * nx.SP['5'] + rows * cell.height() + (rows - 1) * nx.SP['4'])

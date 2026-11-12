@@ -434,6 +434,7 @@ PILL_H = 18      # status pills / badges
 STAGE_BTN_H = 44  # the Stage's Play row: Play, Details, More and For you now (w-89)
 STAGE_FACT_H = 24  # the Stage's fact pills (QLabel#StageFact, w-90)
 CHIP_H = 28      # filter chips
+SOFT_TAG_H = 22  # soft tags by a page title (QLabel#SoftTag, w-117)
 GLYPH_H = 22     # controller hint glyphs
 PERSON_H = 30    # a friend's chip on the game page (friends.PersonChip)
 
@@ -711,8 +712,9 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #ShelfCount { color: $muted; font-size: ${fs_xs}px; padding-bottom: 2px; }
     #KickerTitle { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     /* Soft tags by a page title, the Library's Filter and its popover (w-117). */
-    QLabel#SoftTag, QLabel#SoftTagAccent { border-radius: ${r_control}px;
-        padding: 2px ${sp_2}px; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#SoftTag, QLabel#SoftTagAccent { border-radius: ${r_soft_tag}px;
+        padding: 0 ${sp_2_5}px; min-height: ${soft_tag_h}px; max-height: ${soft_tag_h}px;
+        font-size: ${fs_2xs}px; font-weight: 600; }
     QLabel#SoftTag { background: $surface_2; color: $subtext; }
     QLabel#SoftTagAccent { background: $accent_22; color: $accent; }
     QPushButton#FilterButton[active="true"] { background: $accent_22; color: $accent;
@@ -1193,6 +1195,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         grad_dusk_diag=qss_grad('dusk', 1.0, 1.0),
         r_scroll=pill(SP['2_5']), r_bar=pill(6), r_more=pill(28), r_tag=pill(22),
         r_groove=pill(4), r_knob=pill(12), r_search=pill(36), r_icon_group=pill(46),
+        soft_tag_h=int(SOFT_TAG_H * scale), r_soft_tag=pill(int(SOFT_TAG_H * scale)),
         r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,
         r_person=pill(int(round(PERSON_H * scale))),

@@ -2774,7 +2774,10 @@ class StudioPageTest(unittest.TestCase):
         self.assertEqual([g['slug'] for g in p.shown_games()], ['q0', 'q1', 'q2', 'q3'])
         # A refresh with the same games keeps the cards (and the focus).
         cards[2].tile.setFocus()
-        games2, facts2 = studio_games(4)
+        # Fresh dicts with the same values (not studio_games() again: its
+        # last_played comes from the clock and can tick a second over).
+        games2 = [dict(g) for g in games]
+        facts2 = {k: dict(v) for k, v in facts.items()}
         cat = studio_cat(games2, facts2)
         p.set_category(cat, facts=facts2)
         self.assertEqual(p.studio_cards(), cards)
