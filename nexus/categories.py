@@ -9,6 +9,7 @@ Keys: the smart keys of nexus/smart.py (`smart:<rule>`, `genre:<name>`,
 ':', so it is everything after the prefix) and `src:<source>` (a store).
 Play together's `friends:` keys stay a filter, not a category."""
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -391,6 +392,41 @@ def related(cat: Category, groups, n: int = 4) -> list[Category]:
             scored.append((-shared / len(mine | theirs), c.kind == cat.kind, i, c))
     scored.sort(key=lambda t: t[:3])
     return [t[3] for t in scored[:max(0, n)]]
+
+
+def cover_tag(rule, g: dict, fact: dict | None) -> tuple[str, float | None] | None:
+    """The line a cover carries in a smart row: "2 h left" with how far you
+    are (0-1) in Almost finished, "~12 h story" in Never played; nothing
+    elsewhere or when the story length is unknown (or there is no story)."""
+    if rule not in ('smart:almost', 'smart:never'):
+        return None
+    main = smart.main_hours(fact)
+    if main is None:
+        return None
+    if rule == 'smart:never':
+        return f"~{max(1, round(main))} h story", None
+    played = (g.get('playtime_minutes') or 0) / 60
+    return f"{max(1, math.ceil(main - played))} h left", min(1.0, played / main)
+
+
+def studios_for(cat: Category, groups, n: int = 6) -> list[tuple[Category, int]]:
+    """The studios behind this category's games: the categories of the
+    group with key 'studios' (developers and publishers) that share games
+    with it, most shared first, as (studio, shared). Nothing while that
+    group does not exist."""
+    mine = {g.get('slug') for g in cat.games}
+    scored = []
+    for grp in groups:
+        if grp.key != 'studios':
+            continue
+        for i, c in enumerate(grp.cats):
+            if c.key == cat.key:
+                continue                 # a studio's page does not list itself
+            shared = len(mine & {g.get('slug') for g in c.games})
+            if shared:
+                scored.append((-shared, i, c, shared))
+    scored.sort(key=lambda t: t[:2])
+    return [(c, shared) for _a, _i, c, shared in scored[:max(0, n)]]
 
 
 def sort_games(games, sort: str) -> list[dict]:

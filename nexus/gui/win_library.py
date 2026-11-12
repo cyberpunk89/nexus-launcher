@@ -1206,8 +1206,10 @@ class LibraryMixin:
         cut_games = {c.key: smart.games_for(c.key, list(cat.games), facts, linux=linux)
                      for c in cuts}
         self.catpage.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
-                                  cuts, cut_games, categories.related(cat, groups),
-                                  self._category_empty(cat), default_sort=sort)
+                                  cuts, cut_games,
+                                  categories.related(cat, [g for g in groups if g.key != 'studios']),
+                                  self._category_empty(cat), default_sort=sort, facts=facts,
+                                  studios=categories.studios_for(cat, groups))
         self.catpage.set_pin_state(self._pin_state(cat.key))
         self.catpage.set_jobs(self.jobs)
         self.catpage.mark_selected(set(self.selected))

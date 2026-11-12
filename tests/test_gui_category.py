@@ -267,11 +267,15 @@ class Tabs(unittest.TestCase):
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class Pin(unittest.TestCase):
     def test_pin_button_states(self):
+        from nexus.gui.category import CoverWallHeader, MosaicHeader
+        for cls in (MosaicHeader, CoverWallHeader):
+            self._pin_states(cls)
+
+    def _pin_states(self, cls):
         """w-100: Pin / Pinned in the header; full (6 pinned) greys it out
         with a reason; a click asks for the toggle."""
-        from nexus.gui.category import MosaicHeader
         from PyQt6.QtWidgets import QApplication
-        h = MosaicHeader()
+        h = cls()
         self.addCleanup(h.deleteLater)
         h.resize(900, h.height())
         h.set_category(a_category(lib_games(4)))
@@ -291,6 +295,294 @@ class Pin(unittest.TestCase):
         h.set_pin_state('full')
         self.assertEqual((h.btn_pin.text(), h.btn_pin.isEnabled()), ("Pin", False))
         self.assertEqual(h.btn_pin.toolTip(), "6 pinned, unpin one first")
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class StatItems(unittest.TestCase):
+    def test_items(self):
+        from nexus import categories
+        from nexus.gui.category import stat_items, story
+        st = categories.Stats(14, 228 * 60, 5, 426 * 10**9)
+        self.assertEqual(stat_items(st), [("14", "games"), ("228 h", "played"),
+                                          ("5", "finished"), ("426 GB", "on disk")])
+        self.assertEqual(story(st), "14 games  ·  228 h played  ·  5 finished  ·  426 GB on disk")
+        self.assertEqual(stat_items(categories.Stats(1, 30, 0, 2 * 10**9)),
+                         [("1", "game"), ("30 min", "played"), ("2.0 GB", "on disk")])
+        self.assertEqual(stat_items(categories.Stats(3, 0, 0, 0)), [("3", "games")])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class CoverWall(unittest.TestCase):
+    def header(self, width, games, key='src:steam', kind='store'):
+        from nexus.gui.category import CoverWallHeader
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(width, 600)
+        h = CoverWallHeader()
+        QVBoxLayout(host).addWidget(h)
+        h.set_category(a_category(games, key, kind))
+        host.show()
+        for _ in range(3):
+            QApplication.processEvents()
+        return h
+
+    def test_wall_built_once_per_key(self):
+        h = self.header(1388, lib_games(8))
+        h.grab()
+        h.grab()
+        h.set_category(a_category(lib_games(8)))               # the same category again
+        h.grab()
+        self.assertEqual(h.wall_builds, 1)
+        before = h.wall_builds
+        h.parentWidget().resize(1200, 600)
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        h.grab()
+        self.assertEqual(h.wall_builds, before)             # stale, scaled, until the timer
+        h._rebuild_wall()
+        h.grab()
+        self.assertEqual(h.wall_builds, before + 1)
+        before = h.wall_builds
+        h.set_category(a_category(lib_games(8), 'src:other'))   # another key
+        h.grab()
+        self.assertEqual(h.wall_builds, before + 1)
+
+    def test_wall_rebuilds_on_theme(self):
+        from unittest import mock
+        h = self.header(1388, lib_games(8))
+        h.grab()
+        n = h.wall_builds
+        from nexus.gui.theme import P
+        with mock.patch.dict(P, {'bg': '#102030'}):
+            h.grab()
+            h._rebuild_wall()
+            h.grab()
+        self.assertEqual(h.wall_builds, n + 1)
+
+    def test_cover_arriving_rebuilds(self):
+        h = self.header(1388, lib_games(8))
+        h.grab()
+        n = h.wall_builds
+        for _ in range(12):                    # a burst: one build
+            h._cover_arrived()
+        h.grab()
+        self.assertEqual(h.wall_builds, n)
+        h._rebuild_wall()
+        h.grab()
+        self.assertEqual(h.wall_builds, n + 1)
+
+    def test_stats_big_numbers(self):
+        from nexus import categories
+        h = self.header(1388, lib_games(3))
+        h.set_category(a_category(lib_games(3)), categories.Stats(3, 360, 1, 12 * 10**9))
+        self.assertEqual(h.stats.items(), [("3", "games"), ("6 h", "played"),
+                                           ("1", "finished"), ("12 GB", "on disk")])
+        h.set_category(a_category(lib_games(3)), categories.Stats(3, 0, 0, 0))
+        self.assertEqual(h.stats.items(), [("3", "games")])
+
+    def test_no_games_glyph(self):
+        h = self.header(1388, [])
+        self.assertTrue(h.glyph_shown())
+        h.grab()
+
+    def test_paints_848_1388(self):
+        for width in (848, 1388):
+            h = self.header(width, lib_games(14))
+            self.assertEqual(len(h._slugs), 12)
+            self.assertFalse(h.grab().isNull())
+            self.assertGreaterEqual(h.height(), __import__('nexus.gui.theme', fromlist=['scaled']).scaled(280))
+
+    def test_compact_title_at_900(self):
+        wide = self.header(1388, lib_games(4))
+        narrow = self.header(900, lib_games(4))
+        self.assertEqual(wide.title.property('compact'), 'false')
+        self.assertEqual(narrow.title.property('compact'), 'true')
+        self.assertLess(narrow.title.fontMetrics().height(), wide.title.fontMetrics().height())
+        self.assertLessEqual(narrow.col.width(), narrow.width() * 0.60)
+        self.assertGreater(wide.height(), narrow.height() - 1)
+
+    def test_long_title_elided(self):
+        h = self.header(900, lib_games(4))
+        from nexus import categories
+        long = "A really long collection name that goes on and on and on forever"
+        h.set_category(categories.Category('col:x', 'collection', long, "t", nx.G['grid'], None,
+                                           tuple(lib_games(4))))
+        self.assertTrue(h.title.text().endswith("…"))
+        self.assertEqual(h.title.toolTip(), long)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Tags(unittest.TestCase):
+    def test_tile_tag_set_and_painted(self):
+        from PyQt6.QtWidgets import QApplication
+        t = nx.GameTile(lib_games(1)[0], width=150)
+        self.addCleanup(t.deleteLater)
+        t.show()
+        QApplication.processEvents()
+        plain = t.grab().toImage()
+        t.set_tag(("2 h left", 0.8))
+        self.assertEqual(t.tag, ("2 h left", 0.8))
+        self.assertNotEqual(t.grab().toImage(), plain)
+        t.set_tag(("~12 h story", None))
+        self.assertFalse(t.grab().isNull())
+        t.set_tag(None)
+        self.assertIsNone(t.tag)
+        self.assertEqual(t.grab().toImage(), plain)
+
+    def test_tag_clear_of_friends_and_install_progress(self):
+        from PyQt6.QtWidgets import QApplication
+        g = dict(lib_games(1)[0], friends=['1', '2'])
+        t = nx.GameTile(g, width=150)
+        self.addCleanup(t.deleteLater)
+        t.set_tag(("2 h left", 0.5))
+        t.show()
+        QApplication.processEvents()
+        tagged = t.grab().toImage()
+        t.friends_badge = True
+        self.assertNotEqual(t.grab().toImage(), tagged)      # painted, lifted above the avatars
+        t.friends_badge = False
+        t.game = dict(g, installed=False, installing={'done': 1, 'total': 4})
+        installing = t.grab().toImage()
+        t.set_tag(None)
+        self.assertEqual(t.grab().toImage(), installing)    # no tag over install progress
+
+    def rows_page(self, games, facts, key='src:steam'):
+        from nexus import categories
+        from nexus.gui.category import CategoryPage
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(1000, 800)
+        p = CategoryPage(_Prefs())
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        cuts = [categories.Cut('smart:almost', "Almost done", nx.G['history'], 2),
+                categories.Cut('smart:never', "Never played", nx.G['history'], 2)]
+        cut_games = {'smart:almost': games[:2], 'smart:never': games[2:4]}
+        p.set_category(a_category(games), cuts=cuts, cut_games=cut_games, facts=facts)
+        for _ in range(3):
+            QApplication.processEvents()
+        return p, cuts, cut_games
+
+    def test_rows_tag_almost_and_never(self):
+        games = lib_games(6)                     # g0 60 min, g1 120 min ...
+        facts = {f'g{i}': {'length': {'main': 3 + i}, 'modes': ['single']} for i in range(6)}
+        p, cuts, cut_games = self.rows_page(games, facts)
+        by_row = {r.title: r for r in p.rows()}
+        almost = {t.game['slug']: t.tag for t in by_row["Almost done"].tiles}
+        self.assertEqual(almost['g0'], ("2 h left", 1 / 3))
+        self.assertEqual(almost['g1'], ("2 h left", 0.5))
+        never = {t.game['slug']: t.tag for t in by_row["Never played"].tiles}
+        self.assertEqual(never['g2'], ("~5 h story", None))
+        self.assertEqual(never['g3'], ("~6 h story", None))
+        self.assertTrue(all(t.tag is None for t in by_row["All games"].tiles))
+        # A refresh with the same tiles kept: the tags follow the facts.
+        facts['g0']['length'] = None
+        p.set_category(a_category(games), cuts=cuts, cut_games=cut_games, facts=facts)
+        by_row = {r.title: r for r in p.rows()}
+        self.assertIsNone(next(t for t in by_row["Almost done"].tiles
+                               if t.game['slug'] == 'g0').tag)
+        p.set_category(a_category(games), cuts=cuts, cut_games=cut_games)    # no facts at all
+        self.assertTrue(all(t.tag is None for r in p.rows() for t in r.tiles))
+
+    def test_category_of_the_rule_tags_its_all_games_row(self):
+        from nexus import categories
+        from nexus.gui.category import CategoryPage
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        games = lib_games(3)
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(900, 700)
+        p = CategoryPage(_Prefs())
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        cat = categories.Category('smart:never', 'smart', "Never played", "t", nx.G['grid'],
+                                  None, tuple(games))
+        p.set_category(cat, facts={'g0': {'length': {'main': 9}, 'modes': ['single']}})
+        QApplication.processEvents()
+        tags = {t.game['slug']: t.tag for t in p.rows()[-1].tiles}
+        self.assertEqual(tags['g0'], ("~9 h story", None))
+        self.assertIsNone(tags['g1'])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Studios(unittest.TestCase):
+    def test_strip_hidden_without_group(self):
+        from nexus.gui.category import CategoryPage
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(900, 700)
+        p = CategoryPage(_Prefs())
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        p.set_category(a_category(lib_games(4)))
+        QApplication.processEvents()
+        self.assertTrue(p.studios_wrap.isHidden())
+        self.assertTrue(p.foot.isHidden())
+
+    def test_chip_opens_studio(self):
+        from nexus import categories
+        from nexus.gui.category import CategoryPage, StudioChip
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(900, 700)
+        p = CategoryPage(_Prefs())
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        games = lib_games(4)
+        studio = categories.Category('dev:Fake Studio', 'studio', "Fake Studio", "t",
+                                     nx.G['grid'], None, tuple(games[:2]))
+        p.set_category(a_category(games), studios=[(studio, 2)])
+        QApplication.processEvents()
+        self.assertFalse(p.studios_wrap.isHidden())
+        self.assertFalse(p.foot.isHidden())
+        chips = p.studios_box.findChildren(StudioChip)
+        self.assertEqual(len(chips), 1)
+        self.assertEqual(chips[0].count.text(), "2 of your games")
+        chips[0].grab()
+        opened = []
+        p.open_key.connect(opened.append)
+        chips[0].click()
+        self.assertEqual(opened, ['dev:Fake Studio'])
+        p.set_category(a_category(games))                      # the group went away
+        QApplication.processEvents()
+        self.assertTrue(p.studios_wrap.isHidden())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Related(unittest.TestCase):
+    def test_tinted_by_kind_with_shared(self):
+        from nexus import categories
+        from nexus.gui.category import CategoryPage, KIND_TINT, MosaicTile
+        from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        host.resize(900, 700)
+        p = CategoryPage(_Prefs())
+        QVBoxLayout(host).addWidget(p)
+        host.show()
+        games = lib_games(8)
+        rpg = categories.Category('genre:RPG', 'genre', "RPG", "t", nx.G['grid'], None,
+                                  tuple(games[:5]))
+        smart = categories.Category('smart:never', 'smart', "Never played", "t", nx.G['grid'],
+                                    None, tuple(games[3:8]))
+        p.set_category(a_category(games), related=[rpg, smart])
+        QApplication.processEvents()
+        tiles = {t.key: t for t in p.related_box.findChildren(MosaicTile)}
+        self.assertEqual(tiles['genre:RPG'].count.text(), "5 games · 5 shared")
+        self.assertEqual(tiles['smart:never'].count.text(), "5 games · 5 shared")
+        from nexus.gui.theme import P
+        from PyQt6.QtGui import QColor
+        self.assertEqual(tiles['genre:RPG']._tint().name(), QColor(P[KIND_TINT['genre']]).name())
+        self.assertEqual(tiles['smart:never']._tint().name(), QColor(P['accent']).name())
+        for t in tiles.values():
+            t.grab()
+        # Theatre's header stays untinted by kind.
+        from nexus.gui.category import MosaicHeader
+        self.assertFalse(MosaicHeader.TINT_BY_KIND)
 
 
 class _Prefs:
@@ -340,7 +632,7 @@ class Page(unittest.TestCase):
         self.assertEqual(rows, ["Continue playing", "Never played", "All games"])
         counts = [len(r.tiles) for r in p.rows()]
         self.assertEqual(counts, [categories.ROW_CAP, 2, categories.ROW_CAP])
-        self.assertTrue(p.chips_box.isHidden())                  # the rows are the cuts
+        self.assertFalse(p.chips_box.isHidden())                 # the cuts, as buttons too
         # A row's See all: the grid on that cut, for this visit only, one fill.
         fills = []
         p.shown_changed.connect(lambda: fills.append(1))
@@ -352,6 +644,24 @@ class Page(unittest.TestCase):
         self.assertEqual(p.view_seg.current(), 'grid')
         p.set_view('list')                                       # a choice is saved
         self.assertEqual(p.prefs.category_view, {'src:steam': 'list'})
+
+    def test_cut_buttons_in_rows(self):
+        games = lib_games(10)
+        cuts = [(self.cut('smart:continue', "Continue playing", 3), {'g1', 'g4', 'g7'})]
+        p = self.page(games, cuts)
+        self.assertEqual(p.view, 'rows')
+        self.assertFalse(p.chips_box.isHidden())
+        chips = p.chip_buttons()
+        self.assertEqual([c.objectName() for c in chips], ["CatCut", "CatCut"])
+        self.assertTrue(chips[0].isChecked())
+        chips[0].click()                                     # All: Rows already is
+        self.assertEqual(p.view, 'rows')
+        self.assertTrue(chips[0].isChecked())
+        chips = p.chip_buttons()
+        chips[1].click()                                     # a cut: its grid, as See all
+        self.assertEqual((p.view, p.cut), ('grid', 'smart:continue'))
+        self.assertEqual(sorted(p.games), ['g1', 'g4', 'g7'])
+        self.assertTrue(p.chip_buttons()[1].isChecked())
 
     def theatre_page(self, games, size=(1600, 900)):
         from nexus.gui.category import CategoryPage
@@ -379,9 +689,11 @@ class Page(unittest.TestCase):
         self.assertTrue(p.foot.isHidden())                 # no More like this
         self.assertTrue(p.header.btn_back.isHidden())      # B is the way back
         self.assertTrue(p.header.btn_more.isHidden())
-        desk = CategoryPage(_Prefs())
+        from nexus.gui.category import MosaicHeader
+        desk = MosaicHeader()
         self.addCleanup(desk.deleteLater)
-        self.assertGreater(p.header.height(), desk.header.height())
+        self.assertGreater(p.header.height(), desk.height())
+        self.assertIsInstance(p.header, MosaicHeader)
         tiles = self.shown_tiles(p)
         self.assertTrue(tiles)
         for t in tiles:
@@ -608,7 +920,7 @@ class Routing(_Window):
         self.assertEqual(len(self.slugs()), 12)
         self.assertTrue(w._lib_bar.isHidden())
         self.assertTrue(w._lib_chips.isHidden())
-        self.assertIn("12 games", w.catpage.header.story.text())
+        self.assertEqual(w.catpage.header.stats.items()[0], ("12", "games"))
         w.close_category()
         self.assertFalse(w._category_open())
         self.assertIs(w.views.currentWidget(), w.home)

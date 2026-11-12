@@ -459,7 +459,9 @@ SP = {'0_5': 2, '1': 4, '1_5': 6, '2': 8, '2_5': 10, '3': 12, '4': 16,
 FS = {'2xs': 10, 'xs_plus': 11, 'xs': 12, 'command': 13, 'sm': 14,
       'base': 16, 'lg': 18, 'display': 20,
       # Icon glyphs and the few big numbers / headlines.
-      'stat_icon': 17, 'icon': 20, 'headline': 26, 'big': 28}
+      'stat_icon': 17, 'icon': 20, 'headline': 26, 'big': 28,
+      # The category page's cover-wall header (w-113).
+      'wall': 76, 'wall_sm': 52, 'stat_big': 24}
 
 TILE_W = 200
 TILE_LIFT = 4                    # hover translateY(-4px); reserved, not layout churn
@@ -710,6 +712,18 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #CatTitle { color: $text; font-size: ${fs_big}px; font-weight: 700; }
     #CatStory { color: $subtext; font-size: ${fs_sm}px; }
     #CatKind { color: $subtext; font-size: ${fs_2xs}px; font-weight: 600; }
+    #CatWallTitle { color: $text; font-size: ${fs_wall}px; font-weight: 700; }
+    #CatWallTitle[compact="true"] { font-size: ${fs_wall_sm}px; }
+    #CatStatValue { color: $text; font-size: ${fs_stat_big}px; font-weight: 600; }
+    #CatStatLabel { color: $subtext; font-size: ${fs_xs}px; }
+    QFrame#CatStatRule { background: $border; border: none; }
+    QPushButton#CatCut { background: $surface_2; color: $subtext; border: 1px solid $border;
+                         border-radius: ${r_xl}px; padding: 0 ${sp_3}px;
+                         font-size: ${fs_command}px; font-weight: 500; }
+    QPushButton#CatCut:hover { color: $text; border-color: $overlay; }
+    QPushButton#CatCut:checked { background: $accent; color: $on_accent; border-color: $accent; }
+    #StudioName { color: $col_gold; font-size: ${fs_xs}px; font-weight: 600; }
+    #StudioCount { color: $subtext; font-size: ${fs_xs}px; }
     #MosaicTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     #MosaicCount { color: $subtext; font-size: ${fs_xs}px; }
     QToolButton#ShelfArrow, QToolButton#GlassIcon {

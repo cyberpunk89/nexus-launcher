@@ -234,6 +234,55 @@ class Page(unittest.TestCase):
         self.assertEqual([g['slug'] for g in gs][0], 'rpg1')            # a copy: input kept
 
 
+class CoverTag(unittest.TestCase):
+    """w-113: the line on a cover in a smart row (cover_tag)."""
+    def test_almost_left(self):
+        g = game('a', 480)                               # 8 h of 10
+        self.assertEqual(C.cover_tag('smart:almost', g, fact(10)), ("2 h left", 0.8))
+        g = game('b', 570)                               # 9.5 of 10: never "0 h left"
+        text, frac = C.cover_tag('smart:almost', g, fact(10))
+        self.assertEqual(text, "1 h left")
+        self.assertAlmostEqual(frac, 0.95)
+        g = game('c', 1200)                              # past the story: a full bar
+        self.assertEqual(C.cover_tag('smart:almost', g, fact(10))[1], 1.0)
+
+    def test_never_story(self):
+        self.assertEqual(C.cover_tag('smart:never', game('a'), fact(12.4)), ("~12 h story", None))
+
+    def test_no_length_or_online_no_tag(self):
+        self.assertIsNone(C.cover_tag('smart:almost', game('a', 60), fact()))
+        self.assertIsNone(C.cover_tag('smart:never', game('a'), None))
+        self.assertIsNone(C.cover_tag('smart:never', game('a'), fact(10, modes=('online',))))
+        self.assertIsNone(C.cover_tag('smart:continue', game('a', 60), fact(10)))
+        self.assertIsNone(C.cover_tag(None, game('a', 60), fact(10)))
+
+
+class Studios(unittest.TestCase):
+    """w-113: studios_for reads a group with key 'studios' (w-112 adds it)."""
+    def test_none_without_the_group(self):
+        games, facts = library()
+        groups = C.categories(games, facts, prefs(), linux=True, now=NOW)
+        rpg = C.lookup(groups, 'genre:RPG')
+        self.assertEqual(C.studios_for(rpg, groups), [])
+
+    def test_ranked_by_shared_games(self):
+        games, facts = library()
+        groups = C.categories(games, facts, prefs(), linux=True, now=NOW)
+        rpg = C.lookup(groups, 'genre:RPG')
+        by = {g['slug']: g for g in games}
+
+        def studio(key, *slugs):
+            return C.Category(key, 'studio', key, '', '*', None, tuple(by[s] for s in slugs))
+        one = studio('dev:One', 'rpg1')
+        two = studio('dev:Two', 'rpg1', 'rpg2')
+        none = studio('dev:None', 'race')
+        extra = C.Group('studios', "Studios", (one, two, none))
+        got = C.studios_for(rpg, list(groups) + [extra])
+        self.assertEqual([(c.key, n) for c, n in got], [('dev:Two', 2), ('dev:One', 1)])
+        self.assertEqual(len(C.studios_for(rpg, list(groups) + [extra], n=1)), 1)
+        self.assertEqual(C.studios_for(two, list(groups) + [extra]), [(one, 1)])   # not itself
+
+
 def cat(key, n):
     """A category of `n` made-up games (browse() looks only at keys,
     kinds and counts)."""
