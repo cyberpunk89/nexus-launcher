@@ -724,6 +724,23 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#CatCut:checked { background: $accent; color: $on_accent; border-color: $accent; }
     #StudioName { color: $col_gold; font-size: ${fs_xs}px; font-weight: 600; }
     #StudioCount { color: $subtext; font-size: ${fs_xs}px; }
+    /* Studio pages (w-114): a gold wordmark, game cards, other studios. */
+    #StudioWordmark { color: $gold_text; font-size: ${fs_wall}px; font-weight: 800; }
+    #StudioWordmark[compact="true"] { font-size: ${fs_wall_sm}px; }
+    #StudioMerged { color: $muted; font-size: ${fs_command}px; }
+    #StudioNote { color: $muted; font-size: ${fs_xs}px; }
+    QFrame#StudioGameCard { background: $surface_2; border: 1px solid $border;
+                            border-radius: ${r_card}px; }
+    QFrame#StudioGameCard:hover { border-color: $overlay; }
+    #StudioGameName { color: $text; font-size: ${fs_base}px; font-weight: 600; }
+    #StudioGameCredit { color: $muted; font-size: ${fs_xs}px; }
+    #StudioGameMeta { color: $subtext; font-size: ${fs_xs}px; }
+    #StudioCardName { color: $gold_text; font-size: ${fs_base}px; font-weight: 700; }
+    #StudioCardCount { color: $muted; font-size: ${fs_xs}px; }
+    QPushButton#StudioTag { background: $gold_10; color: $col_gold; border: 1px solid $gold_35;
+                            border-radius: ${r_tag}px; padding: 0 ${sp_2_5}px;
+                            font-size: ${fs_xs}px; min-height: 20px; max-height: 20px; }
+    QPushButton#StudioTag:hover { background: $gold_22; border-color: $col_gold; }
     #MosaicTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     #MosaicCount { color: $subtext; font-size: ${fs_xs}px; }
     QToolButton#ShelfArrow, QToolButton#GlassIcon {
@@ -1175,6 +1192,9 @@ def build_stylesheet(scale: float = 1.0) -> str:
         **{f'sp_{k}': int(round(v * scale)) for k, v in SP.items()},
         **{f'fs_{k}': int(round(v * scale)) for k, v in FS.items()},
         fs_quick_clock=int(round(FS['big'] * 1.5 * scale)),
+        # Studio pages (w-114): gold at a few strengths, a gold-tinted text.
+        gold_text=_mix(P['text'], P['col_gold'], 0.25),
+        **{f'gold_{n}': _rgba(P['col_gold'], n / 100) for n in (10, 22, 35)},
     )
 
 

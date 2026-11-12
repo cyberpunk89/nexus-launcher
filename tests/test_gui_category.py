@@ -553,6 +553,52 @@ class Studios(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class StudioItems(unittest.TestCase):
+    """w-114: the studio header's numbers and the merged-names line."""
+    @staticmethod
+    def cat(kind):
+        from nexus import categories
+        key = ('dev:' if kind == 'developer' else 'pub:') + 'square enix'
+        return categories.Category(key, kind, "Square Enix", "t", nx.G['grid'], None,
+                                   tuple(lib_games(3)))
+
+    def test_dev_first(self):
+        from nexus import categories
+        from nexus.gui.category import studio_items
+        sf = categories.StudioFacts(3, 2, (2021, 2024), ())
+        got = studio_items(self.cat('developer'), categories.Stats(3, 61 * 60, 0, 0), sf)
+        self.assertEqual(got, [("3", "games developed"), ("2", "also published"),
+                               ("61 h", "played"), ("2021–2024", "release years")])
+        sf = categories.StudioFacts(1, 0, (), ())
+        got = studio_items(self.cat('developer'), categories.Stats(1, 0, 0, 0), sf)
+        self.assertEqual(got, [("1", "game developed")])
+
+    def test_pub_first(self):
+        from nexus import categories
+        from nexus.gui.category import studio_items
+        sf = categories.StudioFacts(2, 3, (2021, 2024), ())
+        got = studio_items(self.cat('publisher'), categories.Stats(3, 30, 0, 0), sf)
+        self.assertEqual(got, [("3", "games published"), ("2", "also developed"),
+                               ("30 min", "played"), ("2021–2024", "release years")])
+
+    def test_single_year(self):
+        from nexus import categories
+        from nexus.gui.category import studio_items
+        sf = categories.StudioFacts(2, 0, (2023, 2023), ())
+        got = studio_items(self.cat('developer'), categories.Stats(2, 0, 0, 0), sf)
+        self.assertEqual(got[-1], ("2023", "release year"))
+
+    def test_merged_line(self):
+        from nexus.gui.category import merged_line
+        self.assertEqual(merged_line(()), '')
+        self.assertEqual(merged_line(("Square Enix",)), '')
+        self.assertEqual(merged_line(("Square Enix", "SQUARE ENIX CO., LTD.")),
+                         "Names merged: “Square Enix” and “SQUARE ENIX CO., LTD.” count as one studio.")
+        self.assertEqual(merged_line(("A", "B", "C")),
+                         "Names merged: “A”, “B” and “C” count as one studio.")
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class Related(unittest.TestCase):
     def test_tinted_by_kind_with_shared(self):
         from nexus import categories
@@ -2028,3 +2074,530 @@ class TheatreAB(_Theatre):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ---- studio pages (w-114) ----
+def studio_games(n=4, prefix='q'):
+    """`n` games of one studio (Square Enix, spelled two ways, develops and
+    publishes them all; Acquire co-develops the fourth on), with release
+    years and story lengths, and their facts."""
+    games = lib_games(n, prefix=prefix)
+    facts = {}
+    for i, g in enumerate(games):
+        devs = ['SQUARE ENIX CO., LTD.'] if i == 2 else ['Square Enix'] if i < 3 \
+            else ['Square Enix', 'Acquire']
+        facts[g['slug']] = {'developers': devs,
+                            'publishers': ['Square Enix'], 'year': 2021 + i,
+                            'genres': [], 'modes': ['single'], 'length': {'main': 10}}
+    return games, facts
+
+
+def studio_cat(games, facts, key='dev:square enix'):
+    from nexus import categories
+    p = categories.PrefsView()
+    return categories.category(key, games, facts, p, keep_empty=True)
+
+
+def _host(width, height=700):
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    host = QWidget()
+    host.resize(width, height)
+    QVBoxLayout(host)
+    return host
+
+
+def _pump(n=3):
+    from PyQt6.QtWidgets import QApplication
+    for _ in range(n):
+        QApplication.processEvents()
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class StudioHeaderTest(unittest.TestCase):
+    def header(self, width, games=None, facts=None, sf=None):
+        from nexus import categories
+        from nexus.gui.category import StudioHeader
+        if games is None:
+            games, facts = studio_games(4)
+        host = _host(width, 700)
+        self.addCleanup(host.deleteLater)
+        h = StudioHeader()
+        host.layout().addWidget(h)
+        cat = studio_cat(games, facts)
+        h.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
+                       sf or categories.studio_facts(cat, games, facts))
+        host.show()
+        _pump()
+        return h
+
+    def test_fan_built_once_per_key(self):
+        h = self.header(1388)
+        self.assertEqual(len(h._slugs), 3)
+        h.grab()
+        h.grab()
+        games, facts = studio_games(4)
+        cat = studio_cat(games, facts)
+        h.set_category(cat)                                # the same studio again
+        h.grab()
+        self.assertEqual(h.wall_builds, 1)
+        for _ in range(5):
+            h._cover_arrived()                             # a burst: one build, later
+        h.grab()
+        self.assertEqual(h.wall_builds, 1)
+        h._rebuild_wall()
+        h.grab()
+        self.assertEqual(h.wall_builds, 2)
+
+    def test_gold_wordmark_and_kind(self):
+        from nexus.gui.theme import P
+        from PyQt6.QtGui import QColor
+        h = self.header(1388)
+        self.assertEqual(h.title.objectName(), "StudioWordmark")
+        self.assertEqual(h.title.text(), "SQUARE ENIX")
+        self.assertEqual(h.title.toolTip(), "Square Enix")
+        self.assertEqual(h.kind.text(), "STUDIO · DEVELOPER")
+        self.assertEqual(h._tint().name(), QColor(P['col_gold']).name())
+        games, facts = studio_games(4)
+        h.set_category(studio_cat(games, facts, 'pub:square enix'))
+        self.assertEqual(h.kind.text(), "STUDIO · PUBLISHER")
+
+    def test_items_from_studio_facts(self):
+        from nexus import categories
+        h = self.header(1388, sf=categories.StudioFacts(3, 4, (2021, 2024), ()))
+        self.assertEqual(h.stats.items()[0], ("3", "games developed"))     # the facts given
+        self.assertEqual(h.stats.items()[1], ("4", "also published"))
+        self.assertEqual(h.stats.items()[-1], ("2021–2024", "release years"))
+        self.assertFalse(h.btn_more.isHidden())
+
+    def test_paints_900_1440(self):
+        for width in (900, 1440):
+            h = self.header(width)
+            self.assertFalse(h.grab().isNull())
+            cw, ch, cx, _cy = h.fan_geometry(h.width(), h.height())
+            self.assertGreater(cx - StudioHeaderTest._half(h, cw), h._col_w)   # never under the text
+            self.assertLessEqual(cx + StudioHeaderTest._half(h, cw), h.width())
+            self.assertLessEqual(ch, h.height() * 0.8 + 1)
+
+    @staticmethod
+    def _half(h, cw):
+        return h.FAN_HALF * cw
+
+    def test_size15_compact_no_blank(self):
+        from nexus.gui import theme
+        from PyQt6.QtCore import QPoint
+        with mock.patch.dict(theme.LOOK, {'scale': 1.5}):
+            host = _host(900, 900)
+            self.addCleanup(host.deleteLater)
+            host.setStyleSheet(theme.build_stylesheet())
+            from nexus import categories
+            from nexus.gui.category import StudioHeader
+            games, facts = studio_games(4)
+            h = StudioHeader()
+            host.layout().addWidget(h)
+            cat = studio_cat(games, facts)
+            h.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
+                           categories.studio_facts(cat, games, facts))
+            host.show()
+            _pump()
+            self.assertEqual(h.title.property('compact'), 'true')
+            bottom = h.btn_pick.mapTo(h, QPoint(0, h.btn_pick.height())).y()
+            self.assertLessEqual(h.height() - bottom, theme.scaled(64))   # no big blank
+            self.assertGreaterEqual(h.height(), theme.scaled(h.COMPACT_H))
+            self.assertFalse(h.grab().isNull())
+            # the numbers never clip: two rows when one would be cut
+            st = h.stats
+            for box in st._boxes:
+                self.assertGreaterEqual(box.width(), box.sizeHint().width() - 1)
+                self.assertLessEqual(box.geometry().right(), st.width())
+            if st._one_row_width() > h.col.maximumWidth():
+                self.assertEqual(st.rows(), 2)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class StudioTimelineTest(unittest.TestCase):
+    def timeline(self, years, width=1200):
+        from nexus.gui.category import StudioTimeline
+        host = _host(width, 400)
+        self.addCleanup(host.deleteLater)
+        t = StudioTimeline()
+        host.layout().addWidget(t)
+        games, facts = studio_games(4)
+        t.set_years(studio_cat(games, facts), years)
+        host.show()
+        _pump()
+        return t
+
+    def test_layout_sizes_by_hours(self):
+        from nexus.gui.category import timeline_layout
+        from nexus.gui.theme import scaled
+        a = {'slug': 'a', 'display_name': "Alpha", 'playtime_minutes': 6000}
+        b = {'slug': 'b', 'display_name': "Beta", 'playtime_minutes': 60}
+        c = {'slug': 'c', 'display_name': "Gamma", 'playtime_minutes': 0}
+        covers, axis, axis_y = timeline_layout([(2018, [a]), (2021, [b, c])], 1200, 300)
+        self.assertEqual([y for _x, y, _h in axis], [2018, 2019, 2020, 2021])   # contiguous
+        self.assertEqual([h for _x, _y, h in axis], [True, False, False, True])
+        by = {slug: (rect, cap) for rect, slug, cap, _cr in covers}
+        self.assertGreater(by['a'][0].width(), by['b'][0].width())
+        self.assertGreater(by['b'][0].width(), by['c'][0].width() - 0.01)
+        self.assertLessEqual(by['a'][0].width(), scaled(112) + 0.01)
+        self.assertAlmostEqual(by['c'][0].width(), scaled(56), delta=0.5)
+        self.assertEqual(by['a'][1], "Alpha · 100 h")
+        self.assertEqual(by['c'][1], "Gamma")
+        self.assertLess(by['b'][0].right(), by['c'][0].left())          # side by side
+        for rect, *_ in covers:
+            self.assertLess(rect.bottom(), axis_y)
+            self.assertGreaterEqual(rect.top(), 0)
+        # A long span: only the years with games.
+        _c, axis, _y = timeline_layout([(2000, [a]), (2020, [b])], 1200, 300)
+        self.assertEqual([y for _x, y, _h in axis], [2000, 2020])
+        self.assertEqual(timeline_layout([], 1200, 300), ([], [], 0.0))
+
+    def test_built_once(self):
+        from nexus.gui.theme import P
+        games, _f = studio_games(4)
+        t = self.timeline([(2021, games[:2]), (2023, games[2:])])
+        t.grab()
+        t.grab()
+        self.assertEqual(t.builds, 1)
+        with mock.patch.dict(P, {'col_gold': '#123456'}):
+            t.grab()                                    # stale until the timer
+            self.assertEqual(t.builds, 1)
+            t._layer_rebuild()
+            t.grab()
+        self.assertEqual(t.builds, 2)
+
+    def test_cover_arrivals_coalesced(self):
+        games, _f = studio_games(4)
+        t = self.timeline([(2021, games)])
+        t.grab()
+        for _ in range(10):
+            t._cover_arrived()
+        t.grab()
+        self.assertEqual(t.builds, 1)
+        self.assertTrue(t._layer_timer.isActive())
+        t._layer_rebuild()
+        t.grab()
+        self.assertEqual(t.builds, 2)
+
+    def test_hidden_without_years(self):
+        from nexus import categories
+        games, facts = studio_games(4)
+        for f in facts.values():
+            f['year'] = None
+        p = StudioPageTest.page(self, games, facts)
+        self.assertTrue(p.timeline_wrap.isHidden())
+        self.assertFalse(p.timeline.has_years())
+        games, facts = studio_games(4)
+        cat = studio_cat(games, facts)
+        p.set_category(cat, studio=categories.studio_facts(cat, games, facts), facts=facts)
+        self.assertFalse(p.timeline_wrap.isHidden())
+        self.assertEqual(p.timeline_title.text(), "YOUR SQUARE ENIX YEARS")
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class StudioPageTest(unittest.TestCase):
+    def page(self, games, facts, key='dev:square enix', width=1300, theatre=False, others=()):
+        from nexus import categories
+        from nexus.gui.category import CategoryPage
+        host = _host(width, 900)
+        self.addCleanup(host.deleteLater)
+        p = CategoryPage(_Prefs(), theatre=theatre)
+        host.layout().addWidget(p)
+        host.show()
+        cat = studio_cat(games, facts, key)
+        p.set_category(cat, categories.stats(cat, facts), categories.lead(cat), facts=facts,
+                       studio=categories.studio_facts(cat, games, facts), others=others)
+        _pump()
+        return p
+
+    def test_cards_credit_and_meta(self):
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        cards = p.studio_cards()
+        self.assertEqual([c.game['slug'] for c in cards], ['q0', 'q1', 'q2', 'q3'])
+        self.assertEqual(cards[0].credit.toolTip(), "Developed by Square Enix · 2021")
+        self.assertEqual(cards[3].credit.toolTip(), "Developed by Square Enix, Acquire · 2024")
+        self.assertEqual(cards[0].meta.text(), "Yesterday  ·  1 h  ·  10 %")
+        self.assertFalse(cards[0].bar.isHidden())
+        self.assertAlmostEqual(cards[0].bar.value, 0.1)
+        self.assertEqual(p.games_note.text(), "4  ·  recently played first")
+        widths = {c.width() for c in cards}
+        self.assertEqual(len(widths), 1)
+        from nexus.gui.theme import scaled
+        self.assertGreaterEqual(widths.pop(), scaled(380))
+        for c in cards:
+            c.grab()
+        clicked = []
+        p.clicked.connect(lambda g, _m: clicked.append(g['slug']))
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        QTest.mouseClick(cards[1], Qt.MouseButton.LeftButton, pos=QPoint(cards[1].width() - 10, 20))
+        self.assertEqual(clicked, ['q1'])
+
+    def test_other_card_opens_key(self):
+        from nexus import categories
+        from nexus.gui.category import StudioCard
+        games, facts = studio_games(4)
+        other = categories.Category('dev:acquire', 'developer', "Acquire", "t",
+                                    nx.G['grid'], None, tuple(games[2:]))
+        p = self.page(games, facts, others=[(other, 150)])
+        self.assertFalse(p.others_wrap.isHidden())
+        self.assertFalse(p.foot.isHidden())
+        cards = p.others_box.findChildren(StudioCard)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].name.text(), "ACQUIRE")
+        self.assertEqual(cards[0].count.text(), "2 games · 2 h")
+        self.assertFalse(cards[0].grab().isNull())
+        opened = []
+        p.open_key.connect(opened.append)
+        cards[0].click()
+        self.assertEqual(opened, ['dev:acquire'])
+
+    def test_mode_swaps_header_and_back(self):
+        from nexus.gui.category import CoverWallHeader, StudioHeader
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        self.assertIsInstance(p.header, StudioHeader)
+        self.assertFalse(p.header.isHidden())
+        self.assertTrue(p._wall_header.isHidden())
+        self.assertTrue(p.bar.isHidden())
+        self.assertFalse(p.studio_bar.isHidden())
+        self.assertEqual(p.rows(), [])
+        menus = []
+        p.cat_menu.connect(lambda k, _pos: menus.append(k))
+        p.header.btn_more.click()
+        self.assertEqual(menus, ['dev:square enix'])
+        p.header.btn_back.setFocus()
+        p.set_category(a_category(lib_games(6)))              # a store: the wall again
+        _pump()
+        self.assertIs(type(p.header), CoverWallHeader)
+        self.assertFalse(p.header.isHidden())
+        self.assertTrue(p.studio_header.isHidden())
+        self.assertFalse(p.bar.isHidden())
+        self.assertTrue(p.studio_bar.isHidden())
+        self.assertTrue(p.timeline_wrap.isHidden())
+        self.assertEqual(p.studio_cards(), [])
+        self.assertTrue(p.others_wrap.isHidden())
+        self.assertEqual(p.row_titles(), ["All games"])
+        from PyQt6.QtWidgets import QApplication
+        f = QApplication.focusWidget()
+        self.assertFalse(f is not None and p.studio_header.isAncestorOf(f))
+        before = p.studio_header
+        p.set_category(studio_cat(games, facts))              # back: the same studio header
+        self.assertIs(p.header, before)
+        p.header.btn_more.click()
+        self.assertEqual(menus, ['dev:square enix', 'dev:square enix'])
+
+    def test_switch_disables_thin_side_and_emits(self):
+        from nexus import categories
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        dev, pub = p.role_seg.item('dev'), p.role_seg.item('pub')
+        self.assertEqual((dev.text(), pub.text()), ("Developed 4", "Published 4"))
+        self.assertEqual(p.role_seg.current(), 'dev')
+        self.assertTrue(pub.isEnabled())
+        self.assertEqual(p.merged.text(), "Names merged: “SQUARE ENIX CO., LTD.” and "
+                                          "“Square Enix” count as one studio.")
+        opened = []
+        p.open_key.connect(opened.append)
+        pub.click()
+        self.assertEqual(opened, ['pub:square enix'])
+        self.assertEqual(p.role_seg.current(), 'dev')           # until the window opens it
+        # Acquire: one game developed, none published -> Published greyed out.
+        lone = categories.Category('dev:acquire', 'developer', "Acquire", "t", nx.G['grid'],
+                                   None, tuple(games[3:]))
+        p.set_category(lone, facts=facts, studio=categories.studio_facts(lone, games, facts))
+        self.assertFalse(p.role_seg.item('pub').isEnabled())
+        self.assertEqual(p.role_seg.item('pub').text(), "Published 0")
+        self.assertTrue(p.merged.isHidden())
+
+    def test_tiles_and_tile_for_from_cards(self):
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        self.assertEqual(sorted(p.tiles), ['q0', 'q1', 'q2', 'q3'])
+        cards = p.studio_cards()
+        self.assertIs(p.tile_for('q2'), cards[2].tile)
+        self.assertIs(p.tile_for(), cards[0].tile)
+        p.mark_selected({'q1'})
+        self.assertTrue(cards[1].tile._selected)
+        self.assertEqual([g['slug'] for g in p.shown_games()], ['q0', 'q1', 'q2', 'q3'])
+        # A refresh with the same games keeps the cards (and the focus).
+        cards[2].tile.setFocus()
+        games2, facts2 = studio_games(4)
+        cat = studio_cat(games2, facts2)
+        p.set_category(cat, facts=facts2)
+        self.assertEqual(p.studio_cards(), cards)
+        self.assertIs(cards[2].tile.game, games2[2])
+
+    def test_card_menu_and_focus_kept_on_page(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtWidgets import QApplication
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        cards = p.studio_cards()
+        got = []
+        p.menu.connect(lambda g, pos: got.append(g['slug']))
+        QApplication.sendEvent(cards[1], QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(50, 50)))
+        self.assertEqual(got, ['q1'])
+        # The focused game leaves: the focus goes to a new card before the old hide.
+        p.window().activateWindow()
+        _pump()
+        cards[3].tile.setFocus()
+        _pump()
+        self.assertIs(QApplication.focusWidget(), cards[3].tile)
+        cat = studio_cat(games[:3], {k: facts[k] for k in ('q0', 'q1', 'q2')})
+        p.set_category(cat, facts=facts)
+        f = QApplication.focusWidget()
+        self.assertIs(f, p.studio_cards()[0].tile)
+
+    def test_stat_rules_not_leaked(self):
+        from PyQt6.QtWidgets import QFrame
+        from nexus.gui.category import StatBlock
+        b = StatBlock()
+        self.addCleanup(b.deleteLater)
+        b.set_items([('1', 'a'), ('2', 'b'), ('3', 'c'), ('4', 'd')])
+        b.fit(10)                                           # two per row: a rule leaves the grid
+        old = b._rules + b._boxes
+        b.set_items([('9', 'z')])
+        _pump()
+        from PyQt6.QtCore import QEvent
+        QApplication = __import__('PyQt6.QtWidgets', fromlist=['QApplication']).QApplication
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        live = [r for r in b.findChildren(QFrame) if r.objectName() == "CatStatRule"]
+        self.assertEqual(live, [])
+        self.assertEqual(len(old), 7)
+
+    def test_view_not_saved(self):
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        self.assertEqual(p.view, 'rows')
+        p.set_view('grid')
+        self.assertEqual(p.view, 'rows')
+        self.assertEqual(p.prefs.category_view, {})
+        p.prefs.category_view['dev:square enix'] = 'list'
+        p.set_category(a_category(lib_games(3)))
+        p.set_category(studio_cat(games, facts))
+        self.assertEqual(p.view, 'rows')
+
+    def test_theatre_never_studio(self):
+        from nexus.gui.category import MosaicHeader
+        games, facts = studio_games(4)
+        p = self.page(games, facts, theatre=True)
+        self.assertIsInstance(p.header, MosaicHeader)
+        self.assertIsNone(p.studio_header)
+        self.assertEqual(p.view, 'grid')
+        self.assertTrue(p.studio_bar.isHidden())
+
+
+def studio_facts_index():
+    """facts_index() with studio credits: s1, s2, s3 developed by Square
+    Enix (three spellings) and published by it, s3 also by Acquire."""
+    idx = facts_index()
+    g = idx['games']
+    g['s1'].update(developers=['Square Enix'], publishers=['Square Enix'], year=2021)
+    g['s2'].update(developers=['Square Enix Co., Ltd.'], publishers=['Square Enix'], year=2023)
+    g['s3'] = {'genres': [], 'modes': ['single'], 'length': None, 'year': 2024,
+               'developers': ['Deck Nine'], 'publishers': ['Square Enix']}
+    g['s4'] = {'genres': [], 'modes': ['single'], 'length': None, 'year': 2019,
+               'developers': ['Deck Nine'], 'publishers': ['Other Pub']}
+    return idx
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class StudioRouting(_Window):
+    def setUp(self):
+        super().setUp()
+        w = self.win
+        w._facts_idx = studio_facts_index()
+        w._facts_stamp = ('studio',)
+        w._on_library({'games': win_games(), 'disks': []}, '')
+        self.pump()
+
+    def test_strip_chip_opens_studio_page(self):
+        from nexus.gui.category import StudioChip, StudioHeader
+        w = self.win
+        self.assertTrue(w.open_category('genre:RPG'))
+        self.pump()
+        chips = {c.key: c for c in w.catpage.studios_box.findChildren(StudioChip)}
+        self.assertIn('dev:square enix', chips)
+        chips['dev:square enix'].click()
+        self.pump()
+        self.assertTrue(self.on_page('dev:square enix'))
+        self.assertIsInstance(w.catpage.header, StudioHeader)
+        self.assertEqual(self.slugs(), ['s1', 's2'])
+        self.assertEqual(w.catpage.role_seg.item('pub').text(), "Published 3")
+        others = [c.key for c, _m in categories_others(w)]
+        self.assertEqual(others, ['dev:deck nine'])
+        self.assertTrue(w.go_back())
+        self.assertTrue(self.on_page('genre:RPG'))
+        self.assertNotIsInstance(w.catpage.header, StudioHeader)
+
+    def test_switch_opens_other_role_and_back(self):
+        w = self.win
+        self.assertTrue(w.open_category('dev:square enix'))
+        w.catpage.role_seg.item('pub').click()
+        self.pump()
+        self.assertTrue(self.on_page('pub:square enix'))
+        self.assertEqual(w.catpage.role_seg.current(), 'pub')
+        self.assertEqual(w.catpage.header.kind.text(), "STUDIO · PUBLISHER")
+        self.assertEqual(self.slugs(), ['s1', 's2', 's3'])
+        self.assertTrue(w.go_back())
+        self.assertTrue(self.on_page('dev:square enix'))
+        self.assertEqual(w.catpage.role_seg.current(), 'dev')
+
+    def test_pin_studio(self):
+        w = self.win
+        w.open_category('dev:square enix')
+        w.catpage.header.btn_pin.click()
+        self.assertIn('dev:square enix', w.prefs.category_pins)
+        self.assertEqual(w.catpage.header.btn_pin.text(), "Pinned")
+        self.assertIn('dev:square enix', w.cat_tabs.keys())
+
+    def test_menu_hide_only(self):
+        w = self.win
+        w.open_category('dev:square enix')
+        got = []
+        w._choose = lambda name, items, sub, pos: got.append((name, [t for t, _g, _f in items],
+                                                              items))
+        w.catpage.header.btn_more.click()
+        self.assertEqual(got[0][:2], ("Square Enix", ["Hide from Browse"]))
+        got[0][2][0][2]()
+        self.assertIn('dev:square enix', w.prefs.smart_hidden)
+
+    def test_studio_page_ok_counts_cached(self):
+        from nexus import categories
+        w = self.win
+        calls = []
+        real = categories.studio_counts
+        with mock.patch.object(categories, 'studio_counts',
+                               side_effect=lambda *a: calls.append(1) or real(*a)):
+            for _ in range(3):
+                self.assertTrue(w._studio_page_ok('dev:square enix'))
+                self.assertTrue(w._studio_page_ok('pub:square enix'))
+                self.assertFalse(w._studio_page_ok('pub:other pub'))
+                self.assertFalse(w._studio_page_ok('genre:RPG'))
+            self.assertEqual(len(calls), 1)                         # one pass, then cached
+            games = [g for g in win_games() if g['slug'] != 's2']
+            w._on_library({'games': games, 'disks': []}, '')    # the pool changed
+            self.assertFalse(w._studio_page_ok('dev:square enix'))  # s1 alone: no page
+            self.assertEqual(len(calls), 2)
+            w._theatre = True
+            self.assertFalse(w._studio_page_ok('pub:square enix'))
+            w._theatre = False
+
+    def test_game_page_studio_chip_opens_page(self):
+        w = self.win
+        self.assertTrue(w._studio_page_ok('dev:square enix'))
+        self.assertFalse(w._studio_page_ok('dev:deck nine:x'))
+        self.assertFalse(w._studio_page_ok('pub:other pub'))          # one game: no page
+        w.details.filter_library.emit('dev:square enix')
+        self.assertTrue(self.on_page('dev:square enix'))
+        w.details.filter_library.emit('pub:other pub')                 # no page: nothing
+        self.assertTrue(self.on_page('dev:square enix'))
+
+
+def categories_others(w):
+    from nexus import categories
+    return categories.other_studios(w.catpage.cat, w._category_pool(), w._smart_facts())

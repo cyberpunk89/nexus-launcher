@@ -257,7 +257,7 @@ class CoverTag(unittest.TestCase):
         self.assertIsNone(C.cover_tag(None, game('a', 60), fact(10)))
 
 
-class Studios(unittest.TestCase):
+class StudiosFor(unittest.TestCase):
     """w-113: studios_for reads a group with key 'studios' (w-112 adds it)."""
     def test_none_without_the_group(self):
         games, facts = library()
@@ -598,3 +598,75 @@ class Studios(unittest.TestCase):
         cap = C.lookup(groups, 'dev:capcom')
         self.assertEqual(C.stats(cap, facts).count, 3)
         self.assertEqual(C.related(cap, groups)[0].key, 'genre:Action')
+
+
+class StudioPage(unittest.TestCase):
+    """w-114: what a studio's page shows (facts, years, other studios, the
+    credit line on a game card)."""
+    def lib(self):
+        games, facts = studio_library()
+        facts['re4']['year'], facts['dmc']['year'], facts['sow']['year'] = 2023, 2019, 2017
+        return games, facts
+
+    def test_facts_count_both_roles_and_years(self):
+        games, facts = self.lib()
+        cap = C.category('dev:capcom', games, facts, prefs(), now=NOW)
+        sf = C.studio_facts(cap, games, facts)
+        self.assertEqual((sf.developed, sf.published), (3, 2))   # mhw has no publisher
+        self.assertEqual(sf.years, (2019, 2023))
+        self.assertEqual(sf.names, ('CAPCOM', 'CAPCOM Co., Ltd.', 'Capcom'))
+        pub = C.category('pub:capcom', games, facts, prefs(), now=NOW)
+        self.assertEqual(C.studio_facts(pub, games, facts).developed, 3)
+        mono = C.category('dev:monolith productions', games, facts, prefs(), now=NOW)
+        sf = C.studio_facts(mono, games, facts)
+        self.assertEqual((sf.developed, sf.published, sf.years), (2, 0, (2017, 2017)))
+        facts['sow']['year'] = None
+        self.assertEqual(C.studio_facts(mono, games, facts).years, ())
+
+    def test_years_group_and_skip_unknown(self):
+        games, facts = self.lib()
+        facts['dmc']['year'] = 2023
+        cap = C.category('dev:capcom', games, facts, prefs(), now=NOW)
+        got = [(y, [g['slug'] for g in gs]) for y, gs in C.studio_years(cap, facts)]
+        self.assertEqual(got, [(2023, ['re4', 'dmc'])])           # most played first; mhw: no year
+        facts['mhw']['year'] = 2018
+        facts['dmc']['year'] = True                                # no year either
+        got = [(y, [g['slug'] for g in gs]) for y, gs in C.studio_years(cap, facts)]
+        self.assertEqual(got, [(2018, ['mhw']), (2023, ['re4'])])
+        self.assertEqual(C.studio_years(C.Category('x', 'genre', 'x', '', '*', None), facts), [])
+
+    def test_others_ranked_by_minutes_min2_not_self(self):
+        games, facts = self.lib()
+        games.append(game('mono3', 5000, 9))
+        facts['mono3'] = dict(fact(), developers=['Monolith Productions'], publishers=[])
+        cap = C.category('dev:capcom', games, facts, prefs(), now=NOW)
+        got = [(c.key, m) for c, m in C.other_studios(cap, games, facts)]
+        self.assertEqual(got, [('dev:monolith productions', 5500)])   # Tiny Studio: one game
+        mono = C.category('dev:monolith productions', games, facts, prefs(), now=NOW)
+        got = [(c.key, m) for c, m in C.other_studios(mono, games, facts)]
+        self.assertEqual(got, [('dev:capcom', 1260)])
+        pub = C.category('pub:capcom', games, facts, prefs(), now=NOW)
+        got = [(c.key, c.title, m) for c, m in C.other_studios(pub, games, facts)]
+        self.assertEqual(got, [('pub:warner bros. games', 'Warner Bros. Games', 500)])
+        self.assertEqual(C.other_studios(cap, games, facts, n=0), [])
+
+    def test_credit_line(self):
+        self.assertEqual(C.credit_line({'developers': ['CAPCOM Co., Ltd.', 'Capcom', 'Acquire'],
+                                        'publishers': ['Capcom'], 'year': 2023}),
+                         "Developed by Capcom, Acquire · 2023")
+        self.assertEqual(C.credit_line({'developers': [], 'publishers': ['Big Pub S.A.']}),
+                         "Published by Big Pub")
+        self.assertEqual(C.credit_line({'year': 2020}), "2020")
+        self.assertEqual(C.credit_line(None), "")
+        self.assertEqual(C.credit_line({'developers': None, 'year': 'soon'}), "")
+
+
+class StudioCounts(unittest.TestCase):
+    def test_both_roles_one_pass(self):
+        games, facts = studio_library()
+        got = C.studio_counts(games, facts)
+        self.assertEqual(got['dev:capcom'], 3)
+        self.assertEqual(got['pub:capcom'], 2)
+        self.assertEqual(got['pub:warner bros. games'], 2)
+        self.assertEqual(got['dev:tiny studio'], 1)
+        self.assertNotIn('dev:', got)

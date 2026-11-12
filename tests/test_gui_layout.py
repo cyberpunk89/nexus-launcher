@@ -889,6 +889,33 @@ class GameContextBlock(unittest.TestCase):
         ctx.tag_btns[-1].click()
         self.assertEqual(got, ['genre:RPG', 'smart:coop'])
 
+    def test_studio_chips_only_when_page_opens(self):
+        """w-114: the developer and another publisher as gold chips, each
+        only when the window says its page opens."""
+        ctx = self._show('full')
+        self.assertEqual([b.objectName() for b in ctx.tag_btns], ['TagChip'] * 4)  # none asked
+        ok = {'dev:fromsoftware', 'pub:bandai namco'}
+        self.panel.studio_ok = ok.__contains__
+        ctx = self._show('full', playtime_minutes=5)
+        self.assertEqual([b.text() for b in ctx.tag_btns][-2:], ['FromSoftware', 'Bandai Namco'])
+        self.assertEqual([b.objectName() for b in ctx.tag_btns][-2:], ['StudioTag'] * 2)
+        got = []
+        self.panel.filter_library.connect(got.append)
+        ctx.tag_btns[-1].click()
+        self.assertEqual(got, ['pub:bandai namco'])
+        self.panel.studio_ok = {'pub:bandai namco'}.__contains__   # no developer page
+        ctx = self._show('full', playtime_minutes=6)
+        self.assertEqual([b.text() for b in ctx.tag_btns][-1:], ['Bandai Namco'])
+        self.assertNotIn('FromSoftware', [b.text() for b in ctx.tag_btns])
+        self.panel.context.studio_ok = {'dev:a', 'pub:a', 'pub:c'}.__contains__   # first with a page
+        self.assertEqual(self.panel.context.studio_tags(
+            {'developers': ['Nope', 'A Inc.'], 'publishers': ['A', 'B', 'C']}),
+            [('dev:a', 'A'), ('pub:c', 'C')])
+        ctx = self._show('part')                         # publisher = developer: one chip
+        self.panel.studio_ok = lambda key: True
+        ctx = self._show('part', playtime_minutes=7)
+        self.assertEqual([b.text() for b in ctx.tag_btns], ['Larian Studios'])
+
     def test_partial_and_played_past_the_end(self):
         ctx = self._show('part')
         self.assertEqual(ctx.credits.text(), "Larian Studios · 2023")   # publisher = developer
