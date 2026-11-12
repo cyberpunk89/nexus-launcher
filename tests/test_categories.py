@@ -326,7 +326,7 @@ class Browse(unittest.TestCase):
         self.assertEqual(by['genres'].more, 2)
         self.assertEqual((len(by['yours'].cats), by['yours'].more), (3, 0))   # uncapped
         self.assertEqual((len(by['stores'].cats), by['stores'].more), (2, 0))
-        self.assertEqual(C.CAPS, {'for_you': 6, 'genres': 6})
+        self.assertEqual(C.CAPS, {'for_you': 6, 'genres': 6, 'studios': 6})
         none = C.browse(self.full(), caps={})
         self.assertEqual(len(none[0].cats), 8)
 
@@ -458,3 +458,143 @@ class Pins(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ---- studios (w-112) ----
+def studio_library():
+    """Five games with studio credits: Capcom spelled three ways (developer),
+    Warner Bros. under both names and Monolith with and without Inc.
+    (publisher / developer), one studio with a single game."""
+    games = [game('re4', 900, 1), game('dmc', 300, 5), game('mhw', 60, 30),
+             game('sow', 400, 2), game('som', 100, 50), game('lone', 10, 3)]
+    facts = {'re4': dict(fact(), developers=['CAPCOM Co., Ltd.'], publishers=['CAPCOM Co., Ltd.']),
+             'dmc': dict(fact(), developers=['Capcom'], publishers=['Capcom']),
+             'mhw': dict(fact(), developers=['CAPCOM'], publishers=None),   # Steam v1: no publishers
+             'sow': dict(fact(), developers=['Monolith Productions, Inc.'],
+                         publishers=['Warner Bros. Interactive Entertainment']),
+             'som': dict(fact(), developers=['Monolith Productions'],
+                         publishers=['Warner Bros. Games']),
+             'lone': dict(fact(), developers=['Tiny Studio LLC'], publishers=['Big Pub S.A.'])}
+    return games, facts
+
+
+class Studios(unittest.TestCase):
+    def test_studio_name_merges(self):
+        for raw in ('CAPCOM Co., Ltd.', 'Capcom', 'CAPCOM', 'capcom co., ltd'):
+            self.assertEqual(C.studio_name(raw), 'Capcom', raw)
+        for raw in ('Warner Bros. Games', 'Warner Bros. Interactive Entertainment',
+                    'WB Games'):
+            self.assertEqual(C.studio_name(raw), 'Warner Bros. Games', raw)
+        for raw in ('Monolith Productions', 'Monolith Productions, Inc.'):
+            self.assertEqual(C.studio_name(raw), 'Monolith Productions', raw)
+        self.assertEqual(C.studio_name('11 bit studios S.A.'), '11 bit studios')
+        self.assertEqual(C.studio_name('Tiny Studio LLC'), 'Tiny Studio')
+        self.assertEqual(C.studio_name('  SEGA  '), 'SEGA')
+        self.assertEqual(C.studio_name('Warner Bros.'), 'Warner Bros.')   # Bros. is no suffix
+        self.assertEqual(C.studio_name('Co.'), 'Co.')                     # never stripped to nothing
+        for bad in ('', '   ', None, 3):
+            self.assertEqual(C.studio_name(bad), '', bad)
+        self.assertEqual(C.studio_id('CAPCOM Co., Ltd.'), C.studio_id('capcom'))
+        self.assertEqual(C.studio_id('Ubisoft'), C.studio_id('UBISOFT'))
+
+    def test_keys_and_kinds(self):
+        dev, pub = C.studio_key('dev', 'CAPCOM Co., Ltd.'), C.studio_key('pub', 'Capcom')
+        self.assertEqual((dev, pub), ('dev:capcom', 'pub:capcom'))
+        self.assertIsNone(C.studio_key('dev', '  '))
+        self.assertIsNone(C.studio_key('bogus', 'Capcom'))
+        for key in (dev, pub, C.DEV + 'a: b'):
+            self.assertFalse(key.startswith(smart.KEY_PREFIXES), key)
+            self.assertTrue(C.is_key(key), key)
+        self.assertEqual((C.kind_of(dev), C.kind_of(pub)), ('developer', 'publisher'))
+        self.assertEqual(C.STUDIO_KINDS, ('developer', 'publisher'))
+        for bad in ('dev:', 'pub:'):
+            self.assertIsNone(C.kind_of(bad), bad)
+        self.assertEqual(C.studio_switch(dev), pub)
+        self.assertEqual(C.studio_switch(pub), dev)
+        self.assertIsNone(C.studio_switch('genre:RPG'))
+        self.assertEqual(C.STUDIO_DEFAULT, 'dev')
+
+    def test_group_after_genres_developer_by_default(self):
+        games, facts = studio_library()
+        facts['re4']['genres'] = facts['dmc']['genres'] = ['Action']
+        groups = C.categories(games, facts, prefs(), linux=True, now=NOW)
+        order = [g.key for g in groups]
+        self.assertLess(order.index('genres'), order.index('studios'))
+        self.assertEqual(order.index('studios') + 1, order.index('stores'))
+        studios = next(g for g in groups if g.key == 'studios')
+        self.assertEqual(studios.title, "Studios")
+        # Developers, most games first; one-game studios left out.
+        self.assertEqual([c.key for c in studios.cats], ['dev:capcom', 'dev:monolith productions'])
+        cap = studios.cats[0]
+        self.assertEqual((cap.kind, cap.title), ('developer', 'Capcom'))
+        self.assertEqual([g['slug'] for g in cap.games], ['re4', 'dmc', 'mhw'])   # last played
+        self.assertIn('Capcom', cap.tip)
+        pubs = C.categories(games, facts, prefs(), linux=True, now=NOW, studios='pub')
+        pkeys = [c.key for g in pubs if g.key == 'studios' for c in g.cats]
+        self.assertEqual(pkeys, ['pub:capcom', 'pub:warner bros. games'])  # mhw has no publisher
+        self.assertEqual(C.lookup(pubs, 'pub:warner bros. games').title, 'Warner Bros. Games')
+
+    def test_two_games_for_a_page_min_games_for_browse(self):
+        games, facts = studio_library()
+        p = prefs()
+        self.assertIsNone(C.category('dev:tiny studio', games, facts, p, now=NOW))
+        kept = C.category('dev:tiny studio', games, facts, p, now=NOW, keep_empty=True)
+        self.assertEqual(len(kept.games), 1)                       # an open page / a pin keeps it
+        self.assertIsNone(C.category('dev:nobody', games, facts, p, now=NOW))
+        mono = C.category('dev:monolith productions', games, facts, p, now=NOW)
+        self.assertEqual(len(mono.games), 2)                       # 2 makes the hub and a page
+        rows = keys(C.browse(C.categories(games, facts, p, now=NOW)))
+        self.assertIn('dev:capcom', rows)                          # 3 = smart.MIN_GAMES
+        self.assertNotIn('dev:monolith productions', rows)
+        self.assertEqual(smart.MIN_GAMES, 3)
+
+    def test_capped_like_genres(self):
+        self.assertEqual(C.CAPS['studios'], C.CAPS['genres'])
+        games, facts = [], {}
+        for i in range(8):
+            for j in range(3):
+                slug = f's{i}g{j}'
+                games.append(game(slug, 10, i + j))
+                facts[slug] = dict(fact(), developers=[f'Studio {i}'], publishers=[])
+        b = C.browse(C.categories(games, facts, prefs(), now=NOW))
+        studios = next(g for g in b if g.key == 'studios')
+        self.assertEqual((len(studios.cats), studios.more), (6, 2))
+
+    def test_pins_work(self):
+        games, facts = studio_library()
+        pins = C.clean_pins(['dev:capcom', 'pub:capcom', 'dev:', 'dev:capcom'])
+        self.assertEqual(pins, ['dev:capcom', 'pub:capcom'])
+        self.assertEqual(C.toggle_pin([], 'dev:monolith productions'), ['dev:monolith productions'])
+        got = C.pinned(pins + ['dev:gone studio'], games, facts, prefs(), now=NOW)
+        self.assertEqual([c.key for c in got], ['dev:capcom', 'pub:capcom', 'dev:gone studio'])
+        # Like a genre before the facts fill: the tab stays, its page says it is empty.
+        self.assertEqual((got[2].title, got[2].games), ('gone studio', ()))
+
+    def test_raw_names_for_merged_line(self):
+        games, facts = studio_library()
+        cat = C.category('dev:capcom', games, facts, prefs(), now=NOW)
+        self.assertEqual(C.raw_names(cat, facts), ['CAPCOM', 'CAPCOM Co., Ltd.', 'Capcom'])
+
+    def test_windows_set_and_wording(self):
+        games, facts = studio_library()
+        games.append(game('pk1', 0, None, source='nexus'))
+        games.append(game('pk2', 0, None, source='nexus'))
+        facts['pk1'] = dict(fact(), developers=['Capcom'])
+        facts['pk2'] = dict(fact(), developers=['Capcom'])
+        win = C.categories(games, facts, prefs(heroic=False), linux=False, now=NOW)
+        self.assertIn('dev:capcom', keys(win))
+        for g in win:
+            self.assertNotIn('repack', g.title.lower())
+        for cat in (c for g in win if g.key == 'studios' for c in g.cats):
+            self.assertNotIn('repack', (cat.title + cat.tip).lower(), cat.key)
+        self.assertEqual(len(C.lookup(win, 'dev:capcom').games), 5)  # any store counts
+        self.assertNotIn(C.GROUP_GLYPH.get('studios'), (None, ''))
+
+    def test_related_and_stats_on_a_studio(self):
+        games, facts = studio_library()
+        for s in ('re4', 'dmc', 'mhw'):
+            facts[s]['genres'] = ['Action']
+        groups = C.categories(games, facts, prefs(), now=NOW)
+        cap = C.lookup(groups, 'dev:capcom')
+        self.assertEqual(C.stats(cap, facts).count, 3)
+        self.assertEqual(C.related(cap, groups)[0].key, 'genre:Action')
