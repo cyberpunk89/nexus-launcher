@@ -25,6 +25,7 @@ Studios (w-112), from the facts index's `developers` / `publishers`:
   hub and a page (keep_empty keeps an open page or a pin), smart.MIN_GAMES
   for a Browse row, and Browse shows at most CAPS['studios'] rows."""
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -114,6 +115,18 @@ class Stats:
     minutes: int
     finished: int             # at least smart.DONE_AT of the main story
     bytes: int
+
+
+@dataclass(frozen=True)
+class StudioFacts:
+    """A studio page's numbers (w-114): your games it developed and
+    published (both roles, over the pool), the first and last release year
+    of the page's games ((first, last), or () when none is known) and the
+    credits that merged into it (raw_names)."""
+    developed: int
+    published: int
+    years: tuple = ()
+    names: tuple = ()
 
 
 _PREFIX_KINDS = (('smart:', 'smart'), ('genre:', 'genre'), (USER, 'shelf'),
@@ -255,6 +268,34 @@ def _studio_counts(games, facts, role: str) -> dict:
             for sid, n in count.items()}
 
 
+def _studio_index(games, facts, role: str) -> dict:
+    """{studio id: [games]} for one role, in one pass (each game once per
+    studio, in the order given)."""
+    out: dict[str, list] = {}
+    for g in games:
+        for sid in dict.fromkeys(studio_id(n) for n in _credits(g, facts, role)):
+            if sid:
+                out.setdefault(sid, []).append(g)
+    return out
+
+
+def studio_counts(games, facts) -> dict:
+    """{studio key: how many of `games` it credits}, both roles, in one
+    pass per role (a game page's studio chips ask this, not category())."""
+    return {_ROLE_PREFIX[role] + sid: len(hit) for role in ('dev', 'pub')
+            for sid, hit in _studio_index(games, facts, role).items()}
+
+
+def _studio_category(role: str, sid: str, hit, facts) -> Category:
+    """A studio's Category over its games `hit` (last played first)."""
+    hit = _by_played(hit)
+    kind = 'developer' if role == 'dev' else 'publisher'
+    names = _studio_counts(hit, facts, role).get(sid)
+    title = names[1] if names else sid
+    tip = f"Games developed by {title}" if role == 'dev' else f"Games published by {title}"
+    return Category(_ROLE_PREFIX[role] + sid, kind, title, tip, STUDIO_GLYPH[kind], None, hit)
+
+
 def raw_names(cat: Category, facts) -> list[str]:
     """The credits, as the facts index spells them, that merged into this
     studio (sorted); [] for a category that is no studio."""
@@ -314,14 +355,10 @@ def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=N
     elif kind in STUDIO_KINDS:
         role = _KIND_ROLE[kind]
         sid = key[len(_ROLE_PREFIX[role]):]
-        hit = _by_played(g for g in games
-                         if sid in {studio_id(n) for n in _credits(g, facts, role)})
+        hit = [g for g in games if sid in {studio_id(n) for n in _credits(g, facts, role)}]
         if len(hit) < STUDIO_MIN and not keep_empty:
             return None
-        names = _studio_counts(hit, facts, role).get(sid)
-        title = names[1] if names else sid
-        tip = f"Games developed by {title}" if role == 'dev' else f"Games published by {title}"
-        glyph = STUDIO_GLYPH[kind]
+        return _studio_category(role, sid, hit, facts)
     else:
         src = key[len(SRC):]
         if not _store_ok(src, prefs):
@@ -517,6 +554,119 @@ def related(cat: Category, groups, n: int = 4) -> list[Category]:
             scored.append((-shared / len(mine | theirs), c.kind == cat.kind, i, c))
     scored.sort(key=lambda t: t[:3])
     return [t[3] for t in scored[:max(0, n)]]
+
+
+def cover_tag(rule, g: dict, fact: dict | None) -> tuple[str, float | None] | None:
+    """The line a cover carries in a smart row: "2 h left" with how far you
+    are (0-1) in Almost finished, "~12 h story" in Never played; nothing
+    elsewhere or when the story length is unknown (or there is no story)."""
+    if rule not in ('smart:almost', 'smart:never'):
+        return None
+    main = smart.main_hours(fact)
+    if main is None:
+        return None
+    if rule == 'smart:never':
+        return f"~{max(1, round(main))} h story", None
+    played = (g.get('playtime_minutes') or 0) / 60
+    return f"{max(1, math.ceil(main - played))} h left", min(1.0, played / main)
+
+
+def studios_for(cat: Category, groups, n: int = 6) -> list[tuple[Category, int]]:
+    """The studios behind this category's games: the categories of the
+    group with key 'studios' (developers and publishers) that share games
+    with it, most shared first, as (studio, shared). Nothing while that
+    group does not exist."""
+    mine = {g.get('slug') for g in cat.games}
+    scored = []
+    for grp in groups:
+        if grp.key != 'studios':
+            continue
+        for i, c in enumerate(grp.cats):
+            if c.key == cat.key:
+                continue                 # a studio's page does not list itself
+            shared = len(mine & {g.get('slug') for g in c.games})
+            if shared:
+                scored.append((-shared, i, c, shared))
+    scored.sort(key=lambda t: t[:2])
+    return [(c, shared) for _a, _i, c, shared in scored[:max(0, n)]]
+
+
+# ---- what a studio's page shows (w-114) ----
+def _studio_id_of(cat: Category) -> tuple[str, str] | None:
+    role = _KIND_ROLE.get(cat.kind)
+    return (role, cat.key[len(_ROLE_PREFIX[role]):]) if role else None
+
+
+def _year(fact) -> int | None:
+    y = (fact or {}).get('year') if isinstance(fact, dict) else None
+    return y if isinstance(y, int) and not isinstance(y, bool) and y > 0 else None
+
+
+def studio_facts(cat: Category, games, facts) -> StudioFacts:
+    """The studio page's numbers: of `games` (the pool), how many this
+    studio developed and published, the release years of the page's games,
+    the credits merged into it."""
+    facts = facts or {}
+    rs = _studio_id_of(cat)
+    if rs is None:
+        return StudioFacts(0, 0)
+    sid = rs[1]
+    n = {role: sum(1 for g in games if sid in {studio_id(x) for x in _credits(g, facts, role)})
+         for role in ('dev', 'pub')}
+    years = [y for g in cat.games if (y := _year(facts.get(g.get('slug')))) is not None]
+    return StudioFacts(n['dev'], n['pub'], (min(years), max(years)) if years else (),
+                       tuple(raw_names(cat, facts)))
+
+
+def studio_years(cat: Category, facts) -> list[tuple[int, list[dict]]]:
+    """The page's games by release year (oldest first), each year's most
+    played first; a game with no known year is left out."""
+    facts = facts or {}
+    by: dict[int, list] = {}
+    for g in cat.games:
+        y = _year(facts.get(g.get('slug')))
+        if y is not None:
+            by.setdefault(y, []).append(g)
+    out = []
+    for y in sorted(by):
+        gs = sorted(by[y], key=_name)
+        gs.sort(key=lambda g: g.get('playtime_minutes') or 0, reverse=True)
+        out.append((y, gs))
+    return out
+
+
+def other_studios(cat: Category, games, facts, n: int = 6) -> list[tuple[Category, int]]:
+    """Other studios you play, in the page's role: each with STUDIO_MIN of
+    `games` (the pool), never this one, the most minutes played first, as
+    (studio, minutes)."""
+    rs = _studio_id_of(cat)
+    if rs is None or n <= 0:
+        return []
+    role, me = rs
+    scored = []
+    for sid, hit in _studio_index(games, facts, role).items():
+        if sid == me or len(hit) < STUDIO_MIN:
+            continue
+        mins = sum(g.get('playtime_minutes') or 0 for g in hit)
+        scored.append((-mins, sid, hit, mins))
+    scored.sort(key=lambda t: t[:2])
+    return [(_studio_category(role, sid, hit, facts), mins)
+            for _m, sid, hit, mins in scored[:n]]
+
+
+def credit_line(fact) -> str:
+    """A game card's line on a studio page: "Developed by A, B · 2023",
+    else "Published by X · 2023", else the year, else ''."""
+    fact = fact if isinstance(fact, dict) else {}
+    year = _year(fact)
+    for field_, word in (('developers', "Developed by"), ('publishers', "Published by")):
+        raw = fact.get(field_)
+        names = [n for n in raw if isinstance(n, str)] if isinstance(raw, (list, tuple)) else []
+        shown = list(dict.fromkeys(studio_name(x) for x in names if studio_name(x)))
+        if shown:
+            line = f"{word} {', '.join(shown)}"
+            return f"{line} · {year}" if year else line
+    return str(year) if year else ''
 
 
 def sort_games(games, sort: str) -> list[dict]:

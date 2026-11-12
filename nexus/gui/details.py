@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QFileDial
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from nexus import facts, gamedb
+from nexus import categories, facts, gamedb
 from nexus.features import has
 
 from .common import alive, HOME, MAX_NOTE
@@ -365,9 +365,12 @@ class GameContext(QWidget):
     """What the game is, at the top of Overview: credits, a five-line
     description with Read more, and up to three genre tags (+ Co-op) that
     filter the Library. Built only from facts that exist: each row hides on
-    its own, and with nothing known the whole block hides (w-40, w-54)."""
-    filter_library = pyqtSignal(str)             # 'genre:<Nexus genre>' or 'smart:coop'
+    its own, and with nothing known the whole block hides (w-40, w-54).
+    The studios (w-114): a gold chip for the developer and a publisher that
+    is another studio, each only when `studio_ok(key)` says its page opens."""
+    filter_library = pyqtSignal(str)   # 'genre:<Nexus genre>', 'smart:coop', 'dev:<id>', 'pub:<id>'
     LINES = 5
+    studio_ok = None                   # Callable[[str], bool] | None: the window's, set per panel
 
     def __init__(self):
         super().__init__()
@@ -442,15 +445,18 @@ class GameContext(QWidget):
         tags = [(f"genre:{g}", g) for g in (rec.get('genres') or [])[:3]]
         if 'coop' in (rec.get('modes') or []):
             tags.append(('smart:coop', "Co-op"))
+        tags += self.studio_tags(rec)
         keys = tuple(tags)
         if keys != self._tag_keys:               # rebuilt only when they change: keeps focus
             clear_layout(self.tags)
             self._tag_keys, self.tag_btns = keys, []
             for key, text in tags:
                 b = QPushButton(amp(text))
-                b.setObjectName("TagChip")
+                studio = categories.kind_of(key) in categories.STUDIO_KINDS
+                b.setObjectName("StudioTag" if studio else "TagChip")
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.setToolTip(f"Show {'co-op' if key == 'smart:coop' else text} games "
+                b.setToolTip(f"{text}'s page in the Library" if studio else
+                             f"Show {'co-op' if key == 'smart:coop' else text} games "
                              "in the Library")
                 b.clicked.connect(lambda _=False, k=key: self.filter_library.emit(k))
                 self.tags.addWidget(b)
@@ -466,6 +472,29 @@ class GameContext(QWidget):
         shown = bool(short or tags or desc)
         self.setVisible(shown)
         return shown
+
+    def studio_tags(self, rec: dict) -> list[tuple[str, str]]:
+        """[(key, name)] for the developer and the first publisher that is
+        another studio, each only when its page opens (studio_ok)."""
+        ok = self.studio_ok
+        if ok is None:
+            return []
+        out = []
+        devs = [d for d in rec.get('developers') or [] if isinstance(d, str)]
+        pubs = [p for p in rec.get('publishers') or [] if isinstance(p, str)]
+        dev_id = ''
+        for d in devs:                           # the first developer with a page
+            key = categories.studio_key('dev', d)
+            if key and ok(key):
+                dev_id = categories.studio_id(d)
+                out.append((key, categories.studio_name(d)))
+                break
+        for p in pubs:                           # the first other studio publishing it
+            key = categories.studio_key('pub', p)
+            if key and categories.studio_id(p) != dev_id and ok(key):
+                out.append((key, categories.studio_name(p)))
+                break
+        return out
 
     def _sync_more(self, *_):
         self.more.setText("Show less" if self.expanded else "Read more")
@@ -1140,6 +1169,9 @@ class DetailsPanel(QFrame):
     play = pyqtSignal(dict)
     menu = pyqtSignal(dict, QPoint)
     closed = pyqtSignal()
+    # Whether a studio's page opens (w-114, the window's _studio_page_ok):
+    # the game page's studio chips show only then.
+    studio_ok = None
     toast = pyqtSignal(str, str)
     trailer = pyqtSignal(dict)                   # play a store trailer
     reveal = pyqtSignal(str)                     # show another library game
@@ -2224,6 +2256,7 @@ class DetailsPanel(QFrame):
         More like this; a plain line when nothing is known."""
         rec = self._context_facts() or {}
         st = (self._store or {}).get('store') or {}
+        self.context.studio_ok = self.studio_ok
         ctx = self.context.set_facts(rec, st.get('blurb') or '')
         glance = self._fill_glance(rec)
         similar = self._fill_similar()

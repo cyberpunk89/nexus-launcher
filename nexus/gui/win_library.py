@@ -233,6 +233,7 @@ class LibraryMixin:
         sig = getattr(self.details, 'filter_library', None) if hasattr(self, 'details') else None
         if sig is not None:
             sig.connect(self._open_from_game_page)
+            self.details.studio_ok = self._studio_page_ok     # its studio chips (w-114)
         # Clicking the Library tab while on a category page: back to Browse.
         tab = self.tabs.item(self.LIBRARY) if hasattr(self, 'tabs') else None
         if tab is not None:
@@ -1168,6 +1169,25 @@ class LibraryMixin:
         return categories.kind_of(key) == 'genre' and key[len('genre:'):] in NEXUS_GENRES \
             and not self._smart_facts()
 
+    def _studio_page_ok(self, key: str) -> bool:
+        """A game page's studio chip shows: the studio has a page here (not
+        in Theatre). Counted from _studio_counts, not a scan per chip."""
+        if self._theatre or categories.kind_of(key) not in categories.STUDIO_KINDS:
+            return False
+        return self._studio_counts().get(key, 0) >= categories.STUDIO_MIN
+
+    def _studio_counts(self) -> dict:
+        """{studio key: games in the pool}, both roles, from one
+        categories.studio_counts pass; made again only when the pool or
+        the facts index changed."""
+        pool, facts_ = self._category_pool(), self._smart_facts()
+        sig = (id(facts_), self._facts_stamp, tuple(g.get('slug') for g in pool))
+        cached = getattr(self, '_studio_count_cache', None)
+        if cached is None or cached[0] != sig:
+            cached = (sig, categories.studio_counts(pool, facts_))
+            self._studio_count_cache = cached
+        return cached[1]
+
     def _focus_category(self):
         """Keys or pad: the page's first tile (the hub's: the one opened
         last, or its jump's group), once laid out, unless something opened
@@ -1200,14 +1220,28 @@ class LibraryMixin:
             self.close_category(_history=False)
             return
         pool, facts, linux = self._category_pool(), self._smart_facts(), has('proton')
+        if cat.kind in categories.STUDIO_KINDS:
+            # A studio's page (w-114): its numbers and the other studios
+            # you play; no cuts, More like this or studios strip.
+            self.catpage.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
+                                      empty=self._category_empty(cat), facts=facts,
+                                      studio=categories.studio_facts(cat, pool, facts),
+                                      others=categories.other_studios(cat, pool, facts))
+            self._after_category_fill(cat)
+            return
         friends = FRIENDS.public_ids()
         groups = categories.categories(pool, facts, self._prefs_view(), linux, friends)
         cuts = categories.cuts(cat, facts, linux)
         cut_games = {c.key: smart.games_for(c.key, list(cat.games), facts, linux=linux)
                      for c in cuts}
         self.catpage.set_category(cat, categories.stats(cat, facts), categories.lead(cat),
-                                  cuts, cut_games, categories.related(cat, groups),
-                                  self._category_empty(cat), default_sort=sort)
+                                  cuts, cut_games,
+                                  categories.related(cat, [g for g in groups if g.key != 'studios']),
+                                  self._category_empty(cat), default_sort=sort, facts=facts,
+                                  studios=categories.studios_for(cat, groups))
+        self._after_category_fill(cat)
+
+    def _after_category_fill(self, cat):
         self.catpage.set_pin_state(self._pin_state(cat.key))
         self.catpage.set_jobs(self.jobs)
         self.catpage.mark_selected(set(self.selected))
@@ -1313,9 +1347,12 @@ class LibraryMixin:
 
     def _category_menu(self, key: str, pos: QPoint):
         """The page's ⋮: a collection's own sheet; a smart, genre or user
-        shelf's actions. (Favourites and stores have none.)"""
+        shelf's actions; a studio's Hide from Browse (w-114). (Favourites
+        and stores have none.)"""
         kind = categories.kind_of(key)
-        if kind == 'collection':
+        if kind in categories.STUDIO_KINDS:
+            self._choose(self._smart_label(key), self._studio_actions(key), "", pos)
+        elif kind == 'collection':
             self._manage_collection(categories.collection_name(key))
         elif kind in ('smart', 'genre', 'shelf'):
             self._choose(self._smart_label(key), self._shelf_actions(key),
@@ -1418,6 +1455,8 @@ class LibraryMixin:
         when it can't be one here."""
         if smart.is_user(key):
             return None
+        if categories.kind_of(key) in categories.STUDIO_KINDS:
+            return self._category_for(key)      # its title is the name its games credit
         return categories.category(key, [], {}, self._prefs_view(), linux=has('proton'),
                                    keep_empty=True)
 
@@ -1624,6 +1663,10 @@ class LibraryMixin:
             items[0:0] = [("Edit shelf", G['pencil'], lambda: self._edit_shelf(sid))]
             items.append(("Remove shelf", G['trash'], lambda: self._remove_shelf(sid)))
         return items
+
+    def _studio_actions(self, key: str) -> list[tuple]:
+        """A studio page's ⋮ (w-114): only Hide from Browse."""
+        return [("Hide from Browse", G['eye_off'], lambda: self._hide_smart(key))]
 
     def _choose(self, name: str, items: list[tuple], sub: str, pos: QPoint):
         """Items as the desktop menu, or the ActionSheet when a pad is driving."""

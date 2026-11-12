@@ -50,6 +50,7 @@ class GameTile(QFrame):
         self._selected = False
         self.job: Job | None = None
         self.mark_new = False                   # "New" pill: installed, never played
+        self.tag: tuple[str, float | None] | None = None    # "2 h left" + bar (w-113)
         self._spin = 0
 
         art_path, url, self._art_kind = art_lookup(game, WIDE_KINDS if kind == 'wide'
@@ -69,6 +70,14 @@ class GameTile(QFrame):
         self._pb = 56 if min(self.tw, self.th) >= 170 else 44
         self._buttons: tuple[QToolButton, QToolButton] | None = None   # see _make_buttons
         self.setToolTip(self._tooltip())
+
+    def set_tag(self, tag):
+        """The line on the cover, bottom left (categories.cover_tag): text and
+        how far you are (0-1, or None for no bar). None clears it."""
+        tag = tuple(tag) if tag else None
+        if tag != self.tag:
+            self.tag = tag
+            self.update()
 
     @property
     def btn_play(self) -> QToolButton:
@@ -416,6 +425,13 @@ class GameTile(QFrame):
             self._paint_friends_badge(pt, body)
             pt.setOpacity(1.0)
 
+        installing = owned and self.game.get('installing')
+        if self.tag and self.kind != 'wide' and not (self.job and self.job.active) \
+                and not installing and cap < 0.99:
+            pt.setOpacity(1.0 - cap)               # gives way to the caption
+            self._paint_tag(pt, body)
+            pt.setOpacity(1.0)
+
         if self.game.get('playing') or self.game.get('launching'):
             self._paint_playing(pt, body)
         if self.job and self.job.active:
@@ -506,6 +522,42 @@ class GameTile(QFrame):
             pt.setPen(QColor(P['on_art']))
             pt.drawText(QRectF(x + d + step * (len(shown) - 1), y, more_w, d),
                         Qt.AlignmentFlag.AlignCenter, more)
+
+    def _paint_tag(self, pt: QPainter, body: QRectF):
+        """A pill at the bottom left with the tag's text, and a thin bar
+        under the text (how far you are) when there is a fraction."""
+        text, frac = self.tag
+        f = QFont(FONTS.ui, -1, QFont.Weight.DemiBold)
+        f.setPixelSize(FS['xs_plus'])
+        pt.setFont(f)
+        fm = pt.fontMetrics()
+        bar_h = 4.0 if frac is not None else 0.0
+        pad = float(SP['2'])
+        room = max(1.0, body.width() - 2 * SP['2'])
+        shown = fm.elidedText(text, Qt.TextElideMode.ElideRight, int(room - 2 * pad))
+        w = min(room, fm.horizontalAdvance(shown) + 2 * pad)
+        h = fm.height() + SP['1'] + (bar_h + SP['1_5'] if bar_h else 0.0)
+        lift = 0.0
+        if self.friends_badge and self.game.get('friends'):
+            lift = self.FRIEND_D + 6.0 + SP['1']      # above the friends' avatars
+        pill_r = QRectF(body.left() + SP['2'], body.bottom() - SP['2'] - lift - h,
+                        max(w, 1.0), h)
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(QColor(P['scrim_badge']))
+        pt.drawRoundedRect(pill_r, R['sm'], R['sm'])
+        pt.setPen(QColor(P['on_art']))
+        pt.drawText(QRectF(pill_r.left(), pill_r.top() + SP['0_5'], pill_r.width(), fm.height()),
+                    Qt.AlignmentFlag.AlignCenter, shown)
+        if bar_h:
+            track = QRectF(pill_r.left() + pad, pill_r.bottom() - SP['1'] - bar_h,
+                           max(1.0, pill_r.width() - 2 * pad), bar_h)
+            t = QColor(P['on_art'])
+            t.setAlphaF(0.18)
+            pt.setBrush(t)
+            pt.drawRoundedRect(track, bar_h / 2, bar_h / 2)
+            pt.setBrush(QColor(P['accent']))
+            fill = QRectF(track.left(), track.top(), max(bar_h, track.width() * max(0.0, min(1.0, frac))), bar_h)
+            pt.drawRoundedRect(fill, bar_h / 2, bar_h / 2)
 
     def _paint_new_badge(self, pt: QPainter, body: QRectF):
         """Installed but never played: a small "New" pill, top-left."""
