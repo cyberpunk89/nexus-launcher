@@ -323,7 +323,12 @@ class UserShelves(unittest.TestCase):
     def test_empty_shelf_still_shows_saying_so(self):
         self.make("Nothing", ('store', 'is', 'steam'), ('store', 'is', 'nexus'))
         row = next(r for r in self.win.home.group_rows() if r.title == "Nothing")
-        self.assertTrue(row.body.isHidden())
+        self.assertEqual(row.tiles, [])
+        self.assertIsNotNone(row.spine)                     # the spine stays, w-115
+        self.assertFalse(row.body.isHidden())
+        from PyQt6.QtWidgets import QLabel
+        self.assertIn("No games match these rules yet",
+                      [lab.text() for lab in row.body.findChildren(QLabel)])
 
     def test_menu_edit_hide_remove_and_bring_back(self):
         w = self.win

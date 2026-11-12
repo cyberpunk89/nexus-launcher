@@ -222,7 +222,8 @@ class SpatialNav(QObject):
             return True
         # At an edge: stay put — on a tile, and anywhere inside an overlay
         # (Qt's own arrow handling would tab out of it, behind the overlay).
-        return isinstance(cur, GameTile) or self.win.nav_scope() is not self.win
+        return isinstance(cur, (GameTile, SpineCard, CategoryCard)) \
+            or self.win.nav_scope() is not self.win
 
 
 def focus_and_reveal(w: QWidget | None):
@@ -702,9 +703,10 @@ class FocusRing(QWidget):
         if name in ('Chip', 'SegItem', 'TopIcon', 'ShelfArrow', 'GlassIcon', 'PlayRound',
                     'Switch'):
             return r.height() / 2
-        if isinstance(w, (GameTile, ArtThumb)) or name == 'TheatreShot':
+        if isinstance(w, (GameTile, ArtThumb)) or name in ('TheatreShot', 'SpineCard',
+                                                             'PosterCard'):
             return float(R['tile'])
-        if name in ('Card', 'DashCard', 'TheatreNewsRow') or isinstance(w, (DealCard, NewsTile, NewsFeature)):
+        if name in ('Card', 'DashCard', 'TheatreNewsRow', 'StudioCard') or isinstance(w, (DealCard, NewsTile, NewsFeature)):
             return float(R['card'])
         if name == 'DashRow':
             return float(R['sm'])
@@ -764,5 +766,5 @@ from .art import MOTION  # noqa: E402
 from .artpicker import ArtThumb  # noqa: E402
 from .deals import DealCard  # noqa: E402
 from .newspage import NewsFeature, NewsTile  # noqa: E402
-from .tiles import GameTile  # noqa: E402
+from .tiles import CategoryCard, GameTile, SpineCard  # noqa: E402
 from .widgets import clear_layout, label  # noqa: E402

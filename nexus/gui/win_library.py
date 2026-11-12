@@ -1753,7 +1753,7 @@ class LibraryMixin:
         row = self.home.row_for(key)
         if row is not None and self.current() == self.LIBRARY \
                 and self.views.currentWidget() is self.home:
-            QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.btn_menu))
+            QTimer.singleShot(0, lambda: alive(row) and focus_and_reveal(row.first_stop()))
         elif new:
             self.toast(f"Made the shelf “{smart.title_of(shelf)}”.", 'success',
                        ("Show", lambda: self.open_category(key)), 4000)

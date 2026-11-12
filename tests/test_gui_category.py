@@ -910,9 +910,13 @@ class Browse(_Rich):
         self.assertEqual(len(for_you), 6)                                 # capped
         self.assertEqual(for_you, [k for k in smart.rule_keys(True) if k in for_you])
         self.assertEqual(o[i['yours'] + 1:i['genres']], ['fav', 'col:Couch'])
-        genres = o[i['genres'] + 1:i['stores']]
-        self.assertEqual(len(genres), 6)
-        self.assertTrue(all(k.startswith('genre:') for k in genres))
+        # Genres are one strip of posters (w-115), capped at 6.
+        self.assertEqual(o[i['genres'] + 1:i['stores']], ['strip:genres'])
+        posters = w.home.strip('genres').cards
+        self.assertEqual(len(posters), 6)
+        self.assertTrue(all(c.key.startswith('genre:') for c in posters))
+        self.assertTrue(all(c.variant == 'poster' for c in posters))
+        self.assertIsNone(w.home.strip('studios'))          # no studios group yet
         self.assertEqual(o[i['stores'] + 1:], ['src:nexus', 'src:steam'])   # stores last
         head = w.home.head
         self.assertEqual([b.text() for b in head.chips().values()],
@@ -920,7 +924,7 @@ class Browse(_Rich):
         self.assertTrue(head.note.isHidden())                             # facts built
         self.assertIsNotNone(w.home.kicker('genres').btn_all)
         self.assertIsNone(w.home.kicker('stores').btn_all)
-        self.assertEqual(w.home.kicker('yours').text.text(), "YOURS")
+        self.assertEqual(w.home.kicker('yours').text.text(), "Yours")
         # Installing sits above the groups; with a job it is the rows layout.
         self.assertEqual(w.home.lay.indexOf(head), 0)
         self.assertEqual(categories.HUB, 'all')
@@ -1011,8 +1015,8 @@ class Browse(_Rich):
         from PyQt6.QtCore import QPoint
         y = k.mapTo(w.home.viewport(), QPoint(0, 0)).y()
         self.assertTrue(0 <= y < 80, y)
-        first = next(r for r in w.home.group_rows() if r.key.startswith('genre:'))
-        self.assertIs(QApplication.focusWidget(), first.tiles[0])
+        first = w.home.strip('genres').cards[0]                # the first poster (w-115)
+        self.assertIs(QApplication.focusWidget(), first)
 
     def test_home_mode_unchanged(self):
         from nexus.gui.library import BrowseHead, BrowseKicker
@@ -1091,6 +1095,206 @@ class Browse(_Rich):
             self.assertIsNone(self.win.cathub.tile('src:heroic'))
         finally:
             features.FEATURES = saved
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Spines(_Rich):
+    """w-115: a spine leads every Browse row but Continue playing; the
+    kickers wear a disc and a reason; Genres (and Studios) are strips."""
+
+    def test_every_row_but_continue_has_a_spine(self):
+        from nexus import categories
+        from nexus.gui.tiles import SpineCard
+        home = self.win.home
+        for r in home.group_rows():
+            if r.key == 'smart:continue':
+                self.assertIsNone(r.spine)
+                self.assertFalse(r.head.isHidden())          # its title stays
+                continue
+            self.assertIsInstance(r.spine, SpineCard, r.key)
+            self.assertTrue(r.head.isHidden(), r.key)
+            self.assertIs(r.row.itemAt(0).widget(), r.spine)  # first in the row
+            self.assertIs(r.stops()[0], r.spine)
+            self.assertEqual(r.spine.size().width(), r.tile_w)
+            self.assertEqual(r.spine.title, r.title)
+            self.assertLessEqual(len(r.spine.games), SpineCard.FAN)
+        steam = home.row_for('src:steam')
+        self.assertTrue(steam.spine.sub.startswith("40 games"), steam.spine.sub)
+        self.assertEqual(steam.spine.role, 'subtext')                     # Stores grey
+        self.assertEqual(home.row_for('smart:never').spine.role, 'col_mint')   # For you
+        self.assertIn(home.row_for('fav').spine.role, ('col_gold', 'accent'))
+        self.assertEqual(len(steam.tiles), categories.ROW_CAP)
+
+    def test_spine_opens_the_page_and_its_menu(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        w = self.win
+        from PyQt6.QtWidgets import QPushButton
+        asked = []
+        w.home.shelf_menu.connect(lambda k, _p: asked.append(k))
+        w.input.mode = 'pad'                                  # the sheet, not a QMenu.exec
+        spine = w.home.row_for('src:steam').spine
+        spine.setFocus()
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        # X on a pad (straight to the card: a key click would set the mode to keys)
+        spine.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Menu,
+                                      Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(asked, ['src:steam'])
+        rows = [b.text() for b in w.sheet.findChildren(QPushButton)
+                if b.objectName() == 'SheetRow' and b.isVisibleTo(w.sheet)]
+        self.assertIn("See all", rows)
+        w._escape()
+        w.input.mode = 'mouse'
+        self.assertIs(w.home.row_for('src:steam').btn_menu, spine.btn_menu)
+        QTest.keyClick(spine, Qt.Key.Key_Return)                          # A
+        self.pump()
+        self.assertTrue(self.on_page('src:steam'))
+
+    def test_left_from_the_first_tile_is_the_spine(self):
+        from PyQt6.QtCore import Qt
+        w = self.win
+        w.activateWindow()
+        row = w.home.row_for('src:steam')
+        nav = w.spatial
+        row.tiles[0].setFocus()
+        self.pump()
+        self.assertIs(nav.move(row.tiles[0], Qt.Key.Key_Left), row.spine)
+        self.assertIs(nav.move(row.spine, Qt.Key.Key_Right), row.tiles[0])
+        # At the row's left edge the spine keeps the focus (Qt would tab out).
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtWidgets import QApplication
+        row.spine.setFocus()
+        self.pump()
+        nav.move = lambda *_a: None                     # nothing further left
+        ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier)
+        self.assertTrue(nav.eventFilter(row.spine, ev))
+        self.assertIs(QApplication.focusWidget(), row.spine)
+
+    def test_a_new_size_makes_the_strips_again(self):
+        from nexus.gui.theme import LOOK
+        home = self.win.home
+        old = home.strip('genres')
+        saved = LOOK['scale']
+        self.addCleanup(LOOK.__setitem__, 'scale', saved)
+        LOOK['scale'] = 1.25
+        self.win.apply_filter()
+        self.pump()
+        new = home.strip('genres')
+        self.assertIsNot(new, old)
+        self.assertEqual(new.cards[0].width(), round(196 * 1.25))
+
+    def test_kickers_disc_reason_and_all(self):
+        from nexus.gui.library import GROUP_REASON
+        home = self.win.home
+        g = home.kicker('genres')
+        self.assertEqual(g.text.text(), "Genres")
+        self.assertEqual(g.reason.text(), GROUP_REASON['genres'])
+        self.assertEqual(g.role[0], 'col_sky')
+        self.assertEqual(g.btn_all.text(), "All 8 ›")                     # 8 genres, 6 shown
+        self.assertFalse(g.btn_all.isHidden())
+        self.assertEqual(home.kicker('for_you').role[0], 'col_mint')
+        self.assertEqual(home.kicker('stores').role[0], 'subtext')
+        self.assertEqual(home.kicker('yours').role[0], home.row_for('fav').spine.role)
+        self.assertIn('rgba(', home.kicker('genres').disc.styleSheet())
+
+    def test_poster_opens_its_genre(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        strip = self.win.home.strip('genres')
+        card = strip.cards[0]
+        self.assertEqual(len(card.games), 4)                               # the collage
+        QTest.keyClick(card, Qt.Key.Key_Return)
+        self.pump()
+        self.assertTrue(self.on_page(card.key))
+
+    def test_reload_keeps_spines_cards_and_their_focus(self):
+        from PyQt6.QtWidgets import QApplication
+        w = self.win
+        w.activateWindow()
+        home = w.home
+        spine = home.row_for('src:steam').spine
+        cards = list(home.strip('genres').cards)
+        spine.setFocus()
+        self.pump()
+        self.load()                                    # a reload keeps the place
+        self.pump(6)
+        self.assertIs(home.row_for('src:steam').spine, spine)
+        self.assertEqual(home.strip('genres').cards, cards)
+        self.assertIs(QApplication.focusWidget(), spine)
+        cards[2].setFocus()
+        self.pump()
+        self.load()
+        self.pump(6)
+        self.assertIs(QApplication.focusWidget(), cards[2])
+
+    def test_keepplace_puts_a_spine_back_on_a_fresh_row(self):
+        """The row is made again (its look changed): the focus goes to the
+        new row's spine, as it would to the same game's tile."""
+        from PyQt6.QtWidgets import QApplication
+        w = self.win
+        w.activateWindow()
+        home = w.home
+        old = home.row_for('col:Couch').spine
+        old.setFocus()
+        self.pump()
+        with nx.KeepPlace(home, scroll=True):
+            w.prefs.collection_look['Couch'] = {'icon': 'heart', 'color': 'rose'}
+            w._collections_changed()
+        self.pump(6)
+        new = home.row_for('col:Couch').spine
+        self.assertIsNot(new, old)
+        self.assertEqual(new.role, 'col_rose')
+        self.assertIs(QApplication.focusWidget(), new)
+
+    def test_studios_strip_from_the_facts(self):
+        """With developers in the facts index (w-112), Studios is a strip
+        of wordmark cards after Genres; a card opens the studio's page."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        gs, idx = rich_library()
+        for i, g in enumerate(gs):
+            if g['slug'] in idx['games']:
+                idx['games'][g['slug']]['developers'] = [("Remedy Entertainment Oy", "SEGA",
+                                                          "Capcom Co., Ltd.")[i % 3]]
+        self.load(gs, idx)
+        o = self.order()
+        i = o.index(('kicker', 'studios'))
+        self.assertEqual(o[i - 2:i + 2], [('kicker', 'genres'), 'strip:genres',
+                                          ('kicker', 'studios'), 'strip:studios'])
+        cards = self.win.home.strip('studios').cards
+        self.assertTrue(cards and all(c.key.startswith('dev:') for c in cards))
+        self.assertTrue(all(c.tag == "Developer" and c.variant == 'wordmark' for c in cards))
+        self.assertIn("Capcom", [c.title for c in cards])          # suffix stripped
+        self.assertEqual(self.win.home.kicker('studios').role[0], 'col_gold')
+        QTest.keyClick(cards[0], Qt.Key.Key_Return)
+        self.pump()
+        self.assertTrue(self.on_page(cards[0].key))
+
+    def test_studios_strip_shows_only_with_a_group(self):
+        from nexus import categories
+        from nexus.gui.library import HomeView
+        hv = HomeView('shelves')
+        self.addCleanup(hv.deleteLater)
+        games = [{'slug': f'g{i}', 'display_name': f'G{i}'} for i in range(5)]
+        cat = lambda k, t, gs: categories.Category(k, 'studio', t, t, '', None, tuple(gs))  # noqa: E731
+        studios = categories.Group('studios', "Studios", (
+            cat('dev:Remedy', "Remedy", games[:3]), cat('pub:SEGA', "SEGA", games[2:])))
+        hv.set_groups([studios])
+        strip = hv.strip('studios')
+        self.assertEqual([c.key for c in strip.cards], ['dev:Remedy', 'pub:SEGA'])
+        self.assertEqual([c.variant for c in strip.cards], ['wordmark'] * 2)
+        self.assertEqual([c.tag for c in strip.cards], ['Developer', 'Publisher'])
+        self.assertEqual(strip.cards[0].count_text, "3 games")
+        self.assertEqual(hv.kicker('studios').role[0], 'col_gold')
+        self.assertEqual(hv.kicker('studios').btn_all.text(), "All 2 ›")
+        opened = []
+        hv.show_filter.connect(opened.append)
+        strip.cards[1].opened.emit('pub:SEGA')
+        self.assertEqual(opened, ['pub:SEGA'])
+        hv.set_groups([])
+        self.assertIsNone(hv.strip('studios'))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

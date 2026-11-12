@@ -37,7 +37,9 @@ once. Games you own but haven't installed are there too, with an Install button.
   that category's own page: its covers, games and hours at the top, chips for the smart
   shelves inside it (Unfinished RPGs, Co-op RPGs), a sort, rows, grid or list, Pick for me
   from just those games, and related categories under it. The Library opens on rows grouped
-  as For you, Yours, Genres and Stores, with chips to jump between them; *All categories*
+  as For you, Yours, Genres, Studios and Stores: each row starts with a coloured card that
+  names its category, genres show as posters and studios (by developer) as name cards, with
+  chips to jump between them; *All categories*
   shows every category as a tile, and any row can be hidden. Pin up to six categories to
   keep them as tabs above the Library.
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
