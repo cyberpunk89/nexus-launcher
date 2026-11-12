@@ -704,6 +704,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#TabItem:checked { color: $text; }
     #ShelfTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     #ShelfCount { color: $muted; font-size: ${fs_xs}px; padding-bottom: 2px; }
+    #KickerTitle { color: $text; font-size: ${fs_display}px; font-weight: 600; }
     #StageArt #ShelfTitle, #StageArt #ShelfCount { color: $on_art; }
     #SmartRule { background: $border; border: none; }
     #SmartHead { color: $text; font-size: ${fs_base}px; font-weight: 600; }

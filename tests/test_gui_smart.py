@@ -88,9 +88,13 @@ class SmartShelves(unittest.TestCase):
                 and r.parentWidget() is not None]
 
     def smart_rows(self):
-        """Browse's rows for smart rules, genres and your shelves, in order."""
-        return [r.title for r in self.win.home.group_rows()
-                if r.key.startswith(('smart:', 'genre:', 'user:'))]
+        """Browse's rows for smart rules and your shelves, then the genre
+        posters (w-115: genres are cards, not rows), in order."""
+        home = self.win.home
+        strip = home.strip('genres')
+        return [r.title for r in home.group_rows()
+                if r.key.startswith(('smart:', 'genre:', 'user:'))] + \
+            ([c.title for c in strip.cards] if strip is not None else [])
 
     def filter_keys(self):
         f = self.win.filter

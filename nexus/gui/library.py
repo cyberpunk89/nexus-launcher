@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLa
 from .. import categories, smart
 from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
-from .theme import (collection_look, FS, G, GRAD, P, pill_qss, R, SP, STAGE_BTN_H, TILE_LIFT,
-    TILE_W)
+from .theme import (collection_look, FS, G, GRAD, LOOK, P, pill_qss, R, scaled, SP, STAGE_BTN_H,
+    TILE_LIFT, TILE_W)
 
 
 class _TileSignals:
@@ -403,6 +403,9 @@ class KeepPlace:
     def __enter__(self):
         f = QApplication.focusWidget()
         self.focus = None
+        self.stop = None                          # a spine or a strip card (w-115)
+        if isinstance(f, (SpineCard, CategoryCard)) and self.scope.isAncestorOf(f):
+            self.stop = self._stop_id(f)
         if isinstance(f, GameTile) and self.scope.isAncestorOf(f):
             row = f.parentWidget()
             while row is not None and not isinstance(row, ShelfRow):
@@ -432,7 +435,7 @@ class KeepPlace:
 
     def __exit__(self, *exc):
         self._scroll_back()
-        if self.focus is not None or self.offsets or self.scroll:
+        if self.focus is not None or self.stop is not None or self.offsets or self.scroll:
             self._later()
         return False
 
@@ -448,12 +451,38 @@ class KeepPlace:
         t.timeout.connect(t.deleteLater)
         t.start(0)
 
+    def _stop_id(self, w) -> tuple | None:
+        """A spine is its row's first stop: ('spine', the row); a strip
+        card is its category: ('card', key)."""
+        if isinstance(w, CategoryCard):
+            return ('card', w.key)
+        row = w.parentWidget()
+        while row is not None and not isinstance(row, ShelfRow):
+            row = row.parentWidget()
+        return ('spine', self._id(row)) if row is not None else None
+
+    def _find_stop(self, rows):
+        kind, ident = self.stop
+        for r in rows:
+            if kind == 'spine' and r.spine is not None and self._id(r) == ident:
+                return r.spine
+            if kind == 'card':
+                hit = next((c for c in r.cards if c.key == ident), None)
+                if hit is not None:
+                    return hit
+        return None
+
     def _restore(self):
         self._scroll_back()
         rows = self._rows()
         for r in rows:
             if self._id(r) in self.offsets:
                 r.restore_offset(self.offsets[self._id(r)])
+        if self.stop is not None:
+            target = self._find_stop(rows)
+            if target is not None and QApplication.focusWidget() is not target:
+                target.setFocus(Qt.FocusReason.OtherFocusReason)
+            return
         if self.focus is None:
             return
         slug, rid = self.focus
@@ -552,7 +581,11 @@ class ShelfRow(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SP['2'])
-        head = QHBoxLayout()
+        # The head (title, count, ⋮, See all) is a widget: a row led by a
+        # spine (w-115) hides it, the spine carries all of it.
+        self.head = QWidget()
+        head = QHBoxLayout(self.head)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(SP['2'])
         if look:
             head.addWidget(icon_label(look[0], look[2] if len(look) > 2 else 16, P[look[1]]),
@@ -580,7 +613,7 @@ class ShelfRow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(self.see_all)
             head.addWidget(b)
-        lay.addLayout(head)
+        lay.addWidget(self.head)
 
         self.body = QWidget()
         self.body.setFixedHeight(tile_h + TILE_LIFT)
@@ -609,6 +642,8 @@ class ShelfRow(QWidget):
         self.body.installEventFilter(self)
         lay.addWidget(self.body)
         self.tiles: list[GameTile] = []
+        self.spine: 'SpineCard | None' = None   # the row's lead card (Browse, w-115)
+        self.cards: list[QWidget] = []          # a strip's category cards
         if see_all:                           # last: eventFilter needs the parts above
             name.installEventFilter(self)
 
@@ -616,8 +651,34 @@ class ShelfRow(QWidget):
     def pitch(self) -> int:
         return self.tile_w + self.row.spacing()
 
+    def set_spine(self, spine: 'SpineCard'):
+        """Lead the row with `spine` (before any tile is added): it sits
+        first in the row, scrolls with it and is the row's first stop. The
+        head hides, and the row's ⋮ is the spine's."""
+        self.spine = spine
+        self.row.insertWidget(0, spine, 0, Qt.AlignmentFlag.AlignBottom)
+        spine.installEventFilter(self)
+        spine.opened.connect(self.see_all)
+        spine.menu_asked.connect(self.menu_asked)
+        self.btn_menu = spine.btn_menu
+        self.head.hide()
+
+    def stops(self) -> list[QWidget]:
+        """What the focus moves along: the spine, the tiles, the cards."""
+        return ([self.spine] if self.spine is not None else []) + list(self.tiles) \
+            + list(self.cards)
+
+    def first_stop(self) -> QWidget | None:
+        """Where a jump into the row lands: its first stop, else its ⋮."""
+        s = self.stops()
+        return s[0] if s else getattr(self, 'btn_menu', None)
+
     def set_empty(self, text: str):
-        """No tiles: a muted line instead of a tile-high gap."""
+        """No tiles: a muted line instead of a tile-high gap (beside the
+        spine when the row has one)."""
+        if self.spine is not None:
+            self.row.addWidget(label(text, "Muted"), 0, Qt.AlignmentFlag.AlignVCenter)
+            return
         self.body.hide()
         self.layout().addWidget(label(text, "Muted"))
 
@@ -635,6 +696,8 @@ class ShelfRow(QWidget):
         if self.name_label.text() != title:
             self.name_label.setText(title)
         self.name_label.setToolTip(tip)
+        if self.spine is not None and self.spine.title != title:
+            self.spine.set_title(title)
 
     def set_games(self, games: list[dict], make, count: int | None = None):
         """Point the row at `games` (a refresh): the tiles of games still in
@@ -650,6 +713,8 @@ class ShelfRow(QWidget):
                 spare.setdefault(t.game.get('slug'), []).append(t)
             while self.row.count():
                 self.row.takeAt(0)              # tiles stay children of the row
+            if self.spine is not None:          # the spine stays first
+                self.row.addWidget(self.spine, 0, Qt.AlignmentFlag.AlignBottom)
             self.tiles = []
             for g in games:
                 pool = spare.get(g['slug'])
@@ -719,6 +784,8 @@ class ShelfRow(QWidget):
         elif ev.type() == QEvent.Type.FocusIn and obj in self.tiles:
             self._reveal(obj)
             self.focused.emit(obj)
+        elif ev.type() == QEvent.Type.FocusIn and (obj is self.spine or obj in self.cards):
+            self._reveal(obj)
         elif ev.type() == QEvent.Type.Enter and obj in self.tiles:
             self.hovered.emit(obj)
         elif ev.type() == QEvent.Type.Leave and obj in self.tiles:
@@ -734,33 +801,132 @@ class ShelfRow(QWidget):
             self.scroll_to(min(self.bar.maximum(), x1 - vw + margin))
 
 
+class CategoryStrip(ShelfRow):
+    """A Browse group shown as cards, not rows (w-115): Genres as collage
+    posters, Studios as wordmark cards. One sideways row of CategoryCards
+    under the group's kicker; a card opens its category, X / Menu its row
+    menu. Cards are kept by key across refreshes."""
+    opened = pyqtSignal(str)
+    card_menu = pyqtSignal(str, QPoint)
+
+    def __init__(self, gkey: str, variant: str):
+        w, h = CategoryCard.SIZES[variant]
+        super().__init__(gkey, scaled(w), kind=variant, tile_h=scaled(h) - TILE_LIFT)
+        self.gkey, self.variant = gkey, variant
+        self.scale = LOOK['scale']                  # cards sized for it: a new Size, a new strip
+        self.key = f'strip:{gkey}'                 # KeepPlace tells rows apart by key
+        self.head.hide()
+        self.row.setAlignment(Qt.AlignmentFlag.AlignBottom)
+
+    def set_cats(self, cats, role: str, tag_of=None):
+        """The cards, in order: kept ones re-pointed, new ones made, the
+        rest dropped. The same keys in the same order touch no layout."""
+        tag_of = tag_of or (lambda _c: '')
+        old = {c.key: c for c in self.cards}
+        same = [c.key for c in self.cards] == [c.key for c in cats]
+        out = []
+        for c in cats:
+            card = old.pop(c.key, None)
+            if card is None:
+                card = CategoryCard(self.variant, c, role, tag_of(c))
+                card.installEventFilter(self)
+                card.opened.connect(self.opened)
+                card.menu_asked.connect(self.card_menu)
+            else:
+                card.set_category(c, role, tag_of(c))
+            out.append(card)
+        self.cards = out
+        if not same:
+            while self.row.count():
+                self.row.takeAt(0)
+            for card in out:
+                self.row.addWidget(card, 0, Qt.AlignmentFlag.AlignBottom)
+            self.row.addStretch()
+        for card in old.values():
+            card.hide()
+            card.deleteLater()
+
+    def card(self, key: str) -> 'CategoryCard | None':
+        return next((c for c in self.cards if c.key == key), None)
+
+
+# Browse's groups (w-115): the colour of each kicker's disc and spines, and
+# the line under its title. Yours takes its first row's colour.
+GROUP_ROLE = {'for_you': 'col_mint', 'genres': 'col_sky', 'studios': 'col_gold',
+              'stores': 'subtext'}
+GROUP_REASON = {'for_you': "Shelves Nexus builds from how you play",
+                'yours': "Favourites, collections and shelves you made",
+                'genres': "From store genres, every one with a game",
+                'studios': "Who made your games, from store data",
+                'stores': "Where each game lives"}
+STRIP_GROUPS = {'genres': 'poster', 'studios': 'wordmark'}
+
+
 class BrowseKicker(QWidget):
-    """A group's kicker on Browse ("FOR YOU", "GENRES"…), with an "All
-    genres" link on Genres: the hub, at that group."""
+    """A group's kicker on Browse (w-115): an icon disc in the group's
+    colour, the title, a one-line reason, and "All N ›" (the hub, at that
+    group) on For you when it has more than it shows, Genres and Studios."""
     hub = pyqtSignal(str)
 
-    LINKS = {'genres': "All genres"}
+    LINKS = ('for_you', 'genres', 'studios')
 
     def __init__(self, gkey: str, title: str):
         super().__init__()
         self.gkey = gkey
+        self.role: tuple = ()
         self.setObjectName("BrowseKicker")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(SP['2'])
-        self.text = label(title.upper(), "SectionKicker")
-        lay.addWidget(self.text, 0, Qt.AlignmentFlag.AlignBottom)
+        lay.setSpacing(SP['3'])
+        self.disc = QFrame()
+        self.disc.setObjectName("KickerDisc")
+        self.disc.setFixedSize(34, 34)
+        dl = QHBoxLayout(self.disc)
+        dl.setContentsMargins(0, 0, 0, 0)
+        self.glyph = icon_label(categories.GROUP_GLYPH.get(gkey, G['library']), 18,
+                                P['subtext'])
+        dl.addWidget(self.glyph, 0, Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.disc, 0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        self.text = label(title, "KickerTitle")
+        col.addWidget(self.text)
+        self.reason = label(GROUP_REASON.get(gkey, ''), "Muted")
+        col.addWidget(self.reason)
+        lay.addLayout(col)
+        self.reason.setVisible(bool(self.reason.text()))   # in a layout first: no window
         lay.addStretch(1)
         self.btn_all = None
         if gkey in self.LINKS:
-            b = self.btn_all = QPushButton(self.LINKS[gkey])
+            b = self.btn_all = QPushButton("")
             b.setObjectName("Ghost")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip("Every genre, in All categories")
-            set_glyph_icon(b, G['grid'], 14, 'subtext', hover_role='text')
+            b.setToolTip("Every one, in All categories")
             b.clicked.connect(lambda: self.hub.emit(self.gkey))
-            lay.addWidget(b)
+            lay.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.set_look(GROUP_ROLE.get(gkey, 'accent'))
+
+    def set_look(self, role: str):
+        """The disc in `role` (a colour role): a soft wash, the glyph solid."""
+        role = role if role in P else 'accent'
+        if (role, P[role]) == self.role:                # a theme change recolours it
+            return
+        self.role = (role, P[role])
+        c = QColor(P[role])
+        self.disc.setStyleSheet(f"QFrame#KickerDisc {{ background: rgba({c.red()}, {c.green()}, "
+                                f"{c.blue()}, 36); border-radius: {R['control']}px; }}")
+        set_icon_label(self.glyph, self.glyph.text(), 18, role)
+
+    def set_count(self, total: int, shown: int):
+        """"All N ›": shown on Genres and Studios, and on For you only when
+        the hub has rows Browse leaves out."""
+        b = self.btn_all
+        if b is None:
+            return
+        b.setText(f"All {total} ›")
+        b.setVisible(self.gkey != 'for_you' or total > shown)
 
 
 class BrowseHead(QWidget):
@@ -1459,6 +1625,7 @@ class HomeView(QScrollArea, _TileSignals):
         self.tiles: dict[str, list[GameTile]] = {}
         self._group_rows: dict[str, ShelfRow] = {}       # Browse: category key -> row
         self._kickers: dict[str, BrowseKicker] = {}       # Browse: group key -> kicker
+        self._strips: dict[str, CategoryStrip] = {}       # Browse: group key -> its cards (w-115)
         self._order: list[QWidget] = []                   # Browse: group_lay's widgets
         self.head = None
         if mode == 'shelves':
@@ -1505,17 +1672,36 @@ class HomeView(QScrollArea, _TileSignals):
         self.head.setVisible(bool(groups or hidden or can_add))
         old_rows, self._group_rows = self._group_rows, {}
         old_kick, self._kickers = self._kickers, {}
+        old_strip, self._strips = self._strips, {}
         order: list[QWidget] = []
         for g in groups:
             k = old_kick.pop(g.key, None)
             if k is None:
                 k = BrowseKicker(g.key, g.title)
                 k.hub.connect(self.open_hub)
+            k.set_count(len(g.cats) + g.more, len(g.cats))
             self._kickers[g.key] = k
             order.append(k)
+            if g.key in STRIP_GROUPS:                  # cards, not rows (w-115)
+                strip = old_strip.pop(g.key, None)
+                if strip is not None and strip.scale != LOOK['scale']:
+                    self._drop(strip)
+                    strip = None
+                if strip is None:
+                    strip = CategoryStrip(g.key, STRIP_GROUPS[g.key])
+                    strip.opened.connect(self.show_filter)
+                    strip.card_menu.connect(self.shelf_menu)
+                strip.set_cats(g.cats, GROUP_ROLE.get(g.key, 'accent'), self._card_tag)
+                self._strips[g.key] = strip
+                order.append(strip)
+                k.set_look(GROUP_ROLE.get(g.key, 'accent'))
+                continue
+            first_role = None
             for c in g.cats:
                 kind = 'wide' if c.key in self.WIDE_KEYS else 'cover'
                 look = self._look(c)
+                role = self._spine_role(g.key, c, look)
+                first_role = first_role or role
                 games = list(c.games[:categories.ROW_CAP])
                 row = old_rows.pop(c.key, None)
                 if row is not None:
@@ -1525,17 +1711,48 @@ class HomeView(QScrollArea, _TileSignals):
                     row.set_games(games, lambda gm, r=row: self._tile(gm, r.tile_w, r.kind),
                                   count=len(c.games))
                     row.set_title(c.title, c.tip)
+                    if row.spine is not None:
+                        row.spine.set_spine(c.title, c.glyph, role, self._spine_sub(c),
+                                            categories.covers(c, SpineCard.FAN))
                 else:
                     if row is not None:                # was empty, or is now: a fresh row
                         self._drop(row)
-                    row = self._browse_row(c, kind, look, games)
+                    row = self._browse_row(c, kind, look, games, role)
                 self._track(row)
                 self._group_rows[c.key] = row
                 order.append(row)
-        for w in list(old_rows.values()) + list(old_kick.values()):
+            k.set_look(GROUP_ROLE.get(g.key) or first_role or 'accent')
+        for w in list(old_rows.values()) + list(old_kick.values()) + list(old_strip.values()):
             self._drop(w)
         if order != self._order:
             self._relayout(order)
+
+    @staticmethod
+    def _spine_role(gkey: str, c, look) -> str:
+        """A spine's colour: its group's (For you mint, Stores grey), or
+        on Yours its own (★ gold, a collection's colour, else the accent)."""
+        if gkey == 'yours':
+            return look[1] if look and look[1] in P else 'accent'
+        return GROUP_ROLE.get(gkey, 'accent')
+
+    @staticmethod
+    def _spine_sub(c) -> str:
+        """The spine's count line: "12 games · 41 h" (hours played), or
+        what the category is when nothing was played."""
+        n = len(c.games)
+        out = f"{n} game{'s' if n != 1 else ''}"
+        minutes = sum(g.get('playtime_minutes') or 0 for g in c.games)
+        if minutes >= 60:
+            return f"{out} · {minutes // 60} h"
+        extra = {'collection': "collection", 'shelf': "your shelf"}.get(c.kind)
+        return f"{out} · {extra}" if extra else out
+
+    @staticmethod
+    def _card_tag(c) -> str:
+        """A studio card's credit line (w-112 keys: dev: / pub:)."""
+        key = c.key or ''
+        return "Developer" if key.startswith('dev:') else \
+            "Publisher" if key.startswith('pub:') else ''
 
     def _relayout(self, order: list[QWidget]):
         """group_lay in `order`, with a row's gap between rows, a wider one
@@ -1571,11 +1788,17 @@ class HomeView(QScrollArea, _TileSignals):
             return collection_look(categories.collection_name(c.key))
         return None
 
-    def _browse_row(self, c, kind: str, look, games: list[dict]) -> 'ShelfRow':
+    def _browse_row(self, c, kind: str, look, games: list[dict],
+                    role: str = 'accent') -> 'ShelfRow':
         w = self.WIDE_TILE if kind == 'wide' else self.SHELF_TILE
         row = ShelfRow(c.title, w, kind, count=len(c.games), see_all=True, menu=True,
                        tip=c.tip, look=look)
         row.key = c.key
+        if kind != 'wide':                  # Continue playing keeps its hero cards
+            spine = SpineCard(w, int(w * 3 / 2))
+            spine.set_spine(c.title, c.glyph, role, self._spine_sub(c),
+                            categories.covers(c, SpineCard.FAN))
+            row.set_spine(spine)
         row.see_all.connect(lambda k=c.key: self.show_filter.emit(k))
         row.menu_asked.connect(lambda pos, k=c.key: self.shelf_menu.emit(k, pos))
         for g in games:
@@ -1594,12 +1817,17 @@ class HomeView(QScrollArea, _TileSignals):
         return self._kickers.get(gkey)
 
     def group_rows(self) -> list['ShelfRow']:
-        """Browse's category rows, in order."""
-        return [w for w in self._order if isinstance(w, ShelfRow)]
+        """Browse's category rows, in order (not the strips)."""
+        return [w for w in self._order if isinstance(w, ShelfRow)
+                and not isinstance(w, CategoryStrip)]
+
+    def strip(self, gkey: str) -> 'CategoryStrip | None':
+        """A group's card strip (Genres, Studios), None when not shown."""
+        return self._strips.get(gkey)
 
     def jump_to(self, gkey: str):
         """A jump chip: the group's kicker to the top, the focus on its
-        first row's first tile (its ⋮ when it has none)."""
+        first row's first stop (the spine, a strip's first card)."""
         k = self._kickers.get(gkey)
         if k is None:
             return
@@ -1609,7 +1837,7 @@ class HomeView(QScrollArea, _TileSignals):
         i = self._order.index(k)
         row = self._order[i + 1] if i + 1 < len(self._order) else None
         if isinstance(row, ShelfRow):
-            target = row.tiles[0] if row.tiles else getattr(row, 'btn_menu', None)
+            target = row.first_stop()           # the spine, a strip's first card
             if target is not None:
                 focus_and_reveal(target)
 
@@ -1909,6 +2137,6 @@ from .gameinfo import (is_installed, now_playing, play_enabled, play_label, SOUR
     TIER_COLORS)
 from .input import focus_and_reveal, input_mode  # noqa: E402
 from .storage import SortItem  # noqa: E402
-from .tiles import GameTile  # noqa: E402
+from .tiles import CategoryCard, GameTile, SpineCard  # noqa: E402
 from .widgets import (clear_layout, empty_state_text, repacks_on, EmptyState, icon_button,
-    icon_label, label, set_glyph_icon, WrapRow)  # noqa: E402
+    icon_label, label, set_glyph_icon, set_icon_label, WrapRow)  # noqa: E402
