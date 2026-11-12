@@ -704,6 +704,15 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QPushButton#TabItem:checked { color: $text; }
     #ShelfTitle { color: $text; font-size: ${fs_base}px; font-weight: 600; }
     #ShelfCount { color: $muted; font-size: ${fs_xs}px; padding-bottom: 2px; }
+    /* Soft tags by a page title, the Library's Filter and its popover (w-117). */
+    QLabel#SoftTag, QLabel#SoftTagAccent { border-radius: ${r_control}px;
+        padding: 2px ${sp_2}px; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#SoftTag { background: $surface_2; color: $subtext; }
+    QLabel#SoftTagAccent { background: $accent_22; color: $accent; }
+    QPushButton#FilterButton[active="true"] { background: $accent_22; color: $accent;
+                                               border-color: $accent_35; }
+    #Popover { background: $surface_solid; border: 1px solid $border;
+               border-radius: ${r_card}px; }
     #StageArt #ShelfTitle, #StageArt #ShelfCount { color: $on_art; }
     #SmartRule { background: $border; border: none; }
     #SmartHead { color: $text; font-size: ${fs_base}px; font-weight: 600; }

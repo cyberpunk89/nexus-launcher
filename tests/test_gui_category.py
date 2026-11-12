@@ -1772,6 +1772,83 @@ class TheatreAB(_Theatre):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Header(_Rich):
+    """w-117: the one-row Library header, the Filter popover and ⋮."""
+
+    def test_one_row_and_soft_tags(self):
+        w = self.win
+        bar = w._lib_bar
+        for b in (w.btn_filter, w.sort, w.view_seg, w.btn_lib_menu, w.count_label,
+                  w.filter_tag):
+            self.assertTrue(bar.isAncestorOf(b))
+        for b in (w.filter, w.own_seg, w.chips['steam']):
+            self.assertTrue(w.filter_pop.card.isAncestorOf(b))  # in the popover
+        self.assertTrue(w.btn_surprise.isHidden())
+        self.assertTrue(w.btn_refresh.isHidden())
+        self.assertTrue(w.home.head.bar.isHidden())              # no jump chips
+        self.assertRegex(w.count_label.text(), r"^\d+ games?$")
+        self.assertEqual(w.filter_tag.text(), "Installed · every store")
+        self.assertEqual(w.btn_filter.text(), "Filter")
+
+    def test_filters_combine_and_say_so(self):
+        w = self.win
+        before = len(w._shown_games)
+        w._set_chip('steam')
+        steam = len(w._shown_games)
+        w.filter.setCurrentIndex(w.filter.findData('hidden'))
+        self.assertEqual(w.filter_tag.text(), "Installed · Steam · Hidden games")
+        self.assertEqual(w.btn_filter.text(), "Steam · Hidden games")
+        self.assertTrue(w.btn_filter.property('active'))
+        self.assertTrue(all(g.get('source') == 'steam' and g.get('hidden')
+                            for g in w._shown_games))
+        w._reset_filters()
+        self.assertEqual(len(w._shown_games), before)
+        self.assertLessEqual(steam, before)
+        self.assertEqual(w.btn_filter.text(), "Filter")
+        self.assertEqual((w._chip, w.prefs.library_state['status']), ('all', 'all'))
+
+    def test_restored_from_library_state(self):
+        w = self.win
+        w.prefs.library_state = {'sort': 'most', 'status': 'all', 'chip': 'steam'}
+        w._restore_library_state()
+        w.apply_filter()
+        self.assertEqual(w.btn_filter.text(), "Steam")
+        self.assertEqual(w.sort.currentData(), 'most')
+
+    def test_popover_keys_and_pad(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QApplication
+        w = self.win
+        w.activateWindow()
+        w.go(w.LIBRARY)
+        self.assertTrue(w.btn_filter.focusPolicy() & Qt.FocusPolicy.TabFocus)
+        w.btn_filter.setFocus()
+        w._pad_action('view')                                   # View opens it
+        self.pump()
+        self.assertTrue(w._filter_open())
+        self.assertIs(w.nav_scope(), w.filter_pop.card)
+        self.assertTrue(w.filter_pop.card.isAncestorOf(QApplication.focusWidget()))
+        w._escape()                                             # B / Escape close it
+        self.assertFalse(w._filter_open())
+        self.assertIs(QApplication.focusWidget(), w.btn_filter)
+        w.btn_filter.click()
+        self.assertTrue(w._filter_open())
+        w.open_category('src:steam')                            # a page closes it
+        self.assertFalse(w._filter_open())
+
+    def test_new_shelf_on_the_yours_kicker(self):
+        w = self.win
+        k = w.home.kicker('yours')
+        self.assertIsNotNone(k.btn_new)
+        self.assertFalse(k.btn_new.isHidden())
+        called = []
+        w.home.new_shelf.disconnect()
+        w.home.new_shelf.connect(lambda: called.append(1))
+        k.btn_new.click()
+        self.assertEqual(called, [1])
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class Letters(unittest.TestCase):
     """w-116: the A-Z strip's letters (nexus/gui/letters.py)."""
 

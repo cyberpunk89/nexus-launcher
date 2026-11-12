@@ -738,6 +738,7 @@ class BrowseKicker(QWidget):
     """A group's kicker on Browse ("FOR YOU", "GENRES"…), with an "All
     genres" link on Genres: the hub, at that group."""
     hub = pyqtSignal(str)
+    new_shelf = pyqtSignal()                 # Yours' New shelf (w-117)
 
     LINKS = {'genres': "All genres"}
 
@@ -760,7 +761,21 @@ class BrowseKicker(QWidget):
             set_glyph_icon(b, G['grid'], 14, 'subtext', hover_role='text')
             b.clicked.connect(lambda: self.hub.emit(self.gkey))
             lay.addWidget(b)
+        self.btn_new = None
+        if gkey == 'yours':
+            b = self.btn_new = QPushButton("New shelf")
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Make your own shelf from rules")
+            set_glyph_icon(b, G['plus'], 14, 'subtext', hover_role='text')
+            b.clicked.connect(self.new_shelf)
+            b.hide()
+            lay.addWidget(b)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+    def set_can_add(self, on: bool):
+        if self.btn_new is not None:
+            self.btn_new.setVisible(on)
 
 
 class BrowseHead(QWidget):
@@ -797,6 +812,11 @@ class BrowseHead(QWidget):
         for b in (self.btn_hub, self.btn_hidden, self.btn_new):
             rl.addWidget(b)
         lay.addWidget(self.bar)
+        # w-117: the jump chips are gone and the bar's buttons moved (All
+        # categories is a tab, N hidden and New shelf are in the Library's
+        # ⋮ menu, New shelf also on the Yours kicker). The bar stays hidden:
+        # its buttons keep the state those read.
+        self.bar.hide()
         self.note = label("", "Muted", wrap=True)
         self.note.hide()
         lay.addWidget(self.note)
@@ -1502,7 +1522,7 @@ class HomeView(QScrollArea, _TileSignals):
         if self.head is None:
             return
         self.head.set_state([(g.key, g.title) for g in groups], note, hidden, can_add)
-        self.head.setVisible(bool(groups or hidden or can_add))
+        self.head.setVisible(bool(note))           # only the facts note shows (w-117)
         old_rows, self._group_rows = self._group_rows, {}
         old_kick, self._kickers = self._kickers, {}
         order: list[QWidget] = []
@@ -1511,6 +1531,8 @@ class HomeView(QScrollArea, _TileSignals):
             if k is None:
                 k = BrowseKicker(g.key, g.title)
                 k.hub.connect(self.open_hub)
+                k.new_shelf.connect(self.new_shelf)
+            k.set_can_add(can_add)
             self._kickers[g.key] = k
             order.append(k)
             for c in g.cats:

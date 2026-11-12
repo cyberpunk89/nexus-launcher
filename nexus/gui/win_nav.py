@@ -245,6 +245,9 @@ class NavigationMixin:
         if self.desk_search.isVisible():
             self.desk_search.close_search()
             return
+        if self._filter_open():
+            self.filter_pop.close_popover()
+            return
         if self.current() == self.NEWS and self.newspage.reader_open():
             self.newspage.close_reader()
         elif self.current() == self.HOME and self.dashboard.editing:
@@ -308,6 +311,8 @@ class NavigationMixin:
             return self.dashboard.foryou.list
         if not self._theatre and self.desk_search.isVisible():
             return self.desk_search
+        if self._filter_open():
+            return self.filter_pop.card
         if self._theatre:
             if self.theatre.trailer.isVisible():
                 return self.theatre.trailer
@@ -315,6 +320,11 @@ class NavigationMixin:
                 return self.theatre.search
             return self.theatre.details if self.theatre.details.isVisible() else self.theatre
         return self
+
+    def _filter_open(self) -> bool:
+        """The Library's Filter popover is up (w-117)."""
+        pop = getattr(self, 'filter_pop', None)
+        return pop is not None and not self._theatre and pop.isVisible()
 
     def _foryou_open(self) -> bool:
         """For you now's list is open on Home's Stage (w-89)."""
@@ -361,6 +371,8 @@ class NavigationMixin:
             return self.dashboard.foryou.list.default_focus()
         if not self._theatre and self.desk_search.isVisible():
             return self.desk_search.default_focus()
+        if self._filter_open():
+            return self.filter_pop.default_focus()
         if self._theatre:
             return self.theatre.default_focus()
         cur = self.current()

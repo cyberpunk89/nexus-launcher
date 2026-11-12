@@ -218,13 +218,18 @@ class SmartShelves(unittest.TestCase):
             w.deleteLater()
 
     def test_no_smart_rows_leaves_the_head_with_new_shelf(self):
-        # w-51: "New shelf" stays (on Browse's head since w-99) with no smart row.
+        # w-51: "New shelf" stays with no smart row (w-117: in the ⋮ menu).
         self.load([games()[0], games()[3]], facts_for('play0'))
-        head = self.win.home.head
+        w = self.win
+        head = w.home.head
         self.assertEqual(self.smart_rows(), [])
-        self.assertFalse(head.isHidden())
         self.assertFalse(head.btn_new.isHidden())
         self.assertTrue(head.btn_hidden.isHidden())
+        w.input.mode = 'pad'
+        got = []
+        w.sheet.choose = lambda title, items, *a, **k: got.extend(t for t, *_ in items)
+        w._library_menu()
+        self.assertEqual(got, ["Pick for me", "New shelf", "Refresh"])
 
     def test_shelf_menu_offers_three_actions(self):
         w = self.win

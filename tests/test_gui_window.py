@@ -2848,23 +2848,28 @@ class Window(unittest.TestCase):
         w.prefs.collections = {}
         w._collections_changed()
 
-    def test_owned_switch_drops_under_the_chips_when_narrow(self):
-        """Installed / Not installed / Everything used to be squeezed until
-        its labels were cut off (a 1366x768 laptop at 125-150 %, the game
-        panel open); now it moves under the chips."""
+    def test_filter_popover_fits_when_narrow(self):
+        """w-117: the chips and Installed / Not installed / Everything live
+        in the Filter popover, which stays inside a narrow window (a 1366x768
+        laptop at 150 %, the game panel open) and keeps the switch whole."""
         w = self.win
         w.go(w.LIBRARY)
+        w.prefs.show_owned = True
         w.own_seg.setVisible(True)
+        w._own_head.setVisible(True)
         w._tile_activated(w._games[0])                  # the panel takes its share
-        row = w.own_seg.parentWidget()
-        for width, stacked in ((1900, False), (760, True), (1900, False)):
-            w.resize(width, 850)
+        for width in (1900, 760):
+            w.resize(width, 600)
             QApplication.processEvents()
-            self.assertEqual(row.stacked(), stacked, width)
-            m = row.layout().contentsMargins()
-            room = row.width() - m.left() - m.right()       # all of it, when stacked
-            self.assertGreaterEqual(w.own_seg.width(), min(w.own_seg.sizeHint().width(), room),
-                                    width)
+            w.btn_filter.click()
+            QApplication.processEvents()
+            pop = w.filter_pop
+            self.assertTrue(pop.isVisible(), width)
+            card = pop.card.geometry()
+            self.assertTrue(pop.rect().contains(card), (width, card))
+            self.assertGreaterEqual(w.own_seg.width(), w.own_seg.sizeHint().width(), width)
+            w.btn_filter.click()                       # the button closes it again
+            self.assertFalse(pop.isVisible())
 
     def test_launch_state_and_handoff(self):
         from unittest import mock
