@@ -222,10 +222,11 @@ class LibraryMixin:
         fb.addWidget(reset, 0, Qt.AlignmentFlag.AlignRight)
         # Pinned categories as tabs (w-100): Browse, the pins, All
         # categories; shown with a pin, on Browse, a page and the hub alike.
-        self.cat_tabs = CategoryTabs(34, (SP['5'], SP['2'], SP['5'], 0))
+        # w-118: they ride in the top bar's page_tabs slot while the Library shows.
+        self.cat_tabs = CategoryTabs(36)
+        self.cat_tabs.wanted = False
         self.cat_tabs.picked.connect(self._cat_tab_picked)
-        lay.addWidget(self.cat_tabs)
-        self.cat_tabs.hide()
+        self.topbar.mount_page_tabs(self.LIBRARY, self.cat_tabs)
         self._grid_view = self.prefs.view if self.prefs.view in ('grid', 'list') else 'grid'
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
@@ -391,7 +392,6 @@ class LibraryMixin:
         self._store_chips()
         self._save_library_state()
         self.apply_filter()
-        self._sync_pins()
 
     def _restore_library_state(self):
         st = self.prefs.library_state
@@ -552,7 +552,6 @@ class LibraryMixin:
         for g in self._games:
             g['collections'] = self.prefs.collections_of(g['slug'])
         self._rebuild_collection_chips()
-        self.topbar.set_pins(self.prefs.pinned_collections())
         self._home_sig = None                   # a new look or order redraws Home's rows
         if not self._chip.startswith('col:') or self._chip in self.chips:
             self.apply_filter()
@@ -562,27 +561,7 @@ class LibraryMixin:
             self.theatre.set_facts(self._smart_facts())
             self.theatre.set_games([g for g in self._games if not g.get('hidden')])
         self._sync_selection()
-        self._sync_pins()
-
-    def _sync_pins(self):
-        """Light the pin of the collection the Library is showing."""
-        chip = getattr(self, '_chip', 'all')           # go() can run before the Library is built
-        on = self.current() == self.LIBRARY and chip.startswith('col:')
-        self.topbar.mark_pin(chip[4:] if on else None)
-
-    def _open_pinned(self, cname):
-        """A top-bar pin: its collection in the Library, like a shelf's "See
-        all" (no search or status filter narrowing it, as a grid)."""
-        if cname not in self.prefs.collections:
-            return
-        self.go(self.LIBRARY)
-        if self._category_open():
-            self.close_category()
-        self.search.clear()
-        self.filter.setCurrentIndex(0)
-        if self._view == 'home':
-            self.set_view('grid', save=False)
-        self._set_chip(f'col:{cname}')
+        self._sync_cat_tabs()
 
     def ask_collection_name(self, title: str, initial: str, on_done, look: dict | None = None):
         """A collection's name and look in one modal (w-67): the text field
@@ -632,12 +611,13 @@ class LibraryMixin:
         sheet = self.theatre_sheet if self._theatre else self.sheet
         names = list(self.prefs.collections)
         i = names.index(cname)
-        pinned = bool(self.prefs.look_of(cname).get('pinned'))
+        key = categories.COL + cname
+        pinned = key in self.prefs.category_pins
         rows = [("Rename…", G['pencil'], lambda: self.ask_collection_name(
                     "Rename collection", cname,
                     lambda new, look: self._rename_collection(cname, new, look),
                     self.prefs.look_of(cname))),
-                ("Unpin from the top bar" if pinned else "Pin to the top bar",
+                ("Unpin its Library tab" if pinned else "Pin as a Library tab",
                  G['pin_off' if pinned else 'pin'], lambda: self._pin_collection(cname, not pinned))]
         if i > 0:
             rows.append(("Move up", G['arrow_up'],
@@ -675,12 +655,17 @@ class LibraryMixin:
             self._collections_changed()
 
     def _pin_collection(self, cname, on):
-        if not self.prefs.set_collection_look(cname, pinned=on):
-            self.toast(f"Up to {MAX_PINNED} collections fit in the top bar — unpin one first.",
+        """The sheet's Pin: the collection as a Library tab (w-118; the
+        top-bar pins of w-52 are gone)."""
+        key = categories.COL + cname
+        if (key in self.prefs.category_pins) == on:
+            return
+        if on and self._pin_state(key) == 'full':
+            self.toast(f"{categories.PIN_MAX} tabs are pinned — unpin one first.",
                        'warn', None, 4000)
             return
-        self._collections_changed()
-        self.toast(f"Pinned “{cname}” to the top bar." if on else
+        self._toggle_pin(key)
+        self.toast(f"“{cname}” is a Library tab now." if on else
                    f"Unpinned “{cname}”.", 'success' if on else 'info', None, 2500)
 
     def _rename_collection(self, old, new, look: dict | None = None):
@@ -1178,7 +1163,6 @@ class LibraryMixin:
         self.views.setCurrentWidget(self.cathub if hub else self.catpage)
         self._refresh_category(sort)
         self._sync_cat_tabs()
-        self._sync_pins()
         if self.input.mode in ('keyboard', 'pad'):
             QTimer.singleShot(0, self._focus_category)
         return True
@@ -1310,7 +1294,8 @@ class LibraryMixin:
         tabs = [(BROWSE_TAB, "Browse"), (GAMES_TAB, "All games")] \
             + [(c.key, c.title) for c in cats] + [(categories.HUB, "All categories")]
         self.cat_tabs.set_tabs(tabs, key, divider_after=GAMES_TAB)
-        self.cat_tabs.show()
+        self.cat_tabs.wanted = True
+        self.topbar.show_page_tabs(self.current())
 
     def _cat_tab_picked(self, key: str):
         if key in (BROWSE_TAB, GAMES_TAB):
@@ -2042,4 +2027,3 @@ from .widgets import (amp, FlowLayout, icon_button, label, SegmentedControl,  # 
     set_glyph_icon)
 from .popover import Popover  # noqa: E402
 from .topbar import CollectionChip, CollectionLookPicker  # noqa: E402
-from .prefs import MAX_PINNED  # noqa: E402

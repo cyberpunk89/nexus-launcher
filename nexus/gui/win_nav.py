@@ -82,7 +82,7 @@ class NavigationMixin:
         self.tabs.set_current(page if page in self.TABS else None)
         for p, b in self.icons.items():
             b.setChecked(p == page)
-        self._sync_pins()
+        self.topbar.show_page_tabs(page)         # the Library's tabs ride in the bar (w-118)
         if page == self.LIBRARY and self._filter_dirty:
             self.apply_filter()
         # The details panel belongs to the game pages.
@@ -207,8 +207,7 @@ class NavigationMixin:
             self._sync_ribbon()                       # pages over the Ribbon pause 'Moving'
 
     def _focus_search(self):
-        self.search.setFocus()
-        self.search.selectAll()
+        self.topbar.open_search()                # the Search button opens into the field
 
     def _escape(self):
         """Back, one step at a time: leave the details panel (focus returns

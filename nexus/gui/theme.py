@@ -638,10 +638,13 @@ def build_stylesheet(scale: float = 1.0) -> str:
                           font-size: ${fs_icon}px; padding: 0; }
     QToolButton#TopIcon:hover { background: $surface_2; color: $text; }
     QToolButton#TopIcon:checked { background: $accent_16; color: $accent; }
-    QPushButton#TopPin { background: transparent; border: none; color: $subtext;
-                         padding: 0 ${sp_3}px; font-size: ${fs_xs}px; font-weight: 500; }
-    QPushButton#TopPin:hover { background: $surface_2; color: $text; }
-    QPushButton#TopPin:checked { background: $accent_16; color: $text; }
+    /* The merged bar (w-118): the system icons and Search share the nav's track. */
+    QFrame#TopIconGroup { background: $surface_1; border: 1px solid $border;
+                          border-radius: ${r_icon_group}px; }
+    QPushButton#TopSearchButton { background: $surface_1; color: $subtext;
+                                  border: 1px solid $border; border-radius: ${r_search}px;
+                                  padding: 0 ${sp_3}px; font-size: ${fs_xs}px; }
+    QPushButton#TopSearchButton:hover { background: $surface_2; color: $text; }
     #TopSep { background: $border; }
     QToolButton#IconPick { background: transparent; border: 1px solid transparent; color: $subtext;
                            font-size: ${fs_icon}px; padding: 0; }
@@ -1157,7 +1160,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         grad_dusk=qss_grad('dusk'), grad_dusk_hi=qss_grad('dusk', lighten=1.12),
         grad_dusk_diag=qss_grad('dusk', 1.0, 1.0),
         r_scroll=pill(SP['2_5']), r_bar=pill(6), r_more=pill(28), r_tag=pill(22),
-        r_groove=pill(4), r_knob=pill(12), r_search=pill(36),
+        r_groove=pill(4), r_knob=pill(12), r_search=pill(36), r_icon_group=pill(46),
         r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,
         r_person=pill(int(round(PERSON_H * scale))),

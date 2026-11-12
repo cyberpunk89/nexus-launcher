@@ -1,8 +1,8 @@
-"""The window's top bar: the wordmark, page tabs, pinned collections, icon
-buttons; the collection chips under the library toolbar and the collection
-sheet's colour and icon picker."""
+"""The window's top bar: the wordmark, the page switcher, the current
+page's tabs, Search and the icon buttons; the Library's collection chips and
+the collection sheet's colour and icon picker."""
 
-from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt
+from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient,
     QPainter, QPainterPath, QPen)
 from PyQt6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLineEdit, QPushButton,
@@ -12,6 +12,7 @@ from nexus.icons import COLLECTION_ICONS
 from ..features import has
 from .common import WORDMARK_SVG
 from .theme import ACCENTS, collection_look, FONTS, FS, G, GRAD, P, pill, SP
+from .widgets import SegmentedControl
 
 
 class Wordmark(QWidget):
@@ -112,6 +113,7 @@ class TopIcon(QToolButton):
         self.setStyleSheet(f"border-radius: {pill(self.SIZE + 6)}px;")
         self._badge, self._role = '', 'accent'
         self.usage: float | None = None        # 0..1, Storage only
+        self.progress: float | None = None     # 0..1, Downloads while one runs (w-118)
 
     def enterEvent(self, ev):
         super().enterEvent(ev)
@@ -128,16 +130,17 @@ class TopIcon(QToolButton):
         super().paintEvent(ev)
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self.usage is not None:
+        ring = self.usage if self.usage is not None else self.progress
+        if ring is not None:
             r = QRectF(3.0, 3.0, self.width() - 6.0, self.height() - 6.0)
             track = QColor(P['overlay']); track.setAlphaF(0.9)
             pt.setPen(QPen(track, 2.0))
             pt.drawEllipse(r)
-            low = self.usage > 0.90
+            low = self.usage is not None and self.usage > 0.90
             pen = QPen(QColor(P['danger'] if low else P['accent']), 2.0)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pt.setPen(pen)
-            pt.drawArc(r, 90 * 16, -int(self.usage * 360 * 16))
+            pt.drawArc(r, 90 * 16, -int(max(0.0, min(1.0, ring)) * 360 * 16))
         if self._badge:
             f = QFont(FONTS.ui, -1, QFont.Weight.Bold)
             f.setPixelSize(FS['2xs'])
@@ -176,12 +179,57 @@ class _TabHandle:
 ICON_NEEDS = {G['proton']: 'proton'}
 
 
+class NavPill(SegmentedControl):
+    """Home / Library / Deals / News on one rounded track (w-118): the
+    current page shows its icon and label, the others only their icon (the
+    label is their tooltip and accessible name)."""
+
+    def __init__(self, height: int = 40, parent=None):
+        super().__init__('pill', height, parent)
+        self.setObjectName("NavPill")
+        self._compact = False
+
+    def add(self, key, text=None, glyph=None, tip=''):
+        b = super().add(key, text, glyph, tip or text or '')
+        if text:
+            b.setAccessibleName(text)
+        self._relabel()
+        return b
+
+    def set_current(self, key, animate: bool = True, emit: bool = False):
+        super().set_current(key, animate=animate, emit=emit)
+        self._relabel()
+
+    def _clicked(self, key):
+        super()._clicked(key)
+        self._relabel()
+
+    def set_compact(self, on: bool):
+        """Narrow: the current page shows its icon only too."""
+        self._compact = on
+        self._relabel()
+
+    def _relabel(self):
+        cur = self.current()
+        for k, b in self._items.items():
+            lab = getattr(b, '_label', None)
+            if lab is None:
+                continue
+            text = lab if k == cur and not self._compact else ""
+            if b.text() != text:
+                b.setText(text)                  # as SegmentedControl.set_compact does
+        self.layout().invalidate()               # the items shrink now, not on a later pass
+        self.layout().activate()
+        self._sync_later()
+
+
 class TopBar(QFrame):
-    """The app's navigation: wordmark, the four content tabs, then search,
-    the system pages as icons, and Install. A faint gradient hairline sits
-    under it. Pinned collections (w-52) sit after the tabs: one click shows
-    that collection in the Library (`pin_clicked`)."""
-    pin_clicked = pyqtSignal(str)
+    """The app's navigation (w-118, "merged"): wordmark, the page switcher
+    (Home / Library / Deals / News on one rounded track, the current page
+    labelled), then the current page's own tabs (`page_tabs`: the Library
+    mounts its Browse · All games · pins strip, other pages none), then a
+    Search button ("/"), the system pages as one icon group and Install as
+    an icon. A faint gradient hairline sits under it."""
 
     def __init__(self):
         super().__init__()
@@ -192,33 +240,23 @@ class TopBar(QFrame):
         lay.setSpacing(SP['2'])
         self.wordmark = Wordmark()
         lay.addWidget(self.wordmark)
-        lay.addSpacing(SP['4'])
-        self.tabs = SegmentedControl('underline', 44)
+        lay.addSpacing(SP['3'])
+        self.tabs = NavPill(40)
         lay.addWidget(self.tabs)
-        self.pin_sep = QFrame()                   # a hairline between tabs and pins
-        self.pin_sep.setObjectName("TopSep")
-        self.pin_sep.setFixedSize(1, 20)
-        self.pin_sep.hide()
+        self.tabs_sep = QFrame()                  # a hairline before the page's tabs
+        self.tabs_sep.setObjectName("TopSep")
+        self.tabs_sep.setFixedSize(1, 20)
+        self.tabs_sep.hide()
         lay.addSpacing(SP['1'])
-        lay.addWidget(self.pin_sep)
-        self.pins_lay = QHBoxLayout()
-        self.pins_lay.setSpacing(SP['1'])
-        lay.addLayout(self.pins_lay)
-        self.pins: list[PinButton] = []
-        self._pins_wide = True
-        lay.addStretch(1)
-        self.search = QLineEdit()
-        self.search.setObjectName("TopSearch")
-        self.search.setPlaceholderText("Search your games   /")
-        self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(160)
-        self.search.setMaximumWidth(340)
-        self.search.setFixedHeight(36)
-        # Not in the Tab / D-pad chain: it would grab focus at start-up and
-        # swallow arrows and Escape. "/" and Ctrl+F (or a click) focus it.
-        self.search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        lay.addWidget(self.search, 1)
-        lay.addSpacing(SP['2'])
+        lay.addWidget(self.tabs_sep)
+        # The current page's tabs (page_tabs): one widget per page that has any.
+        self.page_slot = QWidget()
+        self.page_slot.setObjectName("PageTabs")
+        self.page_lay = QHBoxLayout(self.page_slot)
+        self.page_lay.setContentsMargins(0, 0, 0, 0)
+        self.page_lay.setSpacing(0)
+        lay.addWidget(self.page_slot, 1)
+        self._page_tabs: dict[str, QWidget] = {}
         # A connected controller's battery, only while one reports it.
         self.battery = QWidget()
         bl = QHBoxLayout(self.battery)
@@ -230,16 +268,104 @@ class TopBar(QFrame):
         bl.addWidget(self.battery_text)
         self.battery.setVisible(False)
         lay.addWidget(self.battery)
-        self.icons_lay = QHBoxLayout()
-        self.icons_lay.setSpacing(SP['1'])
-        lay.addLayout(self.icons_lay)
-        lay.addSpacing(SP['2'])
-        self.install = QPushButton("Install")
+        # Search: a button ("/" and Ctrl+F too) that opens into the field;
+        # the field folds back into the button when it is left empty.
+        self.search_btn = QPushButton("Search")
+        self.search_btn.setObjectName("TopSearchButton")
+        self.search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.search_btn.setFixedHeight(36)
+        self.search_btn.setToolTip("Search your games (/)")
+        set_glyph_icon(self.search_btn, G['search'], 15, 'subtext', hover_role='text')
+        self.search_btn.clicked.connect(self.open_search)
+        lay.addWidget(self.search_btn)
+        self.search = QLineEdit()
+        self.search.setObjectName("TopSearch")
+        self.search.setPlaceholderText("Search your games")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(240)
+        self.search.setFixedHeight(36)
+        # Not in the Tab / D-pad chain: it would grab focus at start-up and
+        # swallow arrows and Escape. "/" and Ctrl+F (or a click) focus it.
+        self.search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.search.installEventFilter(self)
+        self.search.textChanged.connect(self._search_text)
+        self.search.hide()
+        lay.addWidget(self.search)
+        # Downloads, System, Proton, Settings on one rounded track.
+        self.icon_group = QFrame()
+        self.icon_group.setObjectName("TopIconGroup")
+        self.icons_lay = QHBoxLayout(self.icon_group)
+        self.icons_lay.setContentsMargins(2, 2, 2, 2)
+        self.icons_lay.setSpacing(0)
+        self.icon_group.setFixedHeight(TopIcon.SIZE + 6 + 6)
+        lay.addWidget(self.icon_group, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.install = QPushButton()
         self.install.setObjectName("Primary")
-        set_glyph_icon(self.install, G['plus'], 16, 'on_accent', hover_role=None)
-        self.install.setFixedHeight(36)
+        set_glyph_icon(self.install, G['plus'], 18, 'on_accent', hover_role=None)
+        self.install.setFixedSize(40, 40)
+        self.install.setStyleSheet(f"border-radius: {pill(40)}px; padding: 0;")
         self.install.setToolTip("Install a repack (Ctrl+N)")
+        self.install.setAccessibleName("Install")
         lay.addWidget(self.install)
+
+    # ---- the page's tabs (w-118) ----
+    def mount_page_tabs(self, page: str, w: QWidget):
+        """`w` rides in the bar while `page` shows."""
+        self._page_tabs[page] = w
+        self.page_lay.addWidget(w, 1)
+        w.hide()
+
+    def show_page_tabs(self, page: str | None):
+        """The tabs of `page` (none for a page without)."""
+        mine = self._page_tabs.get(page)
+        for p, w in self._page_tabs.items():
+            if w is not mine:
+                w.setVisible(False)
+        if mine is not None:
+            mine.setVisible(bool(getattr(mine, 'wanted', True)))
+        self._page = page
+        self.tabs_sep.setVisible(mine is not None and not mine.isHidden())
+
+    def page_tabs(self) -> QWidget | None:
+        """The page tabs on show, if any."""
+        w = self._page_tabs.get(getattr(self, '_page', None))
+        return w if w is not None and not w.isHidden() else None
+
+    # ---- search ----
+    def open_search(self):
+        self.search_btn.hide()
+        self.search.show()
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def _fold_search(self):
+        if not self.search.text() and not self.search.hasFocus():
+            self.search.hide()
+            self.search_btn.show()
+
+    def _search_text(self, text):
+        if text and self.search.isHidden():         # typed from elsewhere (a test, a pick)
+            self.search_btn.hide()
+            self.search.show()
+        elif not text:
+            self._fold_search()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.search and ev.type() == ev.Type.FocusOut:
+            QTimer.singleShot(0, self._fold_unless_over)
+        return False
+
+    def _fold_unless_over(self):
+        """Folds once focus has gone to the page, not into something over it
+        (a modal or sheet hands focus back to the field when it closes)."""
+        from PyQt6.QtWidgets import QApplication
+        from .overlay import Overlay
+        f = QApplication.focusWidget()
+        while f is not None:
+            if isinstance(f, Overlay):
+                return
+            f = f.parentWidget()
+        self._fold_search()
 
     def set_battery(self, pads: list[dict]):
         """Show the lowest controller battery (gamepad.battery())."""
@@ -267,42 +393,12 @@ class TopBar(QFrame):
             b.hide()
         return b
 
-    def set_pins(self, names: list[str]):
-        """The pinned collections, in order; reuses the buttons it has."""
-        have = {b.name: b for b in self.pins}
-        for b in self.pins:
-            self.pins_lay.removeWidget(b)
-        self.pins = []
-        for name in names:
-            b = have.pop(name, None)
-            if b is None:
-                b = PinButton(name)
-                b.clicked.connect(lambda _=False, b=b: self.pin_clicked.emit(b.name))
-            b.set_look()
-            b.set_wide(self._pins_wide)
-            self.pins_lay.addWidget(b)            # (re)added, so in order
-            self.pins.append(b)
-        for b in have.values():
-            b.hide()
-            b.deleteLater()
-        self.pin_sep.setVisible(bool(self.pins))
-
-    def set_pins_wide(self, on: bool):
-        """Pins with their names (a roomy window) or icons only."""
-        self._pins_wide = on
-        for b in self.pins:
-            b.set_wide(on)
-
-    def mark_pin(self, name: str | None):
-        """Light the pin whose collection the Library is showing."""
-        for b in self.pins:
-            b.setChecked(b.name == name)
-
     def set_compact(self, on: bool):
+        """A narrow window (or a big Size): the current page's label and
+        Search's word go; the page tabs fold into More themselves."""
         self.tabs.set_compact(on)
-        self.install.setText("" if on else "Install")
-        self.search.setMaximumWidth(220 if on else 340)
-        self.search.setPlaceholderText("Search   /" if on else "Search your games   /")
+        self.search_btn.setText("" if on else "Search")
+        self.search.setFixedWidth(170 if on else 240)
 
     def paintEvent(self, ev):
         super().paintEvent(ev)
@@ -350,39 +446,6 @@ class CollectionChip(QPushButton):
             self.move.emit(self.name, -1 if ev.key() == Qt.Key.Key_Left else 1)
         else:
             super().keyPressEvent(ev)
-
-
-class PinButton(QPushButton):
-    """A collection pinned to the top bar: its icon in its colour, and its
-    name while the window is wide enough."""
-    H = 36
-    NAME_MAX = 16                     # longer names are cut with an ellipsis
-
-    def __init__(self, name: str):
-        super().__init__()
-        self.name = name
-        self.setObjectName("TopPin")
-        self.setCheckable(True)
-        self.setFixedHeight(self.H)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(f"{name} — show this collection")
-        self.setAccessibleName(name)
-        self.setStyleSheet(f"border-radius: {pill(self.H)}px;")
-
-    def set_look(self):
-        glyph, role = collection_look(self.name) or (G['collection'], 'subtext')
-        set_glyph_icon(self, glyph, 16, role, hover_role=None)
-
-    def set_wide(self, on: bool):
-        name = self.name if len(self.name) <= self.NAME_MAX else \
-            self.name[:self.NAME_MAX - 1].rstrip() + "…"
-        self.setText(amp(name) if on else "")
-        self.setStyleSheet(f"border-radius: {pill(self.H)}px;" + ("" if on else " padding: 0;"))
-        if on:
-            self.setMinimumWidth(0)
-            self.setMaximumWidth(16777215)
-        else:
-            self.setFixedWidth(self.H)
 
 
 class _NoColour(QToolButton):
@@ -487,4 +550,4 @@ class CollectionLookPicker(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a method, so the cycle resolves at call time.
 from .settings import Swatch  # noqa: E402
-from .widgets import amp, icon_label, label, SegmentedControl, set_glyph_icon  # noqa: E402
+from .widgets import amp, icon_label, label, set_glyph_icon  # noqa: E402

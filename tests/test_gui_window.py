@@ -1910,12 +1910,77 @@ class Window(unittest.TestCase):
         self.assertEqual(list(self.win.library.tiles), ['alpha'])
 
     def test_compact_topbar(self):
-        self.win.resize(860, 600)
+        """w-118: the merged bar. The current page shows its label, the
+        others their icon; a narrow window folds that label and Search's
+        word, and every control still fits."""
+        w = self.win
+        w.go(w.LIBRARY)
+        w.resize(1440, 850)
         QApplication.processEvents()
-        self.assertEqual(self.win.btn_install.text(), "")          # icon only
-        self.win.resize(1300, 850)
+        labels = {k: b.text() for k, b in zip(w.tabs.keys(), w.tabs.buttons())}
+        self.assertEqual(labels, {w.HOME: "", w.LIBRARY: "Library", w.DEALS: "", w.NEWS: ""})
+        self.assertEqual(w.btn_install.text(), "")                  # Install: an icon
+        self.assertEqual(w.btn_install.accessibleName(), "Install")
+        self.assertEqual(w.topbar.search_btn.text(), "Search")
+        self.assertIs(w.topbar.page_tabs(), w.cat_tabs)              # the Library's tabs ride along
+        for width in (900, 860):
+            w.resize(width, 600)
+            QApplication.processEvents()
+            self.assertEqual(w.tabs.item(w.LIBRARY).text(), "", width)
+            self.assertEqual(w.topbar.search_btn.text(), "", width)
+            self.assertLessEqual(w.btn_install.geometry().right(), w.topbar.width(), width)
+        w.go(w.HOME)
+        self.assertIsNone(w.topbar.page_tabs())                      # Home has none
+        self.assertTrue(w.topbar.tabs_sep.isHidden())
+        w.resize(1300, 850)
         QApplication.processEvents()
-        self.assertIn("Install", self.win.btn_install.text())
+        self.assertEqual(w.tabs.item(w.HOME).text(), "Home")
+
+    def test_search_button_opens_and_folds(self):
+        w = self.win
+        w.activateWindow()
+        bar = w.topbar
+        self.assertTrue(bar.search.isHidden())
+        bar.search_btn.click()
+        self.assertFalse(bar.search.isHidden())
+        self.assertTrue(bar.search_btn.isHidden())
+        self.assertIs(QApplication.focusWidget(), bar.search)
+        w.go(w.HOME)
+        w.dashboard.setFocus()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        self.assertTrue(bar.search.isHidden())                       # left empty: folds back
+        w.search.setText("alp")                                      # typed from elsewhere
+        self.assertFalse(bar.search.isHidden())
+
+    def test_page_tabs_fold_into_more(self):
+        """w-118: at 900 px (and at Size 1.25-1.5) the Library's pins fold
+        into More before anything else; Browse, All games and the current
+        tab stay."""
+        w = self.win
+        w.prefs.collections = {f'Shelf number {i}': [] for i in range(6)}
+        w._mirror_collections()
+        w.prefs.category_pins = [f'col:Shelf number {i}' for i in range(6)]
+        w.go(w.LIBRARY)
+        w.resize(1900, 900)
+        w.apply_filter()
+        QApplication.processEvents()
+        tabs = w.cat_tabs
+        wide = list(tabs.folded)
+        w.resize(900, 700)
+        QApplication.processEvents()
+        self.assertTrue(tabs.folded)
+        self.assertGreaterEqual(len(tabs.folded), len(wide))
+        self.assertFalse(tabs.more.isHidden())
+        for k in ('browse', 'games'):
+            self.assertNotIn(k, tabs.folded)
+            self.assertFalse(tabs.button(k).isHidden())
+        self.assertLessEqual(tabs.more.geometry().right(), tabs.width())
+        self.assertLessEqual(w.btn_install.geometry().right(), w.topbar.width())
+        picked = []
+        tabs.picked.connect(picked.append)
+        tabs.picked.emit(tabs.folded[-1])                            # a menu pick is a tab pick
+        self.assertEqual(picked, [tabs.folded[-1]])
 
     def test_dashboard_edit_mode(self):
         d = self.win.dashboard
@@ -3404,7 +3469,7 @@ class Window(unittest.TestCase):
         w.activateWindow()
         QApplication.processEvents()
         m, ran = w.modal, []
-        w.search.setFocus()
+        w._focus_search()
         w.confirm("Delete this?", "It can't be undone.", "Delete", lambda: ran.append(1))
         self.assertTrue(m.isVisible())
         self.assertFalse(m.isWindow())
@@ -3444,7 +3509,7 @@ class Window(unittest.TestCase):
         QApplication.processEvents()
         m, ran = w.modal, []
         for how in ('esc', 'b', 'close', 'cancel'):
-            w.search.setFocus()
+            w._focus_search()
             w.confirm("Sure?", "Really.", "Yes", lambda: ran.append(how))
             if how == 'esc':
                 self._key(QApplication.focusWidget(), Qt.Key.Key_Escape)

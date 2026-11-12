@@ -181,10 +181,14 @@ portrait tiles with a caption gradient and pill badges, one accent colour.
 
 ## The app
 
-One window with a top bar — **Home · Library · Deals · News** as tabs, then search, round
-icons for **System · Proton · Settings** (with badges — System shows running jobs, else
-health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dialogs beyond file pickers: a question
-("quit while jobs run?", "delete this?") or a name is a card inside the window. Under 1000 px wide the tabs fold to icons.
+One window with a top bar — **Home · Library · Deals · News** on one rounded switch (the
+page you're on shows its name, the others their icon), then the page's own tabs (the
+Library's **Browse · All games · your pinned categories**), a **Search** button (or `/`),
+one group of round icons for **Downloads · System · Proton · Settings** (with badges —
+Downloads draws a progress ring, System shows running jobs, else health problems, and draws
+a disk-usage ring) and **＋** to install. No pop-up dialogs beyond file pickers: a question
+("quit while jobs run?", "delete this?") or a name is a card inside the window. In a narrow
+window (or at a big Size) the page tabs fold into **More** first, then the labels go.
 
 - **Home** — a cinematic hero (up to five featured games: playing now, recently played, a
   favourite, an update, something new) with the game's logo, a few facts and Play; it
@@ -210,15 +214,18 @@ health problems, and draws a disk-usage ring) and **＋ Install**. No pop-up dia
   with a controller; the
   layout is saved in `~/.config/nexus/library.json` (older layouts are migrated: the old
   Activity/Storage/Health/Proton cards become System in the same place).
-- **Library** — your Steam, Heroic and repack games together, as **Shelves** (one row per
-  source), a **Grid** with a tile-size slider, or a dense **List**. Source chips
-  (All · Repacks · Steam · Heroic · ★), a status filter, sort; typing in the top-bar search
-  jumps here. Rows page sideways with ‹ › buttons instead of scrollbars. The 🎲 button picks
-  a game from whatever the Library is showing.
+- **Library** — your Steam, Heroic and repack games together, as **Browse** (rows by
+  category) or **All games** (every game as a **Grid** with a tile-size slider and an A–Z
+  jump strip while sorted by name, or a dense **List**). One header row: the count and what
+  the filter shows as soft tags, then **Filter** (status, the store chips
+  All · Repacks · Steam · Heroic · ★, your collections, Installed / Not installed /
+  Everything — View on a controller), sort, the view switch and ⋮ (Pick for me, New shelf,
+  hidden rows, Refresh). Typing in the top-bar search jumps here. Rows page sideways with
+  ‹ › buttons instead of scrollbars.
   - **Collections** — your own groups of games (*Couch co-op*, *Short sessions*…). Add a
     game from its ⋮ menu (*Collections ▸*, or the controller sheet) — *New collection…*
     names one (with a controller, on the on-screen keyboard). Each collection gets a chip
-    after ★; right-click it (or X on a pad) to rename or delete it. Theatre shows a row per
+    in Filter; right-click it (or X on a pad) to rename, pin as a Library tab or delete it. Theatre shows a row per
     collection. Kept in `~/.config/nexus/library.json`.
   - **Installed · Not installed · Everything** — the rest of your library too: Steam games
     you own (from [Game-db](#game-db-integration)'s cached library — Steam keeps no readable

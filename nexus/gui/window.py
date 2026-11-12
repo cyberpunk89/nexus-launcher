@@ -20,7 +20,7 @@ from .. import updates
 from .common import alive, CONFIG_PATH, HOME
 from .fmt import fmt_size
 from .restyle import Restyler
-from .theme import apply_appearance, FS, G, P, scaled, SP
+from .theme import apply_appearance, FS, G, LOOK, P, scaled, SP
 from .topbar import _TabHandle, TopBar
 from .win_library import LibraryMixin
 from .win_nav import NavigationMixin
@@ -61,7 +61,6 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
     SETUP = 'setup'
 
     TABS = (HOME, LIBRARY, DEALS, NEWS)          # content tabs; the rest are icons
-    PINS_WIDE_AT = 1280            # top-bar pins show their names from this width up
 
     # Sections reached by their old page keys: go(ACTIVITY) opens System on
     # Activity, go(UPCOMING) opens Deals on Upcoming.
@@ -519,16 +518,17 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._paint_cached_library()
 
     # ---- layout ----
+    COMPACT_AT = 1100              # narrower (x Size): the top bar folds labels to icons
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         # niri and friends often give the window half a screen: fold the tab
         # labels to icons so search and the content keep their room.
-        compact = self.width() < 1000
+        # Size 1.25-1.5 makes everything wider: fold sooner (w-118).
+        compact = self.width() < self.COMPACT_AT * max(1.0, LOOK['scale'])
         if compact != getattr(self, '_compact', None):
             self._compact = compact
             self.topbar.set_compact(compact)
-        # Pinned collections show their names only while there's room.
-        self.topbar.set_pins_wide(self.width() >= self.PINS_WIDE_AT)
 
     def _add_page(self, key, widget):
         self.pages[key] = widget
@@ -616,8 +616,6 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         # gives it the time (the click comes ~0.2 s later).
         self.icons[self.SETTINGS].hovered.connect(lambda: self.page_widget(self.SETTINGS))
         bar.install.clicked.connect(self.open_install)
-        bar.set_pins(self.prefs.pinned_collections())
-        bar.pin_clicked.connect(self._open_pinned)
         self.btn_install = bar.install
         self.search = bar.search
         # Debounced: rebuilding the grid per keystroke is wasted work. Typing
