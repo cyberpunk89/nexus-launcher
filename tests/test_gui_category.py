@@ -1289,12 +1289,15 @@ class Pins(_Rich):
     def tabs(self):
         return self.win.cat_tabs
 
-    def test_strip_hidden_without_pins(self):
+    def test_strip_without_pins(self):
+        """w-116: Browse and All games are fixed tabs, so the strip shows
+        with no pin too."""
         w = self.win
         self.assertEqual(w.prefs.category_pins, [])
-        self.assertTrue(self.tabs().isHidden())
+        self.assertFalse(self.tabs().isHidden())
+        self.assertEqual(self.tabs().keys(), ['browse', 'games', 'all'])
         w.open_category('src:steam')
-        self.assertTrue(self.tabs().isHidden())
+        self.assertEqual(self.tabs().current(), '')            # not pinned: no tab
         self.assertEqual(w.catpage.header.btn_pin.text(), "Pin")
         self.assertFalse(w.catpage.header.btn_pin.isHidden())
 
@@ -1307,14 +1310,14 @@ class Pins(_Rich):
         self.assertEqual(w.prefs.category_pins, ['src:steam'])
         self.assertEqual(w.catpage.header.btn_pin.text(), "Pinned")
         self.assertFalse(self.tabs().isHidden())
-        self.assertEqual(self.tabs().keys(), ['browse', 'src:steam', 'all'])
+        self.assertEqual(self.tabs().keys(), ['browse', 'games', 'src:steam', 'all'])
         self.assertEqual(self.tabs().current(), 'src:steam')
         self.assertEqual(self.tabs().button('browse').text(), "Browse")
         w.close_category()
         self.assertFalse(self.tabs().isHidden())           # Browse keeps the strip
         self.assertEqual(self.tabs().current(), 'browse')
         w.set_view('grid', save=False)
-        self.assertEqual(self.tabs().button('browse').text(), "All games")
+        self.assertEqual(self.tabs().current(), 'games')
         # Saved, and read back by the next start.
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(nx.LibraryPrefs, 'PATH', Path(d) / 'library.json'):
@@ -1328,7 +1331,7 @@ class Pins(_Rich):
                 w2._on_library({'games': win_games(), 'disks': []}, '')
                 w2.go(w2.LIBRARY)
                 self.pump()
-                self.assertEqual(w2.cat_tabs.keys(), ['browse', 'src:steam', 'all'])
+                self.assertEqual(w2.cat_tabs.keys(), ['browse', 'games', 'src:steam', 'all'])
             finally:
                 stop_leftovers(w2.jobs)
                 w2.close()
@@ -1338,12 +1341,12 @@ class Pins(_Rich):
         w = self.win
         w.prefs.category_pins = ['fav', 'src:steam']
         w.apply_filter()
-        self.assertEqual(self.tabs().keys(), ['browse', 'fav', 'src:steam', 'all'])
+        self.assertEqual(self.tabs().keys(), ['browse', 'games', 'fav', 'src:steam', 'all'])
         w.open_category('src:steam')
         self.assertEqual(w.catpage.header.btn_pin.text(), "Pinned")
         w.catpage.header.btn_pin.click()
         self.assertEqual(w.prefs.category_pins, ['fav'])
-        self.assertEqual(self.tabs().keys(), ['browse', 'fav', 'all'])
+        self.assertEqual(self.tabs().keys(), ['browse', 'games', 'fav', 'all'])
         self.assertEqual(w.catpage.header.btn_pin.text(), "Pin")
         w.catpage.header.btn_pin.click()                   # and back, last
         self.assertEqual(w.prefs.category_pins, ['fav', 'src:steam'])
@@ -1377,6 +1380,60 @@ class Pins(_Rich):
         w.go_back()                                         # history: the pages
         self.assertTrue(self.on_page('fav'))
         QApplication.processEvents()
+
+    def test_all_games_tab(self):
+        """w-116: All games is the second tab, a divider after it, and opens
+        the plain grid (sorted by name on a fresh start) with every game."""
+        w = self.win
+        w.prefs.category_pins = ['fav']
+        w.apply_filter()
+        tabs = self.tabs()
+        self.assertEqual(tabs.keys()[:2], ['browse', 'games'])
+        self.assertIsNotNone(tabs.divider)
+        lay = tabs.seg.layout()
+        self.assertEqual(lay.indexOf(tabs.divider), lay.indexOf(tabs.button('games')) + 1)
+        w.open_category('fav')
+        tabs.button('games').click()
+        self.assertFalse(w._category_open())
+        self.assertIs(w.views.currentWidget(), w.library)
+        self.assertEqual(tabs.current(), 'games')
+        every = {g['slug'] for g in w._games if not g.get('hidden') and not g.get('dup_of')
+                 and nx.is_installed(g)}
+        self.assertEqual(set(w.library.games), every)          # no category: every game
+        tabs.button('browse').click()
+        self.assertIs(w.views.currentWidget(), w.home)
+        self.assertEqual(tabs.current(), 'browse')
+        w.set_view('list', save=False)                     # All games keeps the last of grid/list
+        tabs.button('browse').click()
+        tabs.button('games').click()
+        self.assertIs(w.views.currentWidget(), w.listview)
+
+    def test_letter_jump(self):
+        """w-116: on the grid sorted by name, the A-Z strip lights the
+        letters that have a game; a letter focuses its first tile."""
+        from nexus.gui.letters import letter_of
+        w = self.win
+        w.activateWindow()
+        w.sort.setCurrentIndex(w.sort.findData('name'))
+        self.tabs().button('games').click()
+        self.pump()
+        self.assertFalse(w.letters.isHidden())
+        names = [g.get('display_name') or g['slug'] for g in w._shown_games]
+        lit = {letter_of(n) for n in names}
+        self.assertEqual(set(w.letters.lit()), lit)
+        last = sorted(lit)[-1]
+        first = next(g['slug'] for g in w._shown_games
+                     if letter_of(g.get('display_name') or g['slug']) == last)
+        w.letters.buttons[last].click()
+        self.pump()
+        from PyQt6.QtWidgets import QApplication
+        f = QApplication.focusWidget()
+        self.assertEqual(getattr(f, 'game', {}).get('slug'), first)
+        w.sort.setCurrentIndex(w.sort.findData('most'))       # not by name: no strip
+        self.assertTrue(w.letters.isHidden())
+        w.sort.setCurrentIndex(w.sort.findData('name'))
+        self.tabs().button('browse').click()
+        self.assertTrue(w.letters.isHidden())
 
     def test_all_categories_tab_opens_hub(self):
         w = self.win
@@ -1556,7 +1613,7 @@ class TheatreRows(_Theatre):
         w.set_theatre(False)
         w.go(w.LIBRARY)
         w.apply_filter()
-        self.assertEqual(w.cat_tabs.keys(), ['browse', 'col:Empty', 'fav', 'all'])
+        self.assertEqual(w.cat_tabs.keys(), ['browse', 'games', 'col:Empty', 'fav', 'all'])
         w.cat_tabs.button('col:Empty').click()
         self.assertTrue(self.on_page('col:Empty'))
         self.assertEqual(w.catpage.shown_games(), [])
@@ -1712,6 +1769,19 @@ class TheatreAB(_Theatre):
         hints = dict(w.hints._shown[1])
         self.assertEqual((hints.get('x'), hints.get('y'), hints.get('View'), hints.get('b')),
                          ('Options', 'Pick for me', 'Sort', 'Back'))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Letters(unittest.TestCase):
+    """w-116: the A-Z strip's letters (nexus/gui/letters.py)."""
+
+    def test_letter_of(self):
+        from nexus.gui.letters import first_by_letter, letter_of
+        self.assertEqual([letter_of(n) for n in ("alan wake", "Ōkami", "7 Days to Die",
+                                                 "", "  zeno", "¡Hola!")],
+                         ['A', 'O', '#', '#', 'Z', '#'])
+        self.assertEqual(first_by_letter(["8-bit", "Alpha", "anno", "Beta"]),
+                         {'#': 0, 'A': 1, 'B': 3})
 
 
 if __name__ == '__main__':

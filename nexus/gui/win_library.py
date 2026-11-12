@@ -195,6 +195,7 @@ class LibraryMixin:
         self.cat_tabs.picked.connect(self._cat_tab_picked)
         lay.addWidget(self.cat_tabs)
         self.cat_tabs.hide()
+        self._grid_view = self.prefs.view if self.prefs.view in ('grid', 'list') else 'grid'
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
 
@@ -227,7 +228,17 @@ class LibraryMixin:
         self.cathub.back.connect(self.close_category)
         self.cathub.open_key.connect(self.open_category)
         self.views.addWidget(self.cathub)
-        lay.addWidget(self.views, 1)
+        # All games' A-Z strip (w-116), on the grid's right while it is
+        # sorted by name.
+        self.letters = LetterJump()
+        self.letters.jump.connect(self._letter_jump)
+        self.letters.hide()
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, SP['2'], 0)
+        body.setSpacing(0)
+        body.addWidget(self.views, 1)
+        body.addWidget(self.letters)
+        lay.addLayout(body, 1)
         # A game page's genre or Co-op chip (DetailsPanel.filter_library,
         # when that panel has it) opens that category's page.
         sig = getattr(self.details, 'filter_library', None) if hasattr(self, 'details') else None
@@ -259,6 +270,8 @@ class LibraryMixin:
 
     def set_view(self, key, save=True):
         self._view = key if key in self._views else 'home'
+        if self._view != 'home':
+            self._grid_view = self._view          # All games opens the last of these
         self.view_seg.set_current(self._view)
         self.views.setCurrentWidget(self.view)
         self.size_slider.setVisible(self._view == 'grid')
@@ -348,8 +361,9 @@ class LibraryMixin:
         status = st.get('status')
         if isinstance(status, str) and status.startswith(smart.KEY_PREFIXES):
             self._smart_want = status             # its entry comes with the library
+        # All games starts on Name A-Z until a sort is chosen (w-116).
         for box, key in ((self.sort, 'sort'), (self.filter, 'status')):
-            i = box.findData(st.get(key))
+            i = box.findData(st.get(key, 'name' if key == 'sort' else None))
             if i >= 0:
                 box.blockSignals(True)
                 box.setCurrentIndex(i)
@@ -949,6 +963,7 @@ class LibraryMixin:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
+        self._sync_letters(target, games)
         self._sync_cat_tabs()
         self._refresh_home(empty, pending)
 
@@ -1120,6 +1135,7 @@ class LibraryMixin:
         self._cat_key = key
         self._lib_bar.hide()
         self._lib_chips.hide()
+        self.letters.hide()
         self.views.setCurrentWidget(self.cathub if hub else self.catpage)
         self._refresh_category(sort)
         self._sync_cat_tabs()
@@ -1244,30 +1260,51 @@ class LibraryMixin:
             theatre.pins_changed()
 
     def _sync_cat_tabs(self):
-        """The strip: shown with a pin; its current tab is the place the
-        Library shows (none on a page that isn't pinned)."""
-        pins = self.prefs.category_pins
-        if not pins:
-            self.cat_tabs.hide()
-            return
-        cats = self._pinned_cats()          # one category() per pin: cheap per search key
-        if not cats:
-            self.cat_tabs.hide()
-            return
-        key = self._cat_key if self._category_open() else BROWSE_TAB
-        first = "Browse" if self._view == 'home' else "All games"
-        tabs = [(BROWSE_TAB, first)] + [(c.key, c.title) for c in cats] \
-            + [(categories.HUB, "All categories")]
-        self.cat_tabs.set_tabs(tabs, key)
+        """The strip: Browse · All games │ the pins · All categories (w-116:
+        always there, All games is a fixed tab); its current tab is the
+        place the Library shows (none on a page that isn't pinned)."""
+        cats = self._pinned_cats() if self.prefs.category_pins else []
+        if self._category_open():
+            key = self._cat_key
+        else:
+            key = BROWSE_TAB if self._view == 'home' else GAMES_TAB
+        tabs = [(BROWSE_TAB, "Browse"), (GAMES_TAB, "All games")] \
+            + [(c.key, c.title) for c in cats] + [(categories.HUB, "All categories")]
+        self.cat_tabs.set_tabs(tabs, key, divider_after=GAMES_TAB)
         self.cat_tabs.show()
 
     def _cat_tab_picked(self, key: str):
-        if key == BROWSE_TAB:
+        if key in (BROWSE_TAB, GAMES_TAB):
             self.close_category()
+            view = 'home' if key == BROWSE_TAB else self._grid_view
+            if view != self._view:
+                self.set_view(view)
         elif key == categories.HUB:
             self._open_hub()
         elif not self.open_category(key):
             self._sync_cat_tabs()               # it couldn't open: the tab goes back
+
+    # ---- All games' A-Z strip (w-116) ----
+    def _sync_letters(self, target, games):
+        """Shown on the grid, outside a category page, sorted by name, with
+        a game; the letters that have one are lit."""
+        on = (target is self.library and not self._category_open() and bool(games)
+              and self.sort.currentData() == 'name')
+        if on:
+            names = [g.get('display_name') or g.get('slug') or '' for g in games]
+            self._letter_at = {ch: games[i]['slug']
+                               for ch, i in first_by_letter(names).items()}
+            self.letters.set_lit(self._letter_at)
+        self.letters.setVisible(on)
+
+    def _letter_jump(self, ch: str):
+        """A letter: focus its first game (tile_for builds a far one)."""
+        slug = getattr(self, '_letter_at', {}).get(ch)
+        if slug is None:
+            return
+        t = self.library.tile_for(slug)
+        if t is not None:
+            focus_and_reveal(t)
 
     def _category_empty(self, cat) -> str:
         """The page's line when it has no game."""
@@ -1877,7 +1914,9 @@ from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,
     PRESENCE_AGE, PRESENCE_ARGS, source_of)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
-from .category import BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, NO_GAMES  # noqa: E402
+from .category import (BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, GAMES_TAB,  # noqa: E402
+    NO_GAMES)
+from .letters import first_by_letter, LetterJump  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402

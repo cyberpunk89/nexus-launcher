@@ -988,8 +988,10 @@ class CategoryTabs(QWidget):
         self.setObjectName("CategoryTabs")
         self._h = height
         self._sig = None
+        self._divider_after: str | None = None
         self._titles: dict[str, str] = {}
         self.seg: SegmentedControl | None = None
+        self.divider: QFrame | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(*margins)
         lay.setSpacing(0)
@@ -999,12 +1001,15 @@ class CategoryTabs(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(height + margins[1] + margins[3])
 
-    def set_tabs(self, tabs, current: str | None):
-        """`tabs`: [(key, title)] in order. Never emits `picked`."""
+    def set_tabs(self, tabs, current: str | None, divider_after: str | None = None):
+        """`tabs`: [(key, title)] in order; a thin divider follows the tab
+        `divider_after` (w-116: Browse · All games │ pins). Never emits
+        `picked`."""
         tabs = [(k, t) for k, t in tabs]
-        sig = tuple(tabs)
+        sig = (tuple(tabs), divider_after)
         if sig != self._sig:
             self._sig = sig
+            self._divider_after = divider_after
             self._rebuild(tabs, current)
         elif self.seg is not None and self.seg.current() != (current or ''):
             self.seg.set_current(current if current in self._titles else None,
@@ -1022,6 +1027,16 @@ class CategoryTabs(QWidget):
             b.setToolTip(title)
             b.setAccessibleName(title)
             self._titles[key] = short
+        self.divider = None
+        keys = [k for k, _ in tabs]
+        after = self._divider_after
+        if after in keys and keys.index(after) < len(keys) - 1:
+            div = QFrame(seg)
+            div.setObjectName("TopSep")               # the theme's hairline
+            div.setFixedSize(1, max(12, self._h // 2))
+            seg.layout().insertWidget(keys.index(after) + 1, div, 0,
+                                      Qt.AlignmentFlag.AlignVCenter)
+            self.divider = div
         seg.set_current(current if current in self._titles else None, animate=False)
         seg.changed.connect(self.picked)
         lay = self.layout()
@@ -1055,6 +1070,7 @@ class CategoryTabs(QWidget):
         om = self.layout().contentsMargins()
         avail = self.width() - om.left() - om.right() - m.left() - m.right() \
             - lay.spacing() * (len(buttons) - 1) \
+            - ((self.divider.width() + lay.spacing()) if self.divider is not None else 0) \
             - pad * len(buttons) - sum(fm.horizontalAdvance(self._titles[k]) for k in ends)
         need = sorted(fm.horizontalAdvance(t) for k, t in self._titles.items() if k not in ends)
         cap = None
