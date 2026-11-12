@@ -88,6 +88,7 @@ class PlayMixin:
                     self._sync_selection()
             except RuntimeError:
                 pass
+        self._sync_ribbon()                           # 'Moving' stops while a game runs
 
     def _slow_sync(self, playing: bool):
         """Slow downloads while playing (nexus/slowplay.py): the first game
@@ -233,6 +234,8 @@ class PlayMixin:
     def _launch_expired(self, slugs):
         for slug in slugs:
             self._launching.pop(slug, None)
+        self._sync_ribbon()
+        for slug in slugs:
             g = next((x for x in self._games if x['slug'] == slug), None)
             if g is None:
                 continue
@@ -324,6 +327,7 @@ class PlayMixin:
         slug = game['slug']
         self._session_pending = None
         self._launching[slug] = time.monotonic()
+        self._sync_ribbon()                          # 'Moving' waits while it starts
         self._mark_states()
         game['launching'] = True
         # The windows open before the game starts, so its own can be told

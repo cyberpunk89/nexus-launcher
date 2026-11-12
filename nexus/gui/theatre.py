@@ -227,6 +227,7 @@ class AttractOverlay(QWidget):
     and are painted like the art, so the name can sit on top. Any key or
     click ends it; A / Enter opens the game on screen."""
     open_game = pyqtSignal(dict)
+    running_changed = pyqtSignal()                # shown or hidden (the Ribbon's 'Moving' pauses)
     SLIDE_MS = 14000
     TRAILER_MS = 30000
 
@@ -264,6 +265,14 @@ class AttractOverlay(QWidget):
         self.raise_()
         self.setFocus()
         self._advance()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.running_changed.emit()
+
+    def hideEvent(self, ev):
+        super().hideEvent(ev)
+        self.running_changed.emit()
 
     def stop(self):
         self._next.stop()
@@ -1563,7 +1572,7 @@ class TheatreView(QWidget):
         # its filter is the one in use; only with a public friend to pick.
         cur = str(self.lib_state.get('show') or '')
         together = cur.startswith(smart.FRIENDS_KEY)
-        if FRIENDS.public() or together:
+        if FRIENDS.public_ids() or together:
             items.append(("Play together…", G['check'] if together else G['friends'],
                           self._ask_together, together))
         sheet.choose("Sort & filter", items, focus=focus, keep_open=True)
@@ -1924,7 +1933,7 @@ class TheatreView(QWidget):
                       'slug': e.get('slug')} for e in self._friend_entries],
             settings=settings, discover=not self.tabs.item('discover').isHidden(),
             downloads=not self.tabs.item('downloads').isHidden(), downloads_sub=down,
-            fact=fact_text, a_plays=self.a_plays,
+            fact=fact_text, fact_tags=fact_tags, a_plays=self.a_plays,
             pins=[(c.key, c.title, len(c.games))
                   for c in self._pin_cats],
             groups=categories.browse(self._cat_groups, self.category_prefs().hidden, caps={}),
@@ -2495,7 +2504,7 @@ from .theme import LOOK, TILE_LIFT  # noqa: E402
 from . import ribbon_model  # noqa: E402
 from .ribbon import RibbonView  # noqa: E402
 from .ribbon_model import find  # noqa: E402
-from .theatre_game import fact_line, fact_text, TheatreDetails  # noqa: E402
+from .theatre_game import fact_line, fact_tags, fact_text, TheatreDetails  # noqa: E402
 from .tiles import GameTile  # noqa: E402
 from nexus import categories  # noqa: E402
 from nexus.features import has  # noqa: E402

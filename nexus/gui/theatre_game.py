@@ -60,6 +60,26 @@ def fact_text(g: dict, friends: bool = False) -> str:
     return "&nbsp;&nbsp;·&nbsp;&nbsp;".join(parts)
 
 
+def fact_tags(g: dict) -> tuple:
+    """fact_text's facts as Ribbon tags ((text, role), ...): time played,
+    when, its ProtonDB tier in the tier's colour, an update waiting."""
+    tags = []
+    hours = fmt_hours(played_minutes(g))
+    last = fmt_relative(g.get('last_played'))
+    if hours:
+        tags.append((f"{hours} played", 'subtext'))
+    if last:
+        tags.append((f"Played {last}", 'subtext'))
+    if not hours and not last:
+        tags.append(("Not played yet", 'accent'))
+    tier = g.get('protondb') if has('proton') else None
+    if tier in TIER_COLORS:
+        tags.append((f"ProtonDB {tier.capitalize()}", TIER_COLORS[tier]))
+    if g.get('update_pending'):
+        tags.append(("Update ready", 'warning'))
+    return tuple(tags)
+
+
 def fact_line(name: str = "TheatreMeta") -> QLabel:
     lab = label("", name)
     lab.setTextFormat(Qt.TextFormat.RichText)
@@ -776,21 +796,24 @@ class TheatreDetails(QWidget):
         """Friends (w-82): who owns it (a 2-column grid, playing now
         first, at most 8 then "and N more") and, on the right, the friends
         whose game details are private. Nothing in it is a focus stop, as
-        in Overview. Hidden without friends data or a Steam app id."""
+        in Overview. Hidden without friends data, or for a game with neither
+        a Steam app id nor (Game-db friends, w-84) a store id."""
         g = self.game
         appid = _game_store_id(g) if g else None
-        owners = FRIENDS.owners(appid) if appid is not None else []
-        private = FRIENDS.private() if appid is not None else []
+        known = appid is not None or _store_key(g) is not None
+        owners = FRIENDS.owners_of(g) if known else []
+        private = FRIENDS.private() if known else []
         live = {r['steamid']: r for r in FRIENDS.playing_in(appid)}
         owners.sort(key=lambda r: r['steamid'] not in live)      # stable: minutes after
         now = time.time()
         minutes = {sid: max(0, int((now - (_ts((r.get('playing') or {}).get('since'))
                                            or now)) // 60)) for sid, r in live.items()}
-        sig = (appid, tuple((r['steamid'], r.get('name'), r.get('avatar'),
-                             (r.get('owned') or {}).get(str(appid)), minutes.get(r['steamid']))
-                            for r in owners),
+        played = {r['steamid']: FRIENDS.minutes(r, g) for r in owners}
+        sig = (appid, _store_key(g), tuple((r['steamid'], r.get('name'), r.get('avatar'),
+                                            played[r['steamid']], minutes.get(r['steamid']))
+                                           for r in owners),
                tuple((r['steamid'], r.get('name'), r.get('avatar')) for r in private))
-        show = FRIENDS.usable() and appid is not None and bool(owners or private)
+        show = FRIENDS.usable() and known and bool(owners or private)
         self.drawer.set_section_visible('friends', show)
         if sig == getattr(self, '_friends_sig', None):
             return
@@ -812,7 +835,8 @@ class TheatreDetails(QWidget):
             grid.setHorizontalSpacing(SP['5'])
             grid.setVerticalSpacing(SP['3'])
             for i, r in enumerate(owners[:FRIENDS_SHOWN]):
-                grid.addWidget(self._friend_cell(r, appid, minutes.get(r['steamid'])),
+                grid.addWidget(self._friend_cell(r, played[r['steamid']],
+                                                 minutes.get(r['steamid'])),
                                i // 2, i % 2)
             left.addLayout(grid)
             if n > FRIENDS_SHOWN:
@@ -846,7 +870,7 @@ class TheatreDetails(QWidget):
         lay.addStretch()
 
     @staticmethod
-    def _friend_cell(r: dict, appid, live_minutes) -> QFrame:
+    def _friend_cell(r: dict, played, live_minutes) -> QFrame:
         """One owner: avatar, name, "Playing now · 1 h 20 min" or "41 h
         played". Display only."""
         cell = QFrame()
@@ -863,7 +887,7 @@ class TheatreDetails(QWidget):
             sub = plain_label(f"Playing now · {fmt_duration(live_minutes)}", "TheatreSub")
             sub.setProperty('live', True)
         else:
-            hours = fmt_hours((r.get('owned') or {}).get(str(appid)))
+            hours = fmt_hours(played)
             sub = plain_label(f"{hours} played" if hours else "Not played yet", "TheatreSub")
         col.addWidget(sub)
         cl.addLayout(col, 1)
@@ -1237,7 +1261,7 @@ from .art import (anim_ms, ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS,
     screen_pixmap)  # noqa: E402
 from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # noqa: E402
     played_minutes, SOURCE_LABEL, TIER_COLORS)
-from .friends import _game_store_id, _ts, Avatar, FRIENDS, names_text  # noqa: E402
+from .friends import _game_store_id, _store_key, _ts, Avatar, FRIENDS, names_text  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .widgets import (clear_layout, glyph_pixmap, icon_button, icon_label, label, plain_label,

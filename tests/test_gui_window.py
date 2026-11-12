@@ -3190,17 +3190,12 @@ class Window(unittest.TestCase):
             sys.excepthook(KeyError, KeyError('x'), None)
         self.assertEqual([a[0] for a in toasts[0][1]], ["Details"])
 
-    def test_qt_message_handler_notes_fatal_and_never_raises(self):
-        import sys
-        from PyQt6.QtCore import QtMsgType
-        from nexus.report import crash
-        with mock.patch.object(crash, 'native_note') as note, \
-                mock.patch.object(sys, 'stderr', None):
-            nx.app.qt_message(QtMsgType.QtWarningMsg, None, "just a warning")
-            nx.app.qt_message(QtMsgType.QtFatalMsg, None, "painter died")
-        note.assert_called_once_with("qFatal: painter died")
-        with mock.patch.object(crash, 'native_note', side_effect=OSError):
-            nx.app.qt_message(QtMsgType.QtCriticalMsg, None, "x")        # swallowed
+    def test_no_python_qt_message_handler(self):
+        # A Python message handler deadlocks: Qt's PipeWire thread logs while
+        # holding the loop lock the UI thread waits on with the GIL held.
+        from pathlib import Path
+        src = Path(nx.app.__file__).read_text(encoding='utf-8')
+        self.assertNotIn('qInstallMessageHandler(', src)
 
     def test_recent_debug_tail(self):
         a = self.win.activity

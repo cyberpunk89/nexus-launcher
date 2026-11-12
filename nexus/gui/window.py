@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt, QTimer, QUrl
+from PyQt6.QtCore import QEvent, QProcess, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QDesktopServices, QPainter
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QSplitterHandle,
     QStackedWidget, QVBoxLayout, QWidget)
@@ -203,6 +203,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre = TheatreView()
         self.attract = AttractOverlay(self.theatre)
         self.attract.open_game.connect(self.theatre.open_game)
+        self.attract.running_changed.connect(self._sync_ribbon)
         self._idle_timer = QTimer(self)                 # Theatre's screensaver
         self._idle_timer.setSingleShot(True)
         self._idle_timer.timeout.connect(self._maybe_attract)
@@ -242,6 +243,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.theatre.ribbon_moved.connect(self._ribbon_moved)
         for sh in (self.sheet, self.theatre_sheet, self.theatre_settings):
             sh.closed.connect(self._update_hints)
+            sh.closed.connect(self._sync_ribbon)        # 'Moving' resumes
         # Theatre's system menu (Guide / Start / F10), on the left.
         self.quick = QuickMenu(self.theatre, THEATRE_SCALE)
         self.quick.chosen.connect(self._quick_chosen)
@@ -450,6 +452,9 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.spatial = SpatialNav(self)
         QApplication.instance().installEventFilter(self.spatial)
         self.spatial.moved.connect(self._sound_move)
+        app = QApplication.instance()
+        self._app_active = app.applicationState() == Qt.ApplicationState.ApplicationActive
+        app.applicationStateChanged.connect(self._ribbon_app_state)
         self.ctrl = ControllerInput(self)
         self.ctrl.connected.connect(self._pad_connected)
         self.ctrl.turned_off.connect(self._pad_turned_off)
@@ -859,6 +864,12 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self._sync_selection()
         for w in app.allWidgets():
             w.update()
+        self._sync_ribbon()                        # Glow Off and High contrast stop 'Moving'
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.WindowStateChange and hasattr(self, 'attract'):
+            self._sync_ribbon()                    # minimized: 'Moving' stops
 
     def showEvent(self, ev):
         super().showEvent(ev)

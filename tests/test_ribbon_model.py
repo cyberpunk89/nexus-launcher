@@ -372,6 +372,35 @@ class Nav(unittest.TestCase):
         self.assertIsNone(find(self.cats, 'nowhere', 'game:beta'))
 
 
+class Tags(unittest.TestCase):
+    """Short facts and counts come as soft tags next to `sub` (which stays
+    for screen readers); sentences stay as text."""
+
+    def test_games_category_line_pins_and_folders(self):
+        fact_tags = lambda g: ((f"facts of {g['slug']}", 'subtext'),)
+        cats = categories(feed(fact_tags=fact_tags, groups=GROUPS, pins=[('fav', "Favourites", 1)],
+                               downloads_sub="2 downloading · 1 ready to play"))
+        lib = cat(cats, 'library')
+        self.assertEqual(lib.tags, (("3 games", 'accent'), ("Installed", 'subtext'),
+                                    ("A to Z", 'subtext')))
+        self.assertEqual(lib.items[0].tags, (("1 game", 'accent'),))
+        self.assertEqual(lib.items[1].tags, (("facts of alpha", 'subtext'),))
+        self.assertEqual(lib.items[1].sub, "facts of alpha")       # still there
+        col = cat(cats, 'collections')
+        self.assertEqual(col.tags, (("5 categories", 'accent'),))
+        self.assertEqual(col.items[0].tags, (("1 game", 'accent'),))
+        self.assertEqual(col.items[-1].tags, (("1 category", 'accent'),))
+        self.assertEqual(cat(cats, 'downloads').tags,
+                         (("2 downloading", 'accent'), ("1 ready to play", 'accent')))
+
+    def test_sentences_and_settings_stay_text(self):
+        cats = categories(feed())
+        self.assertEqual(cat(cats, 'library').items[0].tags, ())     # no fact_tags given
+        self.assertTrue(all(not it.tags for it in cat(cats, 'settings').items))
+        self.assertEqual(cat(cats, 'discover').items[0].tags, ())
+        self.assertEqual(rm.split_tags(""), ())
+
+
 class StepValue(unittest.TestCase):
     def test_wraps_or_stops(self):
         st = cat(categories(feed()), 'settings')

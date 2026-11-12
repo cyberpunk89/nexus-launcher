@@ -412,21 +412,93 @@ def _iso(ts) -> str | None:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec='seconds')
 
 
-def by_app(friends: dict) -> dict[str, list[str]]:
-    """{appid: [steamid, …]} over friends whose game details are public,
-    most minutes played first."""
+def by_app(friends: dict, extra: list | None = None) -> dict[str, list[str]]:
+    """{appid: [id, …]} over friends whose game details are public, most
+    minutes played first. `extra` are Game-db rows (keyed by their `id`)."""
     idx: dict[str, list[tuple[int, str]]] = {}
     for sid, rec in friends.items():
         if rec.get('visible') is False:
             continue
         for appid, minutes in (rec.get('owned') or {}).items():
             idx.setdefault(str(appid), []).append((int(minutes or 0), sid))
+    for r in extra or ():
+        for appid, minutes in (r.get('owned') or {}).items():
+            idx.setdefault(str(appid), []).append((int(minutes or 0), r['id']))
     return {a: [s for _m, s in sorted(v, key=lambda x: (-x[0], x[1]))]
             for a, v in sorted(idx.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0)}
 
 
+def by_store(rows: list) -> dict[str, list[str]]:
+    """{"store:storeId": [id, …]} for games known by a store id (Epic, GOG
+    and other non-Steam stores, from Game-db friends), most minutes first."""
+    idx: dict[str, list[tuple[int, str]]] = {}
+    for r in rows:
+        for key, minutes in (r.get('owned_store') or {}).items():
+            idx.setdefault(key, []).append((int(minutes or 0), r['id']))
+    return {k: [i for _m, i in sorted(v, key=lambda x: (-x[0], x[1]))]
+            for k, v in sorted(idx.items())}
+
+
+# ── Game-db friends (receive-only) ────────────────────────────────────────
+
+def _gamedb_part(cfg: dict, force: bool, presence: bool = False) -> dict | None:
+    """gamedb.friends() when Game-db friends are live (cache-only otherwise
+    unless the feature is on or `force`; always for `presence`, so a slow
+    Game-db never delays who plays what), else None: then the answer is
+    exactly the Steam-only one."""
+    try:
+        from nexus import gamedb
+        if not gamedb.friends_live():
+            return None
+        part = gamedb.friends(refresh=force and not presence,
+                              cache_only=presence or not (cfg.get('enabled') or force))
+    except Exception:                   # Game-db must never break Steam friends
+        return None
+    return None if part.get('status') == 'off' else part
+
+
+def _gamedb_rows(part: dict) -> list[dict]:
+    """Game-db friends in the --friends row shape, plus `id`, `source` and
+    `owned_store`. `steamid` is their real SteamID64 or None."""
+    updated = _iso(part.get('updated'))
+    rows = []
+    for f in part.get('friends') or ():
+        if not (isinstance(f, dict) and isinstance(f.get('id'), str)
+                and f['id'].startswith('gdb:')):
+            continue                    # a bad row never breaks Steam friends
+        owned: dict[str, int] = {}
+        owned_store: dict[str, int] = {}
+        for o in f.get('owned') if isinstance(f.get('owned'), list) else ():
+            if not isinstance(o, dict):
+                continue
+            m = o.get('minutes')
+            m = m if isinstance(m, int) and not isinstance(m, bool) and m > 0 else 0
+            appid, store, sid = o.get('appid'), o.get('store'), o.get('storeId')
+            appid = appid if isinstance(appid, int) and not isinstance(appid, bool) else None
+            store = store if isinstance(store, str) else None
+            sid = sid if isinstance(sid, str) else None
+            if appid is None and store == 'steam' and sid and sid.isdigit():
+                appid = int(sid)
+            if appid:
+                owned[str(appid)] = max(owned.get(str(appid), 0), m)
+            if store and sid and store != 'steam':
+                key = f'{store}:{sid}'
+                owned_store[key] = max(owned_store.get(key, 0), m)
+        rows.append({'id': f['id'], 'source': 'gamedb', 'steamid': f.get('steamid'),
+                     'name': f.get('name'), 'avatar': f.get('avatar'), 'visible': True,
+                     'private_reason': None, 'owned': owned, 'owned_store': owned_store,
+                     'evidence': {}, 'playing': None,
+                     'owned_at': f['owned_at'] if isinstance(f.get('owned_at'), str) else updated,
+                     'fetched_at': {'summary': None, 'owned': updated}})
+    return rows
+
+
 def answer(state: dict, cfg: dict, who: dict, error: dict | None,
-           now: float | None = None) -> dict:
+           now: float | None = None, gamedb: dict | None = None) -> dict:
+    """The --friends JSON. `gamedb` (gamedb.friends()' answer, or None when
+    Game-db friends are off) adds Game-db rows and only additive fields:
+    `id` and `source` on every row, `by_store`, `sources`, `gamedb` and
+    `counts.gamedb`. Top-level `error` stays Steam's."""
     now = time.time() if now is None else now
     fresh = now - (state['meta'].get('summary_at') or 0) < PLAYING_STALE
     rows = []
@@ -438,23 +510,36 @@ def answer(state: dict, cfg: dict, who: dict, error: dict | None,
         r['owned_at'] = _iso(rec.get('owned_at'))
         fa = rec.get('fetched_at') or {}
         r['fetched_at'] = {'summary': _iso(fa.get('summary')), 'owned': _iso(fa.get('owned'))}
+        if gamedb is not None:
+            r['id'], r['source'] = r['steamid'], 'steam'
         rows.append(r)
+    extra = _gamedb_rows(gamedb) if gamedb is not None else []
+    rows += extra
     rows.sort(key=lambda r: (r['playing'] is None, r['visible'] is False,
                              (r['name'] or r['steamid']).casefold()))
     public = sum(1 for r in rows if r['visible'] is not False)
     meta = state['meta']
-    return {
+    out = {
         'enabled': bool(cfg.get('enabled')),
         'me': who.get('steamid'),
         'account': {'persona': who.get('persona'), 'source': who.get('source')},
         'friends': rows,
-        'by_app': by_app(state['friends']),
+        'by_app': by_app(state['friends'], extra),
         'counts': {'total': len(rows), 'public': public, 'private': len(rows) - public,
                    'playing': sum(1 for r in rows if r['playing'])},
         'updated': _iso(meta.get('summary_at') or meta.get('list_at')),
         'evidence': meta.get('evidence') or {},
         'error': error,
     }
+    if gamedb is not None:
+        gerr = gamedb.get('error')
+        out['by_store'] = by_store(extra)
+        out['sources'] = sorted({r['source'] for r in rows})
+        out['gamedb'] = {'updated': _iso(gamedb.get('updated')), 'count': len(extra),
+                         'error': {'kind': gerr.get('kind'), 'message': gerr.get('message')}
+                         if isinstance(gerr, dict) else None}
+        out['counts']['gamedb'] = len(extra)
+    return out
 
 
 def friends(force: bool = False, budget: float | None = None,
@@ -466,6 +551,7 @@ def friends(force: bool = False, budget: float | None = None,
     who = whose(cfg)
     me = who.get('steamid')
     state = load_cache(me)
+    gamedb = _gamedb_part(cfg, force, presence)
     error = None
     if not cfg['key']:
         error = {'kind': 'no-key', 'message': "Add a Steam Web API key in Settings › "
@@ -485,7 +571,7 @@ def friends(force: bool = False, budget: float | None = None,
         last = state['meta'].get('last_error')
         if last:
             error = {'kind': last['kind'], 'message': mask(last['message'], cfg['key'])}
-    return answer(state, cfg, who, error)
+    return answer(state, cfg, who, error, gamedb=gamedb)
 
 
 def cmd_friends(refresh_now: bool, as_json: bool, presence: bool = False) -> None:
@@ -497,17 +583,23 @@ def cmd_friends(refresh_now: bool, as_json: bool, presence: bool = False) -> Non
         return
     c, err = data['counts'], data['error']
     who = data['account'].get('persona') or data['me'] or 'no account'
-    print(f"Steam friends of {who}: {c['total']} · {c['public']} public · "
+    g = c.get('gamedb') or 0           # Game-db friends (w-84) are counted apart
+    print(f"Steam friends of {who}: {c['total'] - g} · {c['public'] - g} public · "
           f"{c['private']} private · {c['playing']} playing now"
+          + (f" · {g} on Game-db" if 'gamedb' in data else '')
           + (f" (updated {data['updated']})" if data['updated'] else ''))
     for f in data['friends']:
         state = (f"playing {f['playing'].get('name') or f['playing'].get('gameid')}"
                  if f['playing'] else
                  f"private ({f['private_reason']})" if f['visible'] is False else
-                 f"{len(f['owned'])} games")
-        print(f"  {f['name'] or f['steamid']}: {state}")
+                 f"{len(f['owned']) + len(f.get('owned_store') or ())} games")
+        print(f"  {f['name'] or f['steamid']}"
+              + (" (Game-db)" if f.get('source') == 'gamedb' else '') + f": {state}")
     if not data['enabled']:
         print("  (Show friends is off in Settings; only --refresh asks Steam.)")
+    gerr = (data.get('gamedb') or {}).get('error')
+    if gerr:
+        print(f"  [!] Game-db: {gerr['message']}", file=sys.stderr)
     if err:
         print(mask(f"  [!] {err['message']}", key), file=sys.stderr)
         if not data['friends']:

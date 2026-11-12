@@ -1030,9 +1030,10 @@ class LibraryMixin:
         """Presence is asked only while it is on screen: desktop Home, or
         Theatre's Home tab (a game page over it counts), with the window
         active. Never with a refused key or a private friends list (asking
-        again can't help)."""
+        again can't help), nor without Steam set up (Game-db friends alone,
+        w-84, have no presence)."""
         if not self.config.get('friends_enabled') or not FRIENDS.usable() \
-                or FRIENDS.error_kind() in ('bad-key', 'private-list'):
+                or FRIENDS.error_kind() in ('bad-key', 'private-list', 'no-key', 'no-account'):
             return False
         if not self.isActiveWindow() or self.isMinimized():
             return False
@@ -1461,7 +1462,7 @@ class LibraryMixin:
         if self._smart_temp:
             keys.append(self._smart_temp)
         # "Play together…" (w-83): only with a public friend to pick.
-        pick = bool(FRIENDS.public())
+        pick = bool(FRIENDS.public_ids())                # Steam friends (w-84)
         sig = (tuple((k, self._smart_label(k)) for k in keys), cur, pick)
         if sig == self._smart_sig:
             return
@@ -1550,7 +1551,7 @@ class LibraryMixin:
         own. Show N games sets the filter `friends:<ids>[:multi]` (Theatre:
         its Library's Show); Save as shelf (desktop only) makes a shelf with
         a "Friends own (all of)" rule. `key` starts it on those friends."""
-        if not alive(self) or not FRIENDS.public():
+        if not alive(self) or not FRIENDS.public_ids():
             return
         parsed = smart.parse_friends_key(key) if key else None
         picked, multi = parsed if parsed else ([], True)
@@ -1562,7 +1563,8 @@ class LibraryMixin:
             pool = [g for g in self._shelf_pool() if in_own(g)]
         note = ("Not installed ones are in it too. " if any(not is_installed(g) for g in pool)
                 else '') + "Games Nexus can't match to Steam can't be compared."
-        form = PlayTogetherForm(FRIENDS.friends(), pool, self._smart_facts(), picked, multi,
+        steam = [r for r in FRIENDS.friends() if source_of(r) == 'steam']   # w-84
+        form = PlayTogetherForm(steam, pool, self._smart_facts(), picked, multi,
                                 note=note, scale=m.scale)
         self.open_modal(
             "Play together", form, form.primary_text,
@@ -1872,7 +1874,7 @@ from .art import anim_ms, ART  # noqa: E402
 from .dashboard import _game_store_id, _visible_games, mark_duplicates  # noqa: E402
 from ..features import has  # noqa: E402
 from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,  # noqa: E402
-    PRESENCE_AGE, PRESENCE_ARGS)
+    PRESENCE_AGE, PRESENCE_ARGS, source_of)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
 from .category import BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, NO_GAMES  # noqa: E402

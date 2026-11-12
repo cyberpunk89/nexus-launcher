@@ -354,6 +354,142 @@ class Friends(_FakeSteamCase):
                 self.assertEqual(F.api_base(), want)
 
 
+FIXTURE = REPO / 'tests' / 'fixtures' / 'gamedb_friends.json'
+
+
+class GamedbMerge(_FakeSteamCase):
+    """Game-db friends (receive-only) merged into --friends, from the stub."""
+
+    def setUp(self):
+        super().setUp()
+        from nexus import gamedb
+        self.gamedb = gamedb
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, self.tmp, True)
+        for p in (mock.patch.object(gamedb.paths, 'GAMEDB_CACHE', self.tmp / 'gamedb'),
+                  mock.patch.object(gamedb, '_request', side_effect=AssertionError('net')),
+                  mock.patch.dict(os.environ, {})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def stub(self, payload=None):
+        path = self.tmp / 'stub.json'
+        path.write_text(FIXTURE.read_text() if payload is None else json.dumps(payload))
+        os.environ[self.gamedb.FRIENDS_STUB_ENV] = str(path)
+        return path
+
+    def test_rows_carry_source_and_index_covers_store_ids(self):
+        self.stub()
+        data = F.friends()
+        self.assertIsNone(data['error'])
+        rows = {r['id']: r for r in data['friends']}
+        self.assertEqual(rows[A]['source'], 'steam')
+        self.assertEqual(rows[A]['steamid'], A)
+        ana, ben = rows['gdb:fx-ana'], rows['gdb:fx-ben']
+        self.assertEqual((ana['source'], ana['steamid'], ana['name']),
+                         ('gamedb', None, 'Ana Example'))
+        self.assertEqual(ben['steamid'], '76561190000000002')   # kept for a later link
+        self.assertTrue(ana['visible'])
+        self.assertIsNone(ana['playing'])
+        self.assertEqual(ana['owned'], {'620': 120})
+        self.assertEqual(ana['owned_store'], {'epic:example-epic-1': 45})
+        self.assertEqual(data['by_app']['10'], [B, A])
+        self.assertEqual(data['by_app']['620'], ['gdb:fx-ana'])
+        self.assertEqual(data['by_store'], {'epic:example-epic-1': ['gdb:fx-ana'],
+                                            'gog:1000000001': ['gdb:fx-ben']})
+        self.assertEqual(data['sources'], ['gamedb', 'steam'])
+        self.assertEqual(data['counts']['gamedb'], 2)
+        self.assertEqual(data['gamedb']['count'], 2)
+        self.assertIsNone(data['gamedb']['error'])
+
+    def test_stub_off_output_unchanged(self):
+        with mock.patch.object(self.gamedb, 'friends', side_effect=AssertionError('asked')):
+            data = F.friends()
+        self.assertEqual(set(data), {'enabled', 'me', 'account', 'friends', 'by_app',
+                                     'counts', 'updated', 'evidence', 'error'})
+        self.assertEqual(set(data['counts']), {'total', 'public', 'private', 'playing'})
+        for r in data['friends']:
+            self.assertNotIn('source', r)
+            self.assertNotIn('id', r)
+        self.assertEqual(data['by_app'], {'10': [B, A], '20': [A], '30': [B]})
+        self.assertFalse((self.tmp / 'gamedb').exists())
+
+    def test_no_steam_key_still_lists_gamedb(self):
+        self.stub()
+        self.cfg['key'] = None
+        data = F.friends(force=True)
+        self.assertEqual(data['error']['kind'], 'no-key')
+        self.assertEqual(sorted(r['id'] for r in data['friends']),
+                         ['gdb:fx-ana', 'gdb:fx-ben'])
+        self.assertEqual(data['by_store']['gog:1000000001'], ['gdb:fx-ben'])
+        self.assertEqual(self.names(), [])                         # Steam never asked
+
+    def test_gamedb_error_leaves_steam_rows(self):
+        path = self.stub()
+        F.friends()
+        path.write_text(json.dumps({'schema': 3, 'friends': []}))
+        data = F.friends()
+        self.assertIsNone(data['error'])                           # Steam's error
+        self.assertEqual(data['gamedb']['error']['kind'], 'schema')
+        ids = {r['id'] for r in data['friends']}
+        self.assertTrue({A, B, C, D, 'gdb:fx-ana', 'gdb:fx-ben'} <= ids)   # both kept
+        self.assertEqual(data['by_app']['10'], [B, A])
+
+    def test_steam_error_leaves_gamedb_rows(self):
+        self.stub()
+        self.srv.status = {'*': 429}
+        data = F.friends()
+        self.assertEqual(data['error']['kind'], 'rate-limited')
+        self.assertIsNone(data['gamedb']['error'])
+        self.assertEqual(sorted(r['id'] for r in data['friends']),
+                         ['gdb:fx-ana', 'gdb:fx-ben'])
+
+    def test_same_person_two_rows(self):
+        self.stub({'schema': 2, 'friends': [
+            {'id': 'fx-ana2', 'name': 'Ana on Game-db', 'avatar': None, 'steamid': A,
+             'owned': [{'appid': None, 'store': 'gog', 'storeId': '7', 'title': 'G',
+                        'minutes': 3}]}]})
+        data = F.friends()
+        mine = [r for r in data['friends'] if r['steamid'] == A]
+        self.assertEqual(sorted((r['source'], r['id']) for r in mine),
+                         [('gamedb', 'gdb:fx-ana2'), ('steam', A)])
+
+    def test_presence_reads_gamedb_cache_only(self):
+        self.stub()
+        part = {'status': 'fresh', 'friends': [], 'updated': None, 'error': None}
+        with mock.patch.object(self.gamedb, 'friends', return_value=part) as got:
+            F.friends(force=True, presence=True)
+        self.assertEqual(got.call_args.kwargs, {'refresh': False, 'cache_only': True})
+
+    def test_bad_gamedb_rows_never_break_steam(self):
+        self.stub()
+        part = {'status': 'fresh', 'updated': None, 'error': None, 'friends': [
+            'junk', {'name': 'no id'}, {'id': 'gdb:ok', 'name': 'Ok', 'owned': ['junk',
+             {'appid': 'x', 'store': 'gog', 'storeId': '1', 'minutes': 'many'}],
+             'owned_at': '2026-10-01T00:00:00+00:00'}]}
+        with mock.patch.object(self.gamedb, 'friends', return_value=part):
+            data = F.friends()
+        ids = [r['id'] for r in data['friends']]
+        self.assertIn(A, ids)
+        self.assertIn('gdb:ok', ids)
+        ok = next(r for r in data['friends'] if r['id'] == 'gdb:ok')
+        self.assertEqual(ok['owned_store'], {'gog:1': 0})
+        self.assertEqual(ok['owned_at'], '2026-10-01T00:00:00+00:00')   # its own time
+
+    def test_text_counts_steam_friends_only(self):
+        self.stub()
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+                mock.patch.object(F, 'whose', return_value={'steamid': ME, 'persona': 'Me'}):
+            F.cmd_friends(False, False)
+        head = buf.getvalue().splitlines()[0]
+        self.assertIn("Steam friends of Me: 4 ·", head)
+        self.assertIn("2 on Game-db", head)
+        self.assertIn("Ana Example (Game-db)", buf.getvalue())
+
+
 class Whose(unittest.TestCase):
     def test_override_then_the_pinned_account(self):
         self.assertEqual(F.whose({'steamid': ME})['steamid'], ME)

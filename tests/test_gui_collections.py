@@ -99,20 +99,21 @@ class Prefs(unittest.TestCase):
         c = nx.LibraryPrefs().controls
         self.assertEqual({k: c[k] for k in ('theatre_start', 'theatre_on_pad', 'sounds',
                                             'volume', 'week_home', 'theatre_layout',
-                                            'ribbon_motion')},
+                                            'ribbon_motion', 'ribbon_classic')},
                          {'theatre_start': 'never', 'theatre_on_pad': False, 'sounds': False,
                           'volume': 50, 'week_home': True, 'theatre_layout': 'tabs',
-                          'ribbon_motion': 'input'})
+                          'ribbon_motion': 'input', 'ribbon_classic': False})
         for bad in ('loud', None, True, [], float('nan')):
             self.path.write_text(json.dumps({'controls': {'volume': bad}}))
             self.assertEqual(nx.LibraryPrefs().controls['volume'], 50, bad)
         self.path.write_text(json.dumps({'controls': {
             'theatre_start': 'tv-ish', 'theatre_on_pad': 'yes', 'sounds': 1, 'volume': 147,
             'week_home': 0, 'theatre_layout': 'grid-ish', 'ribbon_motion': ['live'],
-            'future': {'x': 1}}}))
+            'ribbon_classic': 'yes', 'future': {'x': 1}}}))
         p = nx.LibraryPrefs()
         self.assertEqual(p.controls['theatre_layout'], 'tabs')      # junk: the default
         self.assertEqual(p.controls['ribbon_motion'], 'input')
+        self.assertIs(p.controls['ribbon_classic'], False)       # 'yes' is not a real true
         self.assertEqual(p.controls['theatre_start'], 'never')
         self.assertFalse(p.controls['theatre_on_pad'])          # only a real true
         self.assertFalse(p.controls['sounds'])
@@ -120,20 +121,23 @@ class Prefs(unittest.TestCase):
         self.assertTrue(p.controls['week_home'])                 # only a real false hides it
         self.path.write_text(json.dumps({'controls': {'volume': 34, 'theatre_start': 'tv',
                                                       'theatre_layout': 'ribbon',
-                                                      'ribbon_motion': 'still',
+                                                      'ribbon_motion': 'live',
+                                                      'ribbon_classic': True,
                                                       'future': {'x': 1}}}))
         p = nx.LibraryPrefs()
         self.assertEqual(p.controls['volume'], 30)               # steps of 10
         self.assertEqual(p.controls['theatre_start'], 'tv')
         self.assertEqual((p.controls['theatre_layout'], p.controls['ribbon_motion']),
-                         ('ribbon', 'still'))
+                         ('ribbon', 'live'))
+        self.assertIs(p.controls['ribbon_classic'], True)
         p.controls = {**p.controls, 'sounds': True}
         p.save()
         data = json.loads(self.path.read_text())['controls']
         self.assertEqual(data['future'], {'x': 1})
         self.assertTrue(data['sounds'])
         self.assertEqual(data['volume'], 30)
-        self.assertEqual((data['theatre_layout'], data['ribbon_motion']), ('ribbon', 'still'))
+        self.assertEqual((data['theatre_layout'], data['ribbon_motion']), ('ribbon', 'live'))
+        self.assertIs(data['ribbon_classic'], True)
 
     def test_look_order_and_pin_round_trip(self):
         p = nx.LibraryPrefs()

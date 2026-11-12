@@ -29,7 +29,8 @@ ROWS = (
     ("Controller", 'theatre_on_pad', "Switch to Theatre when a controller connects", SWITCH),
     ("Theatre", 'theatre_layout', "Layout", (('tabs', "Tabs"), ('ribbon', "Ribbon"))),
     ("Theatre", 'ribbon_motion', "Ribbon background",
-     (('input', "Moves when you move"), ('still', "Still"))),
+     (('input', "Moves when you move"), ('still', "Still"), ('live', "Moving"))),
+    ("Theatre", 'ribbon_classic', "Classic colours", SWITCH),
     ("Theatre", 'theatre_start', "Start Nexus in Theatre",
      tuple(zip(THEATRE_STARTS, ("Never", "On a TV", "Always")))),
     ("Theatre", 'attract', "Screensaver",
@@ -44,7 +45,8 @@ HELP = {
     'pad_a': "A busy, running or not installed game always opens its page.",
     'theatre_on_pad': "Only when you plug a controller in or turn it on.",
     'theatre_layout': "Tabs: rows of big tiles. Ribbon: categories on one line, games under them.",
-    'ribbon_motion': "Always still with reduced motion, Glow off or High contrast.",
+    'ribbon_motion': "Moving uses more power. Always still with reduced motion, Glow off or High contrast.",
+    'ribbon_classic': "The Ribbon's colour follows the month, its brightness the time of day.",
     'theatre_start': "On a TV: when the screen Nexus opens on is 32\" or bigger.",
     'attract': "Shows off your games when Theatre sits untouched.",
     'week_home': "Your play time this week, under Jump back in.",
@@ -242,7 +244,8 @@ class TheatreSettings(ActionSheet):
         under Tabs."""
         rows = self.rows_by_key
         rows['volume'].setEnabled(bool(rows['sounds'].value))
-        rows['ribbon_motion'].setEnabled(rows['theatre_layout'].value == 'ribbon')
+        for key in ('ribbon_motion', 'ribbon_classic'):
+            rows[key].setEnabled(rows['theatre_layout'].value == 'ribbon')
 
     def _stepped(self, key: str, value):
         if key in ('sounds', 'theatre_layout'):

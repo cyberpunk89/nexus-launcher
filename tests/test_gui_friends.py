@@ -71,6 +71,23 @@ class StatusText(unittest.TestCase):
                          "Not asked yet: Refresh now asks Steam.")
 
 
+    @unittest.skipIf(nx is None, "PyQt6 not available")
+    def test_gamedb_only_wording(self):
+        """w-84: no Steam key, Game-db live: no Steam wording, Game-db's time."""
+        st = gsettings.friends_status_text
+        no_key = {'kind': 'no-key', 'message': 'Add a key'}
+        g = {'updated': '2026-11-05T09:00:00+00:00', 'count': 2, 'error': None}
+        now = datetime.fromisoformat(g['updated']).timestamp() + 125
+        data = {**ANSWER, 'error': no_key, 'gamedb': g}
+        self.assertEqual(st(data, now=now), "2 on Game-db \u00b7 updated 2 min ago")
+        self.assertEqual(st({**data, 'gamedb': {**g, 'count': 0}}, now=now),
+                         "Nobody on Game-db shares with you yet")
+        self.assertEqual(st({**ANSWER, 'counts': {'total': 2, 'public': 2, 'private': 0},
+                             'gamedb': g}, now=now + 3 * 3600),
+                         "No friends on this Steam account \u00b7 2 on Game-db \u00b7 "
+                         "updated 2 h ago")
+
+
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class FriendsGroup(unittest.TestCase):
     def setUp(self):
@@ -168,6 +185,35 @@ class FriendsGroup(unittest.TestCase):
             self.assertIn('STEAM_WEB_API_KEY', page.fr_key.placeholderText())
             self.assertTrue(page.fr_enabled.isEnabled())
 
+    def test_gamedb_row_says_you_share_nothing_only_when_live(self):
+        from nexus import gamedb
+        page = self.page()                                     # not live: hidden, no ask
+        row = page.rows['accounts.friends_gamedb']
+        self.assertFalse(row.available)
+        self.assertTrue(row.isHidden())
+        self.assertEqual(self.friends_calls(), [])
+        with mock.patch.dict(os.environ, {gamedb.FRIENDS_STUB_ENV: '/nonexistent.json'}):
+            page = self.page()                                 # live, still no Steam key
+        row = page.rows['accounts.friends_gamedb']
+        self.assertEqual(self.friends_calls(), [['--friends', '--json']])
+        self.assertTrue(page.fr_enabled.isEnabled())
+        self.assertIn("Steam friends need a Steam Web API key", page.fr_enabled_row.desc.text())
+        cb = [c for args, c in self.calls if '--friends' in args][-1]
+        ans = merged([], [gdb_row('ana', "Ana"), gdb_row('ben', "Ben")],
+                     {'kind': 'no-key', 'message': 'Add a key'})
+        ans['gamedb']['error'] = {'kind': 'rate', 'message': "Game-db is rate-limiting"}
+        cb(ans, '')
+        self.assertTrue(row.available)
+        self.assertEqual(row.desc.text(),
+                         "2 people share their library with you \u00b7 You share: nothing")
+        self.assertIn("rate-limiting", row.note.text())
+        self.assertTrue(page.fr_status_row.desc.text().startswith("2 on Game-db"))
+        self.assertTrue(page.fr_status_row.error.isHidden())  # no Steam key is fine here
+        self.assertFalse(row.findChildren(QPushButton))        # no share control, ever
+        self.assertFalse(row.findChildren(gsettings.Switch))
+        cb(answer([]), '')                                     # Game-db off again
+        self.assertFalse(row.available)
+
     def test_settings_search_finds_it(self):
         page = self.page()
         for q in ('friends', 'who owns', 'web api', 'steamid64'):
@@ -221,6 +267,34 @@ def crowd():
     return rows
 
 
+def gdb_row(fid, name, owned=None, owned_store=None, steamid=None):
+    """A made-up Game-db friend row as `--friends --json` gives it."""
+    return {'id': f'gdb:{fid}', 'source': 'gamedb', 'steamid': steamid, 'name': name,
+            'avatar': None, 'visible': True, 'private_reason': None, 'evidence': {},
+            'owned': {str(a): m for a, m in (owned or {}).items()},
+            'owned_store': dict(owned_store or {}), 'playing': None}
+
+
+def merged(rows, gdb_rows, error=None):
+    """answer() with Game-db rows merged in, as the CLI does when it is live."""
+    ans = answer([{**r, 'id': r['steamid'], 'source': 'steam'} for r in rows], error)
+    ans['friends'] = ans['friends'] + gdb_rows
+    for r in gdb_rows:
+        for a, m in r['owned'].items():
+            ans['by_app'].setdefault(a, []).append(r['id'])
+    by_store = {}
+    for r in gdb_rows:
+        for k in r['owned_store']:
+            by_store.setdefault(k, []).append(r['id'])
+    ans.update(by_store=by_store, sources=sorted({r['source'] for r in ans['friends']}),
+               gamedb={'updated': iso(), 'error': None, 'count': len(gdb_rows)})
+    return ans
+
+
+HEROIC = {'slug': 'heroic-legendary-example-epic-1', 'display_name': 'Example Epic Game',
+          'source': 'heroic', 'launcher': 'heroic://launch/legendary/example-epic-1'}
+
+
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class FriendsStore(unittest.TestCase):
     def setUp(self):
@@ -242,6 +316,42 @@ class FriendsStore(unittest.TestCase):
         self.assertEqual(FRIENDS.owned_by_text([sid(i) for i in range(4)]),
                          "Owned by P00, P01 +2")
         self.assertTrue(FRIENDS.has_owners())
+
+    def test_gamedb_rows_join_by_store_and_survive_no_key(self):
+        ana = gdb_row('ana', "Ana GDB", {10: 5}, {'epic:example-epic-1': 45})
+        FRIENDS.set_answer(merged(crowd(), [ana]))
+        self.assertEqual(FRIENDS.owner_ids_of(HEROIC), ['gdb:ana'])
+        self.assertEqual(FRIENDS.owner_ids(10)[-1], 'gdb:ana')
+        self.assertEqual(FRIENDS.record('gdb:ana')['name'], "Ana GDB")
+        self.assertEqual(FRIENDS.minutes(FRIENDS.record('gdb:ana'), HEROIC), 45)
+        self.assertEqual(FRIENDS.minutes(FRIENDS.record('gdb:ana'),
+                                         {'source': 'steam', 'appid': 10}), 5)
+        self.assertTrue(FRIENDS.two_sources())
+        # No Steam key: the Steam rows go, the Game-db ones stay
+        FRIENDS.set_answer(merged(crowd(), [ana], {'kind': 'no-key', 'message': 'x'}))
+        self.assertTrue(FRIENDS.usable())
+        self.assertEqual([r['id'] for r in FRIENDS.friends()], ['gdb:ana'])
+        self.assertEqual(FRIENDS.owner_ids(10), ['gdb:ana'])
+        self.assertEqual(FRIENDS.private(), [])
+        self.assertFalse(FRIENDS.two_sources())
+        self.assertTrue(FRIENDS.has_owners())
+
+    def test_gamedb_counts_only_with_people(self):
+        no_key = {'kind': 'no-key', 'message': 'x'}
+        FRIENDS.set_answer(merged(crowd(), [], no_key))            # live, nobody shares
+        self.assertFalse(FRIENDS.usable())
+        FRIENDS.set_answer(merged(crowd(), [gdb_row('ana', "Ana")], no_key))
+        self.assertTrue(FRIENDS.usable())
+        self.assertEqual(FRIENDS.steam(), [])
+
+    def test_public_ids_steam_only(self):
+        FRIENDS.set_answer(merged(crowd(), [gdb_row('ana', "Ana GDB", {10: 5},
+                                                    steamid=sid(1))]))
+        ids = FRIENDS.public_ids()
+        self.assertNotIn('gdb:ana', ids)
+        self.assertIn(sid(1), ids)
+        self.assertTrue(all(i.isdigit() for i in ids))
+        self.assertEqual(FRIENDS.record('gdb:ana')['steam_link'], sid(1))
 
     def test_no_key_no_account_or_off_show_nothing(self):
         for ans in (answer(crowd(), {'kind': 'no-key', 'message': 'Add a key'}),
@@ -388,6 +498,18 @@ class GamePageFriends(unittest.TestCase):
         self.assertTrue(box.host.isHidden())
         self.assertTrue(box.none.isHidden())
         self.assertIn("2 friends are private", box.private_text.text())
+
+    def test_heroic_game_shows_gamedb_owner(self):
+        ana = gdb_row('ana', "Ana GDB", owned_store={'epic:example-epic-1': 90})
+        FRIENDS.set_answer(merged(crowd(), [ana]))
+        box = self.show(HEROIC)
+        self.assertFalse(box.isHidden())
+        self.assertEqual(box.count.text(), "1 own it")
+        self.assertEqual([c.rec['name'] for c in box.chips], ["Ana GDB"])
+        self.assertIn("1.5 h played", box.chips[0].toolTip())
+        # A repack with neither an app id nor a store key: still hidden
+        self.assertTrue(self.show({'slug': 'rp', 'display_name': 'Repack', 'source': 'nexus',
+                                   'launcher': '/rp'}).isHidden())
 
     def test_hidden_without_a_key_off_or_for_a_game_steam_cant_match(self):
         FRIENDS.set_answer(answer(crowd(), {'kind': 'no-key', 'message': 'x'}))
@@ -552,6 +674,37 @@ GAMES = [{'slug': 'steam-10', 'display_name': 'Ten', 'source': 'steam', 'appid':
           'launcher': 'steam://rungameid/20', 'installed': False},
          {'slug': 'steam-30', 'display_name': 'Thirty', 'source': 'steam', 'appid': 30,
           'launcher': 'steam://rungameid/30'}]
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class SourceMark(unittest.TestCase):
+    """w-84: a Steam or Game-db mark on people, only with friends from both."""
+
+    def setUp(self):
+        FRIENDS.reset()
+        self.addCleanup(FRIENDS.reset)
+
+    def test_mark_only_with_two_sources(self):
+        from nexus.gui.friends import PersonChip, source_mark
+        from nexus.gui.theme import G
+        ana = gdb_row('ana', "Ana GDB", {10: 5})
+        FRIENDS.set_answer(answer(crowd()))                       # Steam only
+        steam = FRIENDS.record(sid(0))
+        self.assertIsNone(source_mark(steam, 32))
+        self.assertNotIn("on Steam", PersonChip(steam).toolTip())
+        FRIENDS.set_answer(merged(crowd(), [ana]))                # both
+        steam, gdb = FRIENDS.record(sid(0)), FRIENDS.record('gdb:ana')
+        self.assertEqual(source_mark(steam, 32), G['steam'])
+        self.assertEqual(source_mark(gdb, 32), G['gamedb'])
+        self.assertIsNone(source_mark(gdb, 32, ring='bg'))        # never in a stack
+        self.assertIsNone(source_mark(gdb, 16))                   # too small to read
+        self.assertIn("on Game-db", PersonChip(gdb).toolTip())
+        self.assertIn("on Steam", PersonChip(steam).toolTip())
+        chip = PersonChip(gdb)
+        chip.resize(chip.sizeHint())
+        self.assertFalse(chip.grab().isNull())                    # paints the mark
+        FRIENDS.set_answer(merged(crowd(), [ana], {'kind': 'no-key', 'message': 'x'}))
+        self.assertIsNone(source_mark(FRIENDS.record('gdb:ana'), 32))   # one source left
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -844,6 +997,19 @@ class HomeFriendsSmall(_FriendsWindow):
         w.dashboard.set_editing(True)
         self.assertTrue(self.placed())
         w.dashboard.set_editing(False)
+
+    def test_small_gamedb_people_are_never_presence(self):
+        ana = gdb_row('ana', "Ana GDB")
+        FRIENDS.reset()
+        FRIENDS.set_answer(merged([], [ana], {'kind': 'no-key', 'message': 'x'}))
+        self.assertEqual(self.widget().state, 'setup')         # Steam isn't set up
+        FRIENDS.set_answer(merged([], [ana]))
+        self.assertEqual(self.widget().state, 'none')          # no Steam friends
+        FRIENDS.set_answer(merged(self.rows, [ana]))
+        fw = self.widget()
+        self.assertEqual(fw.state, 'live')
+        self.assertNotIn('gdb:ana', [r['steamid'] for r in FRIENDS.online()])
+        self.assertNotIn("Ana GDB", self.texts(fw))
 
     def test_small_refill_keeps_rows_and_focus(self):
         fw = self.widget()
@@ -1182,6 +1348,17 @@ class PlayTogether(_Together):
         w._reload_friends()
         w.apply_filter()
         self.assertEqual(self.pick_index(), -1)
+
+    def test_gamedb_only_people_offer_no_picker(self):
+        w = self.win
+        w.go(w.LIBRARY)
+        self.reply = merged([friend(5, "Fay", visible=False)], [gdb_row('ana', "Ana")])
+        w._reload_friends()
+        w.apply_filter()
+        QApplication.processEvents()
+        self.assertEqual(self.pick_index(), -1)
+        w._play_together()
+        self.assertFalse(w.modal.isVisible())
 
     def test_show_sets_filter_badge_pencil_reopens(self):
         w = self.win

@@ -1859,23 +1859,24 @@ class FriendsWidget(DashWidget):
                            limit=MAX_CARDS if limit == 0 else limit)
 
     def has_content(self, hub):
-        if not hub.config.get('friends_enabled') or not FRIENDS.usable():
+        if not hub.config.get('friends_enabled') or not FRIENDS.steam_usable():
             return False
         if self.size_ == 'small':                # who's online: shown with any public friend
-            return FRIENDS.error_kind() == 'bad-key' or bool(FRIENDS.public())
+            return FRIENDS.error_kind() == 'bad-key' or bool(FRIENDS.steam_public())
         return FRIENDS.error_kind() == 'bad-key' or bool(self._entries(hub))
 
     def _state_of(self, hub) -> str:
+        # Steam friends only (w-84): Game-db friends have no presence.
         if not hub.config.get('friends_enabled') or (
-                FRIENDS.data is not None and not FRIENDS.usable()):
+                FRIENDS.data is not None and not FRIENDS.steam_usable()):
             return 'setup'
         if FRIENDS.data is None:
             return 'loading'
         if FRIENDS.error_kind() == 'bad-key':
             return 'bad-key'
-        if not FRIENDS.friends():
+        if not FRIENDS.steam():
             return 'none'
-        if not FRIENDS.public():
+        if not FRIENDS.steam_public():
             return 'private'
         return 'live'
 
@@ -1982,7 +1983,7 @@ class FriendsWidget(DashWidget):
         entries = self._entries(hub, None) if state == 'live' else []
         playing = [(r, e) for e in entries for r in e['people']]
         online = FRIENDS.online() if state == 'live' else []
-        pub = FRIENDS.public() if state == 'live' else []
+        pub = FRIENDS.steam_public() if state == 'live' else []
         first = [r for r, _e in playing] + [r for r in online
                                            if all(r is not p for p, _e in playing)]
         stack = first + [r for r in pub if all(r is not o for o in first)]

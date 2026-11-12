@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "updated": "2026-11-01T12:00:00.000Z",
+  "nextCursor": null,
+  "friends": [
+    {
+      "id": "fx-ana",
+      "name": "Ana Example",
+      "avatar": "https://avatars.example/ana.png",
+      "steamid": null,
+      "owned": [
+        {"appid": 620, "store": "steam", "storeId": "620", "title": "Example Puzzle Game", "minutes": 120},
+        {"appid": null, "store": "epic", "storeId": "example-epic-1", "title": "Example Epic Game", "minutes": 45}
+      ],
+      "owned_at": "2026-11-01T11:00:00.000Z"
+    },
+    {
+      "id": "fx-ben",
+      "name": "Ben Example",
+      "avatar": null,
+      "steamid": "76561190000000002",
+      "owned": [
+        {"appid": null, "store": "gog", "storeId": "1000000001", "title": "Example GOG Game", "minutes": null}
+      ],
+      "owned_at": "2026-11-01T10:00:00.000Z"
+    }
+  ]
+}

@@ -101,6 +101,204 @@ class Ribbon(unittest.TestCase):
         return rb.state.cat, it.key if it else None
 
     # ---- tests ----
+    # ---- Classic colours (w-110: a setting; the secret code is parked) ----
+    def test_classic_colours_is_a_ribbon_setting(self):
+        from nexus.gui import theatre_settings as ts
+        w = self.win
+        row = next(r for r in ts.ROWS if r[1] == 'ribbon_classic')
+        self.assertEqual(row[2], "Classic colours")
+        self.assertIs(row[3], ts.SWITCH)
+        self.assertIn('ribbon_classic', ts.HELP)
+        self._ribbon()
+        with mock.patch.object(nx.LibraryPrefs, 'save', lambda self: None), \
+                mock.patch.object(w.background, 'ribbon_marks') as marks:
+            w._theatre_setting('ribbon_classic', True)
+            self.assertIs(w.prefs.controls['ribbon_classic'], True)
+            self.assertTrue(w.background.classic)
+            marks.assert_called_once()                            # the marks drift as it turns on
+            w._theatre_setting('ribbon_classic', False)
+            self.assertIs(w.prefs.controls['ribbon_classic'], False)
+            self.assertFalse(w.background.classic)
+            marks.assert_called_once()                            # not again when it turns off
+        s = w.settings
+        self.assertTrue(any(k.endswith('.ribbon_classic') for k in s.rows))
+        s.set_controls({**w.prefs.controls, 'theatre_layout': 'tabs'})
+        self.assertFalse(s.ctl_classic.isEnabled())
+        s.set_controls({**w.prefs.controls, 'theatre_layout': 'ribbon', 'ribbon_classic': True})
+        self.assertTrue(s.ctl_classic.isEnabled())
+        self.assertTrue(s.ctl_classic.isChecked())
+        w.set_theatre(False)
+
+    def test_no_secret_code_on_the_ribbon(self):
+        """The code is parked for later: the arrows, B and A do only what they say."""
+        w = self.win
+        rb = self._ribbon()
+        K = Qt.Key
+        for k in (K.Key_Up, K.Key_Up, K.Key_Down, K.Key_Down, K.Key_Left, K.Key_Right,
+                  K.Key_Left, K.Key_Right, K.Key_B, K.Key_A):
+            self._press(k, rb)
+        self.assertFalse(w.prefs.controls['ribbon_classic'])
+        w.set_theatre(False)
+
+    def test_classic_colours_and_marks_paint_in_the_band(self):
+        from datetime import datetime
+        from nexus.gui import ribbon as rbm
+        from nexus.gui.theme import LOOK
+        w = self.win
+        self._ribbon()
+        bg = w.background
+        self.assertEqual(bg.ribbon, 'input')
+        light = LOOK['light']
+        self.assertEqual(bg._ribbon_color().rgb(), rbm.ribbon_color(bg._tint, light).rgb())
+        w._apply_controls({'ribbon_classic': True})
+        self.assertTrue(bg.classic)
+        when = datetime(2026, 3, 10, 14, 0)
+        with mock.patch('nexus.gui.widgets.datetime') as dt:
+            dt.now.return_value = when
+            self.assertEqual(bg._ribbon_color().rgb(), rbm.classic_color(when, light).rgb())
+        w._apply_controls({'ribbon_classic': False})
+        self.assertFalse(bg.classic)
+        w._apply_controls({'ribbon_classic': True})
+        rects = []
+        with mock.patch.object(bg, 'update', lambda *a: rects.append(a)):
+            with mock.patch.object(art, 'MOTION', True):
+                bg.ribbon_marks()
+                self.assertTrue(bg._marks_timer.isActive())
+                bg._marks_tick()
+                self.assertTrue(rects)
+                band = bg._ribbon_band().toAlignedRect()
+                self.assertTrue(all(len(a) == 1 and a[0] == band for a in rects))
+                bg._marks_t0 -= bg.MARKS_MS / 1000 + 1
+                bg._marks_tick()
+                self.assertFalse(bg._marks_timer.isActive())
+                self.assertIsNone(bg._marks)
+            for why in ('motion', 'contrast', 'glow'):
+                with mock.patch.object(art, 'MOTION', why != 'motion'), \
+                        mock.patch.dict(LOOK, {'contrast': why == 'contrast',
+                                               'glow': 0 if why == 'glow' else 1.0}):
+                    bg.ribbon_marks()
+                    self.assertFalse(bg._marks_timer.isActive(), why)
+        bg.update()
+        bg.grab()                                                 # paints with a colour, no qFatal
+        with mock.patch.object(art, 'MOTION', True):
+            bg.ribbon_marks()
+            bg.grab()                                             # and with marks
+        bg._marks_timer.stop()
+        w.set_theatre(False)
+
+    def test_live_timer_runs_only_when_awake(self):
+        from nexus.gui.theme import LOOK
+        w = self.win
+        K = Qt.ApplicationState
+        bg = w.background
+        rb = self._ribbon()
+        running = lambda: bg._live_timer.isActive()  # noqa: E731
+        with mock.patch.object(art, 'MOTION', True):
+            self.assertFalse(running())                           # 'input': no timer
+            w._apply_controls({'ribbon_motion': 'live'})
+            self.assertEqual(bg.ribbon, 'live')
+            w._ribbon_app_state(K.ApplicationActive)
+            self.assertTrue(running())
+            w._ribbon_app_state(K.ApplicationInactive)            # the window lost focus
+            self.assertFalse(running())
+            w._ribbon_app_state(K.ApplicationActive)
+            self.assertTrue(running())
+            w._playing = {'alpha'}                                # a game runs
+            w._sync_ribbon()
+            self.assertFalse(running())
+            w._playing = set()
+            w._sync_ribbon()
+            self.assertTrue(running())
+            w.attract.show()                                      # the screensaver
+            self.assertFalse(running())
+            w.attract.hide()
+            self.assertTrue(running())
+            rb.select('library', 'game:alpha')                    # a page over the Ribbon
+            self._press(Qt.Key.Key_Return, rb)
+            self._pump()
+            self.assertTrue(w.theatre.details.isVisible())
+            self.assertFalse(running())
+            w._escape()
+            self._pump()
+            self.assertFalse(w.theatre.details.isVisible())
+            self.assertTrue(running())
+            w._launching['alpha'] = 0.0                           # a game is starting
+            w._sync_ribbon()
+            self.assertFalse(running())
+            w._launching.clear()
+            w._sync_ribbon()
+            self.assertTrue(running())
+            for name in ('search', 'reader', 'quick', 'theatre_sheet', 'theatre_settings'):
+                ov = getattr(w.theatre, name, None) or getattr(w, name)
+                with mock.patch.object(type(ov), 'isVisible', lambda self, ov=ov: self is ov):
+                    w._sync_ribbon()
+                    self.assertFalse(running(), name)
+                w._sync_ribbon()
+                self.assertTrue(running(), name)
+            with mock.patch.object(type(w), 'isMinimized', lambda self: True):
+                w._sync_ribbon()
+                self.assertFalse(running())
+                w.changeEvent(QEvent(QEvent.Type.WindowStateChange))   # the hook itself
+            w._sync_ribbon()
+            self.assertTrue(running())
+            with mock.patch.object(w, '_sync_ribbon') as sync:
+                w.changeEvent(QEvent(QEvent.Type.WindowStateChange))
+                self.assertTrue(sync.called)
+                sync.reset_mock()
+                w._begin_launch({'slug': 'alpha', 'display_name': 'Alpha'})
+                self.assertTrue(sync.called)
+                sync.reset_mock()
+                w._launch_expired(['alpha'])
+                self.assertTrue(sync.called)
+            w._launching.clear()
+            w._sync_ribbon()
+            for look in ({'contrast': True}, {'glow': 0}):        # High contrast, Glow off
+                with mock.patch.dict(LOOK, look):
+                    w._sync_ribbon()
+                    self.assertFalse(running(), look)
+                w._sync_ribbon()
+                self.assertTrue(running())
+            rects = []
+            with mock.patch.object(bg, 'update', lambda *a: rects.append(a)):
+                bg._live_tick()
+            self.assertEqual(rects, [(bg._ribbon_band().toAlignedRect(),)])
+            w._apply_controls({'ribbon_motion': 'still'})
+            self.assertFalse(running())
+            w._apply_controls({'ribbon_motion': 'live'})
+            self.assertTrue(running())
+            w.set_theatre(False)
+            self.assertFalse(running())
+            w.set_theatre(True)
+            w._sync_ribbon()
+            self.assertTrue(running())
+        with mock.patch.object(art, 'MOTION', False):             # NEXUS_NO_MOTION
+            w._sync_ribbon()
+            self.assertFalse(running())
+        with mock.patch.object(art, 'MOTION', True):
+            w._sync_ribbon()
+            self.assertTrue(running())
+        with mock.patch.object(w, '_sync_ribbon') as sync:
+            w._apply_running(set())
+            self.assertTrue(sync.called)
+        with mock.patch.object(w, '_sync_ribbon') as sync:
+            w.set_appearance(dict(w.prefs.appearance), save=False)
+            self.assertTrue(sync.called)
+        bg._live_timer.stop()
+        w.set_theatre(False)
+
+    def test_moving_is_a_ribbon_background_value(self):
+        """w-110: 'Moving' is the third Ribbon background value, in the
+        Theatre sheet and the desktop combo, with the power warning."""
+        from nexus.gui import theatre_settings as ts
+        row = next(r for r in ts.ROWS if r[1] == 'ribbon_motion')
+        self.assertEqual([v for v, _ in row[3]], ['input', 'still', 'live'])
+        self.assertEqual(dict(row[3])['live'], "Moving")
+        self.assertIn("more power", ts.HELP['ribbon_motion'])
+        s = self.win.settings
+        self.assertEqual([s.ctl_ribbon.itemData(i) for i in range(s.ctl_ribbon.count())],
+                         ['input', 'still', 'live'])
+        self.assertEqual(s.ctl_ribbon.itemText(2), "Moving")
+
     def test_layout_switch_keeps_the_focused_game(self):
         w = self.win
         th = w.theatre
@@ -752,6 +950,70 @@ class Ribbon(unittest.TestCase):
         w.set_theatre(False)
 
 
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Classic(unittest.TestCase):
+    """w-110: the pure pieces of Classic colours."""
+
+    def test_month_hues_are_twelve_accents(self):
+        from datetime import datetime
+        from nexus.gui import ribbon, theme
+        self.assertEqual(len(ribbon.MONTH_ACCENTS), 12)
+        self.assertEqual(sorted(ribbon.MONTH_ACCENTS), sorted(theme.ACCENTS))
+        noon = [ribbon.classic_color(datetime(2026, m, 15, 15), False).name() for m in range(1, 13)]
+        self.assertEqual(len(set(noon)), 12)
+        from PyQt6.QtGui import QColor
+        for m in range(1, 13):
+            want = QColor(theme.ACCENTS[ribbon.MONTH_ACCENTS[m - 1]])
+            got = ribbon.classic_color(datetime(2026, m, 15, 15), False)
+            if want.saturationF() > 0.15:
+                self.assertAlmostEqual(got.hueF(), want.hueF(), delta=0.01, msg=m)
+
+    def test_brightness_follows_the_clock(self):
+        from datetime import datetime
+        from nexus.gui import ribbon
+        vals = [ribbon.classic_color(datetime(2026, 6, 10, h), False) for h in range(24)]
+        v = [c.valueF() for c in vals]
+        self.assertEqual(v.index(max(v)), 15)
+        self.assertGreater(v[15], v[3] + 0.2)
+        self.assertGreaterEqual(min(v), 0.61)
+        self.assertLessEqual(max(v), 1.0)
+        self.assertTrue(all(c.saturationF() <= 0.551 for c in vals))
+        light = [ribbon.classic_color(datetime(2026, 6, 10, h), True) for h in range(24)]
+        self.assertLess(max(c.valueF() for c in light) - min(c.valueF() for c in light), 0.25)
+
+    def test_marks_three_to_seven_never_all_four(self):
+        from nexus.gui import ribbon
+        self.assertEqual(ribbon.MARKS, ('ring', 'triangle', 'box', 'plus'))
+        for seed in range(300):
+            specs = ribbon.mark_specs(seed)
+            self.assertTrue(3 <= len(specs) <= 7, seed)
+            kinds = {sp['kind'] for sp in specs}
+            self.assertTrue(kinds <= set(ribbon.MARKS) and len(kinds) <= 3, seed)
+        self.assertEqual(ribbon.mark_specs(5), ribbon.mark_specs(5))
+
+    def test_marks_stay_faint(self):
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QColor, QImage, QPainter
+        from nexus.gui import ribbon
+        for light in (False, True):
+            top = 0
+            for seed in range(25):
+                specs = ribbon.mark_specs(seed)
+                for t in (0.0, 0.3, 0.5, 0.8, 1.0):
+                    img = QImage(400, 120, QImage.Format.Format_ARGB32)
+                    img.fill(Qt.GlobalColor.transparent)
+                    p = QPainter(img)
+                    ribbon.paint_marks(p, QRectF(0, 0, 400, 120), t, QColor('#ffffff'), specs)
+                    p.end()
+                    a = max(img.pixelColor(x, y).alpha() for x in range(0, 400, 2)
+                            for y in range(0, 120, 2)) if t in (0.0, 0.5) else 0
+                    if t == 0.0:
+                        self.assertEqual(a, 0, seed)
+                    top = max(top, a)
+            self.assertGreater(top, 20)                           # something is painted
+            self.assertLessEqual(top, int(0.45 * 255) + 2)        # outlines only, under the cap
+
+
 class Wording(unittest.TestCase):
     """The layout is the Ribbon: no other console's name for it anywhere.
     The pad code may name the hardware it drives (hid-playstation, SDL's
@@ -759,6 +1021,7 @@ class Wording(unittest.TestCase):
     the brand check."""
     BANNED = re.compile(r'XMB|Xross\s*Media\s*Bar', re.IGNORECASE)
     BRAND = re.compile(r'playstation', re.IGNORECASE)
+    OWNER = re.compile(r'sony', re.IGNORECASE)
     HARDWARE = ('gamepad.py', 'platform')
 
     def test_no_banned_names(self):
@@ -777,6 +1040,15 @@ class Wording(unittest.TestCase):
             text = (REPO / 'nexus' / 'gui' / name).read_text(encoding='utf-8')
             self.assertIn("Ribbon", text)
             self.assertIsNone(self.BRAND.search(text))
+            self.assertIsNone(self.OWNER.search(text))
+
+    def test_marks_are_original(self):
+        """w-110: the marks are thin original outlines: a plus, not a cross,
+        and a box; never the four-shape set in one go."""
+        from nexus.gui import ribbon
+        self.assertEqual(ribbon.MARKS, ('ring', 'triangle', 'box', 'plus'))
+        text = (REPO / 'nexus' / 'gui' / 'ribbon.py').read_text(encoding='utf-8')
+        self.assertIsNone(re.search(r'cross|square', text, re.IGNORECASE))
 
 
 if __name__ == '__main__':

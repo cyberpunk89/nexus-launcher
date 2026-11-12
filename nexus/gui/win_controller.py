@@ -47,6 +47,8 @@ class ControllerMixin:
 
     def _apply_controls(self, controls: dict | None = None):
         """Settings → Controls, applied at once (a library preference)."""
+        classic_on = bool(controls and controls.get('ribbon_classic') is True
+                          and not self.prefs.controls.get('ribbon_classic'))
         if controls is not None:
             self.prefs.controls = {**self.prefs.controls, **controls}
             if 'close_to_tray' in controls:
@@ -65,6 +67,8 @@ class ControllerMixin:
         self.sounds.configure(self.prefs.controls['sounds'], self.prefs.controls['volume'])
         self.theatre.set_layout(self.prefs.controls['theatre_layout'])      # w-108
         self._sync_ribbon()
+        if classic_on:
+            self.background.ribbon_marks()          # Classic colours just turned on (w-110)
         self.theatre.refresh_ribbon()               # A plays, the Settings items
         self.sync_tray()
         if hasattr(self, 'hints'):
@@ -73,7 +77,24 @@ class ControllerMixin:
     def _sync_ribbon(self):
         """The background's ribbon: in Theatre with the Ribbon layout only."""
         on = getattr(self, '_theatre', False) and self.theatre.layout_mode == 'ribbon'
-        self.background.set_ribbon(self.prefs.controls['ribbon_motion'] if on else 'off')
+        self.background.set_ribbon(self.prefs.controls['ribbon_motion'] if on else 'off',
+                                   self.prefs.controls['ribbon_classic'])
+        self.background.set_ribbon_awake(on and self._ribbon_awake())
+
+    def _ribbon_awake(self) -> bool:
+        """Whether 'Moving' may run: the app is active, no game runs or starts,
+        the screensaver is off, and the Ribbon itself shows (no page over it)."""
+        th = self.theatre
+        return bool(getattr(self, '_app_active', True) and not self.isMinimized()
+                    and not self._playing and not self._launching
+                    and not self.attract.running
+                    and th.pages.currentWidget() is th.ribbon and not th.details.isVisible()
+                    and not (th.search.isVisible() or th.reader.isVisible()
+                             or self.quick.isVisible() or self._open_sheet() is not None))
+
+    def _ribbon_app_state(self, state):
+        self._app_active = state == Qt.ApplicationState.ApplicationActive
+        self._sync_ribbon()
 
     def _open_on_play(self, game):
         self._tile_clicked(game, Qt.KeyboardModifier.NoModifier)

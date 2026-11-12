@@ -183,6 +183,8 @@ class LibraryPrefs:
             THEATRE_LAYOUTS else 'tabs',
             'ribbon_motion': ctl.get('ribbon_motion') if ctl.get('ribbon_motion') in
             RIBBON_MOTIONS else 'input',
+            # Classic colours on the Ribbon (w-110): only the code toggles it.
+            'ribbon_classic': ctl.get('ribbon_classic') is True,
         }
         # Your notes on a game (the details panel's Notes section).
         notes = self._data.get('notes')

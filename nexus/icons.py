@@ -29,6 +29,7 @@ ICONS = {
     'pause':          '\ue12e',  # pause
     'more':           '\ue0b7',  # ellipsis-vertical
     'steam':          '\U000f04d3',  # md-steam (Nerd Font)
+    'gamedb':         '\ue0ad',  # database (Game-db source mark)
     'folder':         '\ue0d7',  # folder
     'save':           '\ue14d',  # save
     'image':          '\ue0f6',  # image

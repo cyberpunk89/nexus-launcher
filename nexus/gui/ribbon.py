@@ -8,7 +8,9 @@ the background's ribbon: an original sheet of thin curves (sine waves with
 a drift), drawn additively on dark themes; GradientBackground paints it."""
 
 import math
+import random
 import re
+from datetime import datetime
 from html import unescape
 
 from PyQt6.QtCore import pyqtSignal, QEasingCurve, QPointF, QRect, QRectF, Qt, QVariantAnimation
@@ -18,7 +20,7 @@ from PyQt6.QtWidgets import QWidget
 
 from .ribbon_model import (clamp, column, columns, crumbs, current, find, nav, resolve,
                            RibbonState)
-from .theme import FONTS, FS, G, GRAD, LOOK, P, R
+from .theme import ACCENTS, FONTS, FS, G, GRAD, LOOK, P, R
 
 
 # ---- the background's ribbon ----
@@ -100,6 +102,80 @@ def ribbon_color(tint: QColor, light: bool) -> QColor:
     if h >= 0 and not light:                     # -1 for greys (Pitfalls - Qt §3)
         c = QColor.fromHsvF(h, min(s, 0.55), max(v, 0.85))
     return c
+
+
+# Twelve of Nexus's own accents, one per month, January first.
+MONTH_ACCENTS = ('blue', 'silver', 'mint', 'rose', 'teal', 'gold',
+                 'coral', 'sky', 'iris', 'love', 'foam', 'pine')
+
+
+def classic_color(now: datetime, light: bool) -> QColor:
+    """The ribbon's colour with Classic colours on: the month's accent for
+    the hue, the time of day for the brightness. Dark themes: saturation at
+    most 0.55, value from about 0.62 at 3 am up to 1.0 at 3 pm. Light
+    themes keep the accent and only vary its value a little."""
+    c = QColor(ACCENTS[MONTH_ACCENTS[now.month - 1]])
+    h, s, v, _ = c.getHsvF()
+    day = math.cos(2 * math.pi * ((now.hour + now.minute / 60) - 15) / 24)   # 1 at 15:00
+    if light:
+        return QColor.fromHsvF(max(h, 0.0), s, max(0.0, min(1.0, v * (0.92 + 0.08 * day))))
+    return QColor.fromHsvF(max(h, 0.0), min(s, 0.55), 0.81 + 0.19 * day)
+
+
+MARKS = ('ring', 'triangle', 'box', 'plus')
+MARK_ALPHA = 0.45                                # an outline's best alpha (the cap is 0.55)
+
+
+def mark_specs(seed) -> list:
+    """3 to 7 marks, drawn from three of the four kinds (never all four),
+    each in its own slice of the width so none overlaps another."""
+    rnd = random.Random(seed)
+    kinds = rnd.sample(MARKS, 3)
+    n = rnd.randint(3, 7)
+    slots = list(range(n))
+    rnd.shuffle(slots)
+    return [dict(kind=rnd.choice(kinds), slot=slots[i], n=n,
+                 y=rnd.uniform(0.2, 0.8), size=rnd.uniform(0.6, 1.0),
+                 turn=rnd.uniform(-0.4, 0.4), drift=rnd.uniform(-1.0, 1.0),
+                 rise=rnd.uniform(0.04, 0.12)) for i in range(n)]
+
+
+def paint_marks(p: QPainter, rect: QRectF, t: float, color: QColor, specs: list):
+    """The marks at time t (0..1) in `rect`: thin outlines, no fill, fading
+    in and out, drifting slowly up and sideways. Nothing at t <= 0 or >= 1."""
+    fade = max(0.0, min(1.0, t / 0.25, (1.0 - t) / 0.25))
+    if fade <= 0 or rect.width() < 2 or rect.height() < 2:
+        return
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    c = QColor(color)
+    c.setAlphaF(MARK_ALPHA * fade)
+    unit = min(rect.height() * 0.5, rect.width() / 10)
+    for sp in specs:
+        slot_w = rect.width() / sp['n']
+        r = unit * 0.5 * sp['size']
+        r = min(r, slot_w * 0.3)
+        cx = rect.left() + slot_w * (sp['slot'] + 0.5) + sp['drift'] * slot_w * 0.12 * (t - 0.5)
+        cy = rect.top() + rect.height() * (sp['y'] - sp['rise'] * t)
+        p.setPen(QPen(c, max(1.0, unit / 22)))
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(sp['turn'] * 360 * t * 0.25)
+        k = sp['kind']
+        if k == 'ring':
+            p.drawEllipse(QPointF(0, 0), r, r)
+        elif k == 'box':
+            p.drawRoundedRect(QRectF(-r, -r, 2 * r, 2 * r), r * 0.3, r * 0.3)
+        elif k == 'triangle':
+            p.drawPolygon([QPointF(0, -r), QPointF(r * 0.95, r * 0.7), QPointF(-r * 0.95, r * 0.7)])
+        else:
+            a = r * 0.3                                  # a hollow plus: one outline, so no stroke doubles up
+            p.drawPolygon([QPointF(x, y) for x, y in (
+                (-a, -r), (a, -r), (a, -a), (r, -a), (r, a), (a, a),
+                (a, r), (-a, r), (-a, a), (-r, a), (-r, -a), (-a, -a))])
+        p.restore()
+    p.restore()
 
 
 # ---- the view ----
@@ -524,9 +600,12 @@ class RibbonView(QWidget):
             open_f = crumbs(self.state, self.cats)
             title = " › ".join([c.title] + [f.title for f in open_f])
             sub = open_f[-1].sub if open_f else c.sub
+            tags = open_f[-1].tags if open_f else c.tags
             self._text(p, QRectF(x - half, ly, 2 * half, lh), title, f, color('text'),
                        Qt.AlignmentFlag.AlignCenter)
-            if sub:
+            if tags:
+                self._tags(p, tags, x, ly + lh + 4 * u, u, fs, 2 * half, center=True)
+            elif sub:
                 self._text(p, QRectF(x - half, ly + lh, 2 * half, sh), sub, fs,
                            color('muted'), Qt.AlignmentFlag.AlignCenter)
 
@@ -618,8 +697,14 @@ class RibbonView(QWidget):
                                  base, color('muted'))
             elif it.kind == 'folder':
                 vx = tx + min(tw * 0.6, QFontMetrics(base).horizontalAdvance(it.title) + 24 * u)
-                end = self._text(p, QRectF(vx, r.y(), tx + tw - vx, r.height()),
-                                 "·  " + it.sub, base, color('muted'))
+                if it.tags:
+                    sm = font('sm', self.scale)
+                    th = self._tag_h(sm, u)
+                    end, _ = self._tags(p, it.tags, vx, r.center().y() - th / 2, u, sm,
+                                        tx + tw - vx, pad=10.0)
+                else:
+                    end = self._text(p, QRectF(vx, r.y(), tx + tw - vx, r.height()),
+                                     "·  " + it.sub, base, color('muted'))
             self._span(tx, end + 2)
         p.restore()
         return bottom
@@ -635,8 +720,10 @@ class RibbonView(QWidget):
         track_h = 0.0
         if tf is not None:
             track_h = 10 * u + 8 * u + QFontMetrics(tf).height() + 16 * u
-        block = (26 * u if it.kicker else 0) + hh + 6 * u + sh + (16 * u + pill if pill else 0) \
-            + track_h
+        tag_f = font('sm', self.scale, QFont.Weight.DemiBold)
+        line_h = self._tag_h(tag_f, u) + 2 * u if it.tags else sh
+        block = (26 * u if it.kicker else 0) + hh + 6 * u + line_h \
+            + (16 * u + pill if pill else 0) + track_h
         y = r.center().y() - block / 2 if r.height() > block else r.y()
         ends = [tx]
         if it.kicker:
@@ -654,7 +741,11 @@ class RibbonView(QWidget):
                                    font('sm', self.scale), color('muted')))
             self._span(tx, max(ends) + 2)
             return y + sh
-        if it.sub:
+        if it.tags:
+            right, th = self._tags(p, it.tags, tx, y + 2 * u, u, tag_f, tw)
+            ends.append(right)
+            y += th + 2 * u + 16 * u
+        elif it.sub:
             st = self._texts.get((it.sub, int(tw)))
             if st is None:
                 st = QStaticText(it.sub)
@@ -678,6 +769,56 @@ class RibbonView(QWidget):
             y += pill
         self._span(tx, max(ends) + 2)
         return y
+
+    @staticmethod
+    def _tag_h(f: QFont, u: float) -> float:
+        return QFontMetrics(f).height() + 12 * u
+
+    def _tags(self, p, tags, x: float, y: float, u: float, f: QFont, max_w: float,
+              center: bool = False, pad: float = 12.0) -> tuple:
+        """Soft tags in one line from (x, y) (centred on x with `center`):
+        a tinted capsule per (text, role); a role is a palette key or a
+        '#rrggbb' colour (then a dot in it, the text stays plain). Tags that
+        don't fit `max_w` are left out. Returns (right edge, height)."""
+        fm = QFontMetrics(f)
+        h, gap, pad = self._tag_h(f, u), 8 * u, pad * u
+        dot = 8 * u
+        sized = []
+        total = 0.0
+        for text, role in tags:
+            hexed = role.startswith('#')
+            w = fm.horizontalAdvance(text) + 2 * pad + (dot + 6 * u if hexed else 0)
+            if sized and total + gap + w > max_w or not sized and w > max_w:
+                break
+            total += (gap if sized else 0) + w
+            sized.append((text, role, hexed, w))
+        cx = x - total / 2 if center else x
+        p.save()
+        p.setFont(f)
+        for text, role, hexed, w in sized:
+            tint = QColor(role) if hexed else color(role)
+            plain_tag = role == 'subtext'
+            r = QRectF(cx, y, w, h)
+            fill = color('surface_2', 0.85) if plain_tag else QColor(tint)
+            if not plain_tag:
+                fill.setAlphaF(0.16)
+            edge = color('muted', 0.30) if plain_tag else QColor(tint)
+            if not plain_tag:
+                edge.setAlphaF(0.40)
+            p.setBrush(fill)
+            p.setPen(QPen(edge, max(1.0, 1.2 * u)))
+            p.drawRoundedRect(r, h / 2, h / 2)
+            tx = cx + pad
+            if hexed:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(tint)
+                p.drawEllipse(QPointF(tx + dot / 2, r.center().y()), dot / 2, dot / 2)
+                tx += dot + 6 * u
+            p.setPen(color('subtext') if plain_tag or hexed else tint)
+            p.drawText(QRectF(tx, y, w, h), int(Qt.AlignmentFlag.AlignVCenter), text)
+            cx += w + gap
+        p.restore()
+        return cx - gap if sized else x, h
 
     def _track_font(self, u: float) -> QFont:
         f = QFont(FONTS.mono)

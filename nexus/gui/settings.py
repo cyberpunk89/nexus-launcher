@@ -594,15 +594,26 @@ def friends_status_text(data: dict | None, err: str = '', now: float | None = No
     if not data:
         return f"Couldn't ask: {err or 'no answer'}"
     c = data.get('counts') or {}
-    total = c.get('total') or 0
     error = data.get('error') or None
+    # w-84: with Game-db friends live, the Steam counts leave them out (and
+    # are nothing while Steam isn't set up); they get their own part.
+    gdb = data['gamedb'].get('count') or 0 if data.get('gamedb') else None
+    from .friends import UNSET_ERRORS
+    steam_unset = gdb is not None and (error or {}).get('kind') in UNSET_ERRORS
+    total = 0 if steam_unset else (c.get('total') or 0) - (gdb or 0)
     parts = []
     if total:
-        parts.append(f"{total} friend{'' if total == 1 else 's'} \u00b7 {c.get('public', 0)} "
+        parts.append(f"{total} friend{'' if total == 1 else 's'} \u00b7 "
+                     f"{c.get('public', 0) - (gdb or 0)} "
                      f"public \u00b7 {c.get('private', 0)} private")
     elif data.get('updated') and not error:
         parts.append("No friends on this Steam account")
-    ago = _ago_text(data.get('updated'), now)
+    if gdb:
+        parts.append(f"{gdb} on Game-db")
+    elif steam_unset:
+        return "Nobody on Game-db shares with you yet"
+    # Without Steam its time is a stale cache's: Game-db's says more.
+    ago = _ago_text(data['gamedb'].get('updated') if steam_unset else data.get('updated'), now)
     if ago and parts:
         parts.append(ago)
     if parts:
@@ -620,6 +631,15 @@ def friends_problem(data: dict | None) -> tuple[str | None, str | None]:
     msg = e.get('message') or e.get('kind') or "error"
     return (msg, None) if e.get('kind') in ('bad-key', 'no-account', 'private-list') \
         else (None, msg)
+
+
+def gamedb_friends_text(data: dict | None) -> str:
+    """The Game-db friends row (w-84, receive-only): who shares with you,
+    and that you share nothing; Nexus never offers to share."""
+    n = ((data or {}).get('gamedb') or {}).get('count') or 0
+    who = f"{n} {'person shares' if n == 1 else 'people share'} their library with you" \
+        if n else "Nobody shares their library with you yet"
+    return f"{who} \u00b7 You share: nothing"
 
 
 def token_note(scopes) -> str:
@@ -1055,10 +1075,15 @@ class SettingsPage(QWidget):
         self._row(sec, "Theatre layout", "Tabs: rows of big tiles. Ribbon: categories on one "
                   "line, your games in a column under them.", self.ctl_layout,
                   keywords="tv couch ribbon categories", key='theatre_layout')
-        self.ctl_ribbon = _combo((("Moves when you move", 'input'), ("Still", 'still')))
-        self._row(sec, "Ribbon background", "Always still with reduced motion, Glow off or "
-                  "High contrast.", self.ctl_ribbon, keywords="tv motion animation wave",
+        self.ctl_ribbon = _combo((("Moves when you move", 'input'), ("Still", 'still'),
+                                    ("Moving", 'live')))
+        self._row(sec, "Ribbon background", "Moving uses more power. Always still with "
+                  "reduced motion, Glow off or High contrast.", self.ctl_ribbon, keywords="tv motion animation wave",
                   key='ribbon_motion')
+        self.ctl_classic = Switch()
+        self._row(sec, "Classic colours", "The Ribbon's colour follows the month, its "
+                  "brightness the time of day.", self.ctl_classic,
+                  keywords="tv ribbon colour color month classic", key='ribbon_classic')
         self.ctl_attract = _combo([("Never" if not m else f"After {m} minutes idle", m)
                                    for m in ATTRACT_MINUTES])
         self._row(sec, "Theatre screensaver", "Shows off your games when Theatre mode sits "
@@ -1363,6 +1388,12 @@ class SettingsPage(QWidget):
         self.fr_status_row = self._row(
             sec, "Friends found", "Add a key to see your friends.", self.fr_refresh,
             keywords=words + " refresh status public private", key='friends_status')
+        # w-84: Game-db friends, receive-only. No control: Nexus never offers
+        # a share switch. Shown only once an answer carries Game-db friends.
+        self.fr_gamedb_row = self._row(
+            sec, "Game-db friends", gamedb_friends_text(None), None,
+            keywords=words + " gamedb game-db share library grants", key='friends_gamedb')
+        self.fr_gamedb_row.set_available(False)
         privacy = QPushButton("Privacy on Steam")
         privacy.setToolTip("Opens your Steam privacy settings in the browser")
         privacy.clicked.connect(self._open_steam_privacy)
@@ -1383,14 +1414,21 @@ class SettingsPage(QWidget):
     def _open_steam_privacy(self):
         QDesktopServices.openUrl(QUrl(STEAM_PRIVACY_URL))
 
-    def _friends_have_key(self) -> bool:
+    def _friends_steam_key(self) -> bool:
         return bool(self.fr_key.text().strip() or os.environ.get(STEAM_KEY_ENV))
 
+    def _friends_have_key(self) -> bool:
+        """Can friends be asked for: a Steam key, or Game-db friends live
+        (cache-only check, w-84)."""
+        return self._friends_steam_key() or gamedb.friends_live()
+
     def _friends_key_changed(self, *_):
-        """Show friends and Refresh now wait for a key."""
-        have = self._friends_have_key()
+        """Show friends and Refresh now wait for a key (or Game-db friends)."""
+        have, steam = self._friends_have_key(), self._friends_steam_key()
         self.fr_enabled.setEnabled(have)
-        self.fr_enabled_row.set_description("" if have else "Needs a Steam Web API key.")
+        self.fr_enabled_row.set_description(
+            "" if steam else "Steam friends need a Steam Web API key." if have
+            else "Needs a Steam Web API key.")
         self.fr_refresh.setEnabled(have)
 
     def _friends_status(self, refresh: bool = False):
@@ -1429,8 +1467,17 @@ class SettingsPage(QWidget):
                 self.fr_whose_row.set_description("No Steam account found on this PC.")
         self.fr_status_row.set_description(friends_status_text(data, err))
         error, note = friends_problem(data)
+        if (error or note) and data and data.get('gamedb') and \
+                (data.get('error') or {}).get('kind') == 'no-key':
+            error, note = None, None            # Game-db friends need no Steam key
         self.fr_status_row.set_error(error)
         self.fr_status_row.set_note(note)
+        live = (data or {}).get('gamedb')
+        self.fr_gamedb_row.set_available(bool(live))
+        if live:
+            self.fr_gamedb_row.set_description(gamedb_friends_text(data))
+            gerr = live.get('error') or {}
+            self.fr_gamedb_row.set_note(gerr.get('message') or None)
 
     def _build_system(self):
         cat = self._add_category('system', "System", 'system', 'tide',
@@ -1739,7 +1786,7 @@ class SettingsPage(QWidget):
             box.activated.connect(lambda _i, box=box, key=key: self.controls_changed.emit(
                 {key: box.currentData()}))
         for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
-                        (self.ctl_week, 'week_home')):
+                        (self.ctl_week, 'week_home'), (self.ctl_classic, 'ribbon_classic')):
             sw.toggled.connect(lambda on, key=key: self.controls_changed.emit({key: on}))
 
     # ---- navigation and search ----
@@ -2009,12 +2056,13 @@ class SettingsPage(QWidget):
                          (self.ctl_layout, 'theatre_layout'), (self.ctl_ribbon, 'ribbon_motion')):
             box.setCurrentIndex(max(0, box.findData(controls.get(key))))
         for sw, key in ((self.ctl_on_pad, 'theatre_on_pad'), (self.ctl_sounds, 'sounds'),
-                        (self.ctl_week, 'week_home')):
+                        (self.ctl_week, 'week_home'), (self.ctl_classic, 'ribbon_classic')):
             sw.blockSignals(True)
             sw.setChecked(bool(controls.get(key)))
             sw.blockSignals(False)
         self.ctl_volume.setEnabled(bool(controls.get('sounds')))   # greyed while sounds are off
         self.ctl_ribbon.setEnabled(controls.get('theatre_layout') == 'ribbon')
+        self.ctl_classic.setEnabled(controls.get('theatre_layout') == 'ribbon')
         self._refresh_overview()
         has_tray = tray_available()
         self.tray.blockSignals(True)

@@ -62,6 +62,21 @@ def _game_store_id(g: dict | None) -> int | None:
     return store_id(g) if g else None
 
 
+def _store_key(g: dict | None) -> str | None:
+    """"store:storeId" of a non-Steam store game (Heroic, Epic), the key of
+    the answer's `by_store` (Game-db friends), or None."""
+    if not g:
+        return None
+    from nexus.gamedb_upload import store_of
+    got = store_of(g.get('slug') or '', g.get('source'))
+    return f"{got[0]}:{got[1]}" if got and got[0] != 'steam' else None
+
+
+def source_of(rec: dict | None) -> str:
+    """'steam' or 'gamedb' (rows from before w-84 have no source: Steam)."""
+    return (rec or {}).get('source') or 'steam'
+
+
 class FriendsData(QObject):
     """The last `--friends --json` answer. `changed` fires only when what the
     window shows from it changed (owners, names, avatars, who plays), so a
@@ -74,6 +89,7 @@ class FriendsData(QObject):
         super().__init__()
         self.data: dict | None = None
         self._by_id: dict[str, dict] = {}
+        self._two = False                 # friends from Steam and Game-db (w-84)
         self._sig = None
         self._asked: set = set()          # avatar downloads / decodes on their way
 
@@ -83,8 +99,20 @@ class FriendsData(QObject):
         if not isinstance(data, dict):
             return
         self.data = data
-        self._by_id = {str(r['steamid']): r for r in data.get('friends') or ()
-                       if isinstance(r, dict) and r.get('steamid')}
+        steam_unset = (data.get('error') or {}).get('kind') in UNSET_ERRORS
+        self._by_id = {}
+        for r in data.get('friends') or ():
+            if not isinstance(r, dict):
+                continue
+            if source_of(r) == 'gamedb':
+                # Every GUI site keys people by `steamid`: a Game-db friend's
+                # is its `gdb:` id; the real SteamID64 waits in steam_link.
+                if r.get('id'):
+                    self._by_id[str(r['id'])] = {**r, 'steamid': str(r['id']),
+                                                  'steam_link': r.get('steamid')}
+            elif r.get('steamid') and not steam_unset:
+                self._by_id[str(r['steamid'])] = r
+        self._two = len({source_of(r) for r in self.friends()}) > 1
         sig = self._signature()
         if sig != self._sig:
             self._sig = sig
@@ -93,7 +121,7 @@ class FriendsData(QObject):
     def reset(self):
         """Forget everything (the feature was switched off; tests)."""
         had = self.data is not None
-        self.data, self._by_id, self._sig = None, {}, None
+        self.data, self._by_id, self._sig, self._two = None, {}, None, False
         if had:
             self.changed.emit()
 
@@ -101,18 +129,28 @@ class FriendsData(QObject):
         if not self.usable():
             return None
         by_app = self.data.get('by_app') or {}
+        by_store = self.data.get('by_store') or {}
         people = tuple(sorted((sid, r.get('name'), r.get('avatar'), r.get('visible'),
                                str((r.get('playing') or {}).get('appid') or ''))
                               for sid, r in self._by_id.items()))
         return (tuple(sorted((str(k), tuple(v)) for k, v in by_app.items()
+                             if isinstance(v, list))),
+                tuple(sorted((str(k), tuple(v)) for k, v in by_store.items()
                              if isinstance(v, list))), people)
 
     def usable(self) -> bool:
         """On, set up, and with an answer: a refused key or no network still
-        show the last good copy; no key or no account show nothing."""
+        show the last good copy; no key or no account show nothing, unless
+        Game-db friends are live (w-84): then they show without Steam."""
         d = self.data
         return bool(d and d.get('enabled')
-                    and (d.get('error') or {}).get('kind') not in UNSET_ERRORS)
+                    and ((d.get('error') or {}).get('kind') not in UNSET_ERRORS
+                         or ((d.get('gamedb') or {}).get('count') or 0) > 0))
+
+    def steam_usable(self) -> bool:
+        """Usable with Steam set up: presence and Home's widget need Steam
+        (Game-db friends have no presence)."""
+        return self.usable() and self.error_kind() not in UNSET_ERRORS
 
     # ---- questions ----
     def record(self, sid) -> dict | None:
@@ -132,10 +170,37 @@ class FriendsData(QObject):
         return [self._by_id[s] for s in self.owner_ids(appid)]
 
     def owner_ids_of(self, g: dict) -> list[str]:
-        return self.owner_ids(_game_store_id(g))
+        """Who owns the library game g: by its Steam app id, then (Game-db
+        friends) by its store key, each id once."""
+        ids = self.owner_ids(_game_store_id(g))
+        key = _store_key(g) if self.usable() else None
+        for s in (self.data.get('by_store') or {}).get(key) or () if key else ():
+            if str(s) in self._by_id and str(s) not in ids:
+                ids.append(str(s))
+        return ids
 
     def owners_of(self, g: dict) -> list[dict]:
-        return self.owners(_game_store_id(g))
+        return [self._by_id[s] for s in self.owner_ids_of(g)]
+
+    def minutes(self, rec: dict | None, g: dict | None):
+        """How long rec played the library game g (app id first, then the
+        store key), or None."""
+        appid, key = _game_store_id(g), _store_key(g)
+        if appid is not None and str(appid) in ((rec or {}).get('owned') or {}):
+            return rec['owned'][str(appid)]
+        return ((rec or {}).get('owned_store') or {}).get(key) if key else None
+
+    def two_sources(self) -> bool:
+        """Friends from both Steam and Game-db: only then is a source mark
+        shown on people (worked out once per answer, read while painting)."""
+        return self._two
+
+    def steam(self) -> list[dict]:
+        """Steam friends only (Game-db friends have no presence)."""
+        return [r for r in self.friends() if source_of(r) == 'steam']
+
+    def steam_public(self) -> list[dict]:
+        return [r for r in self.steam() if r.get('visible') is not False]
 
     def private(self) -> list[dict]:
         """Friends whose game details Nexus can't see."""
@@ -150,7 +215,7 @@ class FriendsData(QObject):
         while friends aren't usable (the rule then matches nothing)."""
         if not self.usable():
             return None
-        return {str(r['steamid']) for r in self.public()}
+        return {str(r['steamid']) for r in self.public() if source_of(r) == 'steam'}
 
     def names(self) -> dict[str, str]:
         """steamid -> name, every friend (private ones too)."""
@@ -187,7 +252,7 @@ class FriendsData(QObject):
         if not self.usable() or not self.fresh(now):
             return []
         out = []
-        for r in self.public():
+        for r in self.steam_public():
             st = (r.get('evidence') or {}).get('personastate')
             st = st if isinstance(st, int) and not isinstance(st, bool) else 0
             if 1 <= st <= 6 or r.get('playing'):
@@ -195,7 +260,11 @@ class FriendsData(QObject):
         return out
 
     def has_owners(self) -> bool:
-        return self.usable() and any(self.owner_ids(a) for a in self.data.get('by_app') or {})
+        if not self.usable():
+            return False
+        return any(self.owner_ids(a) for a in self.data.get('by_app') or {}) or any(
+            str(s) in self._by_id for v in (self.data.get('by_store') or {}).values()
+            for s in v or ())
 
     def owned_by_text(self, ids) -> str:
         """'Owned by Ana, Ben +2' ('' for nobody)."""
@@ -244,7 +313,7 @@ def playing_now(games, now: float | None = None, limit: int | None = MAX_CARDS) 
         return []
     now = time.time() if now is None else now
     groups: dict[str, list[dict]] = {}
-    for r in FRIENDS.public():
+    for r in FRIENDS.steam_public():
         appid = (r.get('playing') or {}).get('appid')
         if appid is None or not str(appid).isdigit():
             continue
@@ -287,14 +356,46 @@ def who_text(entry: dict) -> str:
 
 def hue_of(rec: dict | None) -> str:
     sid = str((rec or {}).get('steamid') or '0')
-    return HUES[int(sid) % len(HUES)] if sid.isdigit() else HUES[0]
+    n = int(sid) if sid.isdigit() else sum(map(ord, sid))      # gdb: ids too
+    return HUES[n % len(HUES)]
+
+
+MARK_FROM = 20                 # px: smaller avatars get no source mark
+SOURCE_NAME = {'steam': "Steam", 'gamedb': "Game-db"}
+
+
+def source_mark(rec: dict | None, d: float, ring: str | None = None) -> str | None:
+    """The glyph of the person's source (Steam or Game-db) for an avatar of
+    d px, or None: only with friends from both sources, never in a stack
+    (ring) and never below MARK_FROM px."""
+    if ring or d < MARK_FROM or not rec or not FRIENDS.two_sources():
+        return None
+    return G['gamedb'] if source_of(rec) == 'gamedb' else G['steam']
+
+
+def _paint_mark(pt: QPainter, r: QRectF, glyph: str):
+    """A small disk at the avatar's bottom right holding the source glyph."""
+    s = max(10.0, round(r.width() * 0.42))
+    disk = QRectF(r.right() - s + 1, r.bottom() - s + 1, s, s)
+    pt.setPen(Qt.PenStyle.NoPen)
+    pt.setBrush(QColor(P['bg']))
+    pt.drawEllipse(disk)
+    pt.setBrush(QColor(P['surface_3']))
+    pt.drawEllipse(disk.adjusted(1.0, 1.0, -1.0, -1.0))
+    f = QFont(FONTS.icon)
+    f.setPixelSize(max(7, int(s * 0.62)))
+    pt.setFont(f)
+    pt.setPen(QColor(P['text']))
+    pt.drawText(disk, Qt.AlignmentFlag.AlignCenter, glyph)
 
 
 def paint_avatar(pt: QPainter, r: QRectF, rec: dict | None, dim: bool = False,
                  live: bool = False, ring: str | None = None):
     """One round avatar in r: Steam's picture, else the first letter on a
     colour of its own. dim = private (greyed); live = in this game now (a
-    success ring); ring = a gap ring in that colour role (in a stack)."""
+    success ring); ring = a gap ring in that colour role (in a stack).
+    With friends from both Steam and Game-db, a source mark (source_mark)."""
+    mark = source_mark(rec, r.width(), ring)
     pt.save()
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
     pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -326,6 +427,8 @@ def paint_avatar(pt: QPainter, r: QRectF, rec: dict | None, dim: bool = False,
         pt.setBrush(Qt.BrushStyle.NoBrush)
         pt.setPen(QPen(QColor(P['success']), 2.0))
         pt.drawEllipse(r.adjusted(1.0, 1.0, -1.0, -1.0))
+    if mark:
+        _paint_mark(pt, r, mark)
     pt.restore()
 
 
@@ -401,8 +504,10 @@ class PersonChip(QFrame):
             self.sub.setProperty('live', True)
             lay.addWidget(self.sub)
         played = fmt_hours(minutes)
+        on = f"on {SOURCE_NAME.get(source_of(rec), 'Steam')}" if FRIENDS.two_sources() else ''
         tip = " · ".join(x for x in (
-            name, "playing now" if live else '', f"{played} played" if played else '') if x)
+            name, on, "playing now" if live else '', f"{played} played" if played else '')
+            if x)
         self.setToolTip(html.escape(tip))
 
 
@@ -410,8 +515,8 @@ class FriendsBlock(QWidget):
     """Overview's "Friends": who of your friends owns this game (chips,
     playing now first, at most 8 then "+N more"), and one greyed line for
     the friends whose game details are private. Hidden while friends are
-    off, for a game Nexus can't match to a Steam app id, and without
-    friends."""
+    off, for a game Nexus can match neither to a Steam app id nor (Game-db
+    friends) to a store id, and without friends."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -451,7 +556,8 @@ class FriendsBlock(QWidget):
 
     def set_game(self, g: dict | None):
         self._game = g
-        sid = _game_store_id(g) if g else None
+        appid = _game_store_id(g) if g else None
+        sid = appid if appid is not None else _store_key(g)
         if not FRIENDS.usable() or sid is None or not FRIENDS.friends():
             self._shown = None
             self.setVisible(False)
@@ -459,10 +565,10 @@ class FriendsBlock(QWidget):
         if self._expanded_for != sid:
             self._expanded_for = None
         expanded = self._expanded_for == sid
-        live = {r['steamid'] for r in FRIENDS.playing_in(sid)}
-        owners = FRIENDS.owners(sid)
+        live = {r['steamid'] for r in FRIENDS.playing_in(appid)}
+        owners = FRIENDS.owners_of(g)
         owners.sort(key=lambda r: r['steamid'] not in live)      # stable: minutes after
-        minutes = {r['steamid']: (r.get('owned') or {}).get(str(sid)) for r in owners}
+        minutes = {r['steamid']: FRIENDS.minutes(r, g) for r in owners}
         private = FRIENDS.private()
         state = (sid, expanded, tuple((r['steamid'], r.get('name'), r.get('avatar'),
                                        r['steamid'] in live, minutes[r['steamid']])

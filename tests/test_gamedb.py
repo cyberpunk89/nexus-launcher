@@ -1141,6 +1141,245 @@ class OtherStoreLibrary(V2Base):
         self.assertEqual(heroic['heroic-gog-1207658924']['appid'], 292030)   # IGDB's link
 
 
+FRIENDS_FIXTURE = REPO / 'tests' / 'fixtures' / 'gamedb_friends.json'
+META_FRIENDS = {**META, 'features': ['summary', 'games', 'friends']}
+
+
+def gdb_friend(fid, name=None, **kw):
+    f = {'id': fid, 'name': name or fid.title(), 'avatar': None, 'steamid': None,
+         'owned': [{'appid': 620, 'store': 'steam', 'storeId': '620', 'title': 'Example',
+                    'minutes': 30}], 'owned_at': '2026-11-01T00:00:00.000Z'}
+    f.update(kw)
+    return f
+
+
+class Friends(V2Base):
+    """v2/friends, receive-only: the people who share their library with you."""
+
+    def stub(self, path=FRIENDS_FIXTURE):
+        return mock.patch.dict(os.environ, {gamedb.FRIENDS_STUB_ENV: str(path)})
+
+    def test_stub_served_without_request(self):
+        self.write_config('')                       # Game-db not even set up
+        with self.stub(), mock.patch.object(gamedb, '_request',
+                                            side_effect=AssertionError('network')):
+            self.assertTrue(gamedb.friends_live())
+            res = gamedb.friends()
+        self.assertEqual(res['status'], 'synced')
+        ids = [f['id'] for f in res['friends']]
+        self.assertEqual(sorted(ids), ['gdb:fx-ana', 'gdb:fx-ben'])
+        ana = next(f for f in res['friends'] if f['id'] == 'gdb:fx-ana')
+        self.assertIsNone(ana['avatar'])              # not Steam's CDN: a letter avatar
+        self.assertEqual(ana['owned'][1], {'appid': None, 'store': 'epic',
+                                           'storeId': 'example-epic-1',
+                                           'title': 'Example Epic Game', 'minutes': 45})
+
+    def live(self, friends_route):
+        """A server offering friends, its meta already cached."""
+        fake, p = self.server({'/api/nexus/v2/meta': META_FRIENDS,
+                               '/api/nexus/v2/friends': friends_route})
+        with p:
+            gamedb.server_meta()
+        fake.requests.clear()
+        return fake, p
+
+    def pages(self, *pages):
+        def route(q):
+            i = int(q['cursor'][1:]) if 'cursor' in q else 0
+            return {'schema': 2, 'updated': '2026-11-01T00:00:00.000Z', 'friends': pages[i],
+                    'nextCursor': f'c{i + 1}' if i + 1 < len(pages) else None}
+        return route
+
+    def test_hidden_without_offer_no_request(self):
+        fake, p = self.server({'/api/nexus/v2/meta': META,
+                               '/api/nexus/v2/friends': self.pages([gdb_friend('a')])})
+        with p:
+            self.assertFalse(gamedb.friends_live())          # meta never asked: unknown
+            self.assertEqual(gamedb.friends()['status'], 'off')
+            self.assertEqual(fake.requests, [])               # not even v2/meta
+            gamedb.server_meta()
+            fake.requests.clear()
+            self.assertFalse(gamedb.friends_live())          # meta lacks 'friends'
+            self.assertEqual(gamedb.friends(refresh=True)['status'], 'off')
+        self.assertEqual(fake.requests, [])
+        self.assertFalse((self.cache / 'friends.json').exists())
+
+    def test_fake_server_payload_paged(self):
+        fake, p = self.live(self.pages([gdb_friend('a'), gdb_friend('b')], [gdb_friend('c')]))
+        with p:
+            self.assertTrue(gamedb.friends_live())
+            res = gamedb.friends()
+            again = gamedb.friends()
+            cached = gamedb.friends(cache_only=True)
+        self.assertEqual(res['status'], 'synced')
+        self.assertEqual(sorted(f['id'] for f in res['friends']),
+                         ['gdb:a', 'gdb:b', 'gdb:c'])
+        self.assertEqual(fake.queries('/api/nexus/v2/friends'), [{}, {'cursor': 'c1'}])
+        self.assertEqual(again['status'], 'fresh')               # within 6 h: no request
+        self.assertEqual(len(again['friends']), 3)
+        self.assertEqual(len(cached['friends']), 3)
+        self.assertEqual(len(fake.requests), 2)
+        f = self.cache / 'friends.json'
+        self.assertEqual(why_not_private(f), '')
+        self.assertNotIn(TOKEN, f.read_text())
+
+    def failing_after_one_good(self, err):
+        calls = []
+
+        def route(q):
+            calls.append(q)
+            return self.pages([gdb_friend('a')])(q) if len(calls) == 1 else err
+        return route, calls
+
+    def test_404_keeps_cache_and_waits_a_day(self):
+        route, calls = self.failing_after_one_good(http_error(404))
+        _fake, p = self.live(route)
+        with p:
+            gamedb.friends()
+            res = gamedb.friends(refresh=True)
+            again = gamedb.friends(refresh=True)
+        self.assertEqual((res['status'], res['error']['kind']), ('failed', 'missing'))
+        self.assertEqual([f['id'] for f in res['friends']], ['gdb:a'])
+        self.assertEqual(again['status'], 'failed')
+        self.assertEqual([f['id'] for f in again['friends']], ['gdb:a'])
+        self.assertEqual(len(calls), 2)                          # the day's wait: no request
+
+    def test_429_keeps_cache_and_backs_off(self):
+        route, calls = self.failing_after_one_good(http_error(429, {'Retry-After': '120'}))
+        _fake, p = self.live(route)
+        with p:
+            gamedb.friends()
+            res = gamedb.friends(refresh=True)
+            again = gamedb.friends(refresh=True)
+        self.assertEqual(res['error']['kind'], 'rate')
+        self.assertEqual([f['id'] for f in res['friends']], ['gdb:a'])
+        self.assertEqual(again['error']['kind'], 'rate')
+        self.assertEqual(len(calls), 2)
+        self.assertGreater(gamedb.last_state()['retry_at'], time.time() + 100)
+
+    def test_schema_mismatch_keeps_cache(self):
+        calls = []
+
+        def route(q):
+            calls.append(q)
+            if len(calls) == 1:
+                return self.pages([gdb_friend('a')])(q)
+            return {'schema': 3, 'friends': []}
+        _fake, p = self.live(route)
+        with p:
+            gamedb.friends()
+            res = gamedb.friends(refresh=True)
+        self.assertEqual((res['status'], res['error']['kind']), ('failed', 'schema'))
+        self.assertEqual([f['id'] for f in res['friends']], ['gdb:a'])
+        c = json.loads((self.cache / 'friends.json').read_text())
+        self.assertEqual(list(c['friends']), ['gdb:a'])
+
+    def test_bad_rows_dropped_https_avatar_only(self):
+        rows = [gdb_friend('ok', avatar='https://gdb.example/ok.png',
+                           steamid='76561190000000009'),
+                gdb_friend('plain', avatar='http://gdb.example/x.png', steamid='12345'),
+                gdb_friend('bad id!'), gdb_friend('x' * 65), {'id': 'noname'}, 'junk',
+                gdb_friend('games', owned=[
+                    {'appid': None, 'store': 'Epic', 'storeId': 'e1', 'title': 'E',
+                     'minutes': -5},
+                    {'appid': None, 'store': 'gog', 'storeId': '', 'title': 'no id'},
+                    {'appid': True, 'store': '', 'storeId': None},
+                    'junk'])]
+        _fake, p = self.live(self.pages(rows))
+        with p:
+            got = {f['id']: f for f in gamedb.friends()['friends']}
+        self.assertEqual(sorted(got), ['gdb:games', 'gdb:ok', 'gdb:plain'])
+        self.assertEqual(got['gdb:ok']['avatar'], 'https://gdb.example/ok.png')
+        self.assertEqual(got['gdb:ok']['steamid'], '76561190000000009')
+        self.assertIsNone(got['gdb:plain']['avatar'])
+        self.assertIsNone(got['gdb:plain']['steamid'])
+        self.assertEqual(got['gdb:games']['owned'],
+                         [{'appid': None, 'store': 'epic', 'storeId': 'e1', 'title': 'E',
+                           'minutes': None}])
+
+    def test_full_fetch_drops_revoked(self):
+        calls = []
+
+        def route(q):
+            calls.append(q)
+            rows = [gdb_friend('a'), gdb_friend('b')] if len(calls) == 1 else [gdb_friend('b')]
+            return self.pages(rows)(q)
+        _fake, p = self.live(route)
+        with p:
+            gamedb.friends()
+            res = gamedb.friends(refresh=True)
+        self.assertEqual(calls, [{}, {}])                        # never a `since`
+        self.assertEqual([f['id'] for f in res['friends']], ['gdb:b'])
+
+    def test_stub_schema_checked(self):
+        bad = Path(self.tmp.name) / 'bad.json'
+        with self.stub(), mock.patch.object(gamedb, '_request', side_effect=AssertionError):
+            gamedb.friends()
+        bad.write_text('{"schema": 3}')
+        with self.stub(bad):
+            self.assertEqual(gamedb.friends()['error']['kind'], 'schema')
+
+    def test_any_failure_backs_off_refresh_may_retry(self):
+        calls = []
+
+        def route(q):
+            calls.append(q)
+            return http_error(502)
+        _fake, p = self.live(route)
+        with p:
+            self.assertEqual(gamedb.friends()['error']['kind'], 'net')
+            self.assertEqual(gamedb.friends()['status'], 'failed')      # backing off
+            self.assertEqual(len(calls), 1)
+            gamedb.friends(refresh=True)                                 # Refresh now may
+            self.assertEqual(len(calls), 2)
+            f = self.cache / 'friends.json'
+            c = json.loads(f.read_text())
+            self.assertLessEqual(c['next_try'] - time.time(), gamedb.FRIENDS_AGE)
+            c['next_try'] = time.time() - 1
+            f.write_text(json.dumps(c))
+            gamedb.friends()                                             # the wait is over
+        self.assertEqual(len(calls), 3)
+
+    def test_avatar_only_from_steam_cdn_or_this_gamedb(self):
+        rows = [gdb_friend('a', avatar='https://avatars.steamstatic.com/a_full.jpg'),
+                gdb_friend('b', avatar='https://avatars.akamai.steamstatic.com/b.jpg'),
+                gdb_friend('c', avatar='https://gdb.example/avatars/c.png'),
+                gdb_friend('d', avatar='https://tracker.example.com/d.png'),
+                gdb_friend('e', avatar='https://steamstatic.com.example.com/e.png'),
+                gdb_friend('f', avatar='https://gdb.example.evil.example/f.png')]
+        _fake, p = self.live(self.pages(rows))
+        with p:
+            got = {f['id']: f['avatar'] for f in gamedb.friends()['friends']}
+        self.assertEqual(got, {'gdb:a': 'https://avatars.steamstatic.com/a_full.jpg',
+                               'gdb:b': 'https://avatars.akamai.steamstatic.com/b.jpg',
+                               'gdb:c': 'https://gdb.example/avatars/c.png',
+                               'gdb:d': None, 'gdb:e': None, 'gdb:f': None})
+
+    def test_repeated_cursor_aborts(self):
+        def route(q):
+            return {'schema': 2, 'friends': [gdb_friend('a')], 'nextCursor': 'same'}
+        fake, p = self.live(route)
+        with p:
+            res = gamedb.friends()
+        self.assertEqual((res['status'], res['error']['kind']), ('failed', 'net'))
+        self.assertEqual(len(fake.requests), 2)
+        self.assertEqual(res['friends'], [])
+
+    def test_bad_cache_never_breaks(self):
+        _fake, p = self.live(self.pages([gdb_friend('a')]))
+        with p:
+            gamedb.friends()
+            f = self.cache / 'friends.json'
+            c = json.loads(f.read_text())
+            c['friends'].update({'gdb:bad id': {'id': 'gdb:bad id', 'name': 'x'},
+                                 'junk': 'junk', 'gdb:n': {'id': 'gdb:n', 'name': 3}})
+            c['fetched_at'], c['off_until'], c['next_try'] = 'soon', 'x', None
+            f.write_text(json.dumps(c))
+            res = gamedb.friends(cache_only=True)
+        self.assertEqual([r['id'] for r in res['friends']], ['gdb:a'])
+        self.assertIsNone(res['updated'])
+
+
 class Helpers(unittest.TestCase):
     NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 

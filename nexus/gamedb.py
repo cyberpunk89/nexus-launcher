@@ -49,6 +49,10 @@ GAMES_ENDPOINT = "/api/nexus/v2/games"
 MAX_AGE = 45 * 60
 META_AGE = 24 * 3600            # v2/meta: asked about once a day
 GAMES_AGE = 6 * 3600            # v2/games: a since-delta at most this often
+FRIENDS_ENDPOINT = "/api/nexus/v2/friends"
+FRIENDS_AGE = 6 * 3600          # v2/friends: a full fetch at most this often
+FRIENDS_RETRY = 15 * 60         # ... and after a failed one, not before this
+FRIENDS_STUB_ENV = 'NEXUS_GAMEDB_FRIENDS_STUB'   # dev/test only: a v2/friends JSON file
 SCHEMA = 1
 SCHEMA_V2 = 2
 MAX_PAGES = 200                 # 100k games at 500 a page: a cursor loop stops here
@@ -294,6 +298,10 @@ def _games_path():
     return paths.GAMEDB_CACHE / 'games.json'
 
 
+def _friends_path():
+    return paths.GAMEDB_CACHE / 'friends.json'
+
+
 def _write_private(path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
@@ -326,7 +334,7 @@ def _save_state(**changes) -> None:
 
 
 def clear_cache() -> None:
-    for p in (_summary_path(), _state_path(), _meta_path(), _games_path()):
+    for p in (_summary_path(), _state_path(), _meta_path(), _games_path(), _friends_path()):
         p.unlink(missing_ok=True)
     _games_memo.clear()
 
@@ -630,6 +638,203 @@ def sync_games(force: bool = False) -> dict:
     _games_memo.clear()
     return {**out, 'status': 'synced', 'count': len(games), 'changed': len(got['games']),
             'removed': removed}
+
+
+# ---- v2: friends (receive-only) ----------------------------------------------
+# The people whose Game-db `library_grants` name this token's user as grantee.
+# Nexus only reads them: it never writes a grant or reports anything about
+# the user. Hidden (no request at all) until v2/meta lists `friends`; the env
+# NEXUS_GAMEDB_FRIENDS_STUB=<file> serves a v2/friends answer from disk
+# instead, for development and tests, and never touches the network.
+
+_FRIEND_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_STEAMID_RE = re.compile(r'^7656119\d{10}$')
+
+
+def _stub_path():
+    v = os.environ.get(FRIENDS_STUB_ENV, '').strip()
+    return v or None
+
+
+def friends_live(s: dict | None = None) -> bool:
+    """Cache-only: whether Game-db friends are on at all (the stub, or a
+    set-up Game-db whose cached v2/meta lists `friends`). Never asks the
+    server, so callers can gate on it for free."""
+    if _stub_path():
+        return True
+    s = s or settings()
+    return configured(s) and offers('friends', s) is True
+
+
+def _int_or_none(v, low: int = 0):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= low else None
+
+
+def _avatar_url(u, base: str | None) -> str | None:
+    """A friend's avatar only from Steam's CDN or this Game-db itself: an
+    avatar is fetched by the window, so a friend-chosen host would learn the
+    viewer's IP. Anything else is None (the letter avatar)."""
+    u = safe_url(u, base)
+    if not u:
+        return None
+    host = (urllib.parse.urlsplit(u).hostname or '').lower()
+    own = (urllib.parse.urlsplit(base).hostname or '').lower() if base else ''
+    return u if host.endswith('.steamstatic.com') or (own and host == own) else None
+
+
+def _friend_row(raw, base: str | None = None) -> dict | None:
+    """One v2/friends row, checked and normalised, or None to drop it. The
+    id becomes `gdb:<id>`; only avatars from Steam's CDN or `base` (this
+    Game-db) and real-looking SteamID64s are kept; an owned game needs a
+    Steam appid or a store and store id."""
+    if not isinstance(raw, dict):
+        return None
+    fid, name = raw.get('id'), raw.get('name')
+    if not isinstance(fid, str) or not _FRIEND_ID_RE.match(fid):
+        return None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    sid = raw.get('steamid')
+    owned = []
+    for o in raw.get('owned') if isinstance(raw.get('owned'), list) else ():
+        if not isinstance(o, dict):
+            continue
+        appid = _int_or_none(o.get('appid'), 1)
+        store = o.get('store').strip().lower()[:32] if isinstance(o.get('store'), str) else ''
+        store_id = o.get('storeId')
+        store_id = str(store_id).strip()[:128] if isinstance(store_id, (str, int)) \
+            and not isinstance(store_id, bool) else ''
+        if appid is None and not (store and store_id):
+            continue
+        title = o.get('title')
+        owned.append({'appid': appid, 'store': store or None, 'storeId': store_id or None,
+                      'title': title.strip()[:200] if isinstance(title, str) else '',
+                      'minutes': _int_or_none(o.get('minutes'))})
+    return {'id': 'gdb:' + fid, 'name': name.strip()[:64],
+            'avatar': _avatar_url(raw.get('avatar'), base),
+            'steamid': sid if isinstance(sid, str) and _STEAMID_RE.match(sid) else None,
+            'owned': owned,
+            'owned_at': raw['owned_at'] if isinstance(raw.get('owned_at'), str)
+            and parse_iso(raw['owned_at']) else None}
+
+
+def _friend_rows(raw, base: str | None = None) -> dict:
+    rows = {}
+    for f in raw if isinstance(raw, list) else ():
+        if (r := _friend_row(f, base)) is not None:
+            rows[r['id']] = r
+    return rows
+
+
+def _read_stub(path: str) -> list:
+    try:
+        data = json.loads(open(path, encoding='utf-8').read())
+    except OSError as e:
+        raise GameDbError('net', f"friends stub: {e.strerror or e}") from None
+    except ValueError:
+        raise GameDbError('schema', "friends stub: not JSON") from None
+    if not isinstance(data, dict) or data.get('schema') != SCHEMA_V2:
+        raise GameDbError('schema', f"friends stub: schema must be {SCHEMA_V2}")
+    return data.get('friends') or []
+
+
+def _fetch_friends(s: dict) -> list:
+    """Every page of one full v2/friends answer (no `since`: a full answer
+    is what drops a revoked grant). Raises on any failure, so a half-read
+    answer never replaces the cache."""
+    friends, cursor, seen = [], None, set()
+    for _ in range(MAX_PAGES):
+        page = _get(s['url'], s['token'], FRIENDS_ENDPOINT, SCHEMA_V2,
+                    {'cursor': cursor} if cursor else None, timeout=30, device=s['device'])
+        got = page.get('friends')
+        friends += got if isinstance(got, list) else []
+        cursor = page.get('nextCursor')
+        if not cursor:
+            return friends
+        if not isinstance(cursor, str) or cursor in seen:
+            raise GameDbError('net', f"{FRIENDS_ENDPOINT}: the server repeated a page")
+        seen.add(cursor)
+    raise GameDbError('net', f"{FRIENDS_ENDPOINT}: more than {MAX_PAGES} pages")
+
+
+def _num(v) -> float:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
+def _friends_cache(fp: str, base: str | None = None) -> dict | None:
+    """friends.json for this account, every row checked again (a hand-edited
+    or older file never reaches the window unchecked), times as numbers."""
+    c = _read_json(_friends_path())
+    if not (isinstance(c, dict) and c.get('fingerprint') == fp
+            and isinstance(c.get('friends'), dict)):
+        return None
+    rows = {}
+    for r in c['friends'].values():
+        if isinstance(r, dict) and isinstance(r.get('id'), str) and r['id'].startswith('gdb:'):
+            if (ok := _friend_row({**r, 'id': r['id'][4:]}, base)) is not None:
+                rows[ok['id']] = ok
+    err = c.get('error') if isinstance(c.get('error'), dict) else None
+    return {**c, 'friends': rows, 'error': err, 'fetched_at': _num(c.get('fetched_at')),
+            'off_until': _num(c.get('off_until')), 'next_try': _num(c.get('next_try'))}
+
+
+def friends(refresh: bool = False, cache_only: bool = False) -> dict:
+    """The Game-db friends, from gamedb/friends.json, refreshed by a full
+    fetch at most every FRIENDS_AGE (`refresh` skips that wait, not a
+    Retry-After). Never raises. {status, friends, updated, error}: status is
+    off (not live) | fresh | synced | failed. A failure never replaces the
+    rows: it is noted next to them. A 404 holds requests back for a day."""
+    out = {'status': 'off', 'friends': [], 'updated': None, 'error': None}
+    stub = _stub_path()
+    s = None if stub else settings()
+    if not stub and not friends_live(s):
+        return out
+    fp = 'stub:' + hashlib.sha256(stub.encode()).hexdigest()[:16] if stub \
+        else _fingerprint(s['url'], s['token'])
+    base_url = None if stub else s['url']
+    cache = _friends_cache(fp, base_url)
+    now = time.time()
+    rows = (cache or {}).get('friends') or {}
+    base = {**out, 'status': 'fresh', 'friends': list(rows.values()),
+            'updated': (cache or {}).get('fetched_at') or None,
+            'error': (cache or {}).get('error')}
+
+    def failed(e: GameDbError, **extra) -> dict:
+        err = {'kind': e.kind, 'message': str(e), 'at': now}
+        _write_private(_friends_path(), {'fingerprint': fp, 'fetched_at': 0, 'friends': {},
+                                         **(cache or {}), 'error': err, **extra})
+        return {**base, 'status': 'failed', 'error': err}
+
+    if stub:                            # re-read every call; no TTL, no network
+        try:
+            got = _read_stub(stub)
+        except GameDbError as e:
+            return failed(e)
+    else:
+        if cache_only:
+            return base
+        if cache and not refresh and now - (cache.get('fetched_at') or 0) < FRIENDS_AGE:
+            return base
+        if (cache or {}).get('off_until', 0) > now:
+            return {**base, 'status': 'failed'}
+        if not refresh and (cache or {}).get('next_try', 0) > now:
+            return {**base, 'status': 'failed'}     # backing off after a failure
+        retry_at = last_state().get('retry_at') or 0
+        if retry_at > now:
+            return {**base, 'status': 'failed', 'error': {
+                'kind': 'rate', 'message': "Game-db asked us to slow down; retry in "
+                                           f"{int(retry_at - now)}s", 'at': now}}
+        try:
+            got = _fetch_friends(s)
+        except GameDbError as e:
+            _note_rate(e, now)
+            if e.kind == 'missing':
+                return failed(e, off_until=now + META_AGE)
+            return failed(e, next_try=now + min(FRIENDS_RETRY, FRIENDS_AGE))
+    rows = _friend_rows(got, base_url)
+    _write_private(_friends_path(), {'fingerprint': fp, 'fetched_at': now, 'friends': rows,
+                                     'error': None})
+    return {**out, 'status': 'synced', 'friends': list(rows.values()), 'updated': now}
 
 
 def row_key(g) -> str | None:

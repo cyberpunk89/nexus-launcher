@@ -5,6 +5,7 @@ import re
 import shlex
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import (pyqtSignal, QEasingCurve, QEvent, QObject, QPoint, QProcess,
@@ -78,6 +79,18 @@ class GradientBackground(QWidget):
     updates only the band (the lower 70%; the Theatre widgets over it
     repaint inside that rect too), then stops. Still under reduced motion, Glow Off
     and High contrast, or when asked for.
+
+    Classic colours (`classic`, w-110) swap the ribbon's colour for the
+    month's hue at the hour's brightness, and `ribbon_marks` drifts a few
+    outlined marks over the band for MARKS_MS: one child timer, band only,
+    stopped when the time is up.
+
+    'live' (w-110) drifts the waves on its own: `_live_timer` (LIVE_TICK) runs
+    only while `_live_runs()`: the mode is live, the window says it is awake
+    (`set_ribbon_awake`: Theatre's Ribbon shown, app active, no game, no
+    screensaver, no page over it), motion is on, Glow is on and High
+    contrast is off. Otherwise it is stopped, not skipping, and the ribbon
+    is still. Each tick updates the band only.
     """
 
     WASH_SIZE = (64, 36)          # painted this small and scaled up: it's all blur anyway
@@ -85,6 +98,9 @@ class GradientBackground(QWidget):
     RIBBON_MS = 600               # one glide
     RIBBON_TICK = 33              # ms between its frames
     RIBBON_STEP = 0.35            # phase moved per step
+    MARKS_MS = 4000               # how long the marks drift
+    LIVE_TICK = 66                # 'live': 15 frames a second
+    LIVE_SPEED = 0.25             # phase per second
 
     def __init__(self):
         super().__init__()
@@ -106,15 +122,94 @@ class GradientBackground(QWidget):
         self._ribbon_timer = QTimer(self)        # runs only during a glide
         self._ribbon_timer.setInterval(self.RIBBON_TICK)
         self._ribbon_timer.timeout.connect(self._ribbon_tick)
+        self.classic = False                     # Classic colours (w-110)
+        self._marks: list | None = None          # the marks drifting now (specs)
+        self._marks_t0 = 0.0
+        self._marks_timer = QTimer(self)         # runs only while they drift
+        self._marks_timer.setInterval(self.RIBBON_TICK)
+        self._marks_timer.timeout.connect(self._marks_tick)
+        self._awake = False                      # the window's say-so for 'live'
+        self._live_last = 0.0
+        self._live_timer = QTimer(self)          # runs only while _live_runs()
+        self._live_timer.setInterval(self.LIVE_TICK)
+        self._live_timer.timeout.connect(self._live_tick)
 
-    def set_ribbon(self, mode: str):
-        """Theatre's Ribbon layout: 'off' (none), 'still', or 'input' (it
-        glides a little with each move)."""
-        mode = mode if mode in ('still', 'input') else 'off'
-        if mode != self.ribbon:
+    def set_ribbon(self, mode: str, classic: bool = False):
+        """Theatre's Ribbon layout: 'off' (none), 'still', 'input' (it
+        glides a little with each move) or 'live'; with Classic colours or
+        without."""
+        mode = mode if mode in ('still', 'input', 'live') else 'off'
+        if mode != self.ribbon or classic != self.classic:
             self.ribbon = mode
+            self.classic = classic
             self._ribbon_timer.stop()
+            if mode == 'off' or not classic:
+                self._stop_marks()
             self.update()
+        self._sync_live()
+
+    def set_ribbon_awake(self, on: bool):
+        """Whether the window is in a state where 'live' may move: see the
+        class docstring."""
+        self._awake = bool(on)
+        self._sync_live()
+
+    def _live_runs(self) -> bool:
+        return self.ribbon == 'live' and self._awake and anim_ms(1) > 0 \
+            and LOOK['glow'] > 0 and not LOOK['contrast']
+
+    def _sync_live(self):
+        if self._live_runs():
+            if not self._live_timer.isActive():
+                self._live_last = time.monotonic()
+                self._live_timer.start()
+        else:
+            self._live_timer.stop()
+
+    def _live_tick(self):
+        if not self._live_runs():
+            self._live_timer.stop()
+            return
+        now = time.monotonic()
+        self._phase += self.LIVE_SPEED * min(0.5, now - self._live_last)
+        self._live_last = now
+        self.update(self._ribbon_band().toAlignedRect())
+
+    def ribbon_marks(self):
+        """A few outlined marks drift over the band for a moment (Classic
+        colours just turned on). Not under reduced motion, Glow Off or High
+        contrast."""
+        if self.ribbon == 'off' or not self.classic or not self._marks_ok():
+            return
+        self._marks = mark_specs(time.time_ns())
+        self._marks_t0 = time.monotonic()
+        self._marks_timer.start()
+        self.update(self._ribbon_band().toAlignedRect())
+
+    def _marks_ok(self) -> bool:
+        return anim_ms(1) > 0 and LOOK['glow'] > 0 and not LOOK['contrast']
+
+    def _stop_marks(self):
+        self._marks_timer.stop()
+        if self._marks is not None:
+            self._marks = None
+            self.update(self._ribbon_band().toAlignedRect())
+
+    def _marks_t(self) -> float:
+        return (time.monotonic() - self._marks_t0) * 1000 / self.MARKS_MS
+
+    def _marks_tick(self):
+        if self._marks is None or self._marks_t() >= 1.0 or not self._marks_ok():
+            self._stop_marks()
+            return
+        self.update(self._ribbon_band().toAlignedRect())
+
+    def _ribbon_color(self) -> QColor:
+        """The ribbon's colour: the tint's, or with Classic colours the
+        month's hue at the hour's brightness."""
+        light = LOOK['light']
+        return classic_color(datetime.now(), light) if self.classic \
+            else ribbon_color(self._tint, light)
 
     def ribbon_moves(self) -> bool:
         """Whether a move glides the ribbon: 'input', with motion on, a glow,
@@ -148,7 +243,7 @@ class GradientBackground(QWidget):
     def _ribbon_image(self, band: QRectF) -> QImage:
         """The ribbon at half size, for this size, tint and phase (kept)."""
         light = LOOK['light']
-        c = ribbon_color(self._tint, light)
+        c = self._ribbon_color()
         key = (int(band.width()) // 2, int(band.height()) // 2, c.rgb(),
                round(self._phase * 64), light)
         if self._ribbon_img is None or self._ribbon_img[0] != key:
@@ -230,6 +325,9 @@ class GradientBackground(QWidget):
                 if not LOOK['light']:            # light adds up: dark themes only
                     pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
                 pt.drawImage(band, self._ribbon_image(band))
+                if self._marks is not None:
+                    pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                    paint_marks(pt, band, self._marks_t(), QColor(P['accent']), self._marks)
         pt.end()
 
     def _wash_pixmap(self) -> QPixmap:
@@ -1179,6 +1277,7 @@ class SteamGate(QFrame):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import anim_ms, MOTION  # noqa: E402
-from .ribbon import ribbon_color, ribbon_image  # noqa: E402
+from .ribbon import (classic_color, mark_specs, paint_marks, ribbon_color,  # noqa: E402
+                     ribbon_image)
 from .config import steam_running  # noqa: E402
 from .tray import tray_message  # noqa: E402

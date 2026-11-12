@@ -79,7 +79,7 @@ ATTRACT_MINUTES = (0, 3, 5, 10, 20)
 THEATRE_STARTS = ('never', 'tv', 'always')
 # Theatre's layout, and how its Ribbon's background moves (w-108).
 THEATRE_LAYOUTS = ('tabs', 'ribbon')
-RIBBON_MOTIONS = ('input', 'still')
+RIBBON_MOTIONS = ('input', 'still', 'live')
 # Theatre's sound volume, in steps of 10 (the sheet shows 10 pills).
 VOLUME_STEPS = tuple(range(0, 101, 10))
 MAX_NOTE = 20000

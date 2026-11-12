@@ -79,3 +79,6 @@ os.environ.setdefault('NEXUS_NO_MOTION', '1')   # the tests wait on 0 ms timers 
 # XDG_CACHE_HOME would otherwise leak the user's cache into every test).
 for _var in ('XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
     os.environ.pop(_var, None)
+# A dev's Game-db friends stub (w-84) never leaks into a test: each test that
+# wants it sets it under mock.patch.dict.
+os.environ.pop('NEXUS_GAMEDB_FRIENDS_STUB', None)

@@ -7,8 +7,7 @@ import subprocess
 import sys
 import time
 
-from PyQt6.QtCore import (pyqtSignal, qInstallMessageHandler, QObject, QRectF, Qt, QtMsgType,
-    QTimer)
+from PyQt6.QtCore import pyqtSignal, QObject, QRectF, Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
@@ -264,21 +263,6 @@ def install_excepthook(win: 'MainWindow'):
     sys.excepthook = hook
 
 
-def qt_message(mode, context, message) -> None:
-    """Qt's own warnings: to stderr as before, and a critical or fatal one
-    into the native crash file first, so a qFatal abort leaves its reason
-    (faulthandler adds the stack after it). Never raises."""
-    try:
-        text = str(message)
-        if mode == QtMsgType.QtFatalMsg:
-            crash.native_note(f"qFatal: {text}")
-        elif mode == QtMsgType.QtCriticalMsg:
-            crash.native_note(f"Qt critical: {text}")
-        _err(text)
-    except Exception:                        # noqa: BLE001
-        pass
-
-
 class StallWatch(QObject):
     """The UI thread's heartbeat (w-101). Each beat re-arms faulthandler's
     timeout (crash.stall_beat), so if this thread stops answering for
@@ -348,8 +332,11 @@ def main():
             return
         # This is the window: a segfault or qFatal from here on leaves
         # logs/reports/native-<pid>.txt for the next start to offer.
+        # No Python qInstallMessageHandler: Qt's own threads (PipeWire's
+        # PwEventLoop) log while holding a lock the UI thread can be waiting
+        # for with the GIL held, and a Python handler needs the GIL: the
+        # window froze for good (2026-11-12). Qt's default handler is C.
         crash.enable_native()
-        qInstallMessageHandler(qt_message)
     app.setStyle('Fusion')
     return_freed_images()
     NX.migrate()                          # fitgirl-install dirs -> nexus (once)

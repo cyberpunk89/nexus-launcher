@@ -203,6 +203,8 @@ class NavigationMixin:
 
     def _focus_moved(self, _old, _new):
         self._update_hints()
+        if hasattr(self, 'attract'):
+            self._sync_ribbon()                       # pages over the Ribbon pause 'Moving'
 
     def _focus_search(self):
         self.search.setFocus()

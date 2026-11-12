@@ -15,7 +15,8 @@ FOLDER_CAP = 40                       # games in a category folder (then: See al
 GROUP_KICKER = {'ready': "READY TO PLAY", 'progress': "IN PROGRESS", 'queue': "UP NEXT"}
 
 # The glyph of each Theatre setting on the Ribbon (theatre_settings.ROWS).
-SETTING_GLYPH = {'theatre_layout': 'grid', 'ribbon_motion': 'sparkles', 'pad_a': 'gamepad',
+SETTING_GLYPH = {'theatre_layout': 'grid', 'ribbon_motion': 'sparkles', 'ribbon_classic': 'palette',
+                 'pad_a': 'gamepad',
                  'theatre_on_pad': 'gamepad', 'theatre_start': 'tv', 'attract': 'moon',
                  'week_home': 'calendar', 'sounds': 'bell', 'volume': 'activity',
                  'theme': 'palette', 'art_tint': 'image'}
@@ -43,6 +44,7 @@ class Item:
     children: tuple = ()              # a folder's own column
     track: tuple = ()                 # a download's pipeline stages (pipeline.cards track)
     figure: str = ''                  # a download's one big number
+    tags: tuple = ()                  # ((text, role), ...): drawn as soft tags instead of `sub`
 
     @property
     def value_text(self) -> str:
@@ -57,6 +59,7 @@ class Category:
     glyph: str
     items: tuple
     sub: str = ''                     # under its name: "Installed · A to Z · 48 games"
+    tags: tuple = ()                  # the same as soft tags under the icon bar
     live: bool = False                # a game is running (a dot on Home's icon)
 
 
@@ -77,6 +80,7 @@ class Feed:
     downloads: bool = True
     downloads_sub: str = ''
     fact: object = None                                # game -> its fact line (fact_text)
+    fact_tags: object = None                           # game -> its facts as tags (fact_tags)
     a_plays: bool = False                              # Settings: A plays a game
     pins: list = field(default_factory=list)           # [(category key, title, games)] (w-100)
     groups: list = field(default_factory=list)         # categories.browse(...) with no caps
@@ -90,6 +94,17 @@ def clamp(i: int, n: int) -> int:
     return max(0, min(n - 1, i))
 
 
+# Tag roles: a palette key ('subtext' = plain, 'accent', 'success', 'warning')
+# or a '#rrggbb' colour (a ProtonDB tier). The painter tints the capsule.
+def count_tag(text: str) -> tuple:
+    return ((text, 'accent'),)
+
+
+def split_tags(line: str, role: str = 'subtext') -> tuple:
+    """'Installed  ·  A to Z' -> two plain tags."""
+    return tuple((t.strip(), role) for t in (line or '').split('·') if t.strip())
+
+
 def _name(g: dict) -> str:
     return g.get('display_name') or g.get('slug') or ''
 
@@ -97,6 +112,7 @@ def _name(g: dict) -> str:
 def _game(g: dict, feed: Feed, kicker: str = '', key: str | None = None) -> Item:
     return Item(key=key or f"game:{g['slug']}", kind='game', title=_name(g),
                 sub=feed.fact(g) if feed.fact else '', slug=g['slug'], kicker=kicker,
+                tags=feed.fact_tags(g) if feed.fact_tags else (),
                 primary='play' if feed.a_plays else 'open')
 
 
@@ -106,6 +122,7 @@ def _home(feed: Feed) -> Category:
     if run:
         items.append(Item(key=f"game:{run['slug']}", kind='game', title=_name(run),
                           slug=run['slug'], sub=feed.fact(run) if feed.fact else '',
+                          tags=feed.fact_tags(run) if feed.fact_tags else (),
                           kicker=feed.playing_kicker,
                           primary='resume' if run.get('playing') else 'open'))
     live = bool(run and run.get('playing'))      # not while it's only starting
@@ -143,12 +160,14 @@ def _library(feed: Feed) -> Category:
                  if feed.games else
                  Item(key='empty:library', kind='empty', glyph='library', title=NO_GAMES,
                       sub=NO_GAMES_SUB, primary='all_settings')]
-    sub = "  ·  ".join(p for p in (feed.lib_label, f"{n} game{'s' if n != 1 else ''}") if p)
+    count = f"{n} game{'s' if n != 1 else ''}"
+    sub = "  ·  ".join(p for p in (feed.lib_label, count) if p)
     # Pinned categories first (w-100): A opens the category's page.
     pins = [Item(key=f"cat:{key}", kind='action', title=title, glyph='pin', primary=f"cat:{key}",
-                 sub=f"{count} game{'s' if count != 1 else ''}")
-            for key, title, count in feed.pins]
-    return Category('library', "Library", 'library', tuple(pins + items), sub=sub)
+                 sub=_count(c, 'game'), tags=count_tag(_count(c, 'game')))
+            for key, title, c in feed.pins]
+    return Category('library', "Library", 'library', tuple(pins + items), sub=sub,
+                    tags=count_tag(count) + split_tags(feed.lib_label))
 
 
 def _settings(feed: Feed) -> Category:
@@ -179,7 +198,8 @@ def _cat_folder(c, feed: Feed) -> Item:
         kids = [Item(key=f"empty:{c.key}", kind='empty', title="Nothing here yet", glyph='folder',
                      primary='none')]
     return Item(key=f"col:{c.key}", kind='folder', title=c.title, glyph='folder',
-                sub=_count(len(games), 'game'), children=tuple(kids))
+                sub=_count(len(games), 'game'), tags=count_tag(_count(len(games), 'game')),
+                children=tuple(kids))
 
 
 def _collections(feed: Feed) -> Category:
@@ -191,16 +211,18 @@ def _collections(feed: Feed) -> Category:
             items += [_cat_folder(c, feed) for c in g.cats]
     for g in feed.groups:
         if g.key != 'yours' and g.cats:
+            n = _count(len(g.cats), 'category', 'categories')
             items.append(Item(key=f"group:{g.key}", kind='folder', title=g.title,
-                              glyph='folder', sub=_count(len(g.cats), 'category', 'categories'),
+                              glyph='folder', sub=n, tags=count_tag(n),
                               children=tuple(_cat_folder(c, feed) for c in g.cats)))
     if not items:
         items.append(Item(key='empty:collections', kind='empty', glyph='folder',
                           title="No collections yet",
                           sub="Collections, genres and stores appear as your library grows.",
                           primary='none'))
-    return Category('collections', "Collections", 'folder', tuple(items),
-                    sub=_count(sum(len(g.cats) for g in feed.groups), 'category', 'categories'))
+    n = _count(sum(len(g.cats) for g in feed.groups), 'category', 'categories')
+    return Category('collections', "Collections", 'folder', tuple(items), sub=n,
+                    tags=count_tag(n))
 
 
 SHELF_NOUN = {'news': ("story", "stories"), 'deal': ("deal", "deals"),
@@ -220,14 +242,16 @@ def _discover(feed: Feed) -> Category:
         if kind == 'news':
             kids = tuple(Item(key=_story_key(n, i), kind='news', title=n.get('title') or "",
                               sub=" · ".join(x for x in (n.get('source'),) if x), glyph='news',
+                              tags=split_tags(n.get('source') or ''),
                               value=n) for i, n in enumerate(found))
         else:
             kids = tuple(Item(key=f"{kind}:{d.get('appid') or d.get('title') or i}", kind='deal',
                               title=d.get('title') or "", glyph='sparkles', value=d,
                               primary=f"deal:{kind}") for i, d in enumerate(found))
         one, many = SHELF_NOUN.get(kind, ("item", "items"))
+        n = _count(len(found), one, many)
         items.append(Item(key=f"shelf:{title}", kind='folder', title=title, glyph='folder',
-                          sub=_count(len(found), one, many), children=kids))
+                          sub=n, tags=count_tag(n), children=kids))
     if feed.gamedb_off:
         items.append(Item(key='action:gamedb_setup', kind='action', title="Sales and coming soon",
                           sub="Connect Game-db to see your wishlist's sales here. "
@@ -243,7 +267,8 @@ def _downloads(feed: Feed) -> Category:
                   primary=f"dl:{r.get('primary') or 'options'}") for r in feed.dl_rows]
     items.append(Item(key='page:downloads', kind='page', title="All downloads", glyph='download',
                       sub=feed.downloads_sub or "Nothing downloading.", primary='tab:downloads'))
-    return Category('downloads', "Downloads", 'download', tuple(items), sub=feed.downloads_sub)
+    return Category('downloads', "Downloads", 'download', tuple(items), sub=feed.downloads_sub,
+                    tags=split_tags(feed.downloads_sub, 'accent'))
 
 
 def _friends(feed: Feed) -> Category:
