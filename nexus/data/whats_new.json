@@ -2,6 +2,12 @@
   "0.5.5": [
     {
       "kind": "new",
+      "icon": "library",
+      "title": "A tidier Library and top bar",
+      "text": "One header row with a Filter button, an All games tab with A to Z, and one slimmer top bar. Top-bar collection pins are Library tabs now."
+    },
+    {
+      "kind": "new",
       "icon": "sparkles",
       "title": "A shorter, friendlier Setup",
       "text": "A shorter Setup shows what it found beside each choice. Keeping Nexus in the tray is asked when you first close the window."

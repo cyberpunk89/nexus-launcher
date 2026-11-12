@@ -139,7 +139,7 @@ from .theatre_settings import (  # noqa: F401
 from .theatre_game import (_news_html, fact_text, SECTIONS, TheatreDetails, TheatreDrawer,
     TheatreRow, TheatreShot)  # noqa: F401
 from .topbar import _TabHandle, CollectionChip, TopBar, TopIcon, Wordmark  # noqa: F401
-from .topbar import CollectionLookPicker, PinButton  # noqa: F401
+from .topbar import CollectionLookPicker, NavPill  # noqa: F401
 from .win_library import LibraryMixin  # noqa: F401
 from .win_nav import NavigationMixin  # noqa: F401
 from .win_controller import ControllerMixin  # noqa: F401

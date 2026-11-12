@@ -16,7 +16,7 @@ import math
 from PyQt6.QtCore import pyqtSignal, QPoint, QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QRadialGradient)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import categories, smart
@@ -2426,23 +2426,41 @@ class CategoryTabs(QWidget):
         self.setObjectName("CategoryTabs")
         self._h = height
         self._sig = None
+        self._divider_after: str | None = None
         self._titles: dict[str, str] = {}
         self.seg: SegmentedControl | None = None
+        self.divider: QFrame | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(*margins)
         lay.setSpacing(0)
+        # The tabs that don't fit, behind "More" (w-118: a narrow window or
+        # a big Size folds the page tabs first).
+        self.folded: list[str] = []
+        self.more = QPushButton("More")
+        self.more.setObjectName("TabItem")
+        self.more.setCheckable(True)
+        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more.setFixedHeight(height)
+        set_glyph_icon(self.more, G['chevron_down'], 14,
+                       'muted', on_role='text')
+        self.more.clicked.connect(self._more_menu)
+        self.more.hide()
+        lay.addWidget(self.more)
         lay.addStretch(1)
         # As wide as the row gives it: the titles fit that (_fit), not the
         # other way round.
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(height + margins[1] + margins[3])
 
-    def set_tabs(self, tabs, current: str | None):
-        """`tabs`: [(key, title)] in order. Never emits `picked`."""
+    def set_tabs(self, tabs, current: str | None, divider_after: str | None = None):
+        """`tabs`: [(key, title)] in order; a thin divider follows the tab
+        `divider_after` (w-116: Browse · All games │ pins). Never emits
+        `picked`."""
         tabs = [(k, t) for k, t in tabs]
-        sig = tuple(tabs)
+        sig = (tuple(tabs), divider_after)
         if sig != self._sig:
             self._sig = sig
+            self._divider_after = divider_after
             self._rebuild(tabs, current)
         elif self.seg is not None and self.seg.current() != (current or ''):
             self.seg.set_current(current if current in self._titles else None,
@@ -2460,12 +2478,24 @@ class CategoryTabs(QWidget):
             b.setToolTip(title)
             b.setAccessibleName(title)
             self._titles[key] = short
+        self.divider = None
+        keys = [k for k, _ in tabs]
+        after = self._divider_after
+        if after in keys and keys.index(after) < len(keys) - 1:
+            div = QFrame(seg)
+            div.setObjectName("TopSep")               # the theme's hairline
+            div.setFixedSize(1, max(12, self._h // 2))
+            seg.layout().insertWidget(keys.index(after) + 1, div, 0,
+                                      Qt.AlignmentFlag.AlignVCenter)
+            self.divider = div
         seg.set_current(current if current in self._titles else None, animate=False)
         seg.changed.connect(self.picked)
         lay = self.layout()
         lay.insertWidget(0, seg)                 # in the layout before it shows
+        self.seg = seg                           # before show: a resize then fits this one
+        self.folded = []                         # a new strip: everything shows until _fit
+        self.more.hide()
         seg.show()
-        self.seg = seg
         self._fit()
         if had and tabs:                         # focus first, then hide (w-60)
             b = seg.item(current) if current in self._titles else seg.item(tabs[0][0])
@@ -2477,24 +2507,56 @@ class CategoryTabs(QWidget):
 
     def _fit(self):
         """The titles in the width there is: the shortest stay whole, the
-        longer ones share what is left equally, elided."""
+        longer ones share what is left equally, elided. When even short
+        titles don't fit, the last tabs (never Browse, All games or the
+        current one) fold into More, the rightmost first."""
         seg = self.seg
         if seg is None or not self._titles:
             return
-        buttons = [seg.item(k) for k in self._titles]
-        for b in buttons:
+        keys = list(self._titles)
+        buttons = {k: seg.item(k) for k in keys}
+        if None in buttons.values():
+            return
+        for b in buttons.values():
             b.ensurePolished()
-        fm = buttons[0].fontMetrics()
-        pad = buttons[0].sizeHint().width() - fm.horizontalAdvance(buttons[0].text())
+        b0 = buttons[keys[0]]
+        fm = b0.fontMetrics()
+        pad = b0.sizeHint().width() - fm.horizontalAdvance(b0.text())
         lay = seg.layout()
         m = lay.contentsMargins()
-        keys = list(self._titles)
-        ends = {keys[0], keys[-1]} if len(keys) > 2 else set()
         om = self.layout().contentsMargins()
-        avail = self.width() - om.left() - om.right() - m.left() - m.right() \
-            - lay.spacing() * (len(buttons) - 1) \
-            - pad * len(buttons) - sum(fm.horizontalAdvance(self._titles[k]) for k in ends)
-        need = sorted(fm.horizontalAdvance(t) for k, t in self._titles.items() if k not in ends)
+        room = self.width() - om.left() - om.right() - m.left() - m.right() \
+            - ((self.divider.width() + lay.spacing()) if self.divider is not None else 0)
+        textw = {k: fm.horizontalAdvance(self._titles[k]) for k in keys}
+        cur = seg.current()
+        keep = set(keys[:2]) | {cur}
+        shown = list(keys)
+
+        def least(ks):                      # every tab at its shortest (the kept ones whole)
+            return sum(pad + (textw[k] if k in keep else min(textw[k], self.MIN_TEXT))
+                       + lay.spacing() for k in ks)
+        more_w = self.more.sizeHint().width()
+        folded = []
+        for k in reversed(keys):
+            if least(shown) + (more_w if folded else 0) <= room:
+                break
+            if k in keep:
+                continue
+            shown.remove(k)
+            folded.append(k)
+        folded.reverse()
+        if folded != self.folded:
+            self.folded = folded
+            for k in keys:
+                seg.set_item_visible(k, k not in folded)
+            self.more.setVisible(bool(folded))
+        self.more.setChecked(cur in folded)
+        avail = room - (more_w if folded else 0) - lay.spacing() * (len(shown) - 1) \
+            - pad * len(shown)
+        ends = {shown[0], shown[-1]} if len(shown) > 2 and not folded else set()
+        ends |= keep & set(shown)                # Browse, All games, the current: whole
+        avail -= sum(textw[k] for k in ends)
+        need = sorted(textw[k] for k in shown if k not in ends)
         cap = None
         if sum(need) > avail:
             left, n = avail, len(need)           # water-fill: whole while under the cap
@@ -2503,13 +2565,28 @@ class CategoryTabs(QWidget):
                     cap = max(self.MIN_TEXT, left // (n - i))
                     break
                 left -= w
-        for key, b in zip(self._titles, buttons):
+        for key in keys:
+            b = buttons[key]
             text = self._titles[key]
-            if cap is not None and key not in ends and fm.horizontalAdvance(text) > cap:
+            if cap is not None and key not in ends and textw[key] > cap:
                 text = fm.elidedText(text, Qt.TextElideMode.ElideRight, cap)
             text = text.replace('&', '&&')
             if b.text() != text:
                 b.setText(text)
+
+    def _more_menu(self):
+        """The folded tabs as a menu; picking one is a tab pick."""
+        self.more.setChecked(self.seg is not None and self.seg.current() in self.folded)
+        if not self.folded:
+            return
+        m = QMenu(self)
+        for k in self.folded:
+            a = m.addAction(self._titles[k].replace('&', '&&'))
+            a.setCheckable(True)
+            a.setChecked(self.seg is not None and self.seg.current() == k)
+            a.triggered.connect(lambda _=False, k=k: self.picked.emit(k))
+        m.exec(self.more.mapToGlobal(QPoint(0, self.more.height())))
+        m.deleteLater()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

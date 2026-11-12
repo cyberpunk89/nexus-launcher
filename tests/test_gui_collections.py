@@ -139,64 +139,63 @@ class Prefs(unittest.TestCase):
         self.assertEqual((data['theatre_layout'], data['ribbon_motion']), ('ribbon', 'live'))
         self.assertIs(data['ribbon_classic'], True)
 
-    def test_look_order_and_pin_round_trip(self):
+    def test_look_order_round_trip(self):
         p = nx.LibraryPrefs()
         for n in ('Couch', 'Short', 'Spooky'):
             p.add_collection(n)
-        self.assertTrue(p.set_collection_look('Couch', icon='sofa', color='foam', pinned=True))
+        self.assertTrue(p.set_collection_look('Couch', icon='sofa', color='foam'))
         self.assertTrue(p.set_collection_look('Spooky', icon='ghost'))
         self.assertTrue(p.move_collection('Spooky', -1))
         self.assertFalse(p.move_collection('Couch', -1))           # already first
         self.assertFalse(p.set_collection_look('Nope', icon='sofa'))
         q = nx.LibraryPrefs()
         self.assertEqual(list(q.collections), ['Couch', 'Spooky', 'Short'])
-        self.assertEqual(q.look_of('Couch'), {'icon': 'sofa', 'color': 'foam', 'pinned': True})
+        self.assertEqual(q.look_of('Couch'), {'icon': 'sofa', 'color': 'foam'})
         self.assertEqual(q.look_of('Spooky'), {'icon': 'ghost'})
-        self.assertEqual(q.pinned_collections(), ['Couch'])
         # None puts a choice back to the default; nothing chosen, no entry.
         q.set_collection_look('Spooky', icon=None)
         self.assertNotIn('Spooky', nx.LibraryPrefs().collection_look)
 
+    def test_top_bar_pins_become_library_tabs(self):
+        """w-118: a collection pinned to the old top bar (w-52) loads as a
+        `col:` category pin, after the ones already there, and loses the
+        flag (an empty look goes)."""
+        self.path.write_text(json.dumps({
+            'collections': {'Couch': [], 'Short': [], 'A': []},
+            'category_pins': ['fav', 'col:A'],
+            'collection_look': {'Couch': {'icon': 'sofa', 'pinned': True},
+                                'Short': {'pinned': True}, 'A': {'pinned': True}}}))
+        p = nx.LibraryPrefs()
+        self.assertEqual(p.category_pins, ['fav', 'col:A', 'col:Couch', 'col:Short'])
+        self.assertEqual(p.collection_look, {'Couch': {'icon': 'sofa'}})
+        self.assertEqual(p.pinned_collections(), [])
+        p.save()
+        q = nx.LibraryPrefs()
+        self.assertEqual(q.category_pins, ['fav', 'col:A', 'col:Couch', 'col:Short'])
+
     def test_rename_carries_the_look_and_delete_drops_it(self):
         p = nx.LibraryPrefs()
         p.add_collection('Couch')
-        p.set_collection_look('Couch', color='love', pinned=True)
+        p.set_collection_look('Couch', color='love')
         self.assertEqual(p.rename_collection('Couch', 'Sofa'), 'Sofa')
         q = nx.LibraryPrefs()
-        self.assertEqual(q.look_of('Sofa'), {'color': 'love', 'pinned': True})
+        self.assertEqual(q.look_of('Sofa'), {'color': 'love'})
         self.assertNotIn('Couch', json.loads(self.path.read_text())['collection_look'])
         q.delete_collection('Sofa')
         self.assertEqual(json.loads(self.path.read_text())['collection_look'], {})
 
     def test_bad_hand_edits_are_dropped_and_new_keys_kept(self):
         self.path.write_text(json.dumps({
-            'collections': {'Couch': [], 'Short': [], 'A': [], 'B': []},
+            'collections': {'Couch': [], 'Short': []},
             'collection_look': {
                 'couch': {'icon': 'sofa', 'color': '#123456', 'pinned': 'yes', 'sort': 'name'},
-                'Short': {'icon': 'not-an-icon', 'color': 'gold', 'pinned': True},
-                'A': {'pinned': True}, 'B': {'pinned': True},
+                'Short': {'icon': 'not-an-icon', 'color': 'gold'},
                 'Gone': {'icon': 'sofa'}, 'Bad': 'x'}}))
         p = nx.LibraryPrefs()
         # Matched ignoring case; a newer Nexus's 'sort' survives.
         self.assertEqual(p.look_of('Couch'), {'icon': 'sofa', 'sort': 'name'})
-        self.assertEqual(p.look_of('Short'), {'color': 'gold', 'pinned': True})
+        self.assertEqual(p.look_of('Short'), {'color': 'gold'})
         self.assertNotIn('Gone', p.collection_look)
-        self.assertEqual(p.pinned_collections(), ['Short', 'A', 'B'])
-
-    def test_no_more_pins_than_fit(self):
-        p = nx.LibraryPrefs()
-        for n in 'ABCD':
-            p.add_collection(n)
-        for n in 'ABC':
-            self.assertTrue(p.set_collection_look(n, pinned=True))
-        self.assertFalse(p.set_collection_look('D', pinned=True))
-        self.assertTrue(p.set_collection_look('A', pinned=True))     # already pinned: fine
-        self.assertEqual(p.pinned_collections(), ['A', 'B', 'C'])
-        # A file with too many pins (hand-edited) keeps the first ones.
-        data = json.loads(self.path.read_text())
-        data['collection_look']['D'] = {'pinned': True}
-        self.path.write_text(json.dumps(data))
-        self.assertEqual(nx.LibraryPrefs().pinned_collections(), ['A', 'B', 'C'])
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -315,51 +314,24 @@ class Window(unittest.TestCase):
         self.assertEqual(w.prefs.look_of('Couch'), {'icon': 'sofa'})
         w.sheet.close_sheet()
 
-    def test_pin_to_the_top_bar(self):
+    def test_pin_as_a_library_tab(self):
+        """w-118: the sheet's Pin makes the collection a Library tab (no
+        top-bar pins any more); rename moves the tab, delete drops it."""
         w = self.win
-        bar = w.topbar
-        self.assertEqual(bar.pins, [])
-        self.assertTrue(bar.pin_sep.isHidden())
+        self.assertFalse(hasattr(w.topbar, 'pins'))
         w._create_collection('Couch co-op night', 'alpha')
         w._pin_collection('Couch co-op night', True)
-        self.assertEqual([b.name for b in bar.pins], ['Couch co-op night'])
-        self.assertFalse(bar.pin_sep.isHidden())
-        pin = bar.pins[0]
-        self.assertTrue(pin.text().endswith("…"))                # a long name is cut
-        w.go(w.HOME)
-        w.search.setText("zzz")
-        pin.click()
-        self.assertEqual(w.current(), w.LIBRARY)
-        self.assertEqual(w._chip, 'col:Couch co-op night')
-        self.assertEqual(w.search.text(), "")
-        self.assertEqual([g['slug'] for g in w._shown_games], ['alpha'])
-        self.assertTrue(pin.isChecked())
-        w.go(w.HOME)
-        self.assertFalse(pin.isChecked())
-        # Rename keeps the pin (the same button), delete takes it away.
+        self.assertEqual(w.prefs.category_pins, ['col:Couch co-op night'])
+        w.go(w.LIBRARY)
+        w.apply_filter()
+        self.assertIn('col:Couch co-op night', w.cat_tabs.keys())
         w._rename_collection('Couch co-op night', 'Couch')
-        self.assertEqual([b.name for b in bar.pins], ['Couch'])
+        self.assertEqual(w.prefs.category_pins, ['col:Couch'])
+        w._pin_collection('Couch', False)
+        self.assertEqual(w.prefs.category_pins, [])
+        w._pin_collection('Couch', True)
         w._delete_collection('Couch')
-        self.assertEqual(bar.pins, [])
-
-    def test_pins_fold_to_icons_on_a_narrow_window(self):
-        w = self.win
-        for n in ('A', 'B', 'C', 'D'):
-            w._create_collection(n)
-            w._pin_collection(n, True)
-        self.assertEqual([b.name for b in w.topbar.pins], ['A', 'B', 'C'])    # D didn't fit
-        self.assertTrue(all(b.text() for b in w.topbar.pins))
-        for width in (1100, 900):
-            w.resize(width, 700)
-            QApplication.processEvents()
-            self.assertTrue(all(not b.text() and b.width() == b.H for b in w.topbar.pins))
-            # Everything in the bar still fits: nothing pushed past its right edge.
-            self.assertLessEqual(w.btn_install.geometry().right(), w.topbar.width())
-            self.assertGreaterEqual(w.search.width(), w.search.minimumWidth())
-        w.resize(1400, 850)
-        QApplication.processEvents()
-        self.assertTrue(all(b.text() for b in w.topbar.pins))
-
+        self.assertEqual(w.prefs.category_pins, [])
 
 if __name__ == '__main__':
     unittest.main()

@@ -333,6 +333,9 @@ class ControllerMixin:
             i = order.index(cur) if cur in order else 0
             self.go(order[(i + (1 if act == 'page-next' else -1)) % len(order)])
             QTimer.singleShot(anim_ms(50), lambda: alive(self) and focus_and_reveal(self.default_focus()))
+        elif act == 'view' and self.current() == self.LIBRARY \
+                and (self._filter_open() or not self._category_open()):
+            self._toggle_filter()                   # w-117: View is the Filter popover
         elif act == 'view' and self.current() == self.LIBRARY:
             views = ['home', 'grid', 'list']
             self.set_view(views[(views.index(self._view) + 1) % 3])
@@ -704,6 +707,9 @@ class ControllerMixin:
         if self._open_sheet() is not None:
             self.hints.show_hints([('a', 'Select'), ('b', 'Close')])
             return
+        if self._filter_open():
+            self.hints.show_hints([('a', 'Select'), ('b', 'Close'), ('View', 'Close')])
+            return
         if not self._theatre and self.desk_search.isVisible():
             self.hints.show_hints(([('a', 'Open')] if isinstance(f, GameTile) else
                                    [('a', 'Type')]) + [('x', 'Delete'), ('y', 'Space'),
@@ -796,7 +802,7 @@ class ControllerMixin:
             hints = [('a', 'Select'), ('b', 'Back')]
         hints += [('LB RB', 'Pages')]
         if self.current() == self.LIBRARY:
-            hints.append(('View', 'Switch view'))
+            hints.append(('View', 'Switch view' if self._category_open() else 'Filter'))
         hints.append(('Menu', 'Theatre mode'))
         self.hints.show_hints(hints)
 

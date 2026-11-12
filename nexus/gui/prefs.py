@@ -228,6 +228,17 @@ class LibraryPrefs:
         # Categories pinned as Library tabs (w-100): keys in order, at most
         # categories.PIN_MAX. One missing from the library now stays here.
         self.category_pins = categories.clean_pins(self._data.get('category_pins'))
+        # Collections pinned to the top bar (w-52) became Library tabs (w-118):
+        # each one's `col:` key joins the pins once, and the old flag goes.
+        old = [n for n in self.collections if self.look_of(n).get('pinned')]
+        if old:
+            self.category_pins = categories.clean_pins(
+                self.category_pins + [categories.COL + n for n in old
+                                      if categories.COL + n not in self.category_pins])
+            for n in old:
+                self.collection_look[n].pop('pinned', None)
+                if not self.collection_look[n]:
+                    del self.collection_look[n]
         # Shelves you built from rules (w-51, nexus/smart.py); removed ones are kept.
         self.smart_shelves = smart.clean_shelves(self._data.get('smart_shelves'))
         # The Deals page as it was left: section, filter, sort, hide owned.

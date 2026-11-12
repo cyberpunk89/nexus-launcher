@@ -121,7 +121,16 @@ class DownloadsMixin:
                         and torrent.claim_install(r['hash']):
                     self._install_download(r)
             active = self.downloads.active_count()
-            self.icons[self.DOWNLOADS].set_badge(active or None)
+            icon = self.icons[self.DOWNLOADS]
+            icon.set_badge(active or None)
+            # The ring (w-118): how far the running downloads are, together.
+            running = [r for r in self.downloads.data.get('torrents') or []
+                       if not r.get('done') and not r.get('gone') and r.get('state') != 'paused']
+            prog = (sum(float(r.get('percent') or 0) for r in running) / len(running) / 100
+                    if running else None)
+            if prog != icon.progress:
+                icon.progress = prog
+                icon.update()
             if data.get('configured') is False:
                 self._torrent_timer.stop()
             elif self._showing(self.DOWNLOADS) or (

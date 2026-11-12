@@ -88,8 +88,11 @@ class LibraryMixin:
         bl.setContentsMargins(SP['5'], SP['4'], SP['5'], 0)
         bl.setSpacing(SP['2'])
         bl.addWidget(label("Library", "PageTitle"))
-        self.count_label = label("", "ShelfCount")
-        bl.addWidget(self.count_label, 0, Qt.AlignmentFlag.AlignBottom)
+        # Soft tags (w-117): how many games show, and what the filter is.
+        self.count_label = label("", "SoftTagAccent")
+        bl.addWidget(self.count_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.filter_tag = label("", "SoftTag")
+        bl.addWidget(self.filter_tag, 0, Qt.AlignmentFlag.AlignVCenter)
         bl.addStretch()
         self.filter = QComboBox()
         for text, key in (("Any status", 'all'), ("Update pending", 'update'),
@@ -139,19 +142,35 @@ class LibraryMixin:
                            "Ghost", round_=True)
         dice.clicked.connect(lambda: self.surprise(self._shown_games))
         self.btn_surprise = dice
-        # Right-anchored, with the view switch last before refresh: controls
-        # that hide per view are on its left, so the switch itself never moves.
-        for w in (self.btn_edit_shelf, self.btn_clear_filter, self.filter, self.sort,
-                  self.size_slider,
-                  self.view_seg, dice, refresh):
+        dice.hide()                               # w-117: both live in the ⋮ menu
+        refresh.hide()
+        # Filter (w-117): the status, the store and collection chips and
+        # Installed / Not installed / Everything, in a popover; the button
+        # says what is on. Tab and the pad's View reach it.
+        self.btn_filter = QPushButton("Filter")
+        self.btn_filter.setObjectName("FilterButton")
+        self.btn_filter.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_glyph_icon(self.btn_filter, G['tune'], 15, 'subtext', hover_role='text')
+        self.btn_filter.clicked.connect(self._toggle_filter)
+        self.btn_lib_menu = icon_button(G['more'], "More", 34, "Ghost", round_=True)
+        self.btn_lib_menu.clicked.connect(self._library_menu)
+        # Right-anchored, with the view switch before ⋮: controls that hide
+        # per view are on its left, so the switch itself never moves.
+        for w in (self.btn_edit_shelf, self.btn_clear_filter, self.btn_filter, self.sort,
+                  self.size_slider, self.view_seg, self.btn_lib_menu):
             bl.addWidget(w)
         lay.addWidget(bar)
 
-        chips = WrapRow(SP['1_5'])              # own_seg drops under the chips if narrow
+        self.filter_pop = Popover(self.desk if hasattr(self, 'desk') else page, 460)
+        self.filter_pop.closed.connect(self._filter_closed)
+        fb = self.filter_pop.body
+        fb.addWidget(label("STATUS", "SectionKicker"))
+        fb.addWidget(self.filter)
+        fb.addSpacing(SP['2'])
+        fb.addWidget(label("STORES", "SectionKicker"))
+        chips = QWidget()                         # wraps inside the card's width
         self._lib_chips = chips
-        chips.layout().setContentsMargins(SP['5'], SP['3'], SP['5'], 0)
-        cl = chips.left
-        cl.setSpacing(SP['1_5'])
+        cl = FlowLayout(chips, 0, SP['1_5'])
         self.chips = {}
         # One chip per store. Heroic is Linux-only; a store source's chip
         # (Epic) shows once the library has a game from it (_store_chips).
@@ -173,12 +192,14 @@ class LibraryMixin:
         self.chips['all'].setChecked(True)
         self._chip = 'all'
         self._store_chips()
-        self._col_chips = QHBoxLayout()            # one per collection, rebuilt as they change
-        self._col_chips.setContentsMargins(0, 0, 0, 0)
-        self._col_chips.setSpacing(SP['1_5'])
-        cl.addLayout(self._col_chips)
+        fb.addWidget(chips)
+        self._col_head = label("COLLECTIONS", "SectionKicker")
+        fb.addSpacing(SP['2'])
+        fb.addWidget(self._col_head)
+        self._col_host = QWidget()
+        self._col_chips = FlowLayout(self._col_host, 0, SP['1_5'])   # one per collection
+        fb.addWidget(self._col_host)
         self._rebuild_collection_chips()
-        cl.addStretch()
         # Installed / not installed (owned on Steam, Epic, GOG) / everything.
         self.own_seg = SegmentedControl('pill', 30)
         for key, text in (('installed', "Installed"), ('owned', "Not installed"),
@@ -186,15 +207,27 @@ class LibraryMixin:
             self.own_seg.add(key, text)
         self.own_seg.set_current(self.prefs.owned_view, animate=False)
         self.own_seg.changed.connect(self._set_owned_view)
-        chips.set_right(self.own_seg)
+        self._own_head = label("SHOW", "SectionKicker")
+        fb.addSpacing(SP['2'])
+        fb.addWidget(self._own_head)
+        fb.addWidget(self.own_seg, 0, Qt.AlignmentFlag.AlignLeft)
         self.own_seg.setVisible(self.prefs.show_owned)
-        lay.addWidget(chips)
+        self._own_head.setVisible(self.prefs.show_owned)
+        reset = QPushButton("Show everything again")
+        reset.setObjectName("Ghost")
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.clicked.connect(self._reset_filters)
+        self.btn_filter_reset = reset
+        fb.addSpacing(SP['1'])
+        fb.addWidget(reset, 0, Qt.AlignmentFlag.AlignRight)
         # Pinned categories as tabs (w-100): Browse, the pins, All
         # categories; shown with a pin, on Browse, a page and the hub alike.
-        self.cat_tabs = CategoryTabs(34, (SP['5'], SP['2'], SP['5'], 0))
+        # w-118: they ride in the top bar's page_tabs slot while the Library shows.
+        self.cat_tabs = CategoryTabs(36)
+        self.cat_tabs.wanted = False
         self.cat_tabs.picked.connect(self._cat_tab_picked)
-        lay.addWidget(self.cat_tabs)
-        self.cat_tabs.hide()
+        self.topbar.mount_page_tabs(self.LIBRARY, self.cat_tabs)
+        self._grid_view = self.prefs.view if self.prefs.view in ('grid', 'list') else 'grid'
         self._restore_library_state()
         self.filter.currentIndexChanged.connect(self._save_library_state)
 
@@ -227,7 +260,17 @@ class LibraryMixin:
         self.cathub.back.connect(self.close_category)
         self.cathub.open_key.connect(self.open_category)
         self.views.addWidget(self.cathub)
-        lay.addWidget(self.views, 1)
+        # All games' A-Z strip (w-116), on the grid's right while it is
+        # sorted by name.
+        self.letters = LetterJump()
+        self.letters.jump.connect(self._letter_jump)
+        self.letters.hide()
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, SP['2'], 0)
+        body.setSpacing(0)
+        body.addWidget(self.views, 1)
+        body.addWidget(self.letters)
+        lay.addLayout(body, 1)
         # A game page's genre or Co-op chip (DetailsPanel.filter_library,
         # when that panel has it) opens that category's page.
         sig = getattr(self.details, 'filter_library', None) if hasattr(self, 'details') else None
@@ -260,6 +303,8 @@ class LibraryMixin:
 
     def set_view(self, key, save=True):
         self._view = key if key in self._views else 'home'
+        if self._view != 'home':
+            self._grid_view = self._view          # All games opens the last of these
         self.view_seg.set_current(self._view)
         self.views.setCurrentWidget(self.view)
         self.size_slider.setVisible(self._view == 'grid')
@@ -287,6 +332,8 @@ class LibraryMixin:
         self.prefs.show_owned = on
         self.prefs.save()
         self.own_seg.setVisible(on)
+        self._own_head.setVisible(on)
+        self.filter_pop.refit()
         self.reload_library()
 
     def _set_owned_view(self, key):
@@ -318,6 +365,10 @@ class LibraryMixin:
         for c in old.values():
             c.hide()
             c.deleteLater()
+        self._col_head.setVisible(bool(self.prefs.collections))
+        self._col_host.setVisible(bool(self.prefs.collections))
+        self._col_chips.invalidate()
+        self.filter_pop.refit()
 
     def _store_chips(self):
         """Show a store source's chip only when the library has its games
@@ -342,15 +393,15 @@ class LibraryMixin:
         self._store_chips()
         self._save_library_state()
         self.apply_filter()
-        self._sync_pins()
 
     def _restore_library_state(self):
         st = self.prefs.library_state
         status = st.get('status')
         if isinstance(status, str) and status.startswith(smart.KEY_PREFIXES):
             self._smart_want = status             # its entry comes with the library
+        # All games starts on Name A-Z until a sort is chosen (w-116).
         for box, key in ((self.sort, 'sort'), (self.filter, 'status')):
-            i = box.findData(st.get(key))
+            i = box.findData(st.get(key, 'name' if key == 'sort' else None))
             if i >= 0:
                 box.blockSignals(True)
                 box.setCurrentIndex(i)
@@ -502,7 +553,6 @@ class LibraryMixin:
         for g in self._games:
             g['collections'] = self.prefs.collections_of(g['slug'])
         self._rebuild_collection_chips()
-        self.topbar.set_pins(self.prefs.pinned_collections())
         self._home_sig = None                   # a new look or order redraws Home's rows
         if not self._chip.startswith('col:') or self._chip in self.chips:
             self.apply_filter()
@@ -512,27 +562,7 @@ class LibraryMixin:
             self.theatre.set_facts(self._smart_facts())
             self.theatre.set_games([g for g in self._games if not g.get('hidden')])
         self._sync_selection()
-        self._sync_pins()
-
-    def _sync_pins(self):
-        """Light the pin of the collection the Library is showing."""
-        chip = getattr(self, '_chip', 'all')           # go() can run before the Library is built
-        on = self.current() == self.LIBRARY and chip.startswith('col:')
-        self.topbar.mark_pin(chip[4:] if on else None)
-
-    def _open_pinned(self, cname):
-        """A top-bar pin: its collection in the Library, like a shelf's "See
-        all" (no search or status filter narrowing it, as a grid)."""
-        if cname not in self.prefs.collections:
-            return
-        self.go(self.LIBRARY)
-        if self._category_open():
-            self.close_category()
-        self.search.clear()
-        self.filter.setCurrentIndex(0)
-        if self._view == 'home':
-            self.set_view('grid', save=False)
-        self._set_chip(f'col:{cname}')
+        self._sync_cat_tabs()
 
     def ask_collection_name(self, title: str, initial: str, on_done, look: dict | None = None):
         """A collection's name and look in one modal (w-67): the text field
@@ -582,12 +612,13 @@ class LibraryMixin:
         sheet = self.theatre_sheet if self._theatre else self.sheet
         names = list(self.prefs.collections)
         i = names.index(cname)
-        pinned = bool(self.prefs.look_of(cname).get('pinned'))
+        key = categories.COL + cname
+        pinned = key in self.prefs.category_pins
         rows = [("Rename…", G['pencil'], lambda: self.ask_collection_name(
                     "Rename collection", cname,
                     lambda new, look: self._rename_collection(cname, new, look),
                     self.prefs.look_of(cname))),
-                ("Unpin from the top bar" if pinned else "Pin to the top bar",
+                ("Unpin its Library tab" if pinned else "Pin as a Library tab",
                  G['pin_off' if pinned else 'pin'], lambda: self._pin_collection(cname, not pinned))]
         if i > 0:
             rows.append(("Move up", G['arrow_up'],
@@ -625,12 +656,17 @@ class LibraryMixin:
             self._collections_changed()
 
     def _pin_collection(self, cname, on):
-        if not self.prefs.set_collection_look(cname, pinned=on):
-            self.toast(f"Up to {MAX_PINNED} collections fit in the top bar — unpin one first.",
+        """The sheet's Pin: the collection as a Library tab (w-118; the
+        top-bar pins of w-52 are gone)."""
+        key = categories.COL + cname
+        if (key in self.prefs.category_pins) == on:
+            return
+        if on and self._pin_state(key) == 'full':
+            self.toast(f"{categories.PIN_MAX} tabs are pinned — unpin one first.",
                        'warn', None, 4000)
             return
-        self._collections_changed()
-        self.toast(f"Pinned “{cname}” to the top bar." if on else
+        self._toggle_pin(key)
+        self.toast(f"“{cname}” is a Library tab now." if on else
                    f"Unpinned “{cname}”.", 'success' if on else 'info', None, 2500)
 
     def _rename_collection(self, old, new, look: dict | None = None):
@@ -938,6 +974,7 @@ class LibraryMixin:
                                     and in_own(g)])
         self.count_label.setText(f"{n} of {total}" if n != total else
                                  f"{n} game{'s' if n != 1 else ''}")
+        self._sync_filter_text()
         badge = chip == 'friends' or together       # avatars on tiles only while filtering
         self.library.set_friends_badge(badge)
         self.home.set_friends_badge(badge)
@@ -950,6 +987,7 @@ class LibraryMixin:
             target.set_games(games, empty, pending)
         target.set_jobs(self.jobs)
         target.mark_selected(set(self.selected))
+        self._sync_letters(target, games)
         self._sync_cat_tabs()
         self._refresh_home(empty, pending)
 
@@ -1119,12 +1157,13 @@ class LibraryMixin:
             # Browse's scroll and focus, for Back (the grid's or list's too).
             self._browse_place = KeepPlace(self.views.currentWidget()).take()
         self._cat_key = key
+        self.filter_pop.close_popover(restore=False)
         self._lib_bar.hide()
         self._lib_chips.hide()
+        self.letters.hide()
         self.views.setCurrentWidget(self.cathub if hub else self.catpage)
         self._refresh_category(sort)
         self._sync_cat_tabs()
-        self._sync_pins()
         if self.input.mode in ('keyboard', 'pad'):
             QTimer.singleShot(0, self._focus_category)
         return True
@@ -1278,30 +1317,127 @@ class LibraryMixin:
             theatre.pins_changed()
 
     def _sync_cat_tabs(self):
-        """The strip: shown with a pin; its current tab is the place the
-        Library shows (none on a page that isn't pinned)."""
-        pins = self.prefs.category_pins
-        if not pins:
-            self.cat_tabs.hide()
-            return
-        cats = self._pinned_cats()          # one category() per pin: cheap per search key
-        if not cats:
-            self.cat_tabs.hide()
-            return
-        key = self._cat_key if self._category_open() else BROWSE_TAB
-        first = "Browse" if self._view == 'home' else "All games"
-        tabs = [(BROWSE_TAB, first)] + [(c.key, c.title) for c in cats] \
-            + [(categories.HUB, "All categories")]
-        self.cat_tabs.set_tabs(tabs, key)
-        self.cat_tabs.show()
+        """The strip: Browse · All games │ the pins · All categories (w-116:
+        always there, All games is a fixed tab); its current tab is the
+        place the Library shows (none on a page that isn't pinned)."""
+        cats = self._pinned_cats() if self.prefs.category_pins else []
+        if self._category_open():
+            key = self._cat_key
+        else:
+            key = BROWSE_TAB if self._view == 'home' else GAMES_TAB
+        tabs = [(BROWSE_TAB, "Browse"), (GAMES_TAB, "All games")] \
+            + [(c.key, c.title) for c in cats] + [(categories.HUB, "All categories")]
+        self.cat_tabs.set_tabs(tabs, key, divider_after=GAMES_TAB)
+        self.cat_tabs.wanted = True
+        self.topbar.show_page_tabs(self.current())
 
     def _cat_tab_picked(self, key: str):
-        if key == BROWSE_TAB:
+        if key in (BROWSE_TAB, GAMES_TAB):
             self.close_category()
+            view = 'home' if key == BROWSE_TAB else self._grid_view
+            if view != self._view:
+                self.set_view(view)
         elif key == categories.HUB:
             self._open_hub()
         elif not self.open_category(key):
             self._sync_cat_tabs()               # it couldn't open: the tab goes back
+
+    # ---- the header's Filter and ⋮ (w-117) ----
+    OWN_WORDS = {'installed': "Installed", 'owned': "Not installed", 'all': "Everything"}
+
+    def _filter_parts(self) -> tuple[str, str, str]:
+        """(shown, store or collection, status) in words; the defaults are
+        "Installed", "every store" and ''."""
+        own = self.prefs.owned_view if self.prefs.show_owned else 'installed'
+        chip = getattr(self, '_chip', 'all')
+        if chip == 'all' or chip not in self.chips:
+            where = "every store"
+        elif chip.startswith('col:'):
+            where = chip[len('col:'):]
+        else:
+            where = self.chips[chip].text().replace('★', '').strip()
+        status = self.filter.currentData()
+        what = self.filter.currentText() if status not in (None, 'all') else ''
+        return self.OWN_WORDS.get(own, "Installed"), where, what
+
+    def _sync_filter_text(self):
+        """The soft tag says the whole filter; the button only what is
+        changed from the defaults ("Filter" when nothing is)."""
+        own, where, what = self._filter_parts()
+        self.filter_tag.setText(amp(" · ".join(p for p in (own, where, what) if p)))
+        changed = [p for p, d in ((own, "Installed"), (where, "every store"), (what, ''))
+                   if p != d]
+        text = " · ".join(changed) if changed else "Filter"
+        short = text if len(text) <= 32 else text[:31].rstrip() + "…"
+        self.btn_filter.setText(amp(short))
+        self.btn_filter.setToolTip("Filter: " + " · ".join(p for p in (own, where, what) if p)
+                                   + "  (View on a controller)")
+        self.btn_filter.setProperty('active', bool(changed))
+        self.btn_filter.style().unpolish(self.btn_filter)
+        self.btn_filter.style().polish(self.btn_filter)
+
+    def _toggle_filter(self):
+        if self._category_open() or self.current() != self.LIBRARY:
+            return
+        self.filter_pop.toggle(self.btn_filter)
+        self._update_hints()
+
+    def _filter_closed(self):
+        self._update_hints()
+
+    def _reset_filters(self):
+        """The popover's "Show everything again": Any status, All, Installed."""
+        if self.filter.currentData() != 'all':
+            self.filter.setCurrentIndex(0)
+        if self.prefs.show_owned and self.prefs.owned_view != 'installed':
+            self._set_owned_view('installed')
+        if self._chip != 'all':
+            self._set_chip('all')
+
+    def _library_menu(self):
+        """⋮: Pick for me, New shelf, the hidden rows, Refresh."""
+        items = [("Pick for me", G['dice'], lambda: self.surprise(self._shown_games))]
+        if self._view == 'home':
+            head = self.home.head
+            if head is not None and not head.btn_new.isHidden():
+                items.append(("New shelf", G['plus'], self._new_shelf))
+            n = len(self._hidden_keys())
+            if n:
+                items.append((f"{n} hidden…", G['eye'],
+                              lambda: self._smart_hidden_menu(QPoint())))
+        items.append(("Refresh", G['refresh'], self.refresh_library))
+        if self.input.mode == 'pad':
+            self.sheet.choose("Library", items)
+            self._update_hints()
+            return
+        m = QMenu(self)
+        for text, _glyph, fn in items:
+            m.addAction(text).triggered.connect(lambda _=False, fn=fn: fn())
+        b = self.btn_lib_menu
+        m.exec(b.mapToGlobal(QPoint(0, b.height())))
+        m.deleteLater()
+
+    # ---- All games' A-Z strip (w-116) ----
+    def _sync_letters(self, target, games):
+        """Shown on the grid, outside a category page, sorted by name, with
+        a game; the letters that have one are lit."""
+        on = (target is self.library and not self._category_open() and bool(games)
+              and self.sort.currentData() == 'name')
+        if on:
+            names = [g.get('display_name') or g.get('slug') or '' for g in games]
+            self._letter_at = {ch: games[i]['slug']
+                               for ch, i in first_by_letter(names).items()}
+            self.letters.set_lit(self._letter_at)
+        self.letters.setVisible(on)
+
+    def _letter_jump(self, ch: str):
+        """A letter: focus its first game (tile_for builds a far one)."""
+        slug = getattr(self, '_letter_at', {}).get(ch)
+        if slug is None:
+            return
+        t = self.library.tile_for(slug)
+        if t is not None:
+            focus_and_reveal(t)
 
     def _category_empty(self, cat) -> str:
         """The page's line when it has no game."""
@@ -1920,7 +2056,9 @@ from .friends import (_ts, FRIENDS, FRIENDS_ARGS, PlayTogetherForm, playing_now,
     PRESENCE_AGE, PRESENCE_ARGS, source_of)
 from .gameinfo import can_quick_play, is_installed  # noqa: E402
 from .jobs import _CLI_MEMO, cli_json  # noqa: E402
-from .category import BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, NO_GAMES  # noqa: E402
+from .category import (BROWSE_TAB, CategoryHub, CategoryPage, CategoryTabs, GAMES_TAB,  # noqa: E402
+    NO_GAMES)
+from .letters import first_by_letter, LetterJump  # noqa: E402
 from .library import (featured_games, HomeView, KeepPlace, LibraryView, ListView,
     surprise_pick, vibe_pools)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
@@ -1928,7 +2066,7 @@ from .setup import found_counts  # noqa: E402
 from .shelfedit import ShelfForm  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .tiles import GameTile  # noqa: E402
-from .widgets import (amp, icon_button, label, SegmentedControl, set_glyph_icon,
-    WrapRow)  # noqa: E402
+from .widgets import (amp, FlowLayout, icon_button, label, SegmentedControl,  # noqa: E402
+    set_glyph_icon)
+from .popover import Popover  # noqa: E402
 from .topbar import CollectionChip, CollectionLookPicker  # noqa: E402
-from .prefs import MAX_PINNED  # noqa: E402
