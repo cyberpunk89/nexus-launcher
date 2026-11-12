@@ -38,10 +38,14 @@ once. Games you own but haven't installed are there too, with an Install button.
   shelves inside it (Unfinished RPGs, Co-op RPGs), a sort, rows, grid or list, Pick for me
   from just those games, and related categories under it. The Library opens on rows grouped
   as For you, Yours, Genres, Studios and Stores: each row starts with a coloured card that
-  names its category, genres show as posters and studios (by developer) as name cards, with
-  chips to jump between them; *All categories*
-  shows every category as a tile, and any row can be hidden. Pin up to six categories to
-  keep them as tabs above the Library.
+  names its category, genres show as posters and studios (by developer) as name cards;
+  *All categories* shows every category as a tile, and any row can be hidden. *All games*
+  is the plain grid, A to Z. Pin up to six categories as tabs in the top bar.
+- **A page for every studio:** the games a studio made or published, your hours and its
+  years, other studios you play, and the spellings Nexus merged into one name.
+- **One slim top bar:** the page you're on shows its name and the others an icon, the
+  current page's tabs sit beside them, and one Filter button holds status, stores and
+  Installed / Not installed / Everything.
 - **Artwork that looks right:** covers, banners, heroes and logos from SteamGridDB, filled in
   quietly in the background. Pick another image for any game, Steam games included.
 - **Steam friends (optional):** with your own Steam Web API key, a game's page shows which

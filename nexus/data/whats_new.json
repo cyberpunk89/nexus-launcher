@@ -8,6 +8,24 @@
     },
     {
       "kind": "new",
+      "icon": "grid",
+      "title": "Browse by category and studio",
+      "text": "Every Browse row starts with its category card. Genres and studios get their own pages, with your stats and the games you have not finished."
+    },
+    {
+      "kind": "new",
+      "icon": "download",
+      "title": "Downloads you can follow",
+      "text": "Each download shows Download, Verify, Install and Finish to Play, with sizes, one time left and a queue you can reorder."
+    },
+    {
+      "kind": "new",
+      "icon": "tv",
+      "title": "Ribbon layout in Theatre",
+      "text": "A second Theatre layout: categories in a line and items in a column, with tags for hours, ProtonDB and updates. Pick it in Settings."
+    },
+    {
+      "kind": "new",
       "icon": "sparkles",
       "title": "A shorter, friendlier Setup",
       "text": "A shorter Setup shows what it found beside each choice. Keeping Nexus in the tray is asked when you first close the window."

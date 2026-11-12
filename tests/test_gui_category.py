@@ -162,7 +162,9 @@ class Mosaic(unittest.TestCase):
         first = h.shown_slugs()
         # g7 was just played: it would lead a fresh mosaic, not this one.
         fresh = [dict(g) for g in games]
-        fresh[7]['last_played'] = fresh[0]['last_played'][:-2] + '59'
+        from datetime import datetime, timedelta                 # a minute after g0, never a tie
+        fresh[7]['last_played'] = (datetime.fromisoformat(fresh[0]['last_played'])
+                                   + timedelta(minutes=1)).isoformat(timespec='seconds')
         del fresh[2]                                     # g2 left the category
         h.set_category(a_category(fresh))
         self.assertEqual(h.shown_slugs(), [s for s in first if s != 'g2'])   # no top-up
