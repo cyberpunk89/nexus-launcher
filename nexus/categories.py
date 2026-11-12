@@ -4,11 +4,28 @@ as one model the category page, Browse and Theatre share. Pure functions
 over plain dicts, no Qt (Theatre and the Ribbon import it too).
 
 Keys: the smart keys of nexus/smart.py (`smart:<rule>`, `genre:<name>`,
-`user:<id>`) plus three of its own, which never start like a smart key:
+`user:<id>`) plus five of its own, which never start like a smart key:
 `fav` (your favourites), `col:<name>` (a collection; the name may hold
-':', so it is everything after the prefix) and `src:<source>` (a store).
-Play together's `friends:` keys stay a filter, not a category."""
+':', so it is everything after the prefix), `src:<source>` (a store), and
+`dev:<id>` / `pub:<id>` (a studio, kinds 'developer' / 'publisher').
+Play together's `friends:` keys stay a filter, not a category.
 
+Studios (w-112), from the facts index's `developers` / `publishers`:
+- `studio_name(raw)` is the name shown: company suffixes stripped (Inc.,
+  Ltd., Co., LLC, S.A., ...), a few known aliases merged (ALIASES).
+  `studio_id(raw)` is that name case-folded: what a key holds, so CAPCOM,
+  Capcom and CAPCOM Co., Ltd. are one studio. `studio_key(role, raw)`
+  builds the key (role 'dev' or 'pub'); `studio_switch(key)` is the same
+  studio's other role (the studio page's Developer / Publisher switch; it
+  may be no category). `raw_names(cat, facts)` lists the credits that
+  merged into one ("Merged: ...").
+- The `studios` group (after Genres, before Stores) lists developers by
+  default (STUDIO_DEFAULT; `categories(..., studios='pub')` for
+  publishers), most games first. A studio needs STUDIO_MIN games for the
+  hub and a page (keep_empty keeps an open page or a pin), smart.MIN_GAMES
+  for a Browse row, and Browse shows at most CAPS['studios'] rows."""
+
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -18,15 +35,19 @@ from .icons import COLLECTION_ICONS, ICONS
 from .smart import USER
 
 FAV, COL, SRC = 'fav', 'col:', 'src:'
+DEV, PUB = 'dev:', 'pub:'
+STUDIO_KINDS = ('developer', 'publisher')
+STUDIO_DEFAULT = 'dev'       # the studios group lists developers unless told 'pub'
+STUDIO_MIN = 2               # games a studio needs for the hub and a page
 STORE_KEYS = tuple(k for k, _t in smart.STORES)
 # The groups, in the order every place shows them.
 GROUPS = (('for_you', "For you"), ('yours', "Yours"), ('genres', "Genres"),
-          ('stores', "Stores"))
+          ('studios', "Studios"), ('stores', "Stores"))
 SORTS = ('played', 'name', 'most', 'added', 'size')       # the Library's sort keys
 VIEWS = ('rows', 'grid', 'list')
 ROW_CAP = 20                 # tiles in one row of a page's Rows view (and of Browse)
 # Browse shows at most this many rows of a group (the rest: the hub).
-CAPS = {'for_you': 6, 'genres': 6}
+CAPS = {'for_you': 6, 'genres': 6, 'studios': 6}
 # The All categories hub's place key: never a category (is_key is False).
 HUB = 'all'
 PIN_MAX = 6                  # pinned categories (tabs in the Library)
@@ -41,9 +62,10 @@ GENRE_GLYPH = {'Action': 'zap', 'Adventure': 'map', 'RPG': 'swords', 'Strategy':
                'Sports': 'trophy', 'Puzzle': 'puzzle', 'Platformer': 'gamepad-2',
                'Horror': 'ghost', 'Indie': 'heart'}
 STORE_GLYPH = {'nexus': 'folder', 'steam': 'steam', 'heroic': 'wine', 'epic': 'library'}
+STUDIO_GLYPH = {'developer': COLLECTION_ICONS['users'], 'publisher': COLLECTION_ICONS['rocket']}
 # Each group's glyph character (Browse's jump chips).
 GROUP_GLYPH = {'for_you': ICONS['sparkles'], 'yours': ICONS['star'], 'genres': ICONS['grid'],
-               'stores': ICONS['folder']}
+               'studios': COLLECTION_ICONS['users'], 'stores': ICONS['folder']}
 
 
 @dataclass(frozen=True)
@@ -62,7 +84,7 @@ class PrefsView:
 @dataclass(frozen=True)
 class Category:
     key: str
-    kind: str                 # smart, genre, fav, collection, shelf, store
+    kind: str                 # smart, genre, fav, collection, shelf, store, developer, publisher
     title: str
     tip: str
     glyph: str                # the glyph character
@@ -95,12 +117,13 @@ class Stats:
 
 
 _PREFIX_KINDS = (('smart:', 'smart'), ('genre:', 'genre'), (USER, 'shelf'),
-                 (COL, 'collection'), (SRC, 'store'))
+                 (COL, 'collection'), (SRC, 'store'), (DEV, 'developer'),
+                 (PUB, 'publisher'))
 
 
 def kind_of(key) -> str | None:
-    """'smart', 'genre', 'shelf', 'fav', 'collection' or 'store'; None for
-    anything else (a Play together key, a bad one)."""
+    """'smart', 'genre', 'shelf', 'fav', 'collection', 'store', 'developer'
+    or 'publisher'; None for anything else (a Play together key, a bad one)."""
     if not isinstance(key, str):
         return None
     if key == FAV:
@@ -161,6 +184,88 @@ def _store_ok(src: str, prefs: PrefsView) -> bool:
     return src in STORE_KEYS
 
 
+# ---- studios ----
+# Company suffixes, stripped from the end (repeatedly: "Co., Ltd.").
+_SUFFIX = re.compile(r'[\s,]+(inc|ltd|co|llc|l\.l\.c|s\.a|corp|corporation|limited|gmbh)'
+                     r'\.?\s*$', re.IGNORECASE)
+# Known spellings of one studio, by the folded name after the suffixes go.
+ALIASES = {'warner bros. interactive entertainment': 'Warner Bros. Games',
+           'warner bros. games': 'Warner Bros. Games', 'wb games': 'Warner Bros. Games',
+           'monolith productions': 'Monolith Productions', 'capcom': 'Capcom'}
+_ROLE_FIELD = {'dev': 'developers', 'pub': 'publishers'}
+_ROLE_PREFIX = {'dev': DEV, 'pub': PUB}
+_KIND_ROLE = {'developer': 'dev', 'publisher': 'pub'}
+
+
+def studio_name(raw) -> str:
+    """The studio name shown for a credit: whitespace tidied, company
+    suffixes stripped (never down to nothing), a known alias merged. ''
+    for no name."""
+    if not isinstance(raw, str):
+        return ''
+    name = ' '.join(raw.split())
+    while True:
+        cut = _SUFFIX.sub('', name).rstrip(' ,')
+        if not cut or cut == name:
+            break
+        name = cut
+    return ALIASES.get(name.casefold(), name)
+
+
+def studio_id(raw) -> str:
+    """What a studio key holds: studio_name, case-folded."""
+    return studio_name(raw).casefold()
+
+
+def studio_key(role, raw) -> str | None:
+    """`dev:<id>` or `pub:<id>` for a credit; None for no name or a role
+    other than 'dev' / 'pub'."""
+    sid = studio_id(raw)
+    return _ROLE_PREFIX[role] + sid if role in _ROLE_PREFIX and sid else None
+
+
+def studio_switch(key) -> str | None:
+    """The same studio in the other role (dev: <-> pub:); None for a key
+    that is no studio."""
+    kind = kind_of(key)
+    if kind == 'developer':
+        return PUB + key[len(DEV):]
+    if kind == 'publisher':
+        return DEV + key[len(PUB):]
+    return None
+
+
+def _credits(g: dict, facts, role: str) -> list:
+    names = ((facts or {}).get(g.get('slug')) or {}).get(_ROLE_FIELD[role]) or ()
+    return [n for n in names if isinstance(n, str)] if isinstance(names, (list, tuple)) else []
+
+
+def _studio_counts(games, facts, role: str) -> dict:
+    """{studio id: (games, the name shown most)}, each game counted once."""
+    count: dict[str, int] = {}
+    shown: dict[str, dict[str, int]] = {}
+    for g in games:
+        for sid in {studio_id(n) for n in _credits(g, facts, role)} - {''}:
+            count[sid] = count.get(sid, 0) + 1
+        for n in _credits(g, facts, role):
+            if (sid := studio_id(n)):
+                names = shown.setdefault(sid, {})
+                names[studio_name(n)] = names.get(studio_name(n), 0) + 1
+    return {sid: (n, min(shown[sid], key=lambda x: (-shown[sid][x], x)))
+            for sid, n in count.items()}
+
+
+def raw_names(cat: Category, facts) -> list[str]:
+    """The credits, as the facts index spells them, that merged into this
+    studio (sorted); [] for a category that is no studio."""
+    role = _KIND_ROLE.get(cat.kind)
+    if role is None:
+        return []
+    sid = cat.key[len(_ROLE_PREFIX[role]):]
+    return sorted({n for g in cat.games for n in _credits(g, facts, role)
+                   if studio_id(n) == sid})
+
+
 def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=None,
              now: datetime | None = None, keep_empty: bool = False) -> Category | None:
     """One category over `games` (the pool the caller shows: not hidden, no
@@ -206,6 +311,17 @@ def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=N
         title, tip = name, "Your collection"
         glyph = COLLECTION_ICONS.get(look.get('icon'), COLLECTION_ICONS['bookmark'])
         color = look.get('color') or None
+    elif kind in STUDIO_KINDS:
+        role = _KIND_ROLE[kind]
+        sid = key[len(_ROLE_PREFIX[role]):]
+        hit = _by_played(g for g in games
+                         if sid in {studio_id(n) for n in _credits(g, facts, role)})
+        if len(hit) < STUDIO_MIN and not keep_empty:
+            return None
+        names = _studio_counts(hit, facts, role).get(sid)
+        title = names[1] if names else sid
+        tip = f"Games developed by {title}" if role == 'dev' else f"Games published by {title}"
+        glyph = STUDIO_GLYPH[kind]
     else:
         src = key[len(SRC):]
         if not _store_ok(src, prefs):
@@ -219,13 +335,18 @@ def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=N
     return Category(key, kind, title, tip, glyph, color, tuple(hit))
 
 
-def _keys(games, facts, prefs: PrefsView, linux: bool) -> list[tuple[str, list[str]]]:
+def _keys(games, facts, prefs: PrefsView, linux: bool,
+          studios: str = STUDIO_DEFAULT) -> list[tuple[str, list[str]]]:
     genres = sorted(_genre_counts(games, facts).items(),
                     key=lambda kv: (-kv[1], NEXUS_GENRES.index(kv[0])))
+    role = studios if studios in _ROLE_PREFIX else STUDIO_DEFAULT
+    found = sorted(((sid, n) for sid, (n, _name) in _studio_counts(games, facts, role).items()
+                    if n >= STUDIO_MIN), key=lambda kv: (-kv[1], kv[0]))
     return [('for_you', smart.rule_keys(linux)),
             ('yours', [FAV] + [COL + n for n in prefs.collections]
              + [USER + s['id'] for s in prefs.shelves if not s.get('removed')]),
             ('genres', [f'genre:{name}' for name, _n in genres]),
+            ('studios', [_ROLE_PREFIX[role] + sid for sid, _n in found]),
             ('stores', [SRC + k for k in STORE_KEYS])]
 
 
@@ -239,14 +360,16 @@ def _genre_counts(games, facts) -> dict:
 
 
 def categories(games, facts, prefs: PrefsView, linux: bool = False, friends=None,
-               now: datetime | None = None) -> list[Group]:
+               now: datetime | None = None, studios: str = STUDIO_DEFAULT) -> list[Group]:
     """Every category with a game (and your shelves, even empty), grouped:
     For you (the smart rules), Yours (favourites, collections, shelves),
-    Genres (most games first), Stores. Empty groups are left out."""
+    Genres (most games first), Studios (developers, or publishers with
+    studios='pub'; STUDIO_MIN games, most first), Stores. Empty groups are
+    left out."""
     now = now or datetime.now()
     titles = dict(GROUPS)
     out = []
-    for gkey, keys in _keys(games, facts, prefs, linux):
+    for gkey, keys in _keys(games, facts, prefs, linux, studios):
         cats = [c for c in (category(k, games, facts, prefs, linux, friends, now)
                             for k in keys) if c is not None]
         if cats:
@@ -254,9 +377,12 @@ def categories(games, facts, prefs: PrefsView, linux: bool = False, friends=None
     return out
 
 
+_MIN_KINDS = ('smart', 'genre') + STUDIO_KINDS
+
+
 def browse(groups, hidden=(), caps=None) -> list[Group]:
     """What Browse shows of `groups` (categories()): none of the `hidden`
-    keys, a smart rule or genre only with smart.MIN_GAMES games, at most
+    keys, a smart rule, genre or studio only with smart.MIN_GAMES games, at most
     `caps[group]` rows (CAPS by default; `more` counts the rest), empty
     groups left out. The groups given are not changed: the hub shows them
     all."""
@@ -265,7 +391,7 @@ def browse(groups, hidden=(), caps=None) -> list[Group]:
     out = []
     for g in groups:
         cats = [c for c in g.cats if c.key not in hidden
-                and (c.kind not in ('smart', 'genre') or len(c.games) >= smart.MIN_GAMES)]
+                and (c.kind not in _MIN_KINDS or len(c.games) >= smart.MIN_GAMES)]
         cap = caps.get(g.key)
         more = 0
         if cap is not None and len(cats) > cap:
