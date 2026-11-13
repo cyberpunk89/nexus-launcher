@@ -2563,7 +2563,7 @@ class StudioHeaderTest(unittest.TestCase):
                 self.assertGreaterEqual(box.width(), box.sizeHint().width() - 1)
                 self.assertLessEqual(box.geometry().right(), st.width())
             if st._one_row_width() > h.col.maximumWidth():
-                self.assertEqual(st.rows(), 2)
+                self.assertGreaterEqual(st.rows(), 2)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

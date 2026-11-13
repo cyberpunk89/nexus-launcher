@@ -14,7 +14,7 @@ a strip over the List."""
 import math
 
 from PyQt6.QtCore import pyqtSignal, QPoint, QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
@@ -522,8 +522,9 @@ class MosaicHeader(_HeaderActions, _Mosaic):
 class StatBlock(QWidget):
     """The header's numbers, big, each over its label with a hairline
     between: [('14', 'games'), ('228 h', 'played'), ...] (set_items).
-    fit(width) puts them on one row, or two per row when one row would be
-    cut (Size 1.5 at 900 px): never clipped."""
+    fit(width) puts them on one row, or as many a row as fit when one row
+    would be cut (Size 1.5 at 900 px; one a row with Windows' fonts): never
+    clipped."""
 
     def __init__(self):
         super().__init__()
@@ -570,11 +571,21 @@ class StatBlock(QWidget):
         return (sum(b.sizeHint().width() for b in self._boxes)
                 + max(0, n - 1) * (1 + 2 * sp))
 
+    def _row_width(self, per_row: int) -> int:
+        """The grid's width with `per_row` boxes a row: each column as wide
+        as its widest box, a hairline and two gaps between columns."""
+        sp = self._lay.horizontalSpacing()
+        cols = [max(b.sizeHint().width() for b in self._boxes[c::per_row])
+                for c in range(min(per_row, len(self._boxes)))]
+        return sum(cols) + max(0, len(cols) - 1) * (1 + 2 * sp)
+
     def _choose(self, width: int) -> int:
+        """As many a row as fit (one row when it does), never fewer than one:
+        Windows' wider fonts at Size 1.5 don't fit two a row either."""
         n = len(self._boxes)
-        if n <= 2 or width <= 0 or self._one_row_width() <= width:
+        if n <= 1 or width <= 0 or self._one_row_width() <= width:
             return max(1, n)
-        return 2
+        return next((k for k in range(n - 1, 0, -1) if self._row_width(k) <= width), 1)
 
     def _place(self, per_row: int):
         if per_row == self._per_row:
@@ -747,6 +758,24 @@ class CoverWallHeader(_CachedLayer, _HeaderActions, _Mosaic):
         return stat_items(st)
 
     # ---- fitting ----
+    TITLE_MIN = 0.6                  # the smallest a long title shrinks to, of its size
+
+    def _shrink_title(self, w: int):
+        """A title wider than its column gets a smaller font (down to
+        TITLE_MIN) before it is elided: Windows' wider fonts cut "SQUARE
+        ENIX" to "SQUARE E…" on a studio page at 1388 px."""
+        css = ""
+        if self.title.styleSheet():
+            self.title.setStyleSheet("")          # measure at the theme's size
+        self.title.ensurePolished()
+        f = self.title.font()
+        px = f.pixelSize() if f.pixelSize() > 0 else round(f.pointSizeF() * 96 / 72)
+        adv = QFontMetrics(f).horizontalAdvance(self._title)
+        if adv > w and px > 0:
+            css = f"font-size: {max(int(px * self.TITLE_MIN), int(px * w / adv))}px;"
+        if css:
+            self.title.setStyleSheet(css)
+
     def _fit(self):
         """Compact below ~1100 px (a smaller title, the text a little
         wider); the title on one line; Continue's name cut; the header as
@@ -763,7 +792,7 @@ class CoverWallHeader(_CachedLayer, _HeaderActions, _Mosaic):
         w = max(120, int(self.width() * self.TEXT_SHARES[1 if compact else 0]) - m.left())
         self._col_w = w + m.left()
         self.col.setMaximumWidth(w)
-        self.title.ensurePolished()               # the theme's font, not the default
+        self._shrink_title(w)
         self.title.setText(self.title.fontMetrics().elidedText(
             self._title, Qt.TextElideMode.ElideRight, w))
         role = self._tint_role()

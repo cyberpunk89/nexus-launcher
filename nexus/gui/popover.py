@@ -11,7 +11,7 @@ from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from .overlay import Overlay
-from .theme import SP
+from .theme import scaled, SP
 
 
 class Popover(Overlay):
@@ -66,10 +66,13 @@ class Popover(Overlay):
     def _place(self):
         """Under the anchor, its right edges lined up, kept inside."""
         par = self.parentWidget()
-        w = min(self._want_w, par.width() - 2 * SP['4'])
-        w = max(200, w)
-        self.card.setFixedWidth(w)
+        # As wide as asked (at this Size), never narrower than what the
+        # content needs whole (Windows' wider fonts squeezed the switch).
         lay = self.card.layout()
+        border = 2 * max(1, self.card.frameWidth())     # QSS border: 1px a side
+        w = max(scaled(self._want_w), self._content_width(lay) + border)
+        w = max(200, min(w, par.width() - 2 * SP['4']))
+        self.card.setFixedWidth(w)
         need = lay.heightForWidth(w) if lay.hasHeightForWidth() else -1
         if need <= 0:
             need = self.card.sizeHint().height()
@@ -84,6 +87,22 @@ class Popover(Overlay):
         x = max(SP['4'], min(x, par.width() - self.card.width() - SP['4']))
         y = max(SP['4'], min(y, par.height() - h - SP['4']))
         self.card.setGeometry(x, y, self.card.width(), h)
+
+    @staticmethod
+    def _content_width(lay) -> int:
+        """The card width its rows want whole: each row's size hint, but a
+        wrapping row (a FlowLayout of chips) only its minimum (it wraps)."""
+        m = lay.contentsMargins()
+        need = 0
+        for i in range(lay.count()):
+            it = lay.itemAt(i)
+            w = it.widget()
+            inner = w.layout() if w is not None else it.layout()
+            if w is not None and w.isHidden():
+                continue
+            wraps = inner is not None and inner.hasHeightForWidth()
+            need = max(need, (it.minimumSize() if wraps else it.sizeHint()).width())
+        return need + m.left() + m.right()
 
     def refit(self):
         """The content changed size (a row came or went)."""
