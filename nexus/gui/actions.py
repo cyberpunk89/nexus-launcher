@@ -657,13 +657,16 @@ def _count(n) -> str:
 
 
 def glance_rows(info: dict | None, tips: dict | None, length: dict | None,
-                protondb: str | None = None, linux: bool = True) -> list[tuple[str, str, str]]:
+                protondb: str | None = None, linux: bool = True,
+                metacritic=None) -> list[tuple[str, str, str]]:
     """The game page's "At a glance" (w-54): (name, rich text, tooltip) rows,
     each only when its facts exist. `info` is --store-info's answer, `tips`
     --game-tips', `length` the facts' play length, `protondb` the library's
-    tier (used until tips have one). 'On Linux' only where it matters
-    (`linux`). Everything is escaped; links only to the sites they name."""
-    from .gameinfo import PCGW_COLORS, TIER_COLORS
+    tier (used until tips have one), `metacritic` the facts index's score
+    (used when the store answer has none). 'On Linux' only where it matters
+    (`linux`). Every colour comes with a word (w-131). Everything is
+    escaped; links only to the sites they name."""
+    from .gameinfo import PCGW_COLORS, PCGW_WORDS, TIER_COLORS
     esc, info, tips = html.escape, info or {}, tips or {}
     st, rv = info.get('store') or {}, info.get('reviews') or {}
     rows = []
@@ -674,14 +677,18 @@ def glance_rows(info: dict | None, tips: dict | None, length: dict | None,
                     f"{esc(rv['desc'])}</span>")
         if rv.get('percent') is not None:
             bits.append(f"{int(rv['percent'])}% of {_count(rv.get('total'))}")
-    mc = st.get('metacritic') or {}
-    if mc.get('score'):
-        bits.append(f"Metacritic {int(mc['score'])}")
+    mc = (st.get('metacritic') or {}).get('score') or (
+        metacritic if isinstance(metacritic, (int, float)) and not isinstance(metacritic, bool)
+        else None)
+    if mc:
+        bits.append(f"Metacritic {int(mc)}")
     if bits:
         rows.append(("Reviews", " · ".join(bits), ''))
     ln = length or {}
     if ln.get('main'):
         text = f"Main story {ln['main']:g} h"
+        if ln.get('plus'):
+            text += f" · with extras {ln['plus']:g} h"
         if ln.get('complete'):
             text += f" · everything {ln['complete']:g} h"
         if ln.get('source') == 'igdb':
@@ -721,7 +728,8 @@ def glance_rows(info: dict | None, tips: dict | None, length: dict | None,
     sup = (tips.get('pcgw') or {}).get('support') or {}
     if sup:
         rows.append(("PC", " · ".join(
-            f"<span style='color:{P[PCGW_COLORS.get(v, 'muted')]}'>{esc(k)}</span>"
+            f"<span style='color:{P[PCGW_COLORS.get(v, 'muted')]}'>{esc(k)}: "
+            f"{esc(PCGW_WORDS.get(v, str(v)))}</span>"
             for k, v in list(sup.items())[:5]), "From PCGamingWiki"))
     links = []
     for name, url, site in (

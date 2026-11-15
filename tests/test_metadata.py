@@ -259,6 +259,7 @@ class Gui(unittest.TestCase):
         self.assertNotIn('<b>Very', rows['Reviews'][0])            # escaped
         self.assertEqual(rows['Length'], ("Main story 58 h · everything 133 h",
                                           "From IGDB, 4 submissions"))
+        self.assertIn('Ultrawide: yes', rows['PC'][0])             # a word, not colour alone
         self.assertIn('Gold', rows['On Linux'][0])
         self.assertIn('broken', rows['On Linux'][0])
         links = rows['Links'][0]
@@ -271,6 +272,29 @@ class Gui(unittest.TestCase):
         self.assertNotIn('protondb', glance_rows(info, tips, None, linux=False)[-1][1])
         self.assertEqual(glance_rows(None, None, None), [])
         self.assertIn('Silver', glance_rows(None, None, None, protondb='silver')[0][1])
+
+    def test_glance_words_and_fallbacks(self):
+        from nexus.gui.actions import glance_rows
+        from nexus.gui.gameinfo import PCGW_COLORS, PCGW_WORDS
+        self.assertEqual(set(PCGW_COLORS), set(PCGW_WORDS))       # every value has both
+        for value, word in PCGW_WORDS.items():
+            rows = dict((n, v) for n, v, _t in glance_rows(
+                None, {'pcgw': {'support': {'Upscaling': value}}}, None))
+            self.assertIn(f"Upscaling: {word}", rows['PC'], value)
+        rows = dict((n, v) for n, v, _t in glance_rows(
+            None, {'pcgw': {'support': {'Mods': 'odd'}}}, None))
+        self.assertIn('Mods: odd', rows['PC'])                     # an unknown value shows as is
+        # Metacritic: the store's answer wins, the facts index fills in
+        store = {'store': {'metacritic': {'score': 80}}}
+        self.assertIn('Metacritic 80', dict((n, v) for n, v, _t in
+                      glance_rows(store, None, None, metacritic=91))['Reviews'])
+        self.assertIn('Metacritic 91', dict((n, v) for n, v, _t in
+                      glance_rows(None, None, None, metacritic=91))['Reviews'])
+        self.assertEqual(glance_rows(None, None, None, metacritic=True), [])
+        # Length shows the extras, not only the tooltip
+        rows = dict((n, v) for n, v, _t in glance_rows(
+            None, None, {'main': 10, 'plus': 14, 'complete': 30}))
+        self.assertEqual(rows['Length'], "Main story 10 h · with extras 14 h · everything 30 h")
 
     def test_play_rows(self):
         """Play history's This week / This month / All time rows (w-87):

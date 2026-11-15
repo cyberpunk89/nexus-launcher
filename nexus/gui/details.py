@@ -2268,7 +2268,8 @@ class DetailsPanel(QFrame):
 
     def _fill_glance(self, rec: dict) -> bool:
         rows = glance_rows(self._store, self._tips, rec.get('length'),
-                           self.game.get('protondb'), linux=has('proton'))
+                           self.game.get('protondb'), linux=has('proton'),
+                           metacritic=rec.get('metacritic'))
         deal = self._gamedb_line((self._tips or {}).get('gamedb'), head=False)
         if deal:
             rows.append(("Game-db", deal, ''))
