@@ -25,6 +25,7 @@ Studios (w-112), from the facts index's `developers` / `publishers`:
   hub and a page (keep_empty keeps an open page or a pin), smart.MIN_GAMES
   for a Browse row, and Browse shows at most CAPS['studios'] rows."""
 
+import functools
 import math
 import re
 from dataclasses import dataclass, field
@@ -210,12 +211,8 @@ _ROLE_PREFIX = {'dev': DEV, 'pub': PUB}
 _KIND_ROLE = {'developer': 'dev', 'publisher': 'pub'}
 
 
-def studio_name(raw) -> str:
-    """The studio name shown for a credit: whitespace tidied, company
-    suffixes stripped (never down to nothing), a known alias merged. ''
-    for no name."""
-    if not isinstance(raw, str):
-        return ''
+@functools.lru_cache(maxsize=8192)
+def _studio_name(raw: str) -> str:
     name = ' '.join(raw.split())
     while True:
         cut = _SUFFIX.sub('', name).rstrip(' ,')
@@ -225,9 +222,22 @@ def studio_name(raw) -> str:
     return ALIASES.get(name.casefold(), name)
 
 
+def studio_name(raw) -> str:
+    """The studio name shown for a credit: whitespace tidied, company
+    suffixes stripped (never down to nothing), a known alias merged. ''
+    for no name. Memoised (a pure function of the string; the library asks
+    for every credit on every refresh)."""
+    return _studio_name(raw) if isinstance(raw, str) else ''
+
+
+@functools.lru_cache(maxsize=8192)
+def _studio_id(raw: str) -> str:
+    return _studio_name(raw).casefold()
+
+
 def studio_id(raw) -> str:
     """What a studio key holds: studio_name, case-folded."""
-    return studio_name(raw).casefold()
+    return _studio_id(raw) if isinstance(raw, str) else ''
 
 
 def studio_key(role, raw) -> str | None:
@@ -308,12 +318,15 @@ def raw_names(cat: Category, facts) -> list[str]:
 
 
 def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=None,
-             now: datetime | None = None, keep_empty: bool = False) -> Category | None:
+             now: datetime | None = None, keep_empty: bool = False,
+             index: dict | None = None) -> Category | None:
     """One category over `games` (the pool the caller shows: not hidden, no
     duplicates, the owned segment applied). None for a key that isn't one,
     or has no game, except a shelf you built (its page says it is empty).
     `keep_empty`: an open page keeps a category whose games all left (a
-    genre before the facts index has filled), still None for a bad key."""
+    genre before the facts index has filled), still None for a bad key.
+    `index`: {role: _studio_index(...)} over the same games, so a caller
+    asking for many studios scans the games once, not once per studio."""
     kind = kind_of(key)
     if kind is None:
         return None
@@ -355,7 +368,10 @@ def category(key, games, facts, prefs: PrefsView, linux: bool = False, friends=N
     elif kind in STUDIO_KINDS:
         role = _KIND_ROLE[kind]
         sid = key[len(_ROLE_PREFIX[role]):]
-        hit = [g for g in games if sid in {studio_id(n) for n in _credits(g, facts, role)}]
+        if index is not None and role in index:
+            hit = index[role].get(sid, [])
+        else:
+            hit = _studio_index(games, facts, role).get(sid, [])
         if len(hit) < STUDIO_MIN and not keep_empty:
             return None
         return _studio_category(role, sid, hit, facts)
@@ -405,13 +421,29 @@ def categories(games, facts, prefs: PrefsView, linux: bool = False, friends=None
     left out."""
     now = now or datetime.now()
     titles = dict(GROUPS)
+    role = studios if studios in _ROLE_PREFIX else STUDIO_DEFAULT
+    index = {role: _studio_index(games, facts, role)}
     out = []
     for gkey, keys in _keys(games, facts, prefs, linux, studios):
-        cats = [c for c in (category(k, games, facts, prefs, linux, friends, now)
+        cats = [c for c in (category(k, games, facts, prefs, linux, friends, now, index=index)
                             for k in keys) if c is not None]
         if cats:
             out.append(Group(gkey, titles[gkey], tuple(cats)))
     return out
+
+
+def any_category(games, facts, prefs: PrefsView, linux: bool = False, friends=None,
+                 now: datetime | None = None, studios: str = STUDIO_DEFAULT) -> bool:
+    """Whether categories() would list anything: stops at the first category
+    (the hub asks this to decide if it opens; building every group for it
+    cost as much as the page itself)."""
+    now = now or datetime.now()
+    index: dict = {}
+    for _gkey, keys in _keys(games, facts, prefs, linux, studios):
+        for k in keys:
+            if category(k, games, facts, prefs, linux, friends, now, index=index) is not None:
+                return True
+    return False
 
 
 _MIN_KINDS = ('smart', 'genre') + STUDIO_KINDS

@@ -1198,7 +1198,9 @@ class LibraryMixin:
         empty), or a Nexus genre before the facts index has any game. The
         hub opens when there is a category to show."""
         if key == categories.HUB:
-            return bool(self._hub_groups())
+            return categories.any_category(self._category_pool(), self._smart_facts(),
+                                           self._prefs_view(), has('proton'),
+                                           FRIENDS.public_ids())
         if not categories.is_key(key):
             return False
         if self._category_for(key, keep_empty=False) is not None:

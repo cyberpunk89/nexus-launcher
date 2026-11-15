@@ -670,3 +670,27 @@ class StudioCounts(unittest.TestCase):
         self.assertEqual(got['pub:warner bros. games'], 2)
         self.assertEqual(got['dev:tiny studio'], 1)
         self.assertNotIn('dev:', got)
+
+
+class AnyCategory(unittest.TestCase):
+    def test_matches_categories(self):
+        games, facts = studio_library()
+        for pool in (games, games[:1], []):
+            want = bool(C.categories(pool, facts, prefs()))
+            self.assertEqual(C.any_category(pool, facts, prefs()), want, len(pool))
+
+    def test_empty_shelf_counts(self):
+        shelf = {'id': 'user:1', 'title': 'Mine', 'removed': False}
+        p = prefs(shelves=(shelf,))
+        self.assertEqual(C.any_category([], {}, p), bool(C.categories([], {}, p)))
+
+    def test_studio_pass_matches_scan(self):
+        # categories() builds the studio index once; each studio page must
+        # equal what category() finds on its own
+        games, facts = studio_library()
+        for g in C.categories(games, facts, prefs()):
+            for c in g.cats:
+                if c.kind in C.STUDIO_KINDS:
+                    alone = C.category(c.key, games, facts, prefs())
+                    self.assertEqual([x['slug'] for x in c.games],
+                                     [x['slug'] for x in alone.games], c.key)
