@@ -324,6 +324,35 @@ class Behaviour(unittest.TestCase):
         stop_leftovers(self.win.jobs)
         self.win._busy = frozenset()
 
+    def test_same_reload_keeps_the_views(self):
+        """An answer that says what the last one did rebuilds nothing (w-122);
+        the games the tiles hold stay, and playing is still read again."""
+        w = self.win
+        self.win._on_library({'games': fake_games(), 'disks': []}, '')     # the first full one
+        first = list(w._games)
+        self.win._playing = {'alpha'}
+        with mock.patch.object(w, 'apply_filter') as rebuilt:
+            w._on_library({'games': fake_games(), 'disks': []}, '')
+        rebuilt.assert_not_called()
+        self.assertTrue(all(a is b for a, b in zip(first, w._games)))
+        self.assertTrue(next(g for g in w._games if g['slug'] == 'alpha')['playing'])
+
+    def test_changed_reload_rebuilds(self):
+        w = self.win
+        self.win._on_library({'games': fake_games(), 'disks': []}, '')
+        changed = fake_games()
+        changed[0]['playtime_minutes'] = (changed[0].get('playtime_minutes') or 0) + 5
+        with mock.patch.object(w, 'apply_filter') as rebuilt:
+            w._on_library({'games': changed, 'disks': []}, '')
+        rebuilt.assert_called_once()
+        with mock.patch.object(w, 'apply_filter') as rebuilt:       # its inputs move too
+            w.prefs.favorites.add('alpha')
+            try:
+                w._on_library({'games': changed, 'disks': []}, '')
+            finally:
+                w.prefs.favorites.discard('alpha')
+        rebuilt.assert_called_once()
+
     def test_failed_reload_keeps_the_library(self):
         self.win._playing = {'alpha'}
         self.win._on_library(None, "timed out")

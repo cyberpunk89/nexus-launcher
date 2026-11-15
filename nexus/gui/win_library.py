@@ -776,7 +776,39 @@ class LibraryMixin:
     def _save_library_cache(self, data):
         net.save_json(self.LIB_CACHE, {'args': self._library_args(), 'data': data})
 
+    def _scan_inputs(self) -> tuple:
+        """What turns a scan's rows into self._games and the views besides
+        the rows themselves (the prefs, the facts index, ProtonDB tiers,
+        repack updates, installs asked for or running)."""
+        p = self.prefs
+        return (tuple(sorted(p.favorites)), tuple(sorted(p.hidden)), repr(p.notes),
+                repr(p.overrides), repr(p.collections), p.controls['dedupe'],
+                repr(self._protondb), repr(self._repack_updates),
+                tuple(sorted(self._install_req)), tuple(sorted(self.jobs.busy_slugs())),
+                self._library_args(), self._facts_stamp, id(self._facts_idx),
+                repr(p.smart_shelves), repr(p.smart_hidden), repr(p.category_pins))
+
+    def _same_scan(self, data, cached: bool) -> bool:
+        """This answer holds the rows (and the inputs) of the last real one
+        that was turned into the views: reloading changes nothing on show."""
+        seen = getattr(self, '_scan_seen', None)
+        return (not cached and seen is not None and self._loaded and not self._load_error
+                and not self._filter_dirty and data.get('games') == seen[0]
+                and self._scan_inputs() == seen[1])
+
+    def _sync_live(self):
+        """After a scan that changed nothing: tiles show playing / starting
+        and Home picks its Stage again, without rebuilding Browse."""
+        pending = [j for j in self.jobs.jobs if j.kind == 'install' and j.active]
+        self._pending_ids = tuple(id(j) for j in pending)
+        self._refresh_home(None, pending)
+        for view in (self.library, self.view):
+            for t in view.findChildren(GameTile):
+                t._sync_buttons()
+                t.update()
+
     def _on_library(self, data, err, cached=False):
+        same = False
         if cached:
             if self._loaded:                 # the real scan already answered
                 return
@@ -796,7 +828,19 @@ class LibraryMixin:
             if self._loaded:
                 self.toast(f"Couldn't refresh the library — {self._load_error}", 'error',
                            ("Retry", self.reload_library), 10000)
+        elif self._same_scan(data, cached):
+            # Nothing the scan or its inputs say changed (w-122): keep the
+            # games the tiles already hold; only the live state (playing,
+            # busy) is read again, and the views are not rebuilt.
+            self._load_error = ''
+            self._disk = data.get('disk')
+            self._disks = data.get('disks') or ([self._disk] if self._disk else [])
+            busy = self.jobs.busy_slugs()
+            self._busy = frozenset(g['slug'] for g in self._games if g['slug'] in busy)
+            self._mark_states()
+            same = True
         else:
+            raw = [dict(g) for g in data.get('games', [])]       # before we add to them
             self._games, self._load_error = data.get('games', []), ''
             for g in self._games:
                 g['stale'] = cached
@@ -836,6 +880,7 @@ class LibraryMixin:
                     g['update_pending'] = True
             mark_duplicates(self._games, self.prefs.controls['dedupe'])
             self._store_chips()
+            self._scan_seen = None if cached else (raw, self._scan_inputs())
             for g in [] if cached else self._games:
                 if g['slug'] in self._watch_finish and is_installed(g):
                     self._install_req.pop(g['slug'], None)
@@ -853,7 +898,10 @@ class LibraryMixin:
                 self._steam_resumed = True
                 self._resume_steam_pending()
         self._sync_system()
-        self.apply_filter()
+        if same:
+            self._sync_live()
+        else:
+            self.apply_filter()
         self._sync_selection()
         if cached:
             return

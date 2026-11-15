@@ -1297,6 +1297,7 @@ class Browse(_Rich):
         orig = w.home.set_groups
         w.home.set_groups = lambda *a, **k: (calls.append(1), orig(*a, **k))
         gs, idx = rich_library()
+        gs[0]['playtime_minutes'] = (gs[0].get('playtime_minutes') or 0) + 1   # it moved: not a no-op
         w._on_library({'games': gs, 'disks': []}, '')        # a reload: fresh dicts
         self.pump()
         self.assertEqual(len(calls), 1)                       # filled once
