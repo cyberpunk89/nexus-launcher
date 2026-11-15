@@ -30,7 +30,7 @@ import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus i
 
 try:
     from PyQt6.QtCore import QPoint, QRect, Qt
-    from PyQt6.QtWidgets import QApplication, QWidget, QWidgetItem
+    from PyQt6.QtWidgets import QApplication, QPushButton as QPushButtonType, QWidget, QWidgetItem
 except ImportError:            # PyQt6 not installed: skip the GUI tests
     QApplication = None
 
@@ -920,14 +920,68 @@ class GameContextBlock(unittest.TestCase):
         self.assertEqual(ctx.more.text(), "Show less")
         ctx.more.click()
         self.assertLess(len(ctx.desc.text()), len(ctx.desc.full))
-        # The play length moved to the progress strip and At a glance (w-54).
+        # The play length moved to the progress strip and the length tile (w-54, w-132).
         p = self.panel
         self.assertTrue(p.meter_story.isVisible())
         self.assertEqual(p.meter_story.value.text(), "24 % of 50 h")
         self.assertEqual(p.meter_story.bar.value(), 240)
-        self.assertIn('Length', p.glance_keys)
+        self.assertIn('length', p.tiles.keys())
         self.assertLessEqual(p.stack.currentWidget().widget().minimumSizeHint().width(),
                              p.maximumWidth())
+
+    def test_gamedb_line_in_progress_strip(self):
+        """The Game-db line sits under the progress meters (w-132), with
+        its own link, without the hours the length tile already shows."""
+        p = self.panel
+        self._show('full', playtime_minutes=12 * 60)
+        self.assertTrue(p.gamedb_note.isHidden())
+        gd = {'list': 'wishlist', 'url': 'https://gamedb.example/game/1',
+              'price': {'currentStr': '<b>€23.99</b>', 'atHistoricalLow': True},
+              'hltb': {'main': 59.5}, 'fetched_at': None}
+        p._fill_tips({'gamedb': gd})
+        QApplication.processEvents()
+        note = p.gamedb_note
+        self.assertTrue(note.isVisibleTo(p.progress))
+        self.assertTrue(p.progress.isVisibleTo(p))
+        self.assertIn('all-time low', note.text())
+        self.assertIn("href='https://gamedb.example/game/1'", note.text())
+        self.assertNotIn('<b>€23.99</b>', note.text().replace('<b>&lt;', ''))   # escaped
+        self.assertNotIn('HLTB', note.text())
+        # Not in the overview tiles any more
+        self.assertNotIn('Game-db', p.tiles.keys())
+        # Alone, with no meters: the strip still shows
+        p._fill_tips({})
+        self.assertTrue(note.isHidden())
+
+    def test_tiles_fit_the_panel_at_420_480_640(self):
+        """Every tile, with everything known, inside the panel's width (w-132)."""
+        info = {'store': {'url': 'https://store.steampowered.com/app/1/'},
+                'reviews': {'desc': 'Overwhelmingly Positive', 'percent': 92, 'total': 812000}}
+        tips = {'protondb': {'tier': 'platinum', 'total': 4321, 'trending': 'gold',
+                             'url': 'https://www.protondb.com/app/1'},
+                'deck': {'deck': 'Unsupported'},
+                'anticheat': {'status': 'Broken', 'anticheats': ['Easy Anti-Cheat', 'BattlEye']},
+                'pcgw': {'support': {'Ultrawide': 'hackable', 'High frame rate': 'hackable',
+                                     'Controller remapping': 'limited', 'HDR': 'true',
+                                     'Upscaling': 'false'}}}
+        self._show('full', playtime_minutes=12 * 60)
+        self.panel._fill_about(info)
+        self.panel._fill_tips(tips)
+        for width in (420, 480, 640):
+            with self.subTest(width=width):
+                self.panel.resize(width, 900)
+                QApplication.processEvents()
+                QApplication.processEvents()
+                page = self.panel.stack.currentWidget().widget()
+                self.assertLessEqual(page.minimumSizeHint().width(), width)
+                tiles = self.panel.tiles
+                from nexus.features import has
+                self.assertEqual(tiles.keys(), ['players', 'length'] + (
+                    ['linux'] if has('proton') else []) + ['pc', 'details', 'links'])
+                for w in tiles.findChildren(QWidget):
+                    if w.isVisibleTo(self.panel):
+                        right = w.mapTo(self.panel, w.rect().topRight()).x()
+                        self.assertLessEqual(right, width, w.objectName() or type(w).__name__)
 
     def test_tags_ask_for_a_library_filter(self):
         got = []
@@ -1007,8 +1061,159 @@ class GameContextBlock(unittest.TestCase):
         self.assertTrue(ctx.isVisible())
         self.assertEqual(ctx.credits.text(), "Dev · 2021")
         self.assertEqual(ctx.desc.full, "A game.")
-        self.assertEqual(self.panel.glance_keys[0], "Reviews")
+        self.assertEqual(self.panel.tiles.keys()[0], "players")
         self.assertFalse(self.panel.bare_note.isVisible())
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class OverviewTiles(unittest.TestCase):
+    """The game page's stat tiles (w-132): painted parts on both a dark and a
+    light theme, pairs that stack, a fixed order, nothing wider than the panel."""
+
+    FULL = {'rec': {'length': {'main': 59.5, 'plus': 101, 'complete': 134, 'source': 'hltb'},
+                    'releaseText': '24 Feb 2022', 'modes': ['single', 'coop', 'online'],
+                    'metacritic': 94},
+            'store': {'store': {'url': 'https://store.steampowered.com/app/1/'},
+                      'reviews': {'desc': 'Very Positive', 'percent': 92, 'total': 812000}},
+            'tips': {'protondb': {'tier': 'gold', 'total': 4321, 'trending': 'platinum',
+                                  'url': 'https://www.protondb.com/app/1'},
+                     'deck': {'deck': 'Verified'},
+                     'anticheat': {'status': 'Supported', 'anticheats': ['EAC']},
+                     'pcgw': {'support': {'Ultrawide': 'hackable', '4K': 'true',
+                                          'Upscaling': 'false'}}},
+            'game': {'playtime_minutes': 744}}
+
+    def tearDown(self):
+        nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+        _app.setStyleSheet(nx.build_stylesheet())
+
+    def tiles(self, width=420, theme='forest', data=None, linux=True):
+        from nexus.gui.overview import OverviewTiles, overview_model
+        nx.apply_appearance({'theme': theme})
+        _app.setStyleSheet(nx.build_stylesheet())
+        d = data or self.FULL
+        host = QWidget()
+        from PyQt6.QtWidgets import QVBoxLayout
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        t = OverviewTiles()
+        lay.addWidget(t)
+        t.hide()
+        t.set_sections(overview_model(d.get('rec'), d.get('store'), d.get('tips'),
+                                      d.get('game'), linux=linux))
+        host.resize(width, 900)
+        host.show()
+        self.addCleanup(host.deleteLater)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        return t, host
+
+    def test_painted_parts_render_on_forest_and_dawn(self):
+        from PyQt6.QtGui import QImage
+        from nexus.gui import overview as ov
+        for theme in ('forest', 'dawn'):
+            with self.subTest(theme=theme):
+                t, host = self.tiles(theme=theme)
+                for cls in (ov.ScoreRing, ov.ScoreBadge, ov.TierBadge, ov.LengthBar):
+                    parts = host.findChildren(cls)
+                    self.assertTrue(parts, cls.__name__)
+                    for w in parts:
+                        img = w.grab().toImage()
+                        colours = {img.pixel(x, y) for x in range(0, img.width(), 3)
+                                   for y in range(0, img.height(), 3)}
+                        self.assertGreater(len(colours), 2, cls.__name__)   # something is drawn
+                        self.assertTrue(w.accessibleName() or cls is ov.LengthBar)
+                self.assertIsInstance(host.grab().toImage(), QImage)
+
+    def test_fixed_order_and_late_answers_do_not_reorder(self):
+        from nexus.gui.overview import ORDER, overview_model
+        t, host = self.tiles(data={'rec': self.FULL['rec']})
+        self.assertEqual(t.keys(), ['critics', 'length', 'details'])
+        pos = lambda: [t.mapTo(host, t.tile[k].pos()).y() for k in t.keys()]
+        before = pos()
+        d = self.FULL
+        t.set_sections(overview_model(d['rec'], d['store'], d['tips'], d['game'], linux=True))
+        QApplication.processEvents()
+        self.assertEqual(t.keys(), [k for k in ORDER])
+        order = sorted(t.keys(), key=lambda k: t.tile[k].mapTo(host, t.tile[k].rect().topLeft()).y())
+        self.assertEqual([k for k in order if k not in ('links',)][:3],
+                         ['players', 'critics', 'length'])
+        self.assertEqual(len(before), 3)
+
+    def test_unchanged_section_keeps_its_widgets(self):
+        from nexus.gui.overview import overview_model
+        t, host = self.tiles()
+        d = self.FULL
+        link = host.findChildren(QPushButtonType)[0]
+        t.set_sections(overview_model(d['rec'], d['store'], d['tips'], d['game'], linux=True))
+        QApplication.processEvents()
+        self.assertIs(host.findChildren(QPushButtonType)[0], link)   # focus survives a refresh
+
+    def test_pairs_stack_under_460_and_a_lone_half_is_full_width(self):
+        t, host = self.tiles(width=380)                      # a 420 px panel, 20 px padding
+        pair = t.pairs[0]
+        self.assertTrue(pair.stacked())
+        self.assertLess(t.tile['players'].geometry().bottom(), t.tile['critics'].geometry().top())
+        t, host = self.tiles(width=500)
+        pair = t.pairs[0]
+        self.assertFalse(pair.stacked())
+        self.assertFalse(self.tiles(width=420)[0].pairs[0].stacked())     # a 460 px panel
+        self.assertLess(t.tile['players'].geometry().right(), t.tile['critics'].geometry().left())
+        self.assertAlmostEqual(t.tile['players'].width(), t.tile['critics'].width(), delta=2)
+        d = dict(self.FULL, rec={'year': 2021}, store=None)
+        t, host = self.tiles(width=500, data=dict(d, tips={'pcgw': {'support': {'4K': 'true'}}}))
+        self.assertTrue(t.tile['pc'].isVisibleTo(host))
+        self.assertFalse(t.tile['linux'].isVisibleTo(host))
+        self.assertGreaterEqual(t.tile['pc'].width(), t.width() - 2)       # the whole row
+
+    def test_pairs_stack_earlier_at_a_larger_ui_scale(self):
+        nx.apply_appearance({'scale': 1.25})
+        try:
+            t, host = self.tiles(width=500)       # side by side at 1.0, but 420 * 1.25 > 500
+            nx.apply_appearance({'scale': 1.25})
+            t.pairs[0].resize(500, 100)
+            QApplication.processEvents()
+            self.assertTrue(t.pairs[0].stacked())
+        finally:
+            nx.apply_appearance(nx.APPEARANCE_DEFAULT)
+
+    def test_players_with_only_a_word_shows_no_ring(self):
+        t, host = self.tiles(data={'store': {'reviews': {'desc': 'Mixed', 'total': 9}}})
+        tile = t.tile['players']
+        self.assertTrue(tile.ring.isHidden())
+        self.assertEqual(tile.word.text(), 'Mixed')
+
+    def test_links_have_accessible_names(self):
+        t, host = self.tiles()
+        names = [b.accessibleName() for b in host.findChildren(QPushButtonType)]
+        self.assertIn("Steam store, opens in browser", names)
+
+    def test_sparse_and_windows_show_only_what_is_known(self):
+        t, host = self.tiles(width=480, data={'rec': {'year': 2021, 'modes': ['single']},
+                                              'tips': {'pcgw': {'support': {'4K': 'true'}}}})
+        self.assertEqual(t.keys(), ['pc', 'details'])
+        for key in ('players', 'critics', 'length', 'linux', 'links'):
+            self.assertFalse(t.tile[key].isVisibleTo(host), key)
+        t, host = self.tiles(width=480, linux=False)
+        self.assertNotIn('linux', t.keys())
+        self.assertFalse(t.tile['linux'].isVisibleTo(host))
+        self.assertFalse(t.pairs[1].stacked() and False)
+
+    def test_nothing_is_wider_than_the_panel(self):
+        for width in (380, 420, 480, 640):
+            with self.subTest(width=width):
+                t, host = self.tiles(width=width)
+                self.assertLessEqual(t.minimumSizeHint().width(), width)
+                self.assertLessEqual(t.width(), width)
+                for w in t.findChildren(QWidget):
+                    if w.isVisibleTo(host):
+                        right = w.mapTo(host, w.rect().topRight()).x()
+                        self.assertLessEqual(right, width + 1, w.objectName() or type(w).__name__)
+
+    def test_light_theme_is_readable(self):
+        t, host = self.tiles(theme='dawn')
+        word = t.tile['players'].word
+        self.assertEqual(word.palette().color(word.foregroundRole()).name(),
+                         nx.P['success'].lower())
 
 
 if __name__ == '__main__':

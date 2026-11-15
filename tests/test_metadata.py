@@ -240,62 +240,6 @@ class Gui(unittest.TestCase):
         self.assertNotIn('RPG', trimmed)
         self.assertNotIn('6.9', trimmed)
 
-    def test_glance_rows_escape_link_known_sites_and_skip_linux_on_windows(self):
-        from nexus.gui.actions import glance_rows
-        info = {'store': {'metacritic': {'score': 94},
-                          'url': 'https://store.steampowered.com/app/1/'},
-                'reviews': {'desc': '<b>Very Positive</b>', 'percent': 92, 'total': 712345}}
-        tips = {'protondb': {'tier': 'gold', 'total': 9, 'url': 'https://www.protondb.com/app/1'},
-                'deck': {'deck': 'Verified'},
-                'anticheat': {'status': 'Broken', 'anticheats': ['EAC']},
-                'pcgw': {'support': {'Ultrawide': 'true'}, 'url': 'javascript:alert(1)'},
-                'hltb': {'url': 'https://evil.example/'}}
-        rows = {name: (value, tip) for name, value, tip in
-                glance_rows(info, tips, {'main': 58, 'complete': 133, 'source': 'igdb',
-                                         'count': 4})}
-        self.assertEqual(list(rows), ['Reviews', 'Length', 'On Linux', 'PC', 'Links'])
-        self.assertIn('92% of 712k', rows['Reviews'][0])
-        self.assertIn('Metacritic 94', rows['Reviews'][0])
-        self.assertNotIn('<b>Very', rows['Reviews'][0])            # escaped
-        self.assertEqual(rows['Length'], ("Main story 58 h · everything 133 h",
-                                          "From IGDB, 4 submissions"))
-        self.assertIn('Ultrawide: yes', rows['PC'][0])             # a word, not colour alone
-        self.assertIn('Gold', rows['On Linux'][0])
-        self.assertIn('broken', rows['On Linux'][0])
-        links = rows['Links'][0]
-        self.assertIn('store.steampowered.com', links)
-        self.assertIn('protondb.com', links)
-        self.assertNotIn('javascript:', links)                    # only the sites they name
-        self.assertNotIn('evil.example', links)
-        win = [r[0] for r in glance_rows(info, tips, None, linux=False)]
-        self.assertEqual(win, ['Reviews', 'PC', 'Links'])          # no ProtonDB / Deck / AC
-        self.assertNotIn('protondb', glance_rows(info, tips, None, linux=False)[-1][1])
-        self.assertEqual(glance_rows(None, None, None), [])
-        self.assertIn('Silver', glance_rows(None, None, None, protondb='silver')[0][1])
-
-    def test_glance_words_and_fallbacks(self):
-        from nexus.gui.actions import glance_rows
-        from nexus.gui.gameinfo import PCGW_COLORS, PCGW_WORDS
-        self.assertEqual(set(PCGW_COLORS), set(PCGW_WORDS))       # every value has both
-        for value, word in PCGW_WORDS.items():
-            rows = dict((n, v) for n, v, _t in glance_rows(
-                None, {'pcgw': {'support': {'Upscaling': value}}}, None))
-            self.assertIn(f"Upscaling: {word}", rows['PC'], value)
-        rows = dict((n, v) for n, v, _t in glance_rows(
-            None, {'pcgw': {'support': {'Mods': 'odd'}}}, None))
-        self.assertIn('Mods: odd', rows['PC'])                     # an unknown value shows as is
-        # Metacritic: the store's answer wins, the facts index fills in
-        store = {'store': {'metacritic': {'score': 80}}}
-        self.assertIn('Metacritic 80', dict((n, v) for n, v, _t in
-                      glance_rows(store, None, None, metacritic=91))['Reviews'])
-        self.assertIn('Metacritic 91', dict((n, v) for n, v, _t in
-                      glance_rows(None, None, None, metacritic=91))['Reviews'])
-        self.assertEqual(glance_rows(None, None, None, metacritic=True), [])
-        # Length shows the extras, not only the tooltip
-        rows = dict((n, v) for n, v, _t in glance_rows(
-            None, None, {'main': 10, 'plus': 14, 'complete': 30}))
-        self.assertEqual(rows['Length'], "Main story 10 h · with extras 14 h · everything 30 h")
-
     def test_play_rows(self):
         """Play history's This week / This month / All time rows (w-87):
         (name, text, minutes, the most of that list)."""
@@ -377,6 +321,129 @@ class Gui(unittest.TestCase):
         self.assertIn('rename-reset', keys)
         self.assertNotIn('rename-local', [a.key for a in nx.game_actions(
             {'slug': 'r', 'source': 'nexus', 'launcher': '/x'})])
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class OverviewModel(unittest.TestCase):
+    """The game page's stat tiles (w-132): overview_model() is plain data in a
+    fixed order; each section only when its facts exist, words beside colours,
+    links only to the sites they name, no Linux section off Linux."""
+
+    INFO = {'store': {'metacritic': {'score': 94},
+                      'url': 'https://store.steampowered.com/app/1/'},
+            'reviews': {'desc': 'Very Positive', 'percent': 92, 'total': 712345}}
+    TIPS = {'protondb': {'tier': 'gold', 'total': 9, 'trending': 'platinum',
+                         'url': 'https://www.protondb.com/app/1'},
+            'deck': {'deck': 'Verified'},
+            'anticheat': {'status': 'Broken', 'anticheats': ['EAC']},
+            'pcgw': {'support': {'Ultrawide': 'true', 'HDR': 'hackable', 'Upscaling': 'false'},
+                     'url': 'javascript:alert(1)'},
+            'hltb': {'url': 'https://evil.example/'}}
+    REC = {'length': {'main': 58, 'plus': 90, 'complete': 133, 'source': 'igdb', 'count': 4},
+           'releaseText': '24 Feb 2022', 'modes': ['single', 'coop']}
+
+    @staticmethod
+    def model(rec=None, store=None, tips=None, game=None, linux=True):
+        from nexus.gui.overview import overview_model
+        return overview_model(rec, store, tips, game, linux=linux)
+
+    def sections(self, **kw):
+        return {s['key']: s['items'] for s in self.model(**kw)}
+
+    def test_full_game_in_fixed_order(self):
+        m = self.model(self.REC, self.INFO, self.TIPS, {'playtime_minutes': 744})
+        self.assertEqual([s['key'] for s in m],
+                         ['players', 'critics', 'length', 'linux', 'pc', 'details', 'links'])
+        sec = {s['key']: s['items'] for s in m}
+        self.assertEqual(sec['players'], {'value': 92, 'word': 'Very Positive',
+                                          'of': 712345, 'tone': 'success'})
+        self.assertEqual(sec['critics'], [{'name': 'Metacritic', 'value': 94,
+                                           'word': 'Good', 'tone': 'success'}])
+        ln = sec['length']
+        self.assertEqual((ln['main'], ln['plus'], ln['complete']), (58, 90, 133))
+        self.assertAlmostEqual(ln['you'], 12.4)
+        self.assertEqual((ln['source'], ln['count']), ('igdb', 4))
+
+    def test_sparse_game_leaves_sections_out(self):
+        self.assertEqual(self.model(), [])
+        self.assertEqual(set(self.sections(tips={'pcgw': {'support': {'4K': 'true'}}})), {'pc'})
+        self.assertEqual(set(self.sections(rec={'year': 2021})), {'details'})
+        self.assertEqual(self.sections(rec={'modes': None, 'year': 2021})['details'],
+                         [{'release': '2021'}])        # modes unknown: no pills at all
+        self.assertIsNone(self.sections(rec={'length': {'main': 5}})['length']['you'])
+
+    def test_linux_section_only_on_linux(self):
+        on = self.sections(store=self.INFO, tips=self.TIPS)
+        off = self.sections(store=self.INFO, tips=self.TIPS, linux=False)
+        self.assertIn('linux', on)
+        self.assertNotIn('linux', off)
+        tier = on['linux'][0]
+        self.assertEqual((tier['tier'], tier['reports'], tier['trending']), ('gold', 9, 'platinum'))
+        chips = {c['chip']: c for c in on['linux'][1:]}
+        self.assertEqual(chips['deck']['text'], 'Deck Verified')
+        self.assertEqual(chips['anticheat']['tone'], 'danger')
+        self.assertIn('EAC', chips['anticheat']['text'])
+        self.assertIn('broken', chips['anticheat']['text'])
+        self.assertNotIn('protondb', str(off['links']).lower())     # no ProtonDB link either
+        # The library's tier is used until the tips have one
+        got = self.sections(game={'protondb': 'silver'})
+        self.assertEqual(got['linux'][0]['tier'], 'silver')
+
+    def test_score_tone_and_words(self):
+        from nexus.gui.overview import critic_word, score_tone
+        self.assertEqual([score_tone(v) for v in (100, 66, 65, 33, 32, 0)],
+                         ['success', 'success', 'warning', 'warning', 'danger', 'danger'])
+        self.assertEqual([critic_word(v) for v in (94, 66, 50, 33, 10)],
+                         ['Good', 'Good', 'Mixed', 'Mixed', 'Poor'])
+        low = self.sections(store={'reviews': {'desc': 'Mixed', 'percent': 50, 'total': 3}})
+        self.assertEqual(low['players']['tone'], 'warning')       # 66/33, not 70
+
+    def test_players_tone_follows_steams_own_word(self):
+        def players(desc, pct):
+            return self.sections(store={'reviews': {'desc': desc, 'percent': pct,
+                                                    'total': 5}})['players']
+        self.assertEqual(players('Mixed', 68)['tone'], 'warning')    # not green at 68 %
+        self.assertEqual(players('Mostly Positive', 75)['tone'], 'success')
+        self.assertEqual(players('Overwhelmingly Positive', 97)['tone'], 'success')
+        self.assertEqual(players('Mostly Negative', 30)['tone'], 'danger')
+        self.assertEqual(players('Very Negative', 10)['tone'], 'danger')
+        self.assertEqual(players('', 40)['tone'], 'warning')         # no word: the score decides
+        only = players('Mixed', None)                                  # a word alone still shows
+        self.assertEqual((only['value'], only['word'], only['tone']), (None, 'Mixed', 'warning'))
+        self.assertNotIn('players', self.sections(store={'reviews': {'total': 5}}))
+
+    def test_pc_values_have_a_word_and_a_glyph(self):
+        from nexus.gui.gameinfo import PCGW_COLORS, PCGW_WORDS
+        self.assertEqual(set(PCGW_COLORS), set(PCGW_WORDS))       # every value has both
+        for value, word in PCGW_WORDS.items():
+            items = self.sections(tips={'pcgw': {'support': {'Upscaling': value}}})['pc']
+            self.assertEqual((items[0]['name'], items[0]['word']), ('Upscaling', word), value)
+            self.assertIn(items[0]['glyph'], ('check', 'wrench', 'close'), value)
+        items = self.sections(tips={'pcgw': {'support': {'Mods': 'odd'}}})['pc']
+        self.assertEqual(items[0]['word'], 'odd')                  # an unknown value shows as is
+        many = {str(i): 'true' for i in range(9)}
+        self.assertEqual(len(self.sections(tips={'pcgw': {'support': many}})['pc']), 5)
+
+    def test_metacritic_falls_back_to_the_facts_index(self):
+        store = {'store': {'metacritic': {'score': 80}}}
+        score = lambda **kw: self.sections(**kw)['critics'][0]['value']
+        self.assertEqual(score(rec={'metacritic': 91}, store=store), 80)    # the store wins
+        self.assertEqual(score(rec={'metacritic': 91}), 91)
+        self.assertNotIn('critics', self.sections(rec={'metacritic': True}))  # bool is no score
+        self.assertEqual(self.sections(rec={'metacritic': 20})['critics'][0]['word'], 'Poor')
+
+    def test_links_only_to_own_sites(self):
+        links = self.sections(store=self.INFO, tips=self.TIPS)['links']
+        self.assertEqual([x['name'] for x in links], ['Steam store', 'ProtonDB'])
+        for x in links:
+            self.assertTrue(x['url'].startswith(('https://store.steampowered.com/',
+                                                 'https://www.protondb.com/')))
+        self.assertNotIn('links', self.sections(tips={'hltb': {'url': 'https://evil.example/'}}))
+
+    def test_details_release_and_modes(self):
+        d = self.sections(rec=self.REC)['details']
+        self.assertEqual(d[0], {'release': '24 Feb 2022'})
+        self.assertEqual(d[1]['modes'], [('single', 'Single', True), ('coop', 'Co-op', True),
+                                         ('online', 'Online', False), ('local', 'Couch', False)])
 
 
 if __name__ == '__main__':

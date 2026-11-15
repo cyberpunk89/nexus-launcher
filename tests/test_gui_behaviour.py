@@ -1343,7 +1343,7 @@ class GamePanel(unittest.TestCase):
             self.assertTrue(w.isHidden(), w)
         self.assertFalse(p.sugg_box.isHidden())
         self.assertIn("1 suggestion", p.sec_launch.summary.text())
-        self.assertIn("On Linux", p.glance_keys)             # ProtonDB is in At a glance
+        self.assertIn("linux", p.tiles.keys())               # ProtonDB is in the On Linux tile
         self.assertTrue(p.sec_files.isHidden() and p.sec_trouble.isHidden())
         self.assertFalse(p.steam_tools.isHidden())           # Steam's own tools, in Manage
         self.assertIn('manage', self.visible_tabs())

@@ -1295,13 +1295,23 @@ class DetailsPanel(QFrame):
 
         # ---- your progress: the story and the achievements, side by side ----
         self.progress = QWidget()
-        pl = QHBoxLayout(self.progress)
-        pl.setContentsMargins(0, SP['1'], 0, 0)
+        pv = QVBoxLayout(self.progress)
+        pv.setContentsMargins(0, SP['1'], 0, 0)
+        pv.setSpacing(SP['2'])
+        pl = QHBoxLayout()
         pl.setSpacing(SP['5'])
         self.meter_story = Meter("Main story")
         self.meter_ach = Meter("Achievements")
         pl.addWidget(self.meter_story, 1)
         pl.addWidget(self.meter_ach, 1)
+        pv.addLayout(pl)
+        # Game-db's line (wishlist price, release countdown, status), full width.
+        self.gamedb_note = label('', "MeterNote", wrap=True)
+        self.gamedb_note.setTextFormat(Qt.TextFormat.RichText)
+        self.gamedb_note.setOpenExternalLinks(True)
+        self.gamedb_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.gamedb_note.setVisible(False)
+        pv.addWidget(self.gamedb_note)
         self.progress.setVisible(False)
         lay.addWidget(self.progress)
 
@@ -1429,17 +1439,11 @@ class DetailsPanel(QFrame):
         # Friends who own it (w-81): hidden until there is something to say.
         self.friends_box = FriendsBlock()
         v.addWidget(self.friends_box)
-        self.glance_box, gv = self._column(SP['2'])
-        gv.addWidget(kicker("At a glance"))
-        self.glance = QGridLayout()
-        self.glance.setContentsMargins(0, 0, 0, 0)
-        self.glance.setHorizontalSpacing(SP['3'])
-        self.glance.setVerticalSpacing(SP['2'])
-        self.glance.setColumnStretch(1, 1)
-        gv.addLayout(self.glance)
-        self.glance_keys: list[str] = []
-        self.glance_box.setVisible(False)
-        v.addWidget(self.glance_box)
+        # The stat tiles (w-132): added to the layout first, hidden after, so
+        # none ever shows as a window of its own.
+        self.tiles = OverviewTiles()
+        v.addWidget(self.tiles)
+        self.tiles.hide()
         self.similar_box, sv = self._column(SP['2'])
         sv.addWidget(kicker("More like this"))
         host = QWidget()
@@ -2072,7 +2076,7 @@ class DetailsPanel(QFrame):
         self._sync_tabs()
 
     @staticmethod
-    def _gamedb_line(gd, head: bool = True) -> str:
+    def _gamedb_line(gd, head: bool = True, hltb: bool = True) -> str:
         """Rich-text Game-db line: wishlist price, or HLTB/progress for owned
         games, or the release countdown. Every value is escaped; only https
         links are made clickable. head=False leaves out the leading
@@ -2104,7 +2108,7 @@ class DetailsPanel(QFrame):
                 bits.append(esc(gamedb.release_label(rel)))
         else:
             hl = gd.get('hltb') or {}
-            if hl.get('main'):
+            if hl.get('main') and hltb:
                 bits.append(f"HLTB {hl['main']:g} h main")
             c = gd.get('completion') or {}
             if c.get('state') == 'in-progress':
@@ -2252,44 +2256,20 @@ class DetailsPanel(QFrame):
         return rec
 
     def _fill_overview(self):
-        """Overview from what is known now: the context block, At a glance,
-        More like this; a plain line when nothing is known."""
+        """Overview from what is known now: the context block, the stat
+        tiles, More like this; a plain line when nothing is known."""
         rec = self._context_facts() or {}
         st = (self._store or {}).get('store') or {}
         self.context.studio_ok = self.studio_ok
         ctx = self.context.set_facts(rec, st.get('blurb') or '')
-        glance = self._fill_glance(rec)
+        tiles = self.tiles.set_sections(overview_model(
+            rec, self._store, self._tips, self.game, linux=has('proton')))
         similar = self._fill_similar()
         self.friends_box.set_game(self.game)
-        self.bare_note.setVisible(not (ctx or glance or similar))
+        self.bare_note.setVisible(not (ctx or tiles or similar))
 
     # Kept for older callers: the context block now lives in Overview.
     _fill_context = _fill_overview
-
-    def _fill_glance(self, rec: dict) -> bool:
-        rows = glance_rows(self._store, self._tips, rec.get('length'),
-                           self.game.get('protondb'), linux=has('proton'),
-                           metacritic=rec.get('metacritic'))
-        deal = self._gamedb_line((self._tips or {}).get('gamedb'), head=False)
-        if deal:
-            rows.append(("Game-db", deal, ''))
-        keys = [r[0] for r in rows]
-        if rows != getattr(self, '_glance_rows', None):
-            self._glance_rows = rows
-            clear_layout(self.glance)
-            for i, (name, value, tip) in enumerate(rows):
-                k = label(name, "GlanceKey")
-                k.setMinimumWidth(92)
-                self.glance.addWidget(k, i, 0, Qt.AlignmentFlag.AlignTop)
-                v = label(value, "GlanceValue", wrap=True)
-                v.setTextFormat(Qt.TextFormat.RichText)
-                v.setOpenExternalLinks(True)
-                v.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-                v.setToolTip(tip)
-                self.glance.addWidget(v, i, 1)
-        self.glance_keys = keys
-        self.glance_box.setVisible(bool(rows))
-        return bool(rows)
 
     def _fill_similar(self) -> bool:
         similar = []
@@ -2357,7 +2337,10 @@ class DetailsPanel(QFrame):
                                f"{round(100 * done / total)}% of this game's achievements")
             self.meter_ach.value.setStyleSheet(f"color: {P['success']};" if done == total else "")
         self.meter_ach.setVisible(ach is not None)
-        self.progress.setVisible(story or ach is not None)
+        deal = self._gamedb_line((self._tips or {}).get('gamedb'), hltb=False)
+        self.gamedb_note.setText(deal)
+        self.gamedb_note.setVisible(bool(deal))
+        self.progress.setVisible(story or ach is not None or bool(deal))
 
     def _load_achievements(self):
         """The list, from Steam's stats cache via the CLI (or a repack's
@@ -2412,7 +2395,7 @@ class DetailsPanel(QFrame):
     SECTION_KEYS = {'launch': ('manage', 'launch'), 'tune': ('manage', 'launch'),
                     'files': ('manage', 'files'), 'snapshots': ('manage', 'files'),
                     'troubleshoot': ('manage', 'troubleshoot'), 'log': ('manage', 'troubleshoot'),
-                    'about': ('overview', 'about'), 'compat': ('overview', 'glance'),
+                    'about': ('overview', 'about'), 'compat': ('overview', 'tiles'),
                     'achievements': ('achievements', None), 'media': ('media', None),
                     'trailers': ('media', None), 'notes': ('overview', 'notes'),
                     'overview': ('overview', None), 'manage': ('manage', None)}
@@ -2436,8 +2419,9 @@ class DetailsPanel(QFrame):
             self.notes_box.setVisible(True)
             self.notes_edit.setFocus(Qt.FocusReason.OtherFocusReason)
             target = self.notes_edit
-        elif part == 'glance' and not self.glance_box.isHidden():
-            target = self.glance_box
+        elif part == 'tiles' and not self.tiles.isHidden():
+            target = next((self.tiles.tile[k] for k in ('linux', 'pc')
+                           if not self.tiles.tile[k].isHidden()), self.tiles)
         elif tab != 'overview' or part == 'about':
             target = self.tabs.item(tab)
         if target is not None:
@@ -2746,7 +2730,6 @@ def _hide_row(row):
 
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
-from .actions import glance_rows  # noqa: E402
 from .app import main  # noqa: E402
 from .art import (ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS, placeholder_pixmap,
     rounded_pixmap)  # noqa: E402
@@ -2756,6 +2739,7 @@ from .gameinfo import (anticheat_warning, is_installed, play_enabled, play_label
     SOURCE_LABEL)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
+from .overview import overview_model, OverviewTiles  # noqa: E402
 from .widgets import (amp, ask, clear_layout, FlowLayout, icon_button, icon_label, label,
     NoWheelCombo, plain_label, protongen_code_preview, SegmentedControl, set_glyph_icon,
     soft_wrap)  # noqa: E402

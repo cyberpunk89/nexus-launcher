@@ -242,8 +242,8 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
     drag it 420-640): hero art with the status that matters now (source, not installed,
     playing, update, release status), Play, ★ and ⋮, one line of play time / last played /
     size, and your progress (main story, achievements). Then four tabs, each only when it
-    has something: **Overview** (credits, description, genres, *At a glance*: reviews,
-    length, ProtonDB / Steam Deck / anti-cheat, PCGamingWiki, links; more like this; notes),
+    has something: **Overview** (credits, description, genres, stat tiles: players
+    and critic scores, how long to beat, ProtonDB / Steam Deck / anti-cheat, PC features, details, links; more like this; notes),
     **Media** (screenshots and trailers), **Achievements** (recently unlocked, still to get)
     and **Manage**: **Launch** (repacks: Runtime, Display, Frame rate, Fixes and overlay,
     suggested fixes for your GPU, Advanced, with one Apply bar; Steam/Heroic games get only
@@ -303,8 +303,7 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
   tonight's three picks per time budget (Play if installed, else Install in Steam). Cards
   are focusable: Enter/A opens the best deal, Menu/X lists every link (deal, GG.deals,
   Steam, Game-db, copy). The Deals tab's badge counts games on sale, and the details panel's
-  *At a glance* shows a Game-db line for any game it knows (wishlist price, or HLTB time and
-  how far through you are). Up to 200 cards show at once; the line above them says how many
+  progress strip shows a Game-db line for any game it knows (wishlist price, how far through you are). Up to 200 cards show at once; the line above them says how many
   matched, and search or the filters reach the rest. A refresh that fails keeps what is on
   screen and says why in the banner.
 - **Artwork** — *Change artwork…* (game menu, details panel) opens a page of SteamGridDB

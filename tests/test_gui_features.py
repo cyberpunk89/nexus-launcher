@@ -98,7 +98,8 @@ class Details(unittest.TestCase):
             for w in (p.sec_launch, p.snap_box, p.btn_heroic, p.ov_heroic, p.pg_notice):
                 self.assertTrue(w.isHidden(), w)
             p._fill_tips({'protondb': {'tier': 'gold', 'total': 3}})
-            self.assertNotIn("On Linux", p.glance_keys)        # ProtonDB / Deck: Linux only
+            self.assertNotIn("linux", p.tiles.keys())          # ProtonDB / Deck: Linux only
+            self.assertFalse(p.tiles.tile["linux"].isVisibleTo(p))
             self.assertFalse(p.sec_files.isHidden())       # rename, exe, Steam: Windows too
             self.assertFalse(p.sec_trouble.isHidden())
             self.assertFalse(p.confirm_backup.isHidden())
@@ -119,7 +120,7 @@ class Details(unittest.TestCase):
             for w in (p.sec_launch, p.btn_heroic, p.confirm_backup):
                 self.assertFalse(w.isHidden(), w)
             p._fill_tips({'protondb': {'tier': 'gold', 'total': 3}})
-            self.assertIn("On Linux", p.glance_keys)
+            self.assertIn("linux", p.tiles.keys())
             sent = []
             p.request.connect(lambda args, *_: sent.append(args))
             p._do_uninstall()

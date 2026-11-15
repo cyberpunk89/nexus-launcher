@@ -913,11 +913,36 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#HeroName { color: $text; font-size: ${fs_headline}px; font-weight: 600; }
     QLabel#FactLine { color: $muted; font-size: ${fs_xs}px; }
     QLabel#MeterLabel { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#MeterNote { color: $muted; font-size: ${fs_xs_plus}px; }
     QLabel#MeterValue { color: $text; font-size: ${fs_xs}px; font-weight: 500; }
     QLabel#ContextLede { color: $subtext; font-size: ${fs_sm}px; }
     QLabel#SectionKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
     QLabel#GlanceKey { color: $muted; font-size: ${fs_xs}px; }
-    QLabel#GlanceValue { color: $subtext; font-size: ${fs_xs}px; }
+    /* The game page's stat tiles (w-132). */
+    #OvTile { background: $surface_1; border: none; border-radius: ${r_card}px; }
+    QLabel#OvWord { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
+    QLabel#OvWord[role="success"], QLabel#OvRowWord[role="success"] { color: $success; }
+    QLabel#OvWord[role="warning"], QLabel#OvRowWord[role="warning"] { color: $warning; }
+    QLabel#OvWord[role="danger"], QLabel#OvRowWord[role="danger"] { color: $danger; }
+    QLabel#OvWord[role="muted"], QLabel#OvRowWord[role="muted"] { color: $muted; }
+    QLabel#OvSub, QLabel#OvName, QLabel#OvKey { color: $muted; font-size: ${fs_xs}px; }
+    QLabel#OvName { font-size: ${fs_xs_plus}px; }
+    QLabel#OvBig { color: $text; font-size: ${fs_stat_icon}px; font-weight: 600; }
+    QLabel#OvRowName, QLabel#OvValue { color: $text; font-size: ${fs_command}px; }
+    QLabel#OvRowWord { color: $muted; font-size: ${fs_xs}px; font-weight: 500; }
+    QLabel#OvPill { border-radius: ${r_soft_tag}px; padding: 0 ${sp_2_5}px;
+        min-height: ${soft_tag_h}px; max-height: ${soft_tag_h}px;
+        font-size: ${fs_xs_plus}px; font-weight: 500; background: $surface_2; color: $subtext; }
+    QLabel#OvPill[state="on"] { background: $accent_22; color: $accent; }
+    QLabel#OvPill[state="off"] { background: transparent; color: $muted;
+        border: 1px solid $border; }
+    QLabel#OvPill[state="success"] { background: $success_18; color: $success; }
+    QLabel#OvPill[state="warning"] { background: $warning_18; color: $warning; }
+    QLabel#OvPill[state="danger"] { background: $danger_18; color: $danger; }
+    QPushButton#OvLink { background: $surface_1; color: $accent; border: none;
+        border-radius: ${r_chip}px; padding: 0 ${sp_2_5}px; min-height: ${chip_h}px;
+        max-height: ${chip_h}px; font-size: ${fs_xs}px; font-weight: 500; }
+    QPushButton#OvLink:hover, QPushButton#OvLink:focus { background: $accent_16; }
     QLabel#MediaTitle { color: $text; font-weight: 500; }
     QFrame#MediaPlay { background: $glass_hi; border: 1px solid $glass; }
     #MediaRow { background: transparent; border: none; border-radius: ${r_control}px; }
@@ -1196,7 +1221,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
         r_scroll=pill(SP['2_5']), r_bar=pill(6), r_more=pill(28), r_tag=pill(22),
         r_groove=pill(4), r_knob=pill(12), r_search=pill(36), r_icon_group=pill(46),
         soft_tag_h=int(SOFT_TAG_H * scale), r_soft_tag=pill(int(SOFT_TAG_H * scale)),
-        r_chip=pill(int(CHIP_H * scale)), chip_inner=int(CHIP_H * scale) - 2,
+        r_chip=pill(int(CHIP_H * scale)), chip_h=int(CHIP_H * scale), chip_inner=int(CHIP_H * scale) - 2,
         r_glyph=pill(int(GLYPH_H * scale)), glyph_inner=int(GLYPH_H * scale) - 2,
         r_person=pill(int(round(PERSON_H * scale))),
         r_private=pill(int(PILL_H * scale)),
