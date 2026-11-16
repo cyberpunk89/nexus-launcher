@@ -139,7 +139,8 @@ def _backlog(games, facts, week_minutes: float, today: date) -> dict:
             'idle_year_bytes': idle}
 
 
-def _space(games, today: date) -> list[dict]:
+def _space(games, today: date) -> tuple[list[dict], dict]:
+    """(the SPACE_TOP biggest installed games, {n, bytes} of all the rest)."""
     rows = []
     for g in games:
         b = int(g.get('disk_bytes') or 0)
@@ -148,7 +149,52 @@ def _space(games, today: date) -> list[dict]:
             rows.append({'slug': g['slug'], 'bytes': b,
                          'idle_days': (today - last).days if last else None})
     rows.sort(key=lambda r: (-r['bytes'], r['slug']))
-    return rows[:SPACE_TOP]
+    rest = rows[SPACE_TOP:]
+    return rows[:SPACE_TOP], {'n': len(rest), 'bytes': sum(r['bytes'] for r in rest)}
+
+
+def _facts(games, facts) -> list[dict]:
+    """Library facts for the Facts widget, in a fixed order; a kind with no
+    data is left out. `n` is the number the words use; names only."""
+    out = []
+
+    def add(kind, g=None, name=None, n=0, **extra):
+        out.append({'kind': kind, 'slug': g['slug'] if g else None,
+                    'name': _name(g) if g else name, 'n': n, **extra})
+
+    if games:
+        add('library', n=len(games), hours=round(sum(smart._hours(g) for g in games), 1))
+    top = smart.top_genres(games, facts, 1)
+    if top:
+        add('top_genre', name=top[0][0], n=top[0][1])
+    played = [g for g in games if smart._hours(g) > 0]
+    if played:
+        g = max(played, key=lambda g: (smart._hours(g), g['slug']))
+        add('most_played', g, n=round(smart._hours(g), 1))
+    years = [(y, g['slug'], g) for g in games
+             if isinstance(y := (facts.get(g['slug']) or {}).get('year'), int) and y > 0]
+    if years:
+        y, _s, g = min(years, key=lambda t: (t[0], t[1]))
+        add('oldest', g, n=y)
+    short = [(m, g['slug'], g) for g in games
+             if not (g.get('playtime_minutes') or g.get('last_played'))
+             and (m := smart.main_hours(facts.get(g['slug'])))]
+    if short:
+        m, _s, g = min(short, key=lambda t: (t[0], t[1]))
+        add('shortest_unplayed', g, n=round(m, 1))
+    sized = [g for g in games if int(g.get('disk_bytes') or 0) > 0]
+    if sized:
+        g = max(sized, key=lambda g: (int(g['disk_bytes']), g['slug']))
+        add('biggest', g, n=int(g['disk_bytes']))
+    studios: dict[str, int] = defaultdict(int)
+    for g in games:
+        for dev in dict.fromkeys((facts.get(g['slug']) or {}).get('developers') or ()):
+            if isinstance(dev, str) and dev.strip():
+                studios[dev.strip()] += 1
+    if studios:
+        name, n = max(studios.items(), key=lambda kv: (kv[1], kv[0]))
+        add('top_studio', name=name, n=n)
+    return out
 
 
 def _next_goal(have: float, goals) -> int | None:
@@ -217,8 +263,11 @@ def _day_games(per_day: dict, day_n: dict, day_t: dict, pos: dict) -> dict:
     return out
 
 
-def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> dict:
-    games = [g for g in games if isinstance(g, dict) and g.get('slug')]
+def build(sessions: list[dict], games: list[dict], facts: dict, today: date,
+          hidden=()) -> dict:
+    """`hidden`: slugs the user hid; they count nowhere in the library parts."""
+    hidden = set(hidden or ())
+    games = [g for g in games if isinstance(g, dict) and g.get('slug') and g['slug'] not in hidden]
     facts = facts or {}
     first = today - timedelta(days=DAYS - 1)
     pace_from = today - timedelta(days=PACE_DAYS - 1)
@@ -270,6 +319,7 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
         now += 1
         d -= timedelta(days=1)
     daily, alt = _daily(games, facts, first_played, today)
+    space, space_more = _space(games, today)
     return {
         'v': V,
         'today': today.isoformat(),
@@ -284,7 +334,9 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
         'daily': daily,
         'daily_alt': alt,
         'backlog': _backlog(games, facts, week_minutes, today),
-        'space': _space(games, today),
+        'space': space,
+        'space_more': space_more,
+        'facts': _facts(games, facts),
         'milestones': _milestones(games, facts, year_minutes),
     }
 
@@ -301,9 +353,21 @@ def library_games(path=None) -> list[dict]:
     return games if isinstance(games, list) else []
 
 
+def hidden_slugs(path=None) -> frozenset:
+    """The slugs the GUI's prefs hide (library.json `hidden`); none when the
+    file is missing or broken (a plain read, the GUI writes it)."""
+    from .paths import CONFIG_DIR
+    try:
+        blob = json.loads((path or CONFIG_DIR / 'library.json').read_text(encoding='utf-8'))
+        rows = blob.get('hidden')
+    except (OSError, ValueError, AttributeError):
+        return frozenset()
+    return frozenset(s for s in rows if isinstance(s, str)) if isinstance(rows, list) else frozenset()
+
+
 def gather(today: date | None = None) -> dict:
     """build() from what is on disk: sessions.jsonl, the Library cache and
     the facts index."""
     from . import facts
     return build(history.load(), library_games(), facts.read_index().get('games') or {},
-                 today or date.today())
+                 today or date.today(), hidden_slugs())

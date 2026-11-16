@@ -2318,6 +2318,16 @@ class Window(unittest.TestCase):
         self.assertNotIn("PINNED", stage.art.kicker.text())
         self.assertEqual(stage.menu_stage(stage.art.game), 'pin')
 
+    def test_hiding_a_game_pokes_home_for_the_stats_widgets(self):
+        """w-141: backlog, space and facts leave a hidden game out, so hiding asks again."""
+        w, stage = self._stage()
+        with mock.patch.object(w, '_poke_home') as poke:
+            w.on_game_action('hide', w.game('steam-1'))
+            poke.assert_called_with('library')
+            poke.reset_mock()
+            w.on_game_action('favorite', w.game('steam-1'))
+            poke.assert_not_called()
+
     def test_stage_menu_offers_pin_only_on_art(self):
         w, stage = self._stage()
         seen = []
@@ -6687,7 +6697,7 @@ class HomeLayouts(unittest.TestCase):
         self._flush()
         self.assertTrue(bar.isVisible())
         self.assertEqual([b.text() for b in bar.preset_btns.values()],
-                         ["Cinematic", "Dashboard", "Minimal", "Shelf-first"])
+                         ["Cinematic", "Dashboard", "Minimal", "Shelf-first", "Stats"])
         self.assertTrue(bar.empty_note.isVisible())
         self.assertTrue(bar.btn_save.isVisible())
         self.assertTrue(bar.btn_old.isHidden())                      # nothing to offer
@@ -6725,6 +6735,24 @@ class HomeLayouts(unittest.TestCase):
         d._reset()
         self.assertEqual(pr.dashboard, nx.dash_default())
         self.assertEqual(len(pr.layouts), 2)
+        d.set_editing(False)
+
+    def test_stats_preset_applies(self):
+        """w-141: Stats has no Stage, the Stats widgets and Friends in order, compact."""
+        w, d = self._home()
+        d.set_editing(True)
+        d.layouts_bar.preset_btns['stats'].click()
+        self._flush()
+        pr = w.prefs
+        shown = [(i['id'], i['size']) for i in pr.dashboard if not i['hidden']]
+        self.assertEqual(shown, [('heatmap', 'full'), ('onthisday', 'small'), ('daily', 'small'),
+                                 ('backlog', 'small'), ('spacemap', 'wide'),
+                                 ('milestones', 'small'), ('facts', 'small'), ('pick', 'small'),
+                                 ('friends', 'small')])
+        self.assertTrue(self._item('stage')['hidden'])
+        self.assertEqual(self._item('pick')['style'], 'wheel')
+        self.assertEqual((pr.density, d.density), ('compact', 'compact'))
+        self.assertEqual([lt['name'] for lt in pr.layouts], ["Before Stats"])
         d.set_editing(False)
 
     def test_full_with_nothing_saved_for_you(self):

@@ -78,6 +78,13 @@ SPECS = (
                feeds=('midnight', 'insights')),
     WidgetSpec('milestones', "Next milestones", ('small', 'wide'), 'small', True,
                feeds=('insights',)),
+    # The Stats widgets (w-141): the same, with the library parts of the payload.
+    WidgetSpec('backlog', "Backlog health", ('small', 'wide'), 'small', True,
+               feeds=('insights', 'library')),
+    WidgetSpec('spacemap', "Where your space goes", ('wide', 'full'), 'wide', True,
+               feeds=('insights', 'library')),
+    WidgetSpec('facts', "Library facts", ('small',), 'small', True,
+               feeds=('midnight', 'insights', 'library')),
 )
 SPEC = {s.kind: s for s in SPECS}
 

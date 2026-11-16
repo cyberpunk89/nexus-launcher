@@ -11,7 +11,7 @@ shelf. Words are kind: no streak is "No streak right now", never red."""
 import random
 from datetime import date, datetime, timedelta
 
-from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QProgressBar, QPushButton, QSizePolicy,
     QVBoxLayout, QWidget)
@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QProgressBar, QPushButto
 from .art import anim_ms
 from .common import alive
 from .dashboard import ClickRow, DashWidget
-from .daycard import card_text, DayCard, place_card
+from .daycard import card_text, CardHost
 from .fmt import fmt_duration, fmt_hours
 from .gameinfo import can_quick_play, is_installed
 from .system import _add, _columns
@@ -320,7 +320,7 @@ class DailyWidget(InsightWidget):
 
 
 # ---- Your year (w-140) ----
-class HeatGrid(QWidget):
+class HeatGrid(CardHost, QWidget):
     """A calendar heatmap: Monday to Sunday down, one column per week, as
     many weeks as fit (up to 52), this week last, today ringed. Painted, so
     the card keeps its Open button for a pad. The day under the pointer (or the
@@ -340,10 +340,7 @@ class HeatGrid(QWidget):
         self.detail: dict[str, dict] = {}         # day -> payload day_games entry (the card)
         self.avg = 0.0                            # the payload's avg_minutes (the card's footer)
         self.games: dict = {}                     # slug -> game, for the covers
-        self.card: DayCard | None = None
-        self.show_timer = QTimer(self)
-        self.show_timer.setSingleShot(True)
-        self.show_timer.timeout.connect(self._timed_show)
+        self.init_card_host()
         self.hovered: date | None = None
         self.today: date | None = None
         self.cell, self.gap = scaled(12), scaled(3)
@@ -399,41 +396,12 @@ class HeatGrid(QWidget):
         return card_text(d, self.days.get(d.isoformat(), 0), self.detail.get(d.isoformat()),
                          self.avg, self.today)
 
-    def _card(self) -> DayCard:
-        win = self.window()
-        if self.card is None or not alive(self.card):
-            self.card = DayCard(win)
-            # The card lives in the window, not in the grid: it goes with the grid.
-            self.destroyed.connect(lambda _=None, c=self.card: alive(c) and c.deleteLater())
-        elif self.card.parent() is not win:
-            self.card.setParent(win)
-        return self.card
-
     def _show_card(self, d: date):
-        """Put the day card beside `d`'s cell, inside the window; flipped left
-        near the right edge and moved up near the bottom."""
+        """The day card beside `d`'s cell (CardHost places it)."""
         rect = self.cell_rect(d)
         if rect is None:
             return self._hide_card()
-        self.show_timer.stop()
-        card = self._card()
-        win = self.window()
-        card.set_content(self.card_text(d), self.games)
-        top_left = self.mapTo(win, rect.topLeft().toPoint())
-        cell = QRectF(float(top_left.x()), float(top_left.y()), rect.width(), rect.height())
-        proper = card.card_rect()
-        at = place_card(cell, proper.size().toSize(), QRectF(win.rect()), float(SP['2']),
-                        float(SP['1']))
-        card.move(int(round(at.x() - proper.left())), int(round(at.y() - proper.top())))
-        if not card.isVisible():
-            card.appear()
-        else:
-            card.raise_()
-
-    def _hide_card(self):
-        self.show_timer.stop()
-        if self.card is not None and alive(self.card):
-            self.card.vanish()
+        self.show_card_at(rect, self.card_text(d), self.games)
 
     def _timed_show(self):
         if self.hovered is not None:

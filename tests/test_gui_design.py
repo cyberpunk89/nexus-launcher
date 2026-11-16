@@ -1727,6 +1727,15 @@ class HomeLayouts(unittest.TestCase):
         stage = next(i for i in s if i['id'] == 'stage')
         self.assertEqual((stage['hidden'], stage['size']), (True, 'cinematic'))
         self.assertEqual(self.L.PRESET_DENSITY['shelves'], 'compact')
+        t = self.L.dash_preset('stats')
+        self.assertEqual(self.shown(t), [
+            ('heatmap', 'full'), ('onthisday', 'small'), ('daily', 'small'), ('backlog', 'small'),
+            ('spacemap', 'wide'), ('milestones', 'small'), ('facts', 'small'), ('pick', 'small'),
+            ('friends', 'small')])
+        stage = next(i for i in t if i['id'] == 'stage')
+        self.assertEqual((stage['hidden'], stage['size']), (True, 'cinematic'))
+        self.assertEqual(next(i for i in t if i['id'] == 'pick')['style'], 'wheel')
+        self.assertEqual(self.L.PRESET_DENSITY['stats'], 'compact')
 
     # ---- layouts and rules ----
     def test_clean_layouts(self):
@@ -2117,7 +2126,10 @@ class WidgetSpecTest(unittest.TestCase):
             ('onthisday', ('small', 'wide'), 'small', True),
             ('daily', ('small',), 'small', True),
             ('heatmap', ('wide', 'full'), 'full', True),
-            ('milestones', ('small', 'wide'), 'small', True)])
+            ('milestones', ('small', 'wide'), 'small', True),
+            ('backlog', ('small', 'wide'), 'small', True),
+            ('spacemap', ('wide', 'full'), 'wide', True),
+            ('facts', ('small',), 'small', True)])
         self.assertEqual(t['SIZES'], {k: s for k, s, _d, _h in t['KINDS']})
         self.assertEqual(t['DEFAULT_SIZE'], {k: d for k, _s, d, _h in t['KINDS']})
         self.assertEqual(t['OPTIONS'], {
@@ -2143,8 +2155,10 @@ class WidgetSpecTest(unittest.TestCase):
         self.assertEqual(dashboard.FORYOU_FEEDS,
                          {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'})
         self.assertEqual(t['FED_BY']['system'], {'foryou'})
-        self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'daily', 'heatmap'})
-        self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'daily', 'heatmap', 'milestones'})
+        self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'daily', 'heatmap', 'facts'})
+        self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'daily', 'heatmap', 'milestones',
+                                                   'backlog', 'spacemap', 'facts'})
+        self.assertEqual(t['FED_BY']['library'], {'backlog', 'spacemap', 'facts'})
         self.assertEqual(t['FED_BY']['sessions'], {'week'})
         self.assertEqual(nx.DASH_KINDS, t['KINDS'])
         self.assertEqual(nx.DASH_OPTIONS, t['OPTIONS'])
@@ -2177,7 +2191,7 @@ class WidgetSpecTest(unittest.TestCase):
         from nexus.gui import dashboard
         self.assertEqual(dashboard.fed({'system'}), {'system', 'foryou'})
         self.assertEqual(dashboard.fed(['midnight']),
-                         {'midnight', 'week', 'onthisday', 'daily', 'heatmap'})
+                         {'midnight', 'week', 'onthisday', 'daily', 'heatmap', 'facts'})
         self.assertEqual(dashboard.fed({'sessions', 'friends'}),
                          {'sessions', 'friends', 'week', 'foryou'})
         self.assertEqual(dashboard.fed({'pick'}), {'pick'})

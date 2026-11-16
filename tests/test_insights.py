@@ -188,6 +188,78 @@ class Space(unittest.TestCase):
         self.assertIsNone(build(games=[game('n', size=10)])['space'][0]['idle_days'])
 
 
+class SpaceMore(unittest.TestCase):
+    def test_more_counts_the_rest(self):
+        games = [game(f'g{i:02d}', 60, 5, size=(i + 1) * 100) for i in range(15)]
+        out = build(games=games)
+        self.assertEqual(len(out['space']), 12)
+        self.assertEqual(out['space_more'], {'n': 3, 'bytes': 100 + 200 + 300})
+
+    def test_none_past_twelve_is_zero(self):
+        out = build(games=[game('a', size=10)])
+        self.assertEqual(out['space_more'], {'n': 0, 'bytes': 0})
+
+
+def fact_row(year=None, genres=(), developers=(), main=None):
+    f = fact(main)
+    f.update({'year': year, 'genres': list(genres), 'developers': list(developers)})
+    return f
+
+
+class Facts(unittest.TestCase):
+    def test_each_kind_from_local_data(self):
+        games = [game('alpha', 600, 3, size=500), game('beta', 120, 50, size=9000),
+                 game('gamma', size=100), game('delta', size=200)]
+        facts = {'alpha': fact_row(2010, ['RPG'], ['Studio X'], 40),
+                 'beta': fact_row(2001, ['RPG'], ['Studio X'], 12),
+                 'gamma': fact_row(2020, ['Action'], ['Studio Y'], 3),
+                 'delta': fact_row(2015, [], [], 8)}
+        rows = {f['kind']: f for f in build(games=games, facts=facts)['facts']}
+        self.assertEqual(list(rows), ['library', 'top_genre', 'most_played', 'oldest',
+                                      'shortest_unplayed', 'biggest', 'top_studio'])
+        self.assertEqual((rows['library']['n'], rows['library']['hours']), (4, 12.0))
+        self.assertEqual((rows['top_genre']['name'], rows['top_genre']['n']), ('RPG', 2))
+        self.assertEqual((rows['most_played']['slug'], rows['most_played']['n']), ('alpha', 10.0))
+        self.assertEqual((rows['oldest']['slug'], rows['oldest']['n']), ('beta', 2001))
+        self.assertEqual((rows['shortest_unplayed']['slug'], rows['shortest_unplayed']['n']),
+                         ('gamma', 3.0))
+        self.assertEqual((rows['biggest']['slug'], rows['biggest']['n']), ('beta', 9000))
+        self.assertEqual((rows['top_studio']['name'], rows['top_studio']['n']), ('Studio X', 2))
+        self.assertIsNone(rows['top_studio']['slug'])
+        json.dumps(rows)
+
+    def test_a_kind_without_data_is_left_out(self):
+        out = build(games=[game('a', 60, 1)], facts={})['facts']
+        self.assertEqual([f['kind'] for f in out], ['library', 'most_played'])
+        self.assertEqual(build()['facts'], [])
+
+
+class Hidden(unittest.TestCase):
+    def test_hidden_games_leave_backlog_space_and_facts(self):
+        games = [game('keep', 60, 400, size=100), game('gone', 600, 400, size=9000)]
+        facts = {'keep': fact_row(2010, main=10), 'gone': fact_row(1999, main=10)}
+        out = insights.build([], games, facts, TODAY, hidden={'gone'})
+        self.assertEqual([e['slug'] for e in out['space']], ['keep'])
+        self.assertEqual(out['backlog']['idle_year_bytes'], 100)
+        self.assertEqual(out['backlog']['started'], 1)
+        by = {f['kind']: f for f in out['facts']}
+        self.assertEqual(by['library']['n'], 1)
+        self.assertEqual(by['oldest']['slug'], 'keep')
+        self.assertEqual(by['biggest']['slug'], 'keep')
+
+    def test_reads_prefs_file_and_survives_bad_json(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'library.json'
+            self.assertEqual(insights.hidden_slugs(p), frozenset())
+            p.write_text('{nope', encoding='utf-8')
+            self.assertEqual(insights.hidden_slugs(p), frozenset())
+            p.write_text('{"hidden": ["a", "b", 3]}', encoding='utf-8')
+            self.assertEqual(insights.hidden_slugs(p), frozenset({'a', 'b'}))
+            p.write_text('[1]', encoding='utf-8')
+            self.assertEqual(insights.hidden_slugs(p), frozenset())
+
+
 class DayDetail(unittest.TestCase):
     """The heatmap's hover: what was played on each day."""
 

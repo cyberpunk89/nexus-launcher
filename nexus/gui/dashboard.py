@@ -2285,12 +2285,13 @@ class WeekWidget(DashWidget):
 
 from .foryou import ForYouWidget  # noqa: E402  (it builds on DashWidget)
 from .insight_widgets import INSIGHT_WIDGETS  # noqa: E402  (so does this)
+from .stats_widgets import STATS_WIDGETS  # noqa: E402
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
     StageWidget, SaveWidget, ForYouWidget, FriendsWidget, PickWidget, SystemWidget, NewsWidget,
     InstalledWidget, SmartShelfWidget,
     DealsWidget,
-    UpcomingWidget, WeekWidget, *INSIGHT_WIDGETS, FavouritesWidget, CollectionsWidget,
+    UpcomingWidget, WeekWidget, *INSIGHT_WIDGETS, *STATS_WIDGETS, FavouritesWidget, CollectionsWidget,
     UpdatesWidget, OwnedWidget)}
 
 

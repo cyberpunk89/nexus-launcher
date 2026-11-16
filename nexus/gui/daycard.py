@@ -13,7 +13,7 @@ with floats in one call)."""
 from dataclasses import dataclass, field
 from datetime import date
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath,
     QPen)
 from PyQt6.QtWidgets import QWidget
@@ -421,3 +421,51 @@ class DayCard(QWidget):
         fp = QPainterPath()
         fp.addRoundedRect(fill, bar_h / 2, bar_h / 2)
         pt.fillPath(fp, _bar_color(row.key))
+
+
+class CardHost:
+    """What a painted widget needs to show a DayCard beside one of its parts
+    (w-141: the heatmap and the space map share it). Mix in before QWidget,
+    call `init_card_host()` once the widget exists, implement `_timed_show`.
+    The card is a child of the window, not of the widget: it goes with it."""
+
+    def init_card_host(self):
+        self.card: DayCard | None = None
+        self.show_timer = QTimer(self)
+        self.show_timer.setSingleShot(True)
+        self.show_timer.timeout.connect(self._timed_show)
+
+    def _timed_show(self):
+        raise NotImplementedError
+
+    def _card(self) -> DayCard:
+        win = self.window()
+        if self.card is None or not alive(self.card):
+            self.card = DayCard(win)
+            self.destroyed.connect(lambda _=None, c=self.card: alive(c) and c.deleteLater())
+        elif self.card.parent() is not win:
+            self.card.setParent(win)
+        return self.card
+
+    def show_card_at(self, rect: QRectF, ct: CardText, games: dict | None = None):
+        """Put the card for `ct` beside `rect` (widget coordinates), inside the
+        window; flipped left near the right edge and moved up near the bottom."""
+        self.show_timer.stop()
+        card = self._card()
+        win = self.window()
+        card.set_content(ct, games)
+        top_left = self.mapTo(win, rect.topLeft().toPoint())
+        cell = QRectF(float(top_left.x()), float(top_left.y()), rect.width(), rect.height())
+        proper = card.card_rect()
+        at = place_card(cell, proper.size().toSize(), QRectF(win.rect()), float(SP['2']),
+                        float(SP['1']))
+        card.move(int(round(at.x() - proper.left())), int(round(at.y() - proper.top())))
+        if not card.isVisible():
+            card.appear()
+        else:
+            card.raise_()
+
+    def _hide_card(self):
+        self.show_timer.stop()
+        if self.card is not None and alive(self.card):
+            self.card.vanish()

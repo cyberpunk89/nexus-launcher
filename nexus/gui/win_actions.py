@@ -211,6 +211,8 @@ class ActionsMixin:
             self.apply_filter()
             if slug in self.selected:
                 self._sync_selection()            # the star in the details panel
+            if action == 'hide':
+                self._poke_home('library')        # w-141: backlog, space and facts leave it out
             self.toast(f"{name} {'added to' if on else 'removed from'} "
                        f"{'favourites' if action == 'favorite' else 'hidden games'}.",
                        'success', None, 2500)

@@ -24,6 +24,7 @@ PRESETS = (
     ('dashboard', "Dashboard", "A wide Stage with Your save, System, News and Deals; compact"),
     ('minimal', "Minimal", "A banner Stage, the For you now strip and Continue"),
     ('shelves', "Shelf-first", "No Stage: your shelves, compact"),
+    ('stats', "Stats", "Your year, backlog, space, milestones and facts; compact"),
 )
 PRESET_LABELS = {k: name for k, name, _tip in PRESETS}
 
@@ -45,11 +46,17 @@ _PRESET_ITEMS = {
     'shelves': [('foryou', 'full', {'style': 'strip'}), ('smart', 'full', {'shelf': 'unfinished'}),
                 ('installed', 'full', {}), ('favourites', 'full', {}),
                 ('collections', 'full', {}), ('updates', 'full', {})],
+    # w-141: no Stage; three columns pack evenly (Friends fills the last cell).
+    'stats': [('heatmap', 'full', {}), ('onthisday', 'small', {}), ('daily', 'small', {}),
+              ('backlog', 'small', {}), ('spacemap', 'wide', {}), ('milestones', 'small', {}),
+              ('facts', 'small', {}), ('pick', 'small', {'style': 'wheel'}),
+              ('friends', 'small', {})],
 }
 # Hidden but placed first, so it comes back where it belongs (Shelf-first's Stage).
-_PRESET_HIDDEN_FIRST = {'shelves': [('stage', 'cinematic', _STAGE)]}
+_PRESET_HIDDEN_FIRST = {'shelves': [('stage', 'cinematic', _STAGE)],
+                        'stats': [('stage', 'cinematic', _STAGE)]}
 PRESET_DENSITY = {'cinematic': 'comfortable', 'dashboard': 'compact',
-                  'minimal': 'comfortable', 'shelves': 'compact'}
+                  'minimal': 'comfortable', 'shelves': 'compact', 'stats': 'compact'}
 
 
 def dash_preset(name: str) -> list[dict]:

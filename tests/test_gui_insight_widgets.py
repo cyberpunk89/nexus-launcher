@@ -720,14 +720,15 @@ class InTheRegistry(unittest.TestCase):
     def test_old_layouts_keep_their_shape(self):
         out = nx.dash_normalize([{'id': 'stage'}, {'id': 'week', 'size': 'wide'}])
         ids = [i['id'] for i in out]
-        for kind in ('onthisday', 'daily', 'heatmap', 'milestones'):
+        for kind in ('onthisday', 'daily', 'heatmap', 'milestones', 'backlog', 'spacemap', 'facts'):
             self.assertTrue(next(i for i in out if i['id'] == kind)['hidden'])
-        self.assertEqual(ids[-4:], ['onthisday', 'daily', 'heatmap', 'milestones'])   # last, hidden
+        self.assertEqual(ids[-7:], ['onthisday', 'daily', 'heatmap', 'milestones',
+                                    'backlog', 'spacemap', 'facts'])   # last, hidden
         self.assertEqual(D.DASH_VERSION, 2)
 
     def test_cinematic_preset_is_unchanged(self):
         shown = [i['id'] for i in nx.dash_default() if not i['hidden']]
-        for kind in ('onthisday', 'daily', 'heatmap', 'milestones'):
+        for kind in ('onthisday', 'daily', 'heatmap', 'milestones', 'backlog', 'spacemap', 'facts'):
             self.assertNotIn(kind, shown)
 
 
