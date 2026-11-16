@@ -1120,6 +1120,47 @@ class GameContextBlock(unittest.TestCase):
         self.assertFalse(self.panel.bare_note.isVisible())
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class OverviewFacts(unittest.TestCase):
+    """overview_facts (w-135): the one record the desktop page and Theatre's
+    drawer both build their Overview from."""
+
+    def setUp(self):
+        import json
+        from nexus import facts
+        from nexus.gui import overview
+        self.ov = overview
+        self.path = facts.index_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({'v': facts.INDEX_V, 'games': {
+            'indexed': {'developers': ['Dev'], 'year': 2020, 'length': {'main': 12}},
+            'bare': {'developers': ['Dev']}}}))
+        overview._FACTS.update(mtime=None, games={})
+
+    def tearDown(self):
+        self.path.unlink(missing_ok=True)
+        self.ov._FACTS.update(mtime=None, games={})
+
+    def test_index_first_then_store_then_live_length(self):
+        ov = self.ov
+        rec = ov.overview_facts({'slug': 'indexed'}, {'store': {'blurb': 'x'}},
+                                {'hltb': {'main': 99}})
+        self.assertEqual(rec['year'], 2020)
+        self.assertEqual(rec['length']['main'], 12)         # the index's length wins
+        rec = ov.overview_facts({'slug': 'bare'}, None, {'hltb': {'main': 8, 'plus': 9}})
+        self.assertEqual(rec['length'], {'main': 8, 'plus': 9, 'source': 'hltb'})
+        rec = ov.overview_facts({'slug': 'bare'}, None, {'gamedb': {'hltb': {'main': 7}}})
+        self.assertEqual(rec['length']['main'], 7)
+        rec = ov.overview_facts({'slug': 'bare'}, None, {'gamedb': {'hltb': {}}})
+        self.assertNotIn('length', rec)
+        # A game the index has not reached: the store's answer stands in.
+        store = {'store': {'name': 'Fresh', 'developers': ['Studio'], 'release': '3 Mar, 2021'}}
+        rec = ov.overview_facts({'slug': 'new', 'appid': 5, 'display_name': 'Fresh'}, store, {})
+        self.assertEqual(ov.credits_text(rec)[0], "Studio · 2021")
+        self.assertEqual(ov.overview_facts({'slug': 'new'}, None, None), {})
+        self.assertIs(self.ov.game_facts, __import__('nexus.gui.details', fromlist=['x']).game_facts)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class OverviewTiles(unittest.TestCase):
     """The game page's stat tiles (w-132): painted parts on both a dark and a
     light theme, pairs that stack, a fixed order, nothing wider than the panel."""
@@ -1162,6 +1203,49 @@ class OverviewTiles(unittest.TestCase):
         QApplication.processEvents()
         QApplication.processEvents()
         return t, host
+
+    def test_theatre_row_one_line_focusable_scaled(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor
+        from nexus.gui import overview as ov
+        for theme in ('forest', 'dawn'):
+            with self.subTest(theme=theme):
+                nx.apply_appearance({'theme': theme})
+                _app.setStyleSheet(nx.build_stylesheet())
+                d = self.FULL
+                host = QWidget()
+                from PyQt6.QtWidgets import QHBoxLayout
+                lay = QHBoxLayout(host)
+                lay.setContentsMargins(0, 0, 0, 0)
+                t = ov.OverviewTiles(theatre=True, scale=1.4)
+                lay.addWidget(t)
+                t.set_sections(ov.overview_model(d['rec'], d['store'], d['tips'], d['game']))
+                host.resize(2600, 500)
+                host.show()
+                self.addCleanup(drop, host)
+                QApplication.processEvents()
+                QApplication.processEvents()
+                self.assertEqual(t.keys(), ['players', 'critics', 'length', 'linux', 'pc',
+                                            'details'])            # no links in the drawer
+                self.assertNotIn('links', t.tile)
+                tiles = [t.tile[k] for k in t.keys()]
+                self.assertEqual(len({w.mapTo(host, w.rect().topLeft()).y() for w in tiles}), 1)
+                xs = [w.mapTo(host, w.rect().topLeft()).x() for w in tiles]
+                self.assertEqual(xs, sorted(xs))
+                for w in tiles:
+                    self.assertEqual(w.width(), round(ov.TILE_W * 1.4))
+                    self.assertEqual(w.focusPolicy(), Qt.FocusPolicy.StrongFocus)
+                    self.assertTrue(w.accessibleName())
+                ring = t.tile['players'].ring
+                self.assertEqual(ring.width(), round(ov.ScoreRing.SIZE * 1.4))
+                # Painted on dark art: never the theme's own text colour.
+                img = ring.grab().toImage()
+                px = {QColor(img.pixel(x, y)).name() for x in range(img.width())
+                      for y in range(img.height()) if QColor(img.pixel(x, y)).alpha() > 200}
+                ink = QColor(nx.P['text']).name()
+                if ink != '#ffffff':
+                    self.assertNotIn(ink, px)
+                self.assertIn('#ffffff', px)                  # the number, in on_art
 
     def test_painted_parts_render_on_forest_and_dawn(self):
         from PyQt6.QtGui import QImage

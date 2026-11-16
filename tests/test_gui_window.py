@@ -5264,6 +5264,10 @@ class Window(unittest.TestCase):
         self.assertIn('media', dr.visible_keys())
         self.assertNotIn('achievements', dr.visible_keys())   # this game has none
         self.assertEqual(dr.about.text(), 'A game about tests.')
+        if features.has('proton'):                            # the tier, as its badge (w-135)
+            from nexus.gui.overview import TierBadge
+            badges = dr.sections['compat'].findChildren(TierBadge)
+            self.assertEqual([b.accessibleName() for b in badges], ["ProtonDB Gold"])
         # D-pad Down from Play reaches the tabs and opens the drawer.
         w.activateWindow()
         d.btn_play.setFocus()
@@ -5291,6 +5295,87 @@ class Window(unittest.TestCase):
         w._escape()                                           # ...then the page
         self.assertFalse(d.isVisible())
         self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    OV_TIPS = {'protondb': {'tier': 'gold', 'total': 9, 'url': 'https://www.protondb.com/app/1'},
+               'deck': {'deck': 'Verified'},
+               'hltb': {'main': 12, 'plus': 18, 'source': 'hltb'},
+               'pcgw': {'support': {'4K': 'true', 'Ultrawide': 'hackable'}}}
+    OV_STORE = {'store': {'blurb': 'A game about tests.', 'developers': ['Dev'],
+                          'release': '3 Mar, 2021', 'url': 'https://store.steampowered.com/app/1/'},
+                'reviews': {'desc': 'Very Positive', 'percent': 91, 'total': 5000}}
+
+    def test_theatre_overview_same_sections_as_desktop(self):
+        """w-135: the drawer's Overview and the desktop's are built from the
+        same facts and the same model: same tiles in the same order, bar the
+        links (a TV never opens a browser)."""
+        w = self.win
+        w.set_theatre(True)
+        g = w._games[1]
+        w.theatre.open_game(g)
+        d = w.theatre.details
+        d.set_info(tips=self.OV_TIPS, store=self.OV_STORE)
+        QApplication.processEvents()
+        with patch_gui('cli_json', lambda *a, **k: None):
+            panel = nx.DetailsPanel()
+            panel.show_games([g])
+            panel._fill_about(self.OV_STORE)
+            panel._fill_tips(self.OV_TIPS)
+        try:
+            desk = [k for k in panel.tiles.keys() if k != 'links']
+            self.assertIn('players', desk)
+            self.assertIn('length', desk)
+            self.assertEqual(d.drawer.tiles.keys(), desk)
+            self.assertEqual(d.drawer.tiles.tile['length'].cells[0][0].text(),
+                             panel.tiles.tile['length'].cells[0][0].text())
+            self.assertEqual(d.drawer.credits.text(), "Dev · 2021")
+            self.assertEqual(d.drawer.about.text(), 'A game about tests.')
+            self.assertNotIn('links', d.drawer.tiles.tile)
+            # The progress line takes the main story from the same record.
+            self.assertIn("12 h", d.drawer.progress_sub.text())
+        finally:
+            panel.deleteLater()
+        w.set_theatre(False)
+
+    def test_theatre_overview_tiles_pad_focus(self):
+        """w-135: Down from the Overview tab reaches the first tile, Right the
+        next (scrolling it into view), Up goes back to the tab; A on a tile
+        is not an action."""
+        from nexus.gui.input import focus_and_reveal
+        w = self.win
+        w.set_theatre(True)
+        w.theatre.open_game(w._games[1])
+        d = w.theatre.details
+        d.set_info(tips=self.OV_TIPS, store=self.OV_STORE)
+        w.activateWindow()
+        d.expand()
+        QApplication.processEvents()
+        dr = d.drawer
+        tiles = [dr.tiles.tile[k] for k in dr.tiles.keys()]
+        self.assertGreaterEqual(len(tiles), 3)
+        tab = dr.tabs.item('overview')
+        tab.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not tab:
+            self.skipTest("offscreen gave no focus")
+        nxt = w.spatial.move(tab, Qt.Key.Key_Down)
+        self.assertIs(nxt, tiles[0])
+        focus_and_reveal(nxt)
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), tiles[0])
+        self.assertEqual([k for k, _t in d.hints(tiles[0]) if k == 'a'], [])
+        nxt = w.spatial.move(tiles[0], Qt.Key.Key_Right)
+        self.assertIs(nxt, tiles[1])
+        focus_and_reveal(nxt)
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), tiles[1])
+        last = tiles[-1]
+        focus_and_reveal(last)
+        QApplication.processEvents()
+        view = dr.tiles_scroll.viewport().rect()
+        self.assertTrue(view.contains(last.mapTo(dr.tiles_scroll.viewport(),
+                                                 last.rect().center())))      # scrolled into view
+        self.assertIs(w.spatial.move(tiles[0], Qt.Key.Key_Up), tab)
         w.set_theatre(False)
 
     def test_theatre_achievements_section(self):

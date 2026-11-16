@@ -1068,6 +1068,28 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #TheatreNewsRow { background: $glass; border: 1px solid $glass_hi;
                       border-radius: ${r_card}px; }
     #TheatreNewsRow:hover { background: $glass_hi; }
+    /* The drawer's stat tiles (w-135): the desktop's, on glass, text in on_art. */
+    #TheatreDetails #OvTile { background: $glass; border: 1px solid $glass_hi;
+                              border-radius: ${r_card}px; }
+    #TheatreDetails QLabel#OvWord, #TheatreDetails QLabel#OvBig,
+    #TheatreDetails QLabel#OvRowName, #TheatreDetails QLabel#OvValue { color: $on_art; }
+    #TheatreDetails QLabel#OvSub, #TheatreDetails QLabel#OvName, #TheatreDetails QLabel#OvKey,
+    #TheatreDetails QLabel#OvRowWord, #TheatreDetails QLabel#SectionKicker,
+    #TheatreDetails QLabel#OvWord[role="muted"], #TheatreDetails QLabel#OvRowWord[role="muted"] {
+        color: rgba(255, 255, 255, 0.55); }
+    #TheatreDetails QLabel#OvWord[role="success"],
+    #TheatreDetails QLabel#OvRowWord[role="success"] { color: $success; }
+    #TheatreDetails QLabel#OvWord[role="warning"],
+    #TheatreDetails QLabel#OvRowWord[role="warning"] { color: $warning; }
+    #TheatreDetails QLabel#OvWord[role="danger"],
+    #TheatreDetails QLabel#OvRowWord[role="danger"] { color: $danger; }
+    #TheatreDetails QLabel#OvPill { background: $glass_hi; color: $on_art; }
+    #TheatreDetails QLabel#OvPill[state="on"] { background: $accent_22; color: $accent; }
+    #TheatreDetails QLabel#OvPill[state="off"] { background: transparent;
+        color: rgba(255, 255, 255, 0.55); border: 1px solid $glass_hi; }
+    #TheatreDetails QLabel#OvPill[state="success"] { background: $success_18; color: $success; }
+    #TheatreDetails QLabel#OvPill[state="warning"] { background: $warning_18; color: $warning; }
+    #TheatreDetails QLabel#OvPill[state="danger"] { background: $danger_18; color: $danger; }
     /* Dawn's surface_2 is cream: on dark glass the bar's track stays glass. */
     #TheatreDrawer QProgressBar#CardProgress { background: $glass; }
 

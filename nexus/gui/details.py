@@ -330,25 +330,6 @@ class ClampLabel(QLabel):
         self._clamp()
 
 
-_FACTS: dict = {'mtime': None, 'games': {}}
-
-
-def game_facts(slug: str | None) -> dict | None:
-    """A library game's record in the facts index. The CLI writes the index
-    (--game-facts, the agent); the window only reads it, again when the
-    file changes."""
-    if not slug:
-        return None
-    try:
-        mtime = facts.index_path().stat().st_mtime
-    except OSError:
-        return None
-    if mtime != _FACTS['mtime']:
-        _FACTS.update(mtime=mtime, games=facts.read_index().get('games') or {})
-    rec = _FACTS['games'].get(slug)
-    return rec if isinstance(rec, dict) else None
-
-
 STATUS_PILLS = {'early_access': ("Early access", 'accent'), 'upcoming': ("Unreleased", 'muted'),
                 'delayed': ("Delayed", 'warning'), 'cancelled': ("Cancelled", 'danger')}
 
@@ -399,20 +380,8 @@ class GameContext(QWidget):
 
     @staticmethod
     def credits_text(rec: dict) -> tuple[str, str]:
-        """("FromSoftware · Bandai Namco · 2022", full text for the tooltip);
-        the publisher is dropped when it is the developer."""
-        devs = [d for d in rec.get('developers') or [] if d]
-        pubs = [p for p in rec.get('publishers') or [] if p]
-        dev = devs[0] if devs else ''
-        pub = next((p for p in pubs if p.casefold() not in {d.casefold() for d in devs}), '')
-        year = str(rec['year']) if rec.get('year') else ''
-        short = " · ".join(x for x in (dev, pub, year) if x)
-        full = "\n".join(x for x in (
-            ("Developer: " if len(devs) == 1 else "Developers: ") + ", ".join(devs) if devs else '',
-            ("Publisher: " if len(pubs) == 1 else "Publishers: ") + ", ".join(pubs) if pubs else '',
-            f"Released: {rec.get('releaseText') or rec.get('release')}"
-            if rec.get('releaseText') or rec.get('release') else '') if x)
-        return short, full
+        """overview.credits_text, kept here for the callers that ask the block."""
+        return credits_text(rec)
 
     @staticmethod
     def length_line(length: dict, minutes: int) -> tuple[str, str, float | None, str]:
@@ -1361,7 +1330,6 @@ class DetailsPanel(QFrame):
         self._perf_base: list[str] = []
         self._store: dict = {}
         self._tips: dict = {}
-        self._tips_hltb = None
         self._snap_at = (None, 0.0)
         self._ach_for = None
         self._tips_query = None
@@ -1866,7 +1834,7 @@ class DetailsPanel(QFrame):
         if not same:
             self.confirm.setVisible(False)
             self.info = {}
-            self._store, self._tips, self._tips_hltb = {}, {}, None
+            self._store, self._tips = {}, {}
             self._dirty = set()                 # edits belong to the game they were made on
             self._sent = self._was_busy = False
             self.media.set_media([], [])
@@ -1960,7 +1928,7 @@ class DetailsPanel(QFrame):
         self.tune_pg_row.setVisible(False)
         self.sec_launch.setVisible(self._launch_full)
         self.ac_notice.setVisible(False)
-        self._store, self._tips, self._tips_hltb = {}, {}, None
+        self._store, self._tips = {}, {}
         self._fill_overview()
         self._sync_tabs()
         if self.slug:
@@ -2049,8 +2017,6 @@ class DetailsPanel(QFrame):
             self.sec_launch.setVisible(sugg or show_pg)
             self.sec_launch.set_summary(
                 f"{len(recipes)} suggestion{'s' if len(recipes) != 1 else ''}" if recipes else '')
-        hl = ((info.get('gamedb') or {}).get('hltb') or {}) or (info.get('hltb') or {})
-        self._tips_hltb = info.get('hltb') or (hl if hl.get('main') else None)
         self._fill_overview()
         self._fill_summary(g)
         self._sync_tabs()
@@ -2241,19 +2207,8 @@ class DetailsPanel(QFrame):
         self._sync_tabs()
 
     def _context_facts(self) -> dict | None:
-        """The game's facts: the index first; else what --store-info brought
-        (a game the index has not reached yet); the play length from
-        --game-tips (HowLongToBeat or Game-db) when the index has none."""
-        g = self.game
-        rec = game_facts(g.get('slug'))
-        st = (self._store or {}).get('store')
-        if rec is None and st:
-            rec = facts.merge({'appid': g.get('appid'), 'name': g.get('display_name'),
-                               'steam': facts.from_steam(st), 'hltb': None})
-        live = self._tips_hltb or {}
-        if live.get('main') and not (rec or {}).get('length'):
-            rec = {**(rec or {}), 'length': {**live, 'source': live.get('source') or 'hltb'}}
-        return rec
+        """The game's facts (overview_facts) with what this panel holds."""
+        return overview_facts(self.game, self._store, self._tips) or None
 
     def _fill_overview(self):
         """Overview from what is known now: the context block, the stat
@@ -2739,7 +2694,8 @@ from .gameinfo import (anticheat_warning, is_installed, play_enabled, play_label
     SOURCE_LABEL)  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
-from .overview import overview_model, OverviewTiles  # noqa: E402
+from .overview import (_FACTS, credits_text, game_facts, overview_facts, overview_model,
+    OverviewTiles)  # noqa: E402,F401  (_FACTS, game_facts: tests patch them here)
 from .widgets import (amp, ask, clear_layout, FlowLayout, icon_button, icon_label, label,
     NoWheelCombo, plain_label, protongen_code_preview, SegmentedControl, set_glyph_icon,
     soft_wrap)  # noqa: E402

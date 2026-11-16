@@ -706,7 +706,7 @@ class FocusRing(QWidget):
         if isinstance(w, (GameTile, ArtThumb)) or name in ('TheatreShot', 'SpineCard',
                                                              'PosterCard'):
             return float(R['tile'])
-        if name in ('Card', 'DashCard', 'TheatreNewsRow', 'StudioCard') or isinstance(w, (DealCard, NewsTile, NewsFeature)):
+        if name in ('Card', 'DashCard', 'TheatreNewsRow', 'StudioCard', 'OvTile') or isinstance(w, (DealCard, NewsTile, NewsFeature)):
             return float(R['card'])
         if name == 'DashRow':
             return float(R['sm'])

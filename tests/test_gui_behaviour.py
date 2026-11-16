@@ -94,6 +94,39 @@ class Regressions(unittest.TestCase):
         got = {lv.item(r, 1).data(Qt.ItemDataRole.UserRole) for r in rows}
         self.assertEqual(got, {'alpha', 'gamma'})
 
+    def test_list_view_asks_for_icons_of_visible_rows_only(self):
+        import tempfile
+        from pathlib import Path
+        from PyQt6.QtGui import QImage
+        with tempfile.TemporaryDirectory() as d:
+            im = QImage(8, 12, QImage.Format.Format_RGB32)
+            im.fill(0x00ff00)
+            games = []
+            for i in range(300):
+                f = Path(d, f'{i:03}.png')
+                im.save(str(f))
+                games.append({'slug': f'g{i:03}', 'display_name': f'G{i:03}', 'cover': str(f)})
+            lv = nx.ListView()
+            self.addCleanup(lv.deleteLater)
+            lv.resize(600, 400)
+            asked, keyed = [], []
+            real_key = nx.ART.key
+            with mock.patch.object(nx.ART, 'request_key', lambda k, cb=None: asked.append(k[0])), \
+                    mock.patch.object(nx.ART, 'key', lambda *a, **k: keyed.append(a[0]) or real_key(*a, **k)):
+                lv.show()
+                lv.set_games(games)
+                QApplication.processEvents()
+                lv._load_visible()
+                self.assertGreater(len(asked), 0)
+                self.assertLess(len(asked), 50)
+                self.assertNotIn(str(Path(d, '299.png')), asked)
+                lv.verticalScrollBar().setValue(lv.verticalScrollBar().maximum())
+                lv._load_visible()
+                self.assertIn(str(Path(d, '299.png')), asked)
+                lv._load_visible()
+                self.assertEqual(len(keyed), len(set(keyed)))      # one key per row
+                self.assertEqual(len(asked), len(set(asked)))
+
     def test_hero_download_for_a_game_left_behind_is_dropped(self):
         import tempfile
         from pathlib import Path

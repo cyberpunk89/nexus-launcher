@@ -23,11 +23,69 @@ TITLES = {'players': "Players", 'critics': "Critics", 'length': "How long to bea
 PAIRS = (('players', 'critics'), ('linux', 'pc'))
 MODE_LABELS = {'single': "Single", 'coop': "Co-op", 'online': "Online", 'local': "Couch"}
 PC_MAX = 5
+ART_TRACK = '#4a4f5e'                # empty ring / bar on Theatre's dark art
+TILE_W = 220                        # a Theatre tile's width at scale 1 (w-135)
 PAIR_MIN_W = 460 - 2 * SP['5']       # panel width under which a pair stacks
 SITES = (("Steam store", 'https://store.steampowered.com/'),
          ("ProtonDB", 'https://www.protondb.com/'),
          ("PCGamingWiki", 'https://www.pcgamingwiki.com/'),
          ("HowLongToBeat", 'https://howlongtobeat.com/'))
+
+
+# --- Facts -------------------------------------------------------------------
+# The one record both the desktop page and Theatre's drawer build from.
+
+_FACTS: dict = {'mtime': None, 'games': {}}
+
+
+def game_facts(slug: str | None) -> dict | None:
+    """A library game's record in the facts index. The CLI writes the index
+    (--game-facts, the agent); the window only reads it, again when the
+    file changes."""
+    if not slug:
+        return None
+    try:
+        mtime = facts.index_path().stat().st_mtime
+    except OSError:
+        return None
+    if mtime != _FACTS['mtime']:
+        _FACTS.update(mtime=mtime, games=facts.read_index().get('games') or {})
+    rec = _FACTS['games'].get(slug)
+    return rec if isinstance(rec, dict) else None
+
+
+def credits_text(rec: dict) -> tuple[str, str]:
+    """("FromSoftware · Bandai Namco · 2022", full text for the tooltip);
+    the publisher is dropped when it is the developer."""
+    devs = [d for d in rec.get('developers') or [] if d]
+    pubs = [p for p in rec.get('publishers') or [] if p]
+    dev = devs[0] if devs else ''
+    pub = next((p for p in pubs if p.casefold() not in {d.casefold() for d in devs}), '')
+    year = str(rec['year']) if rec.get('year') else ''
+    short = " · ".join(x for x in (dev, pub, year) if x)
+    full = "\n".join(x for x in (
+        ("Developer: " if len(devs) == 1 else "Developers: ") + ", ".join(devs) if devs else '',
+        ("Publisher: " if len(pubs) == 1 else "Publishers: ") + ", ".join(pubs) if pubs else '',
+        f"Released: {rec.get('releaseText') or rec.get('release')}"
+        if rec.get('releaseText') or rec.get('release') else '') if x)
+    return short, full
+
+
+def overview_facts(game: dict | None, store: dict | None, tips: dict | None) -> dict:
+    """The game's facts: the index first; else what --store-info brought (a
+    game the index has not reached yet); the play length from --game-tips
+    (HowLongToBeat, else Game-db's) when the index has none."""
+    game, tips = game or {}, tips or {}
+    rec = game_facts(game.get('slug'))
+    st = (store or {}).get('store')
+    if rec is None and st:
+        rec = facts.merge({'appid': game.get('appid'), 'name': game.get('display_name'),
+                           'steam': facts.from_steam(st), 'hltb': None})
+    gd = (tips.get('gamedb') or {}).get('hltb') or {}
+    live = tips.get('hltb') or (gd if gd.get('main') else None) or {}
+    if live.get('main') and not (rec or {}).get('length'):
+        rec = {**(rec or {}), 'length': {**live, 'source': live.get('source') or 'hltb'}}
+    return rec or {}
 
 
 def score_tone(v) -> str:
@@ -181,10 +239,16 @@ def _tone(role: str, alpha: float = 1.0) -> QColor:
     return c
 
 
-def _bold(widget: QWidget, px: float) -> QFont:
+def _track(ink: str) -> QColor:
+    """The empty part of a ring or bar: a surface, or on Theatre's dark art
+    (Dawn's surfaces are cream there) a fixed slate."""
+    return _tone('surface_2') if ink == 'text' else QColor(ART_TRACK)
+
+
+def _bold(widget: QWidget, px: float, scale: float = 1.0) -> QFont:
     f = QFont(widget.font())
     f.setFamily(FONTS.ui)
-    f.setPixelSize(scaled(px))
+    f.setPixelSize(scaled(px * scale))
     f.setWeight(QFont.Weight.DemiBold)
     return f
 
@@ -193,10 +257,10 @@ class ScoreRing(QWidget):
     """A percentage as a ring with the number inside (Steam reviews)."""
     SIZE, PEN = 60, 6
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, scale: float = 1.0, ink: str = 'text'):
         super().__init__(parent)
-        self.value, self.tone = 0, 'success'
-        self.setFixedSize(scaled(self.SIZE), scaled(self.SIZE))
+        self.value, self.tone, self.scale, self.ink = 0, 'success', scale, ink
+        self.setFixedSize(scaled(self.SIZE * scale), scaled(self.SIZE * scale))
 
     def set_score(self, value: int, tone: str, name: str):
         self.value, self.tone = max(0, min(100, int(value))), tone
@@ -207,17 +271,17 @@ class ScoreRing(QWidget):
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = float(scaled(self.PEN))
+        pen = float(scaled(self.PEN * self.scale))
         side = float(min(self.width(), self.height())) - pen
         rect = QRectF((self.width() - side) / 2, (self.height() - side) / 2, side, side)
-        pt.setPen(QPen(_tone('surface_2'), pen))
+        pt.setPen(QPen(_track(self.ink), pen))
         pt.drawEllipse(rect)
         arc = QPen(_tone(self.tone), pen)
         arc.setCapStyle(Qt.PenCapStyle.RoundCap)
         pt.setPen(arc)
         pt.drawArc(rect, 90 * 16, -int(self.value / 100 * 360 * 16))
-        pt.setPen(_tone('text'))
-        pt.setFont(_bold(self, 16))
+        pt.setPen(_tone(self.ink))
+        pt.setFont(_bold(self, 16, self.scale))
         pt.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter), str(self.value))
         pt.end()
 
@@ -227,10 +291,10 @@ class ScoreBadge(QWidget):
     gets stronger with the score (and a little more on a light theme)."""
     SIZE = 44
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, scale: float = 1.0, ink: str = 'text'):
         super().__init__(parent)
-        self.value, self.tone = 0, 'success'
-        self.setFixedSize(scaled(self.SIZE), scaled(self.SIZE))
+        self.value, self.tone, self.scale, self.ink = 0, 'success', scale, ink
+        self.setFixedSize(scaled(self.SIZE * scale), scaled(self.SIZE * scale))
 
     def set_score(self, value: int, tone: str, name: str):
         self.value, self.tone = int(value), tone
@@ -248,10 +312,10 @@ class ScoreBadge(QWidget):
         grad.setColorAt(1.0, _tone(self.tone, 0.05))
         pt.setBrush(grad)
         pt.setPen(QPen(_tone(self.tone, a * 1.1), 1.0))
-        r = float(R['control'])
+        r = float(R['control']) * self.scale
         pt.drawRoundedRect(box, r, r)
         pt.setPen(_tone(self.tone))
-        pt.setFont(_bold(self, 18))
+        pt.setFont(_bold(self, 18, self.scale))
         pt.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter), str(self.value))
         pt.end()
 
@@ -260,10 +324,10 @@ class TierBadge(QWidget):
     """ProtonDB's tier as a small square in its own colour, with its letter."""
     SIZE = 28
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, scale: float = 1.0, ink: str = 'text'):
         super().__init__(parent)
-        self.tier = ''
-        self.setFixedSize(scaled(self.SIZE), scaled(self.SIZE))
+        self.tier, self.scale, self.ink = '', scale, ink
+        self.setFixedSize(scaled(self.SIZE * scale), scaled(self.SIZE * scale))
 
     def set_tier(self, tier: str, name: str):
         self.tier = tier
@@ -274,7 +338,8 @@ class TierBadge(QWidget):
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        c = QColor(TIER_COLORS.get(self.tier, P['muted']))
+        c = QColor(TIER_COLORS[self.tier]) if self.tier in TIER_COLORS else (
+            _tone('muted') if self.ink == 'text' else _tone(self.ink, 0.6))
         low = QColor(c)
         c1, c2 = QColor(c), QColor(c)
         c1.setAlphaF(0.35)
@@ -286,10 +351,10 @@ class TierBadge(QWidget):
         grad.setColorAt(1.0, c2)
         pt.setBrush(grad)
         pt.setPen(QPen(low, 1.0))
-        r = float(R['sm'])
+        r = float(R['sm']) * self.scale
         pt.drawRoundedRect(box, r, r)
         pt.setPen(c)
-        pt.setFont(_bold(self, 13))
+        pt.setFont(_bold(self, 13, self.scale))
         pt.drawText(QRectF(self.rect()), int(Qt.AlignmentFlag.AlignCenter),
                     (self.tier[:1] or '?').upper())
         pt.end()
@@ -300,10 +365,11 @@ class LengthBar(QWidget):
     of the accent, and a dot where you are."""
     H, DOT = 10, 14
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, scale: float = 1.0, ink: str = 'text'):
         super().__init__(parent)
         self.main = self.plus = self.complete = self.you = None
-        self.setFixedHeight(scaled(self.DOT) + 2)
+        self.scale, self.ink = scale, ink
+        self.setFixedHeight(scaled(self.DOT * scale) + 2)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
     def set_lengths(self, main, plus, complete, you, name: str):
@@ -317,7 +383,7 @@ class LengthBar(QWidget):
             return
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        h, w = float(scaled(self.H)), float(self.width())
+        h, w = float(scaled(self.H * self.scale)), float(self.width())
         y = (self.height() - h) / 2
         r = h / 2
         pt.setPen(Qt.PenStyle.NoPen)
@@ -326,14 +392,16 @@ class LengthBar(QWidget):
             frac = 1.0 if value is None else min(1.0, value / top) if value else 0.0
             if frac <= 0:
                 continue
-            col = P['surface_2'] if value is None else _mix(P['surface_2'], P['accent'], shade)
-            pt.setBrush(QColor(col))
+            base = _track(self.ink)
+            col = base if value is None else QColor(_mix(
+                base.name(), P['accent'], shade))
+            pt.setBrush(col)
             pt.drawRoundedRect(QRectF(0.0, y, max(h, w * frac), h), r, r)
         if self.you:
-            d = float(scaled(self.DOT))
+            d = float(scaled(self.DOT * self.scale))
             x = min(max(w * self.you / top, d / 2), w - d / 2)
-            pt.setBrush(QColor(P['bg']))
-            pen = QPen(QColor(P['text']), float(scaled(3)))
+            pt.setBrush(QColor(P['bg']) if self.ink == 'text' else QColor(0, 0, 0, 170))
+            pen = QPen(_tone(self.ink), float(scaled(3 * self.scale)))
             pt.setPen(pen)
             pt.drawEllipse(QPointF(x, self.height() / 2), d / 2 - 1.5, d / 2 - 1.5)
         pt.end()
@@ -373,8 +441,9 @@ def _hours(v) -> str:
 class _Elide(QLabel):
     """One line that ends in ... instead of widening its tile."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, ink: str = 'text'):
         super().__init__(parent)
+        self.ink = ink
         self.setObjectName("OvSub")
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(10)
@@ -382,7 +451,7 @@ class _Elide(QLabel):
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setFont(self.font())
-        pt.setPen(QColor(P['muted']))
+        pt.setPen(_tone('muted') if self.ink == 'text' else _tone(self.ink, 0.7))
         text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight,
                                              self.width())
         pt.drawText(self.rect(), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
@@ -396,19 +465,30 @@ class Tile(QFrame):
     key = ''
     ICON = None
 
-    def __init__(self, key: str, parent=None):
+    def __init__(self, key: str, parent=None, theatre: bool = False, scale: float = 1.0):
         super().__init__(parent)
         self.key = key
+        # Theatre (w-135): a fixed width, a focus stop, `scale` times as big,
+        # and its text and painted parts in on_art (the art is dark).
+        self.theatre, self.scale = theatre, scale if theatre else 1.0
+        self.ink = 'on_art' if theatre else 'text'
         self.setObjectName("OvTile")
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        if theatre:
+            self.setFixedWidth(round(TILE_W * self.scale))
+            self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(SP['4'], SP['3'], SP['4'], SP['3'])
-        self.lay.setSpacing(SP['2'])
+        self.lay.setContentsMargins(self.sp(SP['4']), self.sp(SP['3']), self.sp(SP['4']),
+                                    self.sp(SP['3']))
+        self.lay.setSpacing(self.sp(SP['2']))
         head = QHBoxLayout()
-        head.setSpacing(SP['1_5'])
+        head.setSpacing(self.sp(SP['1_5']))
         if self.ICON:
             ic = QLabel(self)
-            set_icon_label(ic, G[self.ICON], 12, 'muted')
+            set_icon_label(ic, G[self.ICON], round(12 * self.scale),
+                           'on_art' if theatre else 'muted')
             ic.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             head.addWidget(ic)
         cap = QLabel(TITLES[key].upper(), self)
@@ -421,19 +501,27 @@ class Tile(QFrame):
         self.lay.addLayout(head)
         self.setAccessibleName(TITLES[key])
 
+    def sp(self, v) -> int:
+        """A spacing or margin at this tile's scale."""
+        return round(v * self.scale)
+
+    def tone_icon_role(self, tone: str) -> str:
+        """The palette role for a small icon: quiet ones follow the ink."""
+        return self.ink if tone == 'muted' else tone
+
     def fill(self, items):
         raise NotImplementedError
 
 
 class PlayersTile(Tile):
-    def __init__(self, parent=None):
-        super().__init__('players', parent)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('players', parent, theatre, scale)
         row = QHBoxLayout()
-        row.setSpacing(SP['3'])
-        self.ring = ScoreRing(self)
+        row.setSpacing(self.sp(SP['3']))
+        self.ring = ScoreRing(self, self.scale, self.ink)
         row.addWidget(self.ring)
         col = QVBoxLayout()
-        col.setSpacing(SP['0_5'])
+        col.setSpacing(self.sp(SP['0_5']))
         col.addStretch()
         self.word = _label('', "OvWord", self, wrap=True)
         self.sub = _label('', "OvSub", self)
@@ -458,10 +546,10 @@ class PlayersTile(Tile):
 
 
 class CriticsTile(Tile):
-    def __init__(self, parent=None):
-        super().__init__('critics', parent)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('critics', parent, theatre, scale)
         self.row = QHBoxLayout()
-        self.row.setSpacing(SP['1_5'])
+        self.row.setSpacing(self.sp(SP['1_5']))
         self.lay.addLayout(self.row)
         self.lay.addStretch(1)
 
@@ -469,8 +557,8 @@ class CriticsTile(Tile):
         clear_layout(self.row)
         for c in items:                       # appended by later sources (w-133)
             col = QVBoxLayout()
-            col.setSpacing(SP['1'])
-            badge = ScoreBadge(self)
+            col.setSpacing(self.sp(SP['1']))
+            badge = ScoreBadge(self, self.scale, self.ink)
             badge.set_score(c['value'], c['tone'], f"{c['name']} {c['value']} of 100, {c['word']}")
             col.addWidget(badge, 0, Qt.AlignmentFlag.AlignHCenter)
             name = _label(c['name'], "OvName", self)
@@ -485,12 +573,12 @@ class CriticsTile(Tile):
 class LengthTile(Tile):
     ICON = 'clock'
 
-    def __init__(self, parent=None):
-        super().__init__('length', parent)
-        self.bar = LengthBar(self)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('length', parent, theatre, scale)
+        self.bar = LengthBar(self, self.scale, self.ink)
         self.lay.addWidget(self.bar)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(SP['2'])
+        grid.setHorizontalSpacing(self.sp(SP['2']))
         grid.setVerticalSpacing(0)
         self.cells = []
         for i, name in enumerate(("Main story", "+ Extras", "Everything")):
@@ -530,19 +618,19 @@ class LengthTile(Tile):
 class LinuxTile(Tile):
     ICON = 'proton'
 
-    def __init__(self, parent=None):
-        super().__init__('linux', parent)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('linux', parent, theatre, scale)
         self.tier_row = QWidget(self)
         tr = QHBoxLayout(self.tier_row)
         tr.setContentsMargins(0, 0, 0, 0)
-        tr.setSpacing(SP['2'])
-        self.badge = TierBadge(self.tier_row)
+        tr.setSpacing(self.sp(SP['2']))
+        self.badge = TierBadge(self.tier_row, self.scale, self.ink)
         tr.addWidget(self.badge)
-        self.tier_text = _Elide(self.tier_row)
+        self.tier_text = _Elide(self.tier_row, self.ink)
         tr.addWidget(self.tier_text, 1)
         self.lay.addWidget(self.tier_row)
         self.chip_host = QWidget(self)
-        self.chips = FlowLayout(self.chip_host, margin=0, spacing=SP['1_5'])
+        self.chips = FlowLayout(self.chip_host, margin=0, spacing=self.sp(SP['1_5']))
         self.lay.addWidget(self.chip_host)
         self.lay.addStretch(1)
 
@@ -571,10 +659,10 @@ class LinuxTile(Tile):
 class PcTile(Tile):
     ICON = 'system'
 
-    def __init__(self, parent=None):
-        super().__init__('pc', parent)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('pc', parent, theatre, scale)
         self.rows = QVBoxLayout()
-        self.rows.setSpacing(SP['1'])
+        self.rows.setSpacing(self.sp(SP['1']))
         self.lay.addLayout(self.rows)
         self.lay.addStretch(1)
         self.setToolTip("From PCGamingWiki")
@@ -583,9 +671,10 @@ class PcTile(Tile):
         clear_layout(self.rows)
         for it in items:
             row = QHBoxLayout()
-            row.setSpacing(SP['2'])
+            row.setSpacing(self.sp(SP['2']))
             ic = QLabel(self)
-            set_icon_label(ic, G[it['glyph']], 13, it['tone'])
+            set_icon_label(ic, G[it['glyph']], round(13 * self.scale),
+                           self.tone_icon_role(it['tone']))
             ic.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             row.addWidget(ic)
             row.addWidget(_label(it['name'], "OvRowName", self), 1)
@@ -599,14 +688,14 @@ class PcTile(Tile):
 class DetailsTile(Tile):
     ICON = 'info'
 
-    def __init__(self, parent=None):
-        super().__init__('details', parent)
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('details', parent, theatre, scale)
         self.kv = QGridLayout()
-        self.kv.setHorizontalSpacing(SP['3'])
+        self.kv.setHorizontalSpacing(self.sp(SP['3']))
         self.kv.setColumnStretch(1, 1)
         self.lay.addLayout(self.kv)
         self.pill_host = QWidget(self)
-        self.pills = FlowLayout(self.pill_host, margin=0, spacing=SP['1_5'])
+        self.pills = FlowLayout(self.pill_host, margin=0, spacing=self.sp(SP['1_5']))
         self.lay.addWidget(self.pill_host)
         self.lay.addStretch(1)
 
@@ -617,7 +706,7 @@ class DetailsTile(Tile):
         for r, rel in enumerate(i['release'] for i in items if 'release' in i):
             key = QLabel("Released", self)
             key.setObjectName("OvKey")
-            key.setFixedWidth(scaled(84))
+            key.setFixedWidth(scaled(84 * self.scale))
             self.kv.addWidget(key, r, 0)
             self.kv.addWidget(_label(rel, "OvValue", self), r, 1)
         for _key, text, on in modes:
@@ -675,10 +764,35 @@ class TilePair(QWidget):
 class OverviewTiles(QWidget):
     """The tiles in ORDER. All are built once; a section that is missing
     hides its tile, one that changed redraws only that tile, so a late
-    store or tips answer neither reorders anything nor drops focus."""
+    store or tips answer neither reorders anything nor drops focus.
 
-    def __init__(self, parent=None):
+    `theatre` (w-135): the drawer's Overview. One horizontal row of
+    fixed-width tiles `scale` times as big, each a focus stop for the pad,
+    with no links row (a TV never opens a browser)."""
+
+    def __init__(self, parent=None, theatre: bool = False, scale: float = 1.0):
         super().__init__(parent)
+        self.theatre, self.scale = theatre, scale if theatre else 1.0
+        self._items: dict[str, object] = {}
+        self._shown: list[str] = []
+        if theatre:
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            h = QHBoxLayout(self)
+            m = round(SP['2'] * self.scale)            # room for the focus ring
+            h.setContentsMargins(m, m, m, m)
+            h.setSpacing(round(SP['3'] * self.scale))
+            kw = {'theatre': True, 'scale': self.scale}
+            self.tile = {'players': PlayersTile(self, **kw), 'critics': CriticsTile(self, **kw),
+                         'length': LengthTile(self, **kw), 'linux': LinuxTile(self, **kw),
+                         'pc': PcTile(self, **kw), 'details': DetailsTile(self, **kw)}
+            self.pairs = []
+            for key in ORDER:
+                if key in self.tile:
+                    h.addWidget(self.tile[key])
+            h.addStretch(1)
+            for w in self.tile.values():
+                w.hide()
+            return
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -693,17 +807,14 @@ class OverviewTiles(QWidget):
         for key in ORDER:
             if key in rows:
                 v.addWidget(rows[key])
-        self._items: dict[str, object] = {}
-        self._shown: list[str] = []
         for w in (*self.tile.values(), *self.pairs):
             w.hide()
 
     def set_sections(self, sections: list[dict]) -> bool:
         """Show `sections` (overview_model's), and the whole block only when
         any tile shows; True then."""
-        got = {s['key']: s['items'] for s in sections}
-        for key in ORDER:
-            tile = self.tile[key]
+        got = {s['key']: s['items'] for s in sections if s['key'] in self.tile}
+        for key, tile in self.tile.items():
             items = got.get(key)
             if items:
                 if self._items.get(key) != items:
@@ -715,9 +826,17 @@ class OverviewTiles(QWidget):
                 tile.setVisible(False)
         for pair in self.pairs:
             pair.setVisible(any(not t.isHidden() for t in pair.tiles))
-        self._shown = [k for k in ORDER if k in got and got[k]]
+        self._shown = [k for k in ORDER if got.get(k)]
         self.setVisible(bool(self._shown))
         return bool(self._shown)
 
     def keys(self) -> list[str]:
         return list(self._shown)
+
+    def row_height(self) -> int:
+        """Theatre: the height the row needs (its tallest tile, wrapped at
+        the tile's width)."""
+        hs = [max(t.sizeHint().height(), t.heightForWidth(t.width()) if t.hasHeightForWidth()
+                  else 0) for t in self.tile.values() if not t.isHidden()]
+        m = self.layout().contentsMargins()
+        return max(hs, default=0) + m.top() + m.bottom()

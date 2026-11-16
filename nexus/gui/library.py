@@ -2006,6 +2006,14 @@ class ListView(QTableWidget):
         self._icon_timer.setSingleShot(True)
         self._icon_timer.setInterval(50)
         self._icon_timer.timeout.connect(self._set_icons)
+        # Scrolling, sorting or resizing asks for the icons now in view.
+        self._paths: dict[str, str] = {}
+        self._load_timer = QTimer(self)
+        self._load_timer.setSingleShot(True)
+        self._load_timer.setInterval(30)
+        self._load_timer.timeout.connect(self._load_visible)
+        self.verticalScrollBar().valueChanged.connect(lambda _v: self._load_timer.start())
+        hh.sortIndicatorChanged.connect(lambda *_a: self._load_timer.start())
 
     def _current_changed(self, row, _col, prev, _pcol):
         if self._syncing or row < 0 or row == prev \
@@ -2059,6 +2067,7 @@ class ListView(QTableWidget):
         self.setUpdatesEnabled(False)
         self.games = {g['slug']: g for g in games}
         self._rows: dict[str, QTableWidgetItem] = {}      # slug -> its icon cell
+        self._paths: dict[str, str] = {}                  # slug -> cover path, not asked for yet
         jobs = list(pending_jobs)
         self.setRowCount(len(jobs) + len(games))
         for r, job in enumerate(jobs):             # installs in progress, on top
@@ -2071,12 +2080,8 @@ class ListView(QTableWidget):
         for r, g in enumerate(games, start=len(jobs)):
             icon_item = QTableWidgetItem()
             path = g.get('cover') or (ART.cached(g['cover_url']) if g.get('cover_url') else None)
-            if path:                       # decoded off the GUI thread, set when ready
-                pm = ART.peek(path, 30, 45)
-                if pm is not None:
-                    icon_item.setIcon(QIcon(rounded_pixmap(pm, R['sm'] / 1.5)))
-                else:                      # by slug: the row may have moved or gone
-                    ART.request(path, 30, 45, lambda pm, slug=g['slug']: self._cover(slug, pm))
+            if path:                       # decoded off the GUI thread, only once near the viewport
+                self._paths[g['slug']] = path
             self.setItem(r, 0, icon_item)
             self._rows[g['slug']] = icon_item
             cells = [
@@ -2107,6 +2112,39 @@ class ListView(QTableWidget):
             hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         self.setUpdatesEnabled(True)
         self._syncing = False
+        self._load_timer.start()
+
+    ICON_AHEAD = 10                    # rows past the viewport edge that are asked for early
+
+    def _load_visible(self):
+        """Ask for the icons of the rows in (and just around) the viewport:
+        3,000 rows used to queue 3,000 decodes and stat each cover twice
+        before the first frame. The key (one stat) is computed once per row."""
+        if not self._paths or not self.rowCount():
+            return
+        first = self.rowAt(0)
+        first = 0 if first < 0 else first
+        last = self.rowAt(self.viewport().height() - 1)
+        last = self.rowCount() - 1 if last < 0 else last
+        for r in range(max(0, first - self.ICON_AHEAD),
+                       min(self.rowCount(), last + self.ICON_AHEAD + 1)):
+            it = self.item(r, 1)
+            slug = it.data(Qt.ItemDataRole.UserRole) if it else None
+            path = self._paths.pop(slug, None) if slug else None
+            if path is None:
+                continue
+            key = ART.key(path, 30, 45)
+            if key is None:
+                continue
+            pm = ART.get(key)
+            if pm is not None:
+                self._cover(slug, pm)
+            else:                      # by slug: the row may have moved or gone
+                ART.request_key(key, lambda pm, slug=slug: self._cover(slug, pm))
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._load_timer.start()
 
     def _cover(self, slug, pm):
         if pm is not None:

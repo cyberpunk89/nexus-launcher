@@ -21,6 +21,7 @@ from nexus.features import has
 
 from .common import alive
 from .fmt import fmt_duration, fmt_hours, fmt_relative, fmt_size
+from .overview import credits_text, overview_facts, overview_model, OverviewTiles, Tile, TierBadge
 from .theme import G, P, pill, R, SP
 
 
@@ -258,20 +259,25 @@ class TheatreDrawer(QFrame):
         self.pages.addWidget(w)
 
     def _overview(self):
-        w = QWidget()
-        h = QHBoxLayout(w)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(SP['8'] * 3)
+        """Overview: About and the credits, Your progress, and under them
+        the same stat tiles as the desktop page (w-135), in one row that
+        scrolls sideways. The page itself scrolls up and down so a 720p
+        screen clips nothing."""
+        body = QWidget()
+        v = QVBoxLayout(body)
+        v.setContentsMargins(0, 0, 0, SP['3'])           # room for a focused tile's ring
+        v.setSpacing(SP['4'])
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(SP['8'] * 3)
         left = QVBoxLayout()
         left.setSpacing(SP['4'])
         self.about = label("", "TheatreAbout", wrap=True)
         self.credits = label("", "TheatreSub", wrap=True)
-        self.more_facts = fact_line("TheatreSub")       # compat facts without Proton
-        self.more_facts.setWordWrap(True)
-        for lab in (self.about, self.credits, self.more_facts):
+        for lab in (self.about, self.credits):
             left.addWidget(lab)
         left.addStretch()
-        h.addLayout(left, 3)
+        top.addLayout(left, 3)
         right = QVBoxLayout()
         right.setSpacing(SP['2'])
         right.addWidget(label("YOUR PROGRESS", "TheatreLabel"))
@@ -288,8 +294,25 @@ class TheatreDrawer(QFrame):
         right.addWidget(self.ach_line)
         right.addWidget(self.ach_bar)
         right.addStretch()
-        h.addLayout(right, 2)
-        self._add('overview', w)
+        top.addLayout(right, 2)
+        v.addLayout(top)
+        self.tiles = OverviewTiles(theatre=True, scale=THEATRE_SCALE)
+        self.tiles_scroll = QScrollArea()
+        self.tiles_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.tiles_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tiles_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tiles_scroll.setWidgetResizable(True)
+        self.tiles_scroll.setWidget(self.tiles)          # added before hidden: no stray window
+        v.addWidget(self.tiles_scroll)
+        self.tiles_scroll.hide()
+        v.addStretch()
+        self.overview_scroll = QScrollArea()
+        self.overview_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.overview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.overview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.overview_scroll.setWidgetResizable(True)
+        self.overview_scroll.setWidget(body)
+        self._add('overview', self.overview_scroll)
 
     def _media(self):
         w = QWidget()
@@ -733,24 +756,21 @@ class TheatreDetails(QWidget):
     def _fill_overview(self):
         d, g = self.drawer, self.game
         st = (self.store or {}).get('store') or {}
-        d.about.setText(st.get('blurb') or '')
-        d.about.setVisible(bool(st.get('blurb')))
-        year = next((w for w in str(st.get('release') or '').replace(',', ' ').split()
-                     if len(w) == 4 and w.isdigit()), '')
-        credits = [x for x in (', '.join(st.get('developers') or []),
-                               ', '.join((st.get('genres') or [])[:2]), year) if x]
-        d.credits.setText("  ·  ".join(credits))
+        rec = overview_facts(g, self.store, self.tips)       # the desktop's facts
+        about = (rec.get('description') or st.get('blurb') or '').strip()
+        d.about.setText(about)
+        d.about.setVisible(bool(about))
+        credits = credits_text(rec)[0]
+        d.credits.setText(credits)
         d.credits.setVisible(bool(credits))
-        # Without Proton there's no Compatibility section: its other facts
-        # (Steam Deck, anti-cheat, PCGamingWiki) go here.
-        facts = compat_facts(self.tips or {})[0] if not has('proton') else []
-        d.more_facts.setText("<br>".join(
-            (f"<span style='color:{c}'>{html.escape(t)}</span>" if c else html.escape(t))
-            for t, c, _b in facts))
-        d.more_facts.setVisible(bool(facts))
+        # The stat tiles, from the model the desktop page uses. Unchanged
+        # tiles keep their widgets, so a late answer does not drop pad focus.
+        d.tiles_scroll.setVisible(d.tiles.set_sections(overview_model(
+            rec, self.store, self.tips, g, linux=has('proton'))))
+        d.tiles_scroll.setFixedHeight(d.tiles.row_height())
         # Your progress: Game-db's completion, How long to beat, the hours.
         gd = (self.tips or {}).get('gamedb') or {}
-        hl = gd.get('hltb') or {}
+        hl = rec.get('length') or {}
         minutes = g.get('playtime_minutes') or 0
         hours = fmt_hours(minutes)
         big, frac, sub = hours and f"{hours} played" or "Not played yet", None, []
@@ -1045,6 +1065,15 @@ class TheatreDetails(QWidget):
             lab = plain_label(text, "TheatreBig" if i == 0 and big else "TheatreMeta")
             if color:
                 lab.setStyleSheet(f"color: {color};")
+            if i == 0 and big and tier:                  # the tier, with its badge
+                badge = TierBadge(self.drawer.sections['compat'], THEATRE_SCALE, 'on_art')
+                badge.set_tier(tier, text)
+                row = QHBoxLayout()
+                row.setSpacing(SP['4'])
+                row.addWidget(badge)
+                row.addWidget(lab, 1)
+                lay.addLayout(row)
+                continue
             lay.addWidget(lab)
         if more:
             lay.addSpacing(SP['4'])
@@ -1178,6 +1207,8 @@ class TheatreDetails(QWidget):
         """The button hints for where focus is on the page."""
         if self.expanded() and self.drawer.reader_open():
             return [('↕', 'Scroll'), ('LB RB', 'Section'), ('b', 'Close')]
+        if self.expanded() and isinstance(f, Tile):      # a stat tile: nothing to press
+            return [('↔', 'Tiles'), ('LB RB', 'Section'), ('b', 'Back to game')]
         if self.expanded():
             a = ("Watch trailer" if isinstance(f, TheatreShot) else
                  "Read" if isinstance(f, TheatreRow) else
@@ -1264,5 +1295,6 @@ from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # n
 from .friends import _game_store_id, _store_key, _ts, Avatar, FRIENDS, names_text  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
+from .theatre import THEATRE_SCALE  # noqa: E402
 from .widgets import (clear_layout, glyph_pixmap, icon_button, icon_label, label, plain_label,
     SegmentedControl, set_glyph_icon)  # noqa: E402
