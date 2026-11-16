@@ -73,6 +73,46 @@ def stop_leftovers(jobs) -> None:
             q.proc.kill()
             q.proc.waitForFinished(2000)
 
+def flush_deletes() -> None:
+    """Run the deleteLater()s that are waiting. processEvents() never does
+    outside an event loop, so a window a test dropped stayed alive and every
+    later app-wide setStyleSheet repolished it (w-130)."""
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+
+def drop(w) -> None:
+    """Tear a test's MainWindow (or any top-level widget) down for good: stop
+    what it left running, close, delete and flush, so it is gone when this
+    returns. Use it instead of a bare deleteLater() cleanup."""
+    from PyQt6 import sip
+    if sip.isdeleted(w):
+        return
+    jobs = getattr(w, 'jobs', None)
+    if jobs is not None:
+        stop_leftovers(jobs)
+    w.close()
+    w.deleteLater()
+    flush_deletes()
+
+
+def leaked_windows() -> list:
+    """MainWindows still alive as top-level widgets."""
+    return [w for w in QApplication.topLevelWidgets() if isinstance(w, nx.MainWindow)]
+
+
+def check_no_leaked_windows() -> None:
+    """For tearDownModule: flush, then fail loudly if a MainWindow survived."""
+    if nx is None:
+        return
+    flush_deletes()
+    left = leaked_windows()
+    if left:
+        raise AssertionError(f"{len(left)} MainWindow(s) leaked by this module "
+                             "(deleteLater without a flush: use drop())")
+
+
 LONG_OPTS = ("PROTON_FSR4_UPGRADE=1 MANGOHUD_CONFIG=" + ",".join(
     f"option_{i}=value_{i}" for i in range(60)) + " %command%")
 DEEP = "/home/someone/Games/FitGirl/" + "/".join(f"very-long-directory-{i}" for i in range(12))
@@ -83,6 +123,21 @@ def browse_groups(games, **pv):
     """Browse's groups (w-99) over plain dicts, as the window makes them."""
     from nexus import categories
     return categories.browse(categories.categories(games, {}, categories.PrefsView(**pv)))
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Leftovers(unittest.TestCase):
+    def test_drop_deletes_a_window_at_once(self):
+        from PyQt6 import sip
+        w = QWidget()
+        w.show()
+        drop(w)
+        self.assertTrue(sip.isdeleted(w))
+
+    def test_drop_twice_is_harmless(self):
+        w = QWidget()
+        drop(w)
+        drop(w)
 
 
 class SoftWrap(unittest.TestCase):
@@ -1083,6 +1138,7 @@ class OverviewTiles(unittest.TestCase):
             'game': {'playtime_minutes': 744}}
 
     def tearDown(self):
+        self.doCleanups()               # the hosts go first: a restyle repolishes what is alive
         nx.apply_appearance(nx.APPEARANCE_DEFAULT)
         _app.setStyleSheet(nx.build_stylesheet())
 
@@ -1102,7 +1158,7 @@ class OverviewTiles(unittest.TestCase):
                                       d.get('game'), linux=linux))
         host.resize(width, 900)
         host.show()
-        self.addCleanup(host.deleteLater)
+        self.addCleanup(drop, host)
         QApplication.processEvents()
         QApplication.processEvents()
         return t, host
@@ -1759,3 +1815,7 @@ class ProtongenDefault(unittest.TestCase):
             self.assertIn('pg-default', keys)
         steam = {'slug': 's', 'source': 'steam', 'appid': 1, 'launcher': 'steam://'}
         self.assertNotIn('pg-default', [a.key for a in nx.game_actions(steam)])
+
+
+def tearDownModule():
+    check_no_leaked_windows()

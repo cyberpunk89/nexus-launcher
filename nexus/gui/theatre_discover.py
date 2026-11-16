@@ -106,9 +106,6 @@ class TheatreCard(QFrame):
         body.addWidget(self.title)
         lay.addLayout(body)
 
-    def height_hint(self) -> int:
-        return self.sizeHint().height()
-
     def keyPressEvent(self, ev):
         if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             self.activated.emit(self)

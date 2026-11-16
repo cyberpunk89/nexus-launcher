@@ -25,9 +25,9 @@ from pathlib import Path
 from unittest import mock
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import patch_gui, set_gui  # noqa: E402
 
 if nx is not None:
@@ -611,7 +611,7 @@ class LibraryFriends(unittest.TestCase):
         x, y = 8 + 3 + tile.FRIEND_D / 2, tile.height() - 8 - 3 - tile.FRIEND_D / 2
 
         def px(t):
-            t._anim.stop()                     # at rest: focus would fade the badge out
+            t._hover_anim().stop()                   # at rest: focus would fade the badge out
             t._hover = 0.0
             return t.grab().toImage().pixelColor(int(x), int(y)).name()
         bare = px(tile)
@@ -1485,3 +1485,8 @@ class TheatreTogether(_Together):
         self.assertIn("Installed", th.lib_chip.text())
         w.set_theatre(False)
         QApplication.processEvents()
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

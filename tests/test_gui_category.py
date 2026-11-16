@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import set_gui  # noqa: E402,F401
 
 
@@ -431,6 +431,36 @@ class Tags(unittest.TestCase):
         t.set_tag(None)
         self.assertIsNone(t.tag)
         self.assertEqual(t.grab().toImage(), plain)
+
+    def test_hover_animation_and_spinner_timer_are_made_on_first_use(self):
+        """w-127: a tile starts with neither; a hover makes the animation
+        (a child of the tile), the spinner timer waits for a spinning job."""
+        from PyQt6.QtCore import QPropertyAnimation, QTimer
+        from PyQt6.QtWidgets import QApplication
+        t = nx.GameTile(lib_games(1)[0], width=150)
+        self.addCleanup(t.deleteLater)
+        self.assertIsNone(t._anim)
+        self.assertIsNone(t._spinner)
+        t.show()
+        QApplication.processEvents()
+        t._hovered(True)                         # shown: it glides
+        self.assertIsInstance(t._anim, QPropertyAnimation)
+        self.assertIs(t._anim.parent(), t)
+        self.assertIsNone(t._spinner)
+        t._hovered(False)
+        t.rest()
+        self.assertEqual(t._hover, 0.0)
+        t.hide()
+        t._hovered(True)                         # hidden: no glide, still lands
+        self.assertEqual(t._hover, 1.0)
+        job = type('J', (), {'active': True, 'state': 'running', 'progress': None,
+                             'step': '', 'kind': 'install'})()
+        t.show()
+        t.set_job(job)
+        self.assertIsInstance(t._spinner, QTimer)
+        self.assertTrue(t._spinner.isActive())
+        t.set_job(None)
+        self.assertFalse(t._spinner.isActive())
 
     def test_tag_clear_of_friends_and_install_progress(self):
         from PyQt6.QtWidgets import QApplication
@@ -1898,9 +1928,7 @@ class Pins(_Rich):
                 self.pump()
                 self.assertEqual(w2.cat_tabs.keys(), ['browse', 'games', 'src:steam', 'all'])
             finally:
-                stop_leftovers(w2.jobs)
-                w2.close()
-                w2.deleteLater()
+                drop(w2)
 
     def test_unpin_from_header_removes_tab(self):
         w = self.win
@@ -2688,6 +2716,28 @@ class StudioPageTest(unittest.TestCase):
         QTest.mouseClick(cards[1], Qt.MouseButton.LeftButton, pos=QPoint(cards[1].width() - 10, 20))
         self.assertEqual(clicked, ['q1'])
 
+    def test_cards_are_capped_until_show_all(self):
+        """w-123: a big studio builds CARD_CAP cards, Show all lifts the cap
+        for that studio only."""
+        from nexus.gui.category import CARD_CAP
+        n = CARD_CAP + 7
+        games, facts = studio_games(n)
+        p = self.page(games, facts)
+        self.assertEqual(len(p.studio_cards()), CARD_CAP)
+        self.assertEqual(p.games_note.text(), f"{CARD_CAP} of {n}  ·  recently played first")
+        self.assertFalse(p.btn_all_cards.isHidden())
+        self.assertEqual(p.btn_all_cards.text(), f"Show all {n} games")
+        p.btn_all_cards.click()
+        _pump()
+        self.assertEqual(len(p.studio_cards()), n)
+        self.assertTrue(p.btn_all_cards.isHidden())
+        self.assertEqual(p.games_note.text(), f"{n}  ·  recently played first")
+
+    def test_small_studio_has_no_show_all(self):
+        games, facts = studio_games(4)
+        p = self.page(games, facts)
+        self.assertTrue(p.btn_all_cards.isHidden())
+
     def test_other_card_opens_key(self):
         from nexus import categories
         from nexus.gui.category import StudioCard
@@ -2958,3 +3008,8 @@ class StudioRouting(_Window):
 def categories_others(w):
     from nexus import categories
     return categories.other_studios(w.catpage.cat, w._category_pool(), w._smart_facts())
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

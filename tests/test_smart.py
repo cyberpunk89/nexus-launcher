@@ -491,5 +491,37 @@ class FriendsRule(unittest.TestCase):
         self.assertEqual(smart.values_for('people', self.games, self.facts, [A]), [])
 
 
+class Memoized(unittest.TestCase):
+    """smart.memoized (w-126): a theme change asks for the same shelves again."""
+
+    def setUp(self):
+        self.games = [game('a', 10, 1, favorite=True), game('b', 0, None), game('c', 300, 90)]
+        self.facts = {'a': fact(5, ('RPG',)), 'b': fact(2, ('RPG',)), 'c': fact(30)}
+
+    def test_same_question_is_answered_once_and_equal(self):
+        plain = slugs(smart.games_for('genre:RPG', self.games, self.facts, NOW))
+        calls = []
+        real = smart._games_for
+        smart._games_for = lambda *a: calls.append(1) or real(*a)
+        try:
+            with smart.memoized():
+                first = smart.games_for('genre:RPG', self.games, self.facts, NOW)
+                again = smart.games_for('genre:RPG', list(self.games), self.facts, NOW)
+                first.clear()                       # a caller may reorder its copy
+                third = smart.games_for('genre:RPG', self.games, self.facts, NOW)
+        finally:
+            smart._games_for = real
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(slugs(again), plain)
+        self.assertEqual(slugs(third), plain)
+
+    def test_nothing_is_kept_outside_the_block(self):
+        with smart.memoized():
+            smart.games_for('genre:RPG', self.games, self.facts, NOW)
+        self.games.append(game('d', 5, 1))
+        self.facts['d'] = fact(1, ('RPG',))
+        self.assertIn('d', slugs(smart.games_for('genre:RPG', self.games, self.facts, NOW)))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -7,9 +7,9 @@ import unittest
 from datetime import datetime, timedelta
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import linux_features, set_gui  # noqa: E402
 
 if nx is not None:
@@ -217,9 +217,7 @@ class SmartShelves(unittest.TestCase):
             w._on_library({'games': games(), 'disks': []}, '')
             self.assertEqual(w.filter.currentData(), 'smart:never')
         finally:
-            stop_leftovers(w.jobs)
-            w.close()
-            w.deleteLater()
+            drop(w)
 
     def test_no_smart_rows_leaves_the_head_with_new_shelf(self):
         # w-51: "New shelf" stays with no smart row (w-117: in the ⋮ menu).
@@ -304,3 +302,8 @@ class SmartShelves(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

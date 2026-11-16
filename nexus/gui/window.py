@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QSplitterHand
 from nexus import __version__, gamedb, paths as NX, platform, stats
 from nexus.features import has
 
-from .. import updates
+from .. import smart, updates
 from .common import alive, CONFIG_PATH, HOME
 from .fmt import fmt_size
 from .restyle import Restyler
@@ -856,7 +856,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         if self._theatre:
             self.theatre.refresh_tint()
         self._home_sig = None
-        self.apply_filter()                        # rebuilds Home (dashboard.refresh) too
+        with smart.memoized():                     # the shelves are asked for again and again
+            self.apply_filter()                    # rebuilds Home (dashboard.refresh) too
         self.downloads.restyle()                   # pipeline cards: sizes, in place
         if self.selected:
             self._sync_selection()

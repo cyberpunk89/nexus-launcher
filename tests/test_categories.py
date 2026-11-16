@@ -694,3 +694,40 @@ class AnyCategory(unittest.TestCase):
                     alone = C.category(c.key, games, facts, prefs())
                     self.assertEqual([x['slug'] for x in c.games],
                                      [x['slug'] for x in alone.games], c.key)
+
+
+# ---- performance budget (w-129) ----
+class Budget(unittest.TestCase):
+    """categories() over a big library: the studio index is built once per
+    call (it was once per studio, O(studios x games): 93 ms at 3,000 games
+    became 22 ms), and the whole call stays inside a generous time budget."""
+
+    N = 3000
+
+    def big(self):
+        games, facts = [], {}
+        for i in range(self.N):
+            slug = f'g{i}'
+            games.append(game(slug, i % 90, i % 400))
+            facts[slug] = dict(fact(5, ('RPG', 'Indie', 'Racing')[i % 3:i % 3 + 1]),
+                               developers=[f'Studio {i % 500:04d}'], publishers=[f'Pub {i % 80}'])
+        return games, facts
+
+    def test_studio_index_is_built_once_per_call(self):
+        games, facts = self.big()
+        real, calls = C._studio_index, []
+        C._studio_index = lambda *a, **k: calls.append(1) or real(*a, **k)
+        try:
+            groups = C.categories(games, facts, prefs(), now=NOW)
+        finally:
+            C._studio_index = real
+        self.assertGreater(sum(c.kind in C.STUDIO_KINDS for g in groups for c in g.cats), 100)
+        self.assertEqual(len(calls), 1)
+
+    def test_categories_fits_the_budget(self):
+        import time
+        games, facts = self.big()
+        C.categories(games, facts, prefs(), now=NOW)          # warm the name caches
+        t0 = time.perf_counter()
+        C.categories(games, facts, prefs(), now=NOW)
+        self.assertLess(time.perf_counter() - t0, 0.6)

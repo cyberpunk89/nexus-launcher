@@ -8,10 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
     from test_gui_window import fake_games
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
     from tests.test_gui_window import fake_games
 from tests.patching import patch_gui, set_gui  # noqa: E402
 
@@ -244,3 +244,8 @@ class Prefs(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

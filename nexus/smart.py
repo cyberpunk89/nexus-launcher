@@ -11,6 +11,7 @@ the end of this file), and `friends:<steamids>[:multi]` for Play together
 (w-83: the games every one of those friends owns; `g['friends']` holds a
 game's public owners)."""
 
+from contextlib import contextmanager
 from datetime import datetime
 
 from .facts import NEXUS_GENRES
@@ -149,12 +150,41 @@ def _order(rule: str, items: list[dict], facts: dict) -> list[dict]:
     return items
 
 
+_MEMO: dict | None = None
+
+
+@contextmanager
+def memoized():
+    """Inside the block, games_for answers the same question once (a theme or
+    size change asks for every shelf several times over an unchanged
+    library). Nothing may change the games or facts inside the block; `now`
+    is taken as the first call's."""
+    global _MEMO
+    outer, _MEMO = _MEMO, {} if _MEMO is None else _MEMO
+    try:
+        yield
+    finally:
+        _MEMO = outer
+
+
 def games_for(key: str, games: list[dict], facts: dict, now: datetime | None = None,
               linux: bool = True, friends: set | None = None) -> list[dict]:
     """The games under one key (`smart:<rule>`, `genre:<name>` or
     `friends:<ids>[:multi]`), ordered for its shelf. `friends` = the
     steamids of your public friends (None: no friends data, so a friends
     key shows nothing)."""
+    if _MEMO is None:
+        return _games_for(key, games, facts, now, linux, friends)
+    # The entry keeps the games and facts alive, so their ids cannot be reused in the block
+    # (callers pass filtered copies of one library: the same rows, so the same answer).
+    k = (key, tuple(map(id, games)), id(facts), linux, None if friends is None else frozenset(friends))
+    hit = _MEMO.get(k)
+    if hit is None:
+        hit = _MEMO[k] = (games, facts, _games_for(key, games, facts, now, linux, friends))
+    return list(hit[2])
+
+
+def _games_for(key, games, facts, now, linux, friends):
     now = now or datetime.now()
     facts = facts or {}
     if key.startswith(FRIENDS_KEY):

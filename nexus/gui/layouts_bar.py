@@ -276,15 +276,6 @@ class LayoutsBar(QFrame):
         if b in self.layout_btns:
             self.switch.emit(self.layout_btns.index(b))
 
-    def focusables(self) -> list[QWidget]:
-        """The panel's buttons in pad order (presets, layouts, Save as, My
-        old Home, the manage strip, then Add widgets)."""
-        out = list(self.preset_btns.values()) + self.layout_btns + [self.btn_save, self.btn_old,
-                                                                   self.btn_time, self.btn_rename,
-                                                                   self.btn_delete]
-        out += self.add_host.findChildren(QPushButton)
-        return [w for w in out if w.isVisibleTo(self) and w.isEnabled()]
-
 
 class TimeField(QFrame):
     """‹ HH › : ‹ MM ›, buttons only (a pad steps it with A): hours step 1,

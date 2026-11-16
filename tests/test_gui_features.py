@@ -7,9 +7,9 @@ import unittest
 from unittest import mock
 
 try:
-    from test_gui_layout import nx
+    from test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx
+    from tests.test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import set_gui  # noqa: E402
 
 from nexus import features, platform  # noqa: E402
@@ -816,3 +816,8 @@ class Setup(unittest.TestCase):
             page.stats_what.set_open(True, remember=False)
         self.assertEqual(calls, [['--stats-preview', '--json']])
         self.assertIn('"os": "fedora"', page.stats_text.text())
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

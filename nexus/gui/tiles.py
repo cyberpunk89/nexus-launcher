@@ -60,12 +60,8 @@ class GameTile(QFrame):
             ART.fetch(url, self._art_arrived)
         self._set_art(art_path)
 
-        self._anim = QPropertyAnimation(self, b'hoverT', self)
-        self._anim.setDuration(150)              # motion.fast
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._spinner = QTimer(self)
-        self._spinner.setInterval(40)
-        self._spinner.timeout.connect(self._advance_spin)
+        self._anim = None                        # made on first hover / first spinner (w-127):
+        self._spinner = None                     # thousands of tiles never need either
 
         self._pb = 56 if min(self.tw, self.th) >= 170 else 44
         self._buttons: tuple[QToolButton, QToolButton] | None = None   # see _make_buttons
@@ -227,11 +223,28 @@ class GameTile(QFrame):
         self._sync_buttons()
         self.update()
 
+    def _spin_timer(self) -> QTimer:
+        """The spinner's timer, made on first use (a child QObject, so it
+        goes with the tile: Pitfalls - Qt and PyQt section 1)."""
+        if self._spinner is None:
+            self._spinner = QTimer(self)
+            self._spinner.setInterval(40)
+            self._spinner.timeout.connect(self._advance_spin)
+        return self._spinner
+
+    def _hover_anim(self) -> QPropertyAnimation:
+        if self._anim is None:
+            self._anim = QPropertyAnimation(self, b'hoverT', self)
+            self._anim.setDuration(150)              # motion.fast
+            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        return self._anim
+
     def _sync_spinner(self):
         if self._spins() and self.isVisible():
-            if not self._spinner.isActive():
-                self._spinner.start()
-        else:
+            t = self._spin_timer()
+            if not t.isActive():
+                t.start()
+        elif self._spinner is not None:
             self._spinner.stop()
 
     def showEvent(self, ev):
@@ -240,7 +253,8 @@ class GameTile(QFrame):
 
     def hideEvent(self, ev):
         super().hideEvent(ev)
-        self._spinner.stop()
+        if self._spinner is not None:
+            self._spinner.stop()
 
     def _advance_spin(self):
         self._spin = (self._spin + 12) % 360
@@ -282,22 +296,27 @@ class GameTile(QFrame):
         self.btn_more.setVisible(more)
 
     def _animate(self, to: float):
-        self._anim.stop()
+        if self._anim is None and not self.isVisible():
+            self._hover = to
+            return
+        self._hover_anim().stop()
         if not self.isVisible():
             # Hidden (its window closing, a page switched away): no glide —
             # an animation started now would step a tile that may be gone.
             self._hover = to
             return
-        self._anim.setStartValue(self._hover)
-        self._anim.setEndValue(to)
-        self._anim.start()
+        anim = self._hover_anim()
+        anim.setStartValue(self._hover)
+        anim.setEndValue(to)
+        anim.start()
 
     def rest(self):
         """Back at rest at once, no glide: a tile the Library grid recycles
         for another game must not bring the lift of where it was."""
         if self.hasFocus() or self.underMouse():
             return
-        self._anim.stop()
+        if self._anim is not None:
+            self._anim.stop()
         self._hover = 0.0
         self._place_buttons()
         self._sync_buttons()

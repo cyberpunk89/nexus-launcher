@@ -37,6 +37,7 @@ import time
 import tomllib
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import __version__, net, paths, platform
 
@@ -728,7 +729,7 @@ def _friend_rows(raw, base: str | None = None) -> dict:
 
 def _read_stub(path: str) -> list:
     try:
-        data = json.loads(open(path, encoding='utf-8').read())
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
     except OSError as e:
         raise GameDbError('net', f"friends stub: {e.strerror or e}") from None
     except ValueError:

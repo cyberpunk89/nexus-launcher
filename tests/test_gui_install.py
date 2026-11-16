@@ -8,10 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 try:
-    from test_gui_layout import nx
+    from test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
     from test_gui_window import fake_games
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx
+    from tests.test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
     from tests.test_gui_window import fake_games
 from tests.patching import set_gui  # noqa: E402
 
@@ -378,7 +378,7 @@ class Followups(unittest.TestCase):
         cls.win.jobs.jobs.clear()
         cls.win.close()
         cls.win.deleteLater()
-        QApplication.processEvents()
+        flush_deletes()
         del cls.win
         set_gui('cli_json', cls._saved[0])
         nx.LibraryPrefs.save = cls._saved[1]
@@ -583,3 +583,8 @@ class Followups(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

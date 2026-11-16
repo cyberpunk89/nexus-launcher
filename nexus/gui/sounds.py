@@ -129,10 +129,6 @@ class WavEffect(QObject):
         if self._sink is not None:
             self._sink.setVolume(self._volume)
 
-    def isPlaying(self) -> bool:
-        from PyQt6.QtMultimedia import QAudio
-        return self._sink is not None and self._sink.state() == QAudio.State.ActiveState
-
     def play(self):
         if self._status != self.Status.Ready:
             return

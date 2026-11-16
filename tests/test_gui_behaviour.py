@@ -7,10 +7,10 @@ import unittest
 from unittest import mock
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
     from test_gui_window import fake_games
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
     from tests.test_gui_window import fake_games
 from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402
 
@@ -305,7 +305,7 @@ class Behaviour(unittest.TestCase):
         stop_leftovers(cls.win.jobs)
         cls.win.close()
         cls.win.deleteLater()
-        QApplication.processEvents()
+        flush_deletes()
         del cls.win
         set_gui('cli_json', cls._saved[0])
         nx.LibraryPrefs.save = cls._saved[1]
@@ -1394,3 +1394,8 @@ class MenuShape(unittest.TestCase):
         self.assertIn("Maintenance", subs)
         first = [s for i, s in enumerate(subs) if s and s not in subs[:i]]
         self.assertEqual(len(first), len(set(first)))      # each group in one block
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()
