@@ -83,6 +83,40 @@ def dominant_color(path: str | None) -> QColor | None:
     return out
 
 
+_LIGHTNESS: dict[str, float | None] = {}
+
+
+def logo_lightness(path: str | None) -> float | None:
+    """How light a logo is, 0 (black) to 1 (white): the mean luminance of its
+    24 x 24 thumbnail, each pixel weighted by its alpha so a transparent
+    surround does not count. None for no file or an empty picture. Cached
+    per path and mtime (w-134: picks the plate a studio logo sits on)."""
+    if not path:
+        return None
+    try:
+        key = f"{path}:{Path(path).stat().st_mtime}"
+    except OSError:
+        return None
+    if key in _LIGHTNESS:
+        return _LIGHTNESS[key]
+    img = QImage(path)
+    out = None
+    if not img.isNull():
+        img = img.scaled(24, 24, Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation).convertToFormat(
+            QImage.Format.Format_ARGB32)
+        weight = total = 0.0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = QColor.fromRgba(img.pixel(x, y))
+                a = c.alphaF()
+                weight += a
+                total += a * (0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF())
+        out = total / weight if weight > 0.02 else None
+    _LIGHTNESS[key] = out
+    return out
+
+
 def fit_image(path: str, w: int, h: int, cover: bool) -> QImage | None:
     """The image at `path` decoded at about w x h, aspect kept: covering the
     box (cover=True) or fitting inside it. No crop. Worker-safe (QImage)."""

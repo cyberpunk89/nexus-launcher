@@ -1032,7 +1032,7 @@ class GameContextBlock(unittest.TestCase):
                 tiles = self.panel.tiles
                 from nexus.features import has
                 self.assertEqual(tiles.keys(), ['players', 'length'] + (
-                    ['linux'] if has('proton') else []) + ['pc', 'details', 'links'])
+                    ['linux'] if has('proton') else []) + ['pc', 'details', 'studio', 'links'])
                 for w in tiles.findChildren(QWidget):
                     if w.isVisibleTo(self.panel):
                         right = w.mapTo(self.panel, w.rect().topRight()).x()
@@ -1072,6 +1072,25 @@ class GameContextBlock(unittest.TestCase):
         self.panel.studio_ok = lambda key: True
         ctx = self._show('part', playtime_minutes=7)
         self.assertEqual([b.text() for b in ctx.tag_btns], ['Larian Studios'])
+
+    def test_studio_tile_row_opens_the_page_only_when_it_has_one(self):
+        """w-134: a Studio row asks for the same page the chip does, and only
+        a studio whose page opens is a focus stop."""
+        self.panel.studio_ok = {'dev:fromsoftware'}.__contains__
+        self.panel.studio_counts = lambda: {'dev:fromsoftware': 3, 'pub:bandai namco': 1}
+        self._show('full', playtime_minutes=8)
+        tile = self.panel.tiles.tile['studio']
+        from nexus.gui.overview import StudioRow
+        rows = tile.findChildren(StudioRow)
+        self.assertEqual([r.row['name'] for r in rows], ['FromSoftware', 'Bandai Namco'])
+        self.assertEqual([r.focusPolicy() == Qt.FocusPolicy.StrongFocus for r in rows],
+                         [True, False])
+        got = []
+        self.panel.filter_library.connect(got.append)
+        rows[1].clicked.emit()                        # no page: nothing opens
+        rows[0].clicked.emit()
+        self.assertEqual(got, ['dev:fromsoftware'])
+        self.assertIn('3 games in your library', rows[0].sub.text())
 
     def test_partial_and_played_past_the_end(self):
         ctx = self._show('part')
@@ -1273,7 +1292,7 @@ class OverviewTiles(unittest.TestCase):
         d = self.FULL
         t.set_sections(overview_model(d['rec'], d['store'], d['tips'], d['game'], linux=True))
         QApplication.processEvents()
-        self.assertEqual(t.keys(), [k for k in ORDER])
+        self.assertEqual(t.keys(), [k for k in ORDER if k != 'studio'])   # FULL names no studio
         order = sorted(t.keys(), key=lambda k: t.tile[k].mapTo(host, t.tile[k].rect().topLeft()).y())
         self.assertEqual([k for k in order if k not in ('links',)][:3],
                          ['players', 'critics', 'length'])
@@ -1348,6 +1367,187 @@ class OverviewTiles(unittest.TestCase):
                     if w.isVisibleTo(host):
                         right = w.mapTo(host, w.rect().topRight()).x()
                         self.assertLessEqual(right, width + 1, w.objectName() or type(w).__name__)
+
+    def test_critics_two_badges_fit_420(self):
+        from PyQt6.QtWidgets import QLabel
+        from nexus.gui import overview as ov
+        rec = {**self.FULL['rec'], 'igdbRating': 91, 'igdbRatingCount': 24}
+        for theme in ('forest', 'dawn'):
+            for width in (380, 420, 640):
+                with self.subTest(theme=theme, width=width):
+                    t, host = self.tiles(width=width, theme=theme, data={**self.FULL, 'rec': rec})
+                    tile = t.tile['critics']
+                    badges = tile.findChildren(ov.ScoreBadge)
+                    self.assertEqual(len(badges), 2)
+                    names = [w.text() for w in tile.findChildren(QLabel)
+                             if w.objectName() == 'OvName']
+                    self.assertEqual(names, ['Metacritic', 'IGDB'])
+                    xs = [b.mapTo(host, b.rect().topLeft()).x() for b in badges]
+                    self.assertEqual(xs, sorted(xs))
+                    self.assertGreater(xs[1] - xs[0], badges[0].width())     # side by side
+                    for b in badges:
+                        self.assertLessEqual(b.mapTo(host, b.rect().bottomRight()).x(),
+                                             tile.mapTo(host, tile.rect().bottomRight()).x())
+                        self.assertTrue(b.accessibleName())
+
+    LOGO = 'https://images.igdb.com/igdb/image/upload/t_logo_med/abc123.png'
+    STUDIO = {'developers': ['Lantern Forge Studios, Inc.'],
+              'publishers': ['Harbor Light Games Entertainment'],
+              'studios': [{'name': 'Lantern Forge Studios', 'role': 'developer',
+                           'logo': LOGO, 'igdbId': 7}]}
+    COUNTS = {'dev:lantern forge studios': 3, 'pub:harbor light games entertainment': 1}
+
+    def studio_tiles(self, width=420, theme='forest', counts=True, rec=None, cached=None):
+        """Tiles with a Studio tile; `cached` {url: QColor} puts a one-colour
+        logo in the art cache first, so nothing touches the network."""
+        from PyQt6.QtGui import QImage, QPainter
+        from nexus.gui.art import ART
+        from nexus.gui.overview import OverviewTiles, overview_model
+        for url, colour in (cached or {}).items():
+            ART.dir.mkdir(parents=True, exist_ok=True)
+            img = QImage(60, 30, QImage.Format.Format_ARGB32)
+            img.fill(0)
+            pt = QPainter(img)
+            pt.fillRect(10, 5, 40, 20, colour)
+            pt.end()
+            self.assertTrue(img.save(str(ART._path(url)), 'PNG'))
+        nx.apply_appearance({'theme': theme})
+        _app.setStyleSheet(nx.build_stylesheet())
+        host = QWidget()
+        from PyQt6.QtWidgets import QVBoxLayout
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        t = OverviewTiles()
+        lay.addWidget(t)
+        t.hide()
+        t.set_sections(overview_model({**self.FULL['rec'], **(rec or self.STUDIO)}, None, None,
+                                      None, studio_counts=self.COUNTS if counts else None))
+        host.resize(width, 900)
+        host.show()
+        self.addCleanup(drop, host)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        return t, host
+
+    def test_studio_tile_rows_initials_and_signal(self):
+        from PyQt6.QtCore import Qt
+        from nexus.gui.overview import StudioRow
+        t, host = self.studio_tiles()
+        tile = t.tile['studio']
+        self.assertTrue(tile.isVisibleTo(host))
+        rows = tile.findChildren(StudioRow)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1].logo.initials, 'HL')              # no logo known: initials
+        self.assertIsNone(rows[1].logo.pm)
+        self.assertEqual(rows[0].name.text(), 'Lantern Forge Studios, Inc.')
+        self.assertEqual(rows[0].sub.text(), 'Developer \u00b7 3 games in your library')
+        self.assertEqual(rows[1].sub.text(), 'Publisher \u00b7 1 game in your library')
+        self.assertTrue(rows[0].chev.isVisibleTo(host))
+        self.assertFalse(rows[1].chev.isVisibleTo(host))
+        self.assertEqual(rows[0].focusPolicy(), Qt.FocusPolicy.StrongFocus)
+        self.assertEqual(rows[1].focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertIn('opens its page', rows[0].accessibleName())
+        got = []
+        t.open_key.connect(got.append)
+        rows[0].clicked.emit()
+        self.assertEqual(got, ['dev:lantern forge studios'])
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        rows[0].keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                        Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(got[-1], 'dev:lantern forge studios')
+        self.assertEqual(len(got), 2)
+        t, host = self.studio_tiles(counts=False)                   # no counts: nothing opens
+        for r in t.tile['studio'].findChildren(StudioRow):
+            self.assertEqual(r.focusPolicy(), Qt.FocusPolicy.NoFocus)
+
+    def test_studio_tile_not_in_theatre(self):
+        from nexus.gui import overview as ov
+        t = ov.OverviewTiles(theatre=True, scale=1.4)
+        self.addCleanup(drop, t)
+        self.assertNotIn('studio', t.tile)
+        t.set_sections(ov.overview_model({**self.FULL['rec'], **self.STUDIO}, None, None, None,
+                                         studio_counts=self.COUNTS))
+        self.assertNotIn('studio', t.keys())
+
+    def test_studio_logo_loads_from_the_art_cache_on_a_plate(self):
+        from PyQt6.QtGui import QColor
+        from nexus.gui import overview as ov
+        for theme, colour, plate in (('forest', QColor('white'), 'surface_2'),
+                                     ('forest', QColor('black'), 'text'),
+                                     ('dawn', QColor('white'), 'text'),
+                                     ('dawn', QColor('black'), 'surface')):
+            with self.subTest(theme=theme, logo=colour.name()):
+                t, host = self.studio_tiles(theme=theme, cached={self.LOGO: colour})
+                sq = t.tile['studio'].findChildren(ov.StudioRow)[0].logo
+                self.assertIsNotNone(sq.pm)
+                self.assertEqual(sq.plate, plate)
+                img = sq.grab().toImage()
+                px = {QColor(img.pixel(x, y)).name() for x in range(0, img.width(), 2)
+                      for y in range(0, img.height(), 2)}
+                self.assertIn(QColor(nx.P[plate]).name(), px)       # the plate
+                self.assertIn(colour.name(), px)                    # the logo on it
+
+    def test_studio_late_logo_only_fills_a_row_that_still_wants_it(self):
+        from PyQt6.QtGui import QColor, QImage
+        from nexus.gui import overview as ov
+        from nexus.gui.art import ART
+        t, host = self.studio_tiles()
+        tile = t.tile['studio']
+        row = tile.findChildren(ov.StudioRow)[0]
+        self.assertIsNone(row.logo.pm)
+        img = QImage(20, 20, QImage.Format.Format_ARGB32)
+        img.fill(QColor('white'))
+        ART.dir.mkdir(parents=True, exist_ok=True)
+        path = str(ART._path('https://images.igdb.com/other.png'))
+        img.save(path, 'PNG')
+        tile._arrived('https://images.igdb.com/other.png', path)    # not any row's: ignored
+        self.assertIsNone(row.logo.pm)
+        tile._arrived(self.LOGO, path)                               # one row's: used
+        self.assertIsNotNone(row.logo.pm)
+        tile.fill([])                                                # rows rebuilt away
+        tile._arrived(self.LOGO, path)                               # a late answer: no crash
+
+    def test_logo_plate_and_lightness(self):
+        from PyQt6.QtGui import QColor, QImage
+        from nexus.gui import art, overview as ov
+        self.assertEqual(ov.logo_plate(0.95, True), 'text')          # white logo, dark plate on Dawn
+        self.assertEqual(ov.logo_plate(0.95, False), 'surface_2')
+        self.assertEqual(ov.logo_plate(0.1, False), 'text')          # dark logo, light plate on Forest
+        self.assertEqual(ov.logo_plate(0.1, True), 'surface')
+        self.assertEqual(ov.logo_plate(None, False), 'text')
+        import tempfile
+        from pathlib import Path
+        d = tempfile.mkdtemp()
+        for name, colour, want in (('w', 'white', 1.0), ('k', 'black', 0.0)):
+            img = QImage(40, 40, QImage.Format.Format_ARGB32)
+            img.fill(0)                                  # transparent surround
+            from PyQt6.QtGui import QPainter
+            pt = QPainter(img)
+            pt.fillRect(10, 10, 20, 20, QColor(colour))
+            pt.end()
+            path = str(Path(d) / f'{name}.png')
+            img.save(path, 'PNG')
+            self.assertAlmostEqual(art.logo_lightness(path), want, delta=0.05)
+        self.assertIsNone(art.logo_lightness(str(Path(d) / 'missing.png')))
+        blank = QImage(8, 8, QImage.Format.Format_ARGB32)
+        blank.fill(0)
+        blank.save(str(Path(d) / 'e.png'), 'PNG')
+        self.assertIsNone(art.logo_lightness(str(Path(d) / 'e.png')))
+
+    def test_studio_tile_fits_the_panel(self):
+        for theme in ('forest', 'dawn'):
+            for width in (380, 420, 640):
+                with self.subTest(theme=theme, width=width):
+                    t, host = self.studio_tiles(width=width, theme=theme, rec={
+                        **self.STUDIO, 'developers': ['A Very Long Studio Name Indeed '
+                                                      'Interactive Entertainment Worldwide']})
+                    tile = t.tile['studio']
+                    self.assertLessEqual(tile.width(), width)
+                    for w in tile.findChildren(QWidget):
+                        if w.isVisibleTo(host):
+                            right = w.mapTo(host, w.rect().topRight()).x()
+                            self.assertLessEqual(right, width + 1)
 
     def test_light_theme_is_readable(self):
         t, host = self.tiles(theme='dawn')

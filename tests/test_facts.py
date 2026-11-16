@@ -168,6 +168,44 @@ class Merge(unittest.TestCase):
                           ('delisted', None), (None, None)):
             self.assertEqual(facts.from_gamedb({**GDB_ROW, 'status': key})['status'], want)
 
+    def test_gamedb_igdb_rating_kept(self):
+        row = {**GDB_ROW, 'reviews': {'metacritic': 90, 'igdbCritics': 88, 'igdbCriticsCount': 31,
+                                      'igdbUsers': 80, 'igdbUsersCount': 900}}
+        g = facts.from_gamedb(row)
+        self.assertEqual((g['igdbRating'], g['igdbRatingCount']), (88, 31))
+        r = facts.merge(self.local(), row)
+        self.assertEqual((r['igdbRating'], r['igdbRatingCount']), (88, 31))
+        self.assertEqual(r['src']['igdbRating'], 'gamedb')
+
+    def test_old_gamedb_row_has_no_igdb_rating(self):
+        r = facts.merge(self.local(), GDB_ROW)
+        self.assertEqual((r['igdbRating'], r['igdbRatingCount']), (None, None))
+        self.assertNotIn('igdbRating', r['src'])
+        r = facts.merge(self.local())
+        self.assertIsNone(r['igdbRating'])
+        junk = {**GDB_ROW, 'reviews': {'igdbCritics': True, 'igdbCriticsCount': 'x'}}
+        self.assertIsNone(facts.merge(self.local(), junk)['igdbRating'])
+
+    def test_gamedb_studios_kept_and_cleaned(self):
+        logo = 'https://images.igdb.com/igdb/image/upload/t_logo_med/abc123.png'
+        row = {**GDB_ROW, 'studios': [
+            {'name': 'Lantern Forge Studios', 'role': 'developer', 'logo': logo, 'igdbId': 7},
+            {'name': 'Harbor Light Games', 'role': 'publisher',
+             'logo': 'https://evil.example/x.png', 'igdbId': 'nine'},
+            {'name': 'Moss Cart', 'role': 'tester', 'logo': logo, 'igdbId': 3},      # not a role
+            {'name': '', 'role': 'developer', 'logo': logo}, 'junk', None]}
+        r = facts.merge(self.local(), row)
+        self.assertEqual(r['studios'], [
+            {'name': 'Lantern Forge Studios', 'role': 'developer', 'logo': logo, 'igdbId': 7},
+            {'name': 'Harbor Light Games', 'role': 'publisher', 'logo': None, 'igdbId': None}])
+        self.assertEqual(r['src']['studios'], 'gamedb')
+
+    def test_old_gamedb_row_has_no_studios(self):
+        self.assertIsNone(facts.merge(self.local(), GDB_ROW)['studios'])
+        self.assertIsNone(facts.merge(self.local())['studios'])
+        self.assertIsNone(facts.merge(self.local(), {**GDB_ROW, 'studios': 'x'})['studios'])
+        self.assertIsNone(facts.merge(self.local(), {**GDB_ROW, 'studios': []})['studios'])
+
 
 class Build(TempCache):
     def test_cache_only_and_no_store_id_no_entry(self):

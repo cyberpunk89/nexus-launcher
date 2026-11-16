@@ -5,22 +5,25 @@ overview_model() is plain data (no Qt, no OS call: `linux` comes from the
 caller); OverviewTiles shows it. Colours are palette role names, resolved
 when painted or styled, so a theme change applies."""
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl
-from PyQt6.QtGui import QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
+from PyQt6.QtCore import pyqtSignal, QPointF, QRectF, Qt, QUrl
+from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QImageReader, QLinearGradient, QPainter,
+    QPainterPath, QPen, QPixmap)
 from PyQt6.QtWidgets import (QBoxLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
     QSizePolicy, QVBoxLayout, QWidget)
 
-from nexus import facts
+from nexus import categories, facts
 
+from .art import _initials, ART, logo_lightness
 from .gameinfo import PCGW_COLORS, PCGW_WORDS, TIER_COLORS
 from .theme import _mix, FONTS, G, is_light, P, R, scaled, SP
 from .widgets import clear_layout, FlowLayout, set_icon_label
 
-ORDER = ('players', 'critics', 'length', 'linux', 'pc', 'details', 'links')
+ORDER = ('players', 'critics', 'length', 'linux', 'pc', 'details', 'studio', 'links')
 TITLES = {'players': "Players", 'critics': "Critics", 'length': "How long to beat",
-          'linux': "On Linux", 'pc': "PC features", 'details': "Details", 'links': ""}
+          'linux': "On Linux", 'pc': "PC features", 'details': "Details", 'studio': "Studio", 'links': ""}
 # Tiles that share a row when the panel is wide enough.
 PAIRS = (('players', 'critics'), ('linux', 'pc'))
+FS_INITIALS, FS_CHEVRON = 15, 16      # a studio's initials, the row's chevron (px at scale 1)
 MODE_LABELS = {'single': "Single", 'coop': "Co-op", 'online': "Online", 'local': "Couch"}
 PC_MAX = 5
 ART_TRACK = '#4a4f5e'                # empty ring / bar on Theatre's dark art
@@ -135,12 +138,23 @@ def _players(rv: dict):
             'of': int(rv.get('total') or 0), 'tone': tone}
 
 
+LOGO_LIGHT = 0.6            # a logo this light needs a dark plate
+IGDB_MIN_CRITICS = 3        # fewer critics than this is not a score worth a badge
+
+
 def _critics(st: dict, rec: dict) -> list:
+    """Metacritic, then IGDB's critics (w-133), always in that order."""
+    out = []
     score = _number((st.get('metacritic') or {}).get('score')) or _number(rec.get('metacritic'))
-    if not score:
-        return []
-    v = int(score)
-    return [{'name': "Metacritic", 'value': v, 'word': critic_word(v), 'tone': score_tone(v)}]
+    if score:
+        v = int(score)
+        out.append({'name': "Metacritic", 'value': v, 'word': critic_word(v),
+                    'tone': score_tone(v)})
+    igdb, n = _number(rec.get('igdbRating')), _number(rec.get('igdbRatingCount'))
+    if igdb and n is not None and n >= IGDB_MIN_CRITICS:
+        v = round(igdb)
+        out.append({'name': "IGDB", 'value': v, 'word': critic_word(v), 'tone': score_tone(v)})
+    return out
 
 
 def _length(rec: dict, game: dict):
@@ -199,6 +213,84 @@ def _details(rec: dict) -> list:
     return items
 
 
+def studio_credits(rec: dict, ok=None, strict: bool = False) -> list[dict]:
+    """The credits a game page shows as studios (w-114, w-134): the developer,
+    then the first publisher that is another studio. [{role 'dev'|'pub', key,
+    name (as credited), both}] (`both`: a developer that also publishes it).
+    `ok(key)` says whether that studio has a page: strict keeps only those
+    that do (the chips); otherwise a studio with a page is preferred and the
+    first credit is the fallback (the tile). Pure."""
+    def names(field):
+        return [n for n in rec.get(field) or [] if isinstance(n, str)
+                and categories.studio_id(n)]
+
+    def pick(role, field, skip=''):
+        pool = [n for n in names(field) if categories.studio_id(n) != skip]
+        if ok is not None:
+            for n in pool:
+                if ok(categories.studio_key(role, n)):
+                    return n
+            if strict:
+                return None
+        return pool[0] if pool else None
+
+    out = []
+    dev = pick('dev', 'developers')
+    dev_id = categories.studio_id(dev) if dev else ''
+    if dev:
+        out.append({'role': 'dev', 'key': categories.studio_key('dev', dev), 'name': dev,
+                    'both': any(categories.studio_id(p) == dev_id for p in names('publishers'))})
+    pub = pick('pub', 'publishers', dev_id)
+    if pub:
+        out.append({'role': 'pub', 'key': categories.studio_key('pub', pub), 'name': pub,
+                    'both': False})
+        if out[0]['role'] == 'dev':
+            out[0]['both'] = False       # another publisher is named: shown on its own row
+    return out
+
+
+def _studio_logo(rec: dict, credit: dict) -> str | None:
+    """The IGDB logo of a credited studio: the Game-db company with the same
+    studio id (the same role first), else, when each side names exactly one
+    studio in that role, that one."""
+    role = {'dev': 'developer', 'pub': 'publisher'}[credit['role']]
+    sid = categories.studio_id(credit['name'])
+    entries = [s for s in rec.get('studios') or [] if isinstance(s, dict)]
+    same = [s for s in entries if categories.studio_id(s.get('name')) == sid]
+    hit = next((s for s in same if s.get('role') == role), None) or (same[0] if same else None)
+    if hit is None:
+        mine = [s for s in entries if s.get('role') == role]
+        credited = [n for n in rec.get({'dev': 'developers', 'pub': 'publishers'}[credit['role']])
+                    or [] if isinstance(n, str)]
+        if len(mine) == 1 and len(credited) == 1:
+            hit = mine[0]
+    logo = (hit or {}).get('logo')
+    return logo if isinstance(logo, str) and logo.startswith(facts.LOGO_HOST) else None
+
+
+def _studio(rec: dict, counts) -> list:
+    """The Studio tile's rows: {key, name, role developer|publisher, n (your
+    games), open (its Library page exists), logo, initials, both}."""
+    ok = (lambda k: counts.get(k, 0) >= categories.STUDIO_MIN) if counts is not None else None
+    rows = []
+    for c in studio_credits(rec, ok):
+        n = int((counts or {}).get(c['key'], 0))
+        rows.append({'key': c['key'], 'name': c['name'], 'both': c['both'],
+                     'role': 'developer' if c['role'] == 'dev' else 'publisher', 'n': n,
+                     'open': counts is not None and n >= categories.STUDIO_MIN,
+                     'logo': _studio_logo(rec, c),
+                     'initials': _initials(categories.studio_name(c['name']))[:2]})
+    return rows
+
+
+def logo_plate(lightness, light: bool) -> str:
+    """The palette role a studio logo sits on so it shows: a light logo gets a
+    dark plate, a dark one (or an unknown) a light plate, on either theme."""
+    if lightness is not None and lightness >= LOGO_LIGHT:
+        return 'text' if light else 'surface_2'
+    return 'surface' if light else 'text'
+
+
 def _links(st: dict, tips: dict, linux: bool) -> list:
     out = []
     for (name, site), url in zip(SITES, (
@@ -209,11 +301,14 @@ def _links(st: dict, tips: dict, linux: bool) -> list:
     return out
 
 
-def overview_model(rec, store, tips, game, linux: bool = True) -> list[dict]:
+def overview_model(rec, store, tips, game, linux: bool = True,
+                   studio_counts=None) -> list[dict]:
     """[{key, title, items}] in ORDER, each section only when its facts exist.
     `rec` is the facts index record, `store` --store-info's answer, `tips`
     --game-tips', `game` the library entry; `linux` says whether Linux-only
-    parts (ProtonDB, Deck, anti-cheat) belong."""
+    parts (ProtonDB, Deck, anti-cheat) belong; `studio_counts` is
+    categories.studio_counts' {studio key: your games} (the Studio tile's
+    numbers and which rows open a page)."""
     rec, store, tips, game = rec or {}, store or {}, tips or {}, game or {}
     st = store.get('store') or {}
     items = {
@@ -223,6 +318,7 @@ def overview_model(rec, store, tips, game, linux: bool = True) -> list[dict]:
         'linux': _linux(tips, game) if linux else [],
         'pc': _pc(tips),
         'details': _details(rec),
+        'studio': _studio(rec, studio_counts),
         'links': _links(st, tips, linux),
     }
     return [{'key': k, 'title': TITLES[k], 'items': items[k]} for k in ORDER if items[k]]
@@ -441,17 +537,18 @@ def _hours(v) -> str:
 class _Elide(QLabel):
     """One line that ends in ... instead of widening its tile."""
 
-    def __init__(self, parent=None, ink: str = 'text'):
+    def __init__(self, parent=None, ink: str = 'text', name: str = "OvSub",
+                 role: str = 'muted'):
         super().__init__(parent)
-        self.ink = ink
-        self.setObjectName("OvSub")
+        self.ink, self.role = ink, role
+        self.setObjectName(name)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(10)
 
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setFont(self.font())
-        pt.setPen(_tone('muted') if self.ink == 'text' else _tone(self.ink, 0.7))
+        pt.setPen(_tone(self.role) if self.ink == 'text' else _tone(self.ink, 0.7))
         text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight,
                                              self.width())
         pt.drawText(self.rect(), int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
@@ -716,6 +813,179 @@ class DetailsTile(Tile):
         self.pill_host.setVisible(bool(modes))
 
 
+class LogoSquare(QWidget):
+    """A studio's logo on a plate that shows it (light logo: dark plate, dark
+    logo: light plate), or its initials when no logo is known. Painted;
+    float overloads only."""
+    SIZE = 44
+
+    def __init__(self, parent=None, initials: str = ''):
+        super().__init__(parent)
+        self.initials, self.pm, self.plate = initials, None, 'surface_2'
+        self.setFixedSize(scaled(self.SIZE), scaled(self.SIZE))
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def set_logo(self, pm: QPixmap | None, lightness: float | None):
+        self.pm = pm if pm is not None and not pm.isNull() else None
+        self.plate = logo_plate(lightness, is_light()) if self.pm else 'surface_2'
+        self.update()
+
+    def paintEvent(self, ev):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        box = QRectF(self.rect())
+        pt.setPen(Qt.PenStyle.NoPen)
+        pt.setBrush(QColor(P[self.plate]))
+        pt.drawRoundedRect(box, float(R['control']), float(R['control']))
+        if self.pm is not None:
+            inner = box.adjusted(*(float(scaled(SP['1_5'])),) * 2, *(-float(scaled(SP['1_5'])),) * 2)
+            size = self.pm.deviceIndependentSize()
+            k = min(inner.width() / max(1.0, size.width()), inner.height() / max(1.0, size.height()))
+            w, h = size.width() * k, size.height() * k
+            pt.drawPixmap(QRectF(inner.center().x() - w / 2, inner.center().y() - h / 2, w, h),
+                          self.pm, QRectF(self.pm.rect()))
+        else:
+            pt.setPen(QColor(P['subtext']))
+            pt.setFont(_bold(self, FS_INITIALS))
+            pt.drawText(box, int(Qt.AlignmentFlag.AlignCenter), self.initials)
+        pt.end()
+
+
+class StudioRow(QWidget):
+    """One studio: logo, name, "Developer · 3 games in your library" and a
+    chevron. A focus stop that opens the studio's page when it has one."""
+    clicked = pyqtSignal()
+
+    def __init__(self, row: dict, parent=None):
+        super().__init__(parent)
+        self.row = row
+        self.setObjectName("OvStudioRow")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['3'])
+        self.logo = LogoSquare(self, row['initials'])
+        lay.addWidget(self.logo)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addStretch()
+        self.name = _Elide(self, name="OvStudioName", role='text')
+        self.name.setText(row['name'])
+        self.sub = _Elide(self)
+        role = ("Developer & publisher" if row.get('both')
+                else row['role'].capitalize())
+        n = row['n']
+        self.sub.setText(role + (f" · {n} game{'s' if n != 1 else ''} in your library" if n else ''))
+        col.addWidget(self.name)
+        col.addWidget(self.sub)
+        col.addStretch()
+        lay.addLayout(col, 1)
+        self.chev = QLabel(self)
+        set_icon_label(self.chev, G['chevron_right'], FS_CHEVRON, 'muted')
+        self.chev.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.chev.setVisible(bool(row['open']))
+        lay.addWidget(self.chev)
+        for w in (self.name, self.sub):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setMinimumHeight(scaled(LogoSquare.SIZE))
+        words = f"{row['name']}, {self.sub.text()}"
+        self.setAccessibleName(words + (", opens its page" if row['open'] else ''))
+        self.setToolTip(f"{row['name']}'s page in the Library" if row['open'] else words)
+        if row['open']:
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hover = False
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, ev):
+        if self._hover and self.row['open']:
+            pt = QPainter(self)
+            pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pt.setPen(Qt.PenStyle.NoPen)
+            pt.setBrush(_tone('text', 0.06))
+            pt.drawRoundedRect(QRectF(self.rect()), float(R['control']), float(R['control']))
+            pt.end()
+
+    def mouseReleaseEvent(self, ev):
+        if (self.row['open'] and ev.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(ev.position().toPoint())):
+            self.clicked.emit()
+
+    def keyPressEvent(self, ev):
+        if self.row['open'] and ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                                             Qt.Key.Key_Space):
+            self.clicked.emit()
+        else:
+            super().keyPressEvent(ev)
+
+
+class StudioTile(Tile):
+    """Developer and publisher with their logos (w-134). Logos come through
+    the art cache; the tile, not a row, owns what arrives (rows are rebuilt
+    by every fill), and a late logo is only used while its URL is still one
+    of the rows'."""
+    ICON = 'home'
+    open_key = pyqtSignal(str)
+
+    def __init__(self, parent=None, theatre=False, scale=1.0):
+        super().__init__('studio', parent, theatre, scale)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(self.sp(SP['2_5']))
+        self.lay.addLayout(self.rows)
+        self.lay.addStretch(1)
+        self._rows: list[StudioRow] = []
+        self._logos: dict[str, tuple] = {}         # url -> (pixmap, lightness)
+        self._asked: set[str] = set()
+
+    def fill(self, items):
+        clear_layout(self.rows)
+        self._rows = []
+        for it in items:
+            r = StudioRow(it, self)
+            r.clicked.connect(lambda k=it['key']: self.open_key.emit(k))
+            self.rows.addWidget(r)
+            self._rows.append(r)
+            if it.get('logo'):
+                self._want(it['logo'])
+        self._apply()
+
+    def _want(self, url: str):
+        if url in self._logos:
+            return
+        path = ART.cached(url)
+        if path:
+            self._arrived(url, path)
+        elif url not in self._asked:
+            self._asked.add(url)
+            ART.fetch(url, lambda p, u=url: self._arrived(u, p))
+
+    def _arrived(self, url: str, path):
+        """A logo came off the disk or the net: decode it once, then redraw
+        the rows that still want it."""
+        try:
+            if url not in {r.row.get('logo') for r in self._rows}:
+                return
+            img = QImageReader(path).read()
+            if img.isNull():
+                return
+            self._logos[url] = (QPixmap.fromImage(img), logo_lightness(path))
+            self._apply()
+        except RuntimeError:                      # the tile is gone
+            pass
+
+    def _apply(self):
+        for r in self._rows:
+            got = self._logos.get(r.row.get('logo') or '')
+            r.logo.set_logo(*(got or (None, None)))
+
+
 class LinksRow(QWidget):
     """The sites the game is on, as buttons that open the browser."""
     key = 'links'
@@ -768,7 +1038,9 @@ class OverviewTiles(QWidget):
 
     `theatre` (w-135): the drawer's Overview. One horizontal row of
     fixed-width tiles `scale` times as big, each a focus stop for the pad,
-    with no links row (a TV never opens a browser)."""
+    with no links row (a TV never opens a browser) and no Studio tile (its
+    pages are Library pages). `open_key` carries a Studio row's key."""
+    open_key = pyqtSignal(str)
 
     def __init__(self, parent=None, theatre: bool = False, scale: float = 1.0):
         super().__init__(parent)
@@ -799,11 +1071,13 @@ class OverviewTiles(QWidget):
         v.setSpacing(SP['2_5'])
         self.tile = {'players': PlayersTile(self), 'critics': CriticsTile(self),
                      'length': LengthTile(self), 'linux': LinuxTile(self), 'pc': PcTile(self),
-                     'details': DetailsTile(self), 'links': LinksRow(self)}
+                     'details': DetailsTile(self), 'studio': StudioTile(self),
+                     'links': LinksRow(self)}
+        self.tile['studio'].open_key.connect(self.open_key)
         self.pairs = [TilePair(self.tile[a], self.tile[b], self) for a, b in PAIRS]
         rows = {'players': self.pairs[0], 'length': self.tile['length'],
                 'linux': self.pairs[1], 'details': self.tile['details'],
-                'links': self.tile['links']}
+                'studio': self.tile['studio'], 'links': self.tile['links']}
         for key in ORDER:
             if key in rows:
                 v.addWidget(rows[key])

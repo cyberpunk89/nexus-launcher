@@ -202,11 +202,36 @@ IGDB_STATUS = {'released': 'released', 'early_access': 'early_access', 'alpha': 
 STATUSES = ('released', 'early_access', 'upcoming', 'delayed', 'cancelled')
 
 
+LOGO_HOST = 'https://images.igdb.com/'
+STUDIO_ROLES = ('developer', 'publisher')
+
+
+def _studios(raw) -> list | None:
+    """Game-db's `studios` [{name, role, logo, igdbId}] cleaned: a name and a
+    role of developer / publisher, the logo kept only on IGDB's image host
+    (like gamedb._avatar_url's allowlist), igdbId only as a whole number.
+    None when there is nothing usable (an old row has no such key)."""
+    out = []
+    for s in raw if isinstance(raw, list) else ():
+        if not isinstance(s, dict) or s.get('role') not in STUDIO_ROLES:
+            continue
+        name = s.get('name')
+        if not isinstance(name, str) or not name.strip():
+            continue
+        logo = s.get('logo')
+        gid = s.get('igdbId')
+        out.append({'name': name.strip(), 'role': s['role'],
+                    'logo': logo if isinstance(logo, str) and logo.startswith(LOGO_HOST) else None,
+                    'igdbId': gid if isinstance(gid, int) and not isinstance(gid, bool) else None})
+    return out or None
+
+
 def from_gamedb(row: dict | None) -> dict | None:
     """The facts in one Game-db `GET /api/nexus/v2/games` row (schema 2):
     genres, developers, publishers, releaseDate/Text, comingSoon, status
     (an IGDB key), playLength {main, mainExtra, completionist, source,
-    count}, igdbSlug. Not fetched in this phase; merge() takes it already."""
+    count}, igdbSlug, reviews {metacritic, igdbCritics, igdbCriticsCount} (the
+    IGDB critics' score; w-133). Not fetched in this phase; merge() takes it already."""
     if not isinstance(row, dict):
         return None
     year, release = parse_release(row.get('releaseDate') or row.get('releaseDateText'))
@@ -217,6 +242,8 @@ def from_gamedb(row: dict | None) -> dict | None:
                   'complete': pl.get('completionist'),
                   'source': pl.get('source') if pl.get('source') in ('hltb', 'igdb') else 'igdb',
                   'count': pl.get('count')}
+    rv = row.get('reviews') if isinstance(row.get('reviews'), dict) else {}
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
     status = IGDB_STATUS.get(str(row.get('status') or '').lower())
     if status is None and row.get('comingSoon'):
         status = 'upcoming'
@@ -227,7 +254,9 @@ def from_gamedb(row: dict | None) -> dict | None:
             'publishers': list(row.get('publishers') or []),
             'releaseText': row.get('releaseDateText'), 'year': year, 'release': release,
             'status': status, 'length': length, 'igdbSlug': row.get('igdbSlug') or None,
-            'metacritic': (row.get('reviews') or {}).get('metacritic')}
+            'metacritic': rv.get('metacritic'), 'igdbRating': num(rv.get('igdbCritics')),
+            'igdbRatingCount': num(rv.get('igdbCriticsCount')),
+            'studios': _studios(row.get('studios'))}
 
 
 # ── the merge ────────────────────────────────────────────────────────────
@@ -244,7 +273,10 @@ def merge(local: dict, gamedb_row: dict | None = None) -> dict:
       and cancellations), then what Steam implies.
     - length: HowLongToBeat (Nexus's own lookup, then Game-db's), else
       IGDB's time-to-beat via Game-db — the same rule as Game-db's site.
-    - igdbSlug: Game-db only."""
+    - igdbSlug, igdbRating, igdbRatingCount (IGDB critics' score and how many):
+      Game-db only.
+    - studios [{name, role, logo, igdbId}] (w-134): Game-db only; the credits'
+      names stay Steam's first, the logos come from here."""
     steam, hl = local.get('steam'), local.get('hltb')
     gdb = from_gamedb(gamedb_row)
     rec = {'appid': local.get('appid')}
@@ -287,6 +319,9 @@ def merge(local: dict, gamedb_row: dict | None = None) -> dict:
     if lengths:
         src['length'] = lengths[0][0]
     pick('igdbSlug', ('gamedb', gdb))
+    pick('igdbRating', ('gamedb', gdb))
+    pick('igdbRatingCount', ('gamedb', gdb))
+    pick('studios', ('gamedb', gdb))
     rec['src'] = src
     return rec
 

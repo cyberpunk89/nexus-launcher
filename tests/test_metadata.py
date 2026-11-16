@@ -431,6 +431,105 @@ class OverviewModel(unittest.TestCase):
         self.assertNotIn('critics', self.sections(rec={'metacritic': True}))  # bool is no score
         self.assertEqual(self.sections(rec={'metacritic': 20})['critics'][0]['word'], 'Poor')
 
+    def test_critics_badges_in_fixed_order_with_tones(self):
+        store = {'store': {'metacritic': {'score': 28}}}
+        got = self.sections(rec={'igdbRating': 94, 'igdbRatingCount': 40}, store=store)['critics']
+        self.assertEqual([(c['name'], c['value'], c['tone'], c['word']) for c in got],
+                         [('Metacritic', 28, 'danger', 'Poor'), ('IGDB', 94, 'success', 'Good')])
+        amber = self.sections(rec={'igdbRating': 58, 'igdbRatingCount': 5})['critics']
+        self.assertEqual((len(amber), amber[0]['name'], amber[0]['tone']), (1, 'IGDB', 'warning'))
+
+    def test_igdb_needs_three_critics(self):
+        self.assertNotIn('critics', self.sections(rec={'igdbRating': 90, 'igdbRatingCount': 2}))
+        self.assertNotIn('critics', self.sections(rec={'igdbRating': 90}))
+        self.assertNotIn('critics', self.sections(rec={'igdbRating': True, 'igdbRatingCount': 9}))
+        one = self.sections(rec={'metacritic': 91, 'igdbRating': 90, 'igdbRatingCount': 2})
+        self.assertEqual([c['name'] for c in one['critics']], ['Metacritic'])
+
+    LOGO = 'https://images.igdb.com/igdb/image/upload/t_logo_med/abc123.png'
+    CREDITS = {'developers': ['Lantern Forge Studios, Inc.'],
+               'publishers': ['Harbor Light Games Entertainment'],
+               'studios': [{'name': 'Lantern Forge Studios', 'role': 'developer',
+                            'logo': LOGO, 'igdbId': 7}]}
+    COUNTS = {'dev:lantern forge studios': 3, 'pub:harbor light games entertainment': 1}
+
+    def studio(self, rec, counts=None):
+        from nexus.gui.overview import overview_model
+        got = {s['key']: s['items'] for s in overview_model(rec, None, None, None,
+                                                            studio_counts=counts)}
+        return got.get('studio')
+
+    def test_studio_rows_developer_and_publisher(self):
+        rows = self.studio(self.CREDITS, self.COUNTS)
+        self.assertEqual([(r['role'], r['name'], r['key'], r['n']) for r in rows], [
+            ('developer', 'Lantern Forge Studios, Inc.', 'dev:lantern forge studios', 3),
+            ('publisher', 'Harbor Light Games Entertainment',
+             'pub:harbor light games entertainment', 1)])
+        self.assertEqual([r['logo'] for r in rows], [self.LOGO, None])
+        self.assertEqual([r['initials'] for r in rows], ['LF', 'HL'])
+        self.assertEqual([r['open'] for r in rows], [True, False])    # a page needs 2 games
+
+    def test_studio_tile_sits_after_details_before_links(self):
+        from nexus.gui.overview import ORDER
+        self.assertEqual(ORDER[-3:], ('details', 'studio', 'links'))
+        m = self.model({**self.REC, **self.CREDITS}, self.INFO, self.TIPS, {})
+        keys = [s['key'] for s in m]
+        self.assertEqual(keys[keys.index('details'):], ['details', 'studio', 'links'])
+
+    def test_studio_publisher_same_as_developer_is_one_row(self):
+        rec = {'developers': ['Moss Cart Games'], 'publishers': ['Moss Cart Games Ltd.']}
+        rows = self.studio(rec)
+        self.assertEqual([(r['role'], r['both']) for r in rows], [('developer', True)])
+        rows = self.studio({**rec, 'publishers': ['Moss Cart Games', 'Harbor Light Games']})
+        self.assertEqual([(r['role'], r['name']) for r in rows],
+                         [('developer', 'Moss Cart Games'), ('publisher', 'Harbor Light Games')])
+        self.assertFalse(rows[0]['both'])
+
+    def test_studio_missing_publisher_or_developer(self):
+        self.assertEqual([r['role'] for r in self.studio({'developers': ['Moss Cart Games']})],
+                         ['developer'])
+        self.assertEqual([r['role'] for r in self.studio({'publishers': ['Harbor Light']})],
+                         ['publisher'])
+        self.assertIsNone(self.studio({'developers': [], 'publishers': None}))
+        self.assertIsNone(self.studio({'developers': [7, ''], 'studios': []}))
+
+    def test_studio_no_counts_means_no_numbers_and_nothing_opens(self):
+        rows = self.studio(self.CREDITS)
+        self.assertEqual([(r['n'], r['open']) for r in rows], [(0, False), (0, False)])
+
+    def test_studio_logo_matched_by_name_or_the_only_developer(self):
+        studios = [{'name': 'Lantern Forge Studios', 'role': 'developer', 'logo': self.LOGO,
+                    'igdbId': 7},
+                   {'name': 'Harbor Light Games', 'role': 'publisher',
+                    'logo': self.LOGO.replace('abc123', 'pub456'), 'igdbId': 8}]
+        rec = {'developers': ['LANTERN FORGE STUDIOS LTD'], 'studios': studios,
+               'publishers': ['Harbor Light Games Inc.']}
+        self.assertEqual([r['logo'] for r in self.studio(rec)],
+                         [self.LOGO, self.LOGO.replace('abc123', 'pub456')])
+        # Steam says another spelling, but there is one developer on both sides
+        rec = {'developers': ['Lantern Works'], 'studios': studios[:1]}
+        self.assertEqual(self.studio(rec)[0]['logo'], self.LOGO)
+        # two developers on Game-db's side and no name match: no guess
+        two = studios[:1] + [{**studios[0], 'name': 'Other Hands'}]
+        self.assertIsNone(self.studio({'developers': ['Lantern Works'], 'studios': two})[0]['logo'])
+        # a logo that is not on IGDB's host never gets through
+        bad = [{**studios[0], 'logo': 'https://evil.example/a.png'}]
+        self.assertIsNone(self.studio({'developers': ['Lantern Forge Studios'],
+                                       'studios': bad})[0]['logo'])
+
+    def test_studio_credits_is_what_the_chips_use(self):
+        from nexus.gui.overview import studio_credits
+        rec = {'developers': ['A One', 'B Two'], 'publishers': ['A One Ltd', 'C Three']}
+        got = studio_credits(rec)
+        self.assertEqual([(c['role'], c['name']) for c in got],
+                         [('dev', 'A One'), ('pub', 'C Three')])
+        ok = lambda k: k in ('dev:b two', 'pub:c three')
+        self.assertEqual([c['key'] for c in studio_credits(rec, ok, strict=True)],
+                         ['dev:b two', 'pub:c three'])
+        self.assertEqual([c['key'] for c in studio_credits(rec, lambda k: False, strict=True)], [])
+        self.assertEqual([c['key'] for c in studio_credits(rec, lambda k: False)],
+                         ['dev:a one', 'pub:c three'])
+
     def test_links_only_to_own_sites(self):
         links = self.sections(store=self.INFO, tips=self.TIPS)['links']
         self.assertEqual([x['name'] for x in links], ['Steam store', 'ProtonDB'])

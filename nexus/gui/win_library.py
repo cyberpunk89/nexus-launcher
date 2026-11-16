@@ -285,6 +285,7 @@ class LibraryMixin:
         if sig is not None:
             sig.connect(self._open_from_game_page)
             self.details.studio_ok = self._studio_page_ok     # its studio chips (w-114)
+            self.details.studio_counts = self._studio_page_counts   # and Studio tile (w-134)
         # Clicking the Library tab while on a category page: back to Browse.
         tab = self.tabs.item(self.LIBRARY) if hasattr(self, 'tabs') else None
         if tab is not None:
@@ -1307,6 +1308,10 @@ class LibraryMixin:
         if self._theatre or categories.kind_of(key) not in categories.STUDIO_KINDS:
             return False
         return self._studio_counts().get(key, 0) >= categories.STUDIO_MIN
+
+    def _studio_page_counts(self) -> dict | None:
+        """The Studio tile's numbers: {studio key: games}; none in Theatre."""
+        return None if self._theatre else self._studio_counts()
 
     def _studio_counts(self) -> dict:
         """{studio key: games in the pool}, both roles, from one

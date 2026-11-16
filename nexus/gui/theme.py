@@ -928,6 +928,7 @@ def build_stylesheet(scale: float = 1.0) -> str:
     QLabel#OvSub, QLabel#OvName, QLabel#OvKey { color: $muted; font-size: ${fs_xs}px; }
     QLabel#OvName { font-size: ${fs_xs_plus}px; }
     QLabel#OvBig { color: $text; font-size: ${fs_stat_icon}px; font-weight: 600; }
+    QLabel#OvStudioName { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
     QLabel#OvRowName, QLabel#OvValue { color: $text; font-size: ${fs_command}px; }
     QLabel#OvRowWord { color: $muted; font-size: ${fs_xs}px; font-weight: 500; }
     QLabel#OvPill { border-radius: ${r_soft_tag}px; padding: 0 ${sp_2_5}px;

@@ -448,22 +448,8 @@ class GameContext(QWidget):
         ok = self.studio_ok
         if ok is None:
             return []
-        out = []
-        devs = [d for d in rec.get('developers') or [] if isinstance(d, str)]
-        pubs = [p for p in rec.get('publishers') or [] if isinstance(p, str)]
-        dev_id = ''
-        for d in devs:                           # the first developer with a page
-            key = categories.studio_key('dev', d)
-            if key and ok(key):
-                dev_id = categories.studio_id(d)
-                out.append((key, categories.studio_name(d)))
-                break
-        for p in pubs:                           # the first other studio publishing it
-            key = categories.studio_key('pub', p)
-            if key and categories.studio_id(p) != dev_id and ok(key):
-                out.append((key, categories.studio_name(p)))
-                break
-        return out
+        return [(c['key'], categories.studio_name(c['name']))
+                for c in studio_credits(rec, ok, strict=True)]
 
     def _sync_more(self, *_):
         self.more.setText("Show less" if self.expanded else "Read more")
@@ -1141,6 +1127,7 @@ class DetailsPanel(QFrame):
     # Whether a studio's page opens (w-114, the window's _studio_page_ok):
     # the game page's studio chips show only then.
     studio_ok = None
+    studio_counts = None                         # Callable[[], dict] | None: {studio key: games}
     toast = pyqtSignal(str, str)
     trailer = pyqtSignal(dict)                   # play a store trailer
     reveal = pyqtSignal(str)                     # show another library game
@@ -1410,6 +1397,7 @@ class DetailsPanel(QFrame):
         # The stat tiles (w-132): added to the layout first, hidden after, so
         # none ever shows as a window of its own.
         self.tiles = OverviewTiles()
+        self.tiles.open_key.connect(self._open_studio)
         v.addWidget(self.tiles)
         self.tiles.hide()
         self.similar_box, sv = self._column(SP['2'])
@@ -2217,11 +2205,19 @@ class DetailsPanel(QFrame):
         st = (self._store or {}).get('store') or {}
         self.context.studio_ok = self.studio_ok
         ctx = self.context.set_facts(rec, st.get('blurb') or '')
+        counts = self.studio_counts() if callable(self.studio_counts) else None
         tiles = self.tiles.set_sections(overview_model(
-            rec, self._store, self._tips, self.game, linux=has('proton')))
+            rec, self._store, self._tips, self.game, linux=has('proton'),
+            studio_counts=counts))
         similar = self._fill_similar()
         self.friends_box.set_game(self.game)
         self.bare_note.setVisible(not (ctx or tiles or similar))
+
+    def _open_studio(self, key: str):
+        """A Studio row: the same page the studio chips open, only when it
+        has one."""
+        if callable(self.studio_ok) and self.studio_ok(key):
+            self.filter_library.emit(key)
 
     # Kept for older callers: the context block now lives in Overview.
     _fill_context = _fill_overview
@@ -2695,6 +2691,7 @@ from .gameinfo import (anticheat_warning, is_installed, play_enabled, play_label
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json, in_thread  # noqa: E402
 from .overview import (_FACTS, credits_text, game_facts, overview_facts, overview_model,
+    studio_credits,
     OverviewTiles)  # noqa: E402,F401  (_FACTS, game_facts: tests patch them here)
 from .widgets import (amp, ask, clear_layout, FlowLayout, icon_button, icon_label, label,
     NoWheelCombo, plain_label, protongen_code_preview, SegmentedControl, set_glyph_icon,

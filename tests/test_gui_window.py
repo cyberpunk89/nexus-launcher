@@ -5360,7 +5360,7 @@ class Window(unittest.TestCase):
             panel._fill_about(self.OV_STORE)
             panel._fill_tips(self.OV_TIPS)
         try:
-            desk = [k for k in panel.tiles.keys() if k != 'links']
+            desk = [k for k in panel.tiles.keys() if k not in ('links', 'studio')]   # no browser, no Library pages on a TV
             self.assertIn('players', desk)
             self.assertIn('length', desk)
             self.assertEqual(d.drawer.tiles.keys(), desk)
@@ -5369,6 +5369,7 @@ class Window(unittest.TestCase):
             self.assertEqual(d.drawer.credits.text(), "Dev · 2021")
             self.assertEqual(d.drawer.about.text(), 'A game about tests.')
             self.assertNotIn('links', d.drawer.tiles.tile)
+            self.assertNotIn('studio', d.drawer.tiles.tile)
             # The progress line takes the main story from the same record.
             self.assertIn("12 h", d.drawer.progress_sub.text())
         finally:
