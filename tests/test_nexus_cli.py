@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from unittest import mock
 from pathlib import Path
 
@@ -723,6 +724,28 @@ class Sandbox(unittest.TestCase):
         out = json.loads(self.cli('--history', '--json').stdout)
         self.assertEqual(out['by_game'], {'steam-5': {'sessions': 1},
                                           'test-game': {'sessions': 3}})
+
+    def test_insights_json_from_temp_sessions(self):
+        """w-138: --insights --json reads sessions.jsonl, the Library cache and
+        the facts index, with no network; a missing cache is not an error."""
+        today = datetime.now().date()
+        lines = [{'slug': 'test-game', 'source': 'nexus', 'name': 'Test Game',
+                  'start': f'{today - timedelta(days=d)}T20:00:00', 'end': '', 'minutes': 60.0}
+                 for d in (0, 1, 2)]
+        data = tests.sandbox.data_dir(self.home)
+        (data / 'sessions.jsonl').write_text(''.join(json.dumps(x) + '\n' for x in lines))
+        out = json.loads(self.cli('--insights', '--json').stdout)
+        self.assertEqual((out['v'], out['today'], out['streak']['now']), (1, str(today), 3))
+        self.assertEqual(out['backlog']['never'], 0)
+        self.assertEqual(out['space'], [])
+        cache = tests.sandbox.cache_dir(self.home)
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / 'library.json').write_text(json.dumps({'args': [], 'data': {'games': [
+            {'slug': 'big', 'display_name': 'Big', 'disk_bytes': 5000, 'installed': True}]}}))
+        out = json.loads(self.cli('--insights', '--json').stdout)
+        self.assertEqual(out['space'], [{'slug': 'big', 'bytes': 5000, 'idle_days': None}])
+        self.assertEqual(out['backlog']['never'], 1)
+        self.assertIn('3 days', self.cli('--insights').stdout)
 
     def test_corrupt_shortcuts_is_never_overwritten(self):
         if steam_running():

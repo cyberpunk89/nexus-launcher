@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView, QLa
 from .. import categories, smart
 from ..features import has
 from .fmt import fmt_hours, fmt_relative, fmt_size
+from .widget_spec import VIBES
 from .theme import (collection_look, FS, G, GRAD, LOOK, P, pill_qss, R, scaled, SP, STAGE_BTN_H,
     TILE_LIFT, TILE_W)
 
@@ -1511,10 +1512,6 @@ def _pickable(games: list[dict]) -> list[dict]:
             and not g.get('incomplete') and not g.get('playing') and not g.get('launching')]
 
 
-# Pick for me's vibe chips (w-91): (key, chip label). Every key but 'any' is
-# a smart rule (nexus/smart.py), so a chip only shows when that rule has games.
-VIBES = (('any', "Any"), ('short', "Quick session"), ('coop', "Co-op"),
-         ('unfinished', "Unfinished"), ('almost', "Almost done"), ('never', "Never played"))
 VIBE_LABELS = dict(VIBES)
 
 
@@ -1579,10 +1576,12 @@ def featured_games(games: list[dict], n: int = 5) -> list[dict]:
     """What the hero shows: the game being played (or starting), then the
     most recently played, then a favourite, an update or something new — no repeats."""
     out: list[dict] = []
+    taken: set[int] = set()              # by identity: a dict compare is deep and slow
 
     def add(g):
-        if g is not None and g not in out and len(out) < n:
+        if g is not None and id(g) not in taken and len(out) < n:
             out.append(g)
+            taken.add(id(g))
     for g in games:
         if g.get('playing'):
             add(g)
@@ -1593,9 +1592,9 @@ def featured_games(games: list[dict], n: int = 5) -> list[dict]:
                     key=lambda g: g['last_played'], reverse=True)
     for g in played[:3]:
         add(g)
-    add(next((g for g in games if g.get('favorite') and g not in out), None))
-    add(next((g for g in games if g.get('update_pending') and g not in out), None))
-    fresh = sorted((g for g in games if g.get('added_at') and g not in out),
+    add(next((g for g in games if g.get('favorite') and id(g) not in taken), None))
+    add(next((g for g in games if g.get('update_pending') and id(g) not in taken), None))
+    fresh = sorted((g for g in games if g.get('added_at') and id(g) not in taken),
                    key=lambda g: g['added_at'], reverse=True)
     for g in fresh:
         add(g)

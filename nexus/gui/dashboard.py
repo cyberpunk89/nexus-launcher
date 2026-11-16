@@ -18,35 +18,22 @@ from .common import alive, COLLECTION_NAMES
 from .layouts import (dash_preset, layout_for, MAX_LAYOUTS, MY_HOME, OLD_HOME, PRESET_DENSITY,
     PRESET_LABELS, PROMPT_MAX)
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
-from .library import (_pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, VIBES,
-    vibe_pools)
+from .library import _pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, vibe_pools
 from .moments import DISK_FULL
+from .home_feed import HomeFeed, today  # noqa: F401
+from .widget_spec import dash_tables, OPTION_BAR, SPEC, SPECS, WidgetSpec  # noqa: F401
 from .theme import FONTS, FS, G, GLYPH_H, GRAD, P, PERSON_H, PILL_H, R, scaled, SP, STAGE_FACT_H
 from .theme import collection_look
 
 
-DASH_SPAN = {'small': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
-# (id, sizes it allows, default size, hidden by default)
-DASH_KINDS = [                       # default order packs evenly in 3 columns
-    ('stage',      ('cinematic', 'wide', 'banner'), 'cinematic', False),
-    ('save',       ('small',),                 'small', True),    # beside a Wide Stage (w-91)
-    ('foryou',     ('full',),                  'full',  False),   # on the Stage by default
-    ('friends',    ('small', 'wide', 'full'),  'full',  False),
-    ('pick',       ('small',),                 'small', False),   # was Surprise me (w-91)
-    ('system',     ('small', 'wide'),          'wide',  False),
-    ('news',       ('small', 'wide', 'full'),  'small', False),
-    ('installed',  ('full',),                  'full',  False),
-    ('smart',      ('full',),                  'full',  False),
-    ('deals',      ('small', 'wide', 'full'),  'wide',  False),
-    ('upcoming',   ('small', 'wide', 'full'),  'small', False),
-    ('week',       ('small', 'wide'),          'small', False),
-    ('favourites', ('full',),                  'full',  False),
-    ('collections', ('full',),                 'full',  False),
-    ('updates',    ('full',),                  'full',  False),
-    ('owned',      ('full',),                  'full',  True),
-]
-DASH_SIZES = {k: sizes for k, sizes, _d, _h in DASH_KINDS}
-DASH_DEFAULT_SIZE = {k: d for k, _s, d, _h in DASH_KINDS}
+DASH_SPAN = {'small': 1, 'tall': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
+DASH_ROWS = {'tall': 2}                 # grid rows a size covers (default 1)
+# Sizes, options, labels, placement and For you feeds come from one WidgetSpec
+# per widget (widget_spec.py, w-136); KINDS keeps the default order.
+_T = dash_tables(SPECS)
+DASH_KINDS = _T['KINDS']
+DASH_SIZES = _T['SIZES']
+DASH_DEFAULT_SIZE = _T['DEFAULT_SIZE']
 # Widgets folded into another: a saved layout's first one becomes the new
 # widget in its place (so it doesn't jump to the end).
 DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
@@ -55,24 +42,15 @@ DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
 # takes the hero's place, which was always there (w-85).
 DASH_MERGED_SHOWN = {'stage'}
 # Widgets added later that belong next to a related one rather than last.
-DASH_PLACE_AFTER = {'upcoming': 'deals', 'pick': 'stage', 'collections': 'favourites',
-                    'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
-                    'foryou': 'stage', 'save': 'stage'}
+DASH_PLACE_AFTER = _T['PLACE_AFTER']
 # Per-widget options checked like sizes: the first value is the default and
 # a bad one falls back to it (w-85, w-90). The Stage's Pinned art also keeps
 # a `pin` (the game's slug) on its item, checked in dash_normalize.
-DASH_OPTIONS = {'stage': {'style': ('row', 'clean'),
-                          'bg': ('art', 'pinned', 'gradient', 'surface')},
-                'week': {'style': ('bars', 'number')},
-                'foryou': {'style': ('stage', 'strip')},
-                'pick': {'vibe': tuple(k for k, _label in VIBES)}}
+DASH_OPTIONS = _T['OPTIONS']
 # The edit bar's "Style:" button names (a kind listed here gets the button).
-DASH_STYLE_LABELS = {'foryou': {'stage': "On stage", 'strip': "Strip"},
-                     'stage': {'row': "Row on art", 'clean': "Clean"},
-                     'week': {'bars': "Bars", 'number': "Number only"}}
+DASH_STYLE_LABELS = _T['STYLE_LABELS']
 # The edit bar's "Background:" button names (w-90); 'surface' is shown as Plain.
-DASH_BG_LABELS = {'stage': {'art': "Game art", 'pinned': "Pinned art",
-                            'gradient': "Accent gradient", 'surface': "Plain"}}
+DASH_BG_LABELS = _T['BG_LABELS']
 QWIDGETSIZE_MAX = (1 << 24) - 1          # Qt's "no maximum"
 PIN_MAX = 80                         # a pinned game's slug, at most this long
 # Home's spacing (Customise → Density, w-90): Home only, on top of Appearance →
@@ -87,8 +65,18 @@ DASH_DENSITY = {
 }
 DENSITY_LABELS = {'comfortable': "Comfortable", 'compact': "Compact"}
 DENSITY_TIP = "Spacing on Home only. Appearance → Size changes text and controls everywhere."
+# {event or kind: the kinds it refreshes}: a spec's `feeds` (w-138).
+FED_BY = _T['FED_BY']
 # Refreshes of these mean For you now's moments may have moved too.
-FORYOU_FEEDS = {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'}
+FORYOU_FEEDS = set(SPEC['foryou'].feeds)
+
+
+def fed(kinds) -> set:
+    """`kinds` plus every kind fed by any of them."""
+    out = set(kinds)
+    for k in kinds:
+        out |= FED_BY.get(k, set())
+    return out
 
 
 def _dash_shelf(value) -> str:
@@ -371,22 +359,45 @@ def dash_cols(width: int) -> int:
     return 3 if width >= 1100 else 2 if width >= 700 else 1
 
 
-def dash_pack(items, cols: int, skip=()) -> list[tuple[str, int, int, int]]:
-    """Row-wise flow of the visible widgets: (id, row, col, span). A widget
-    that doesn't fit what's left of a row starts the next one, so the order
-    you set is the order you read."""
-    out, row, col = [], 0, 0
+def dash_grid(items, cols: int, skip=()) -> list[tuple[str, int, int, int, int]]:
+    """Row-wise flow of the visible widgets: (id, row, col, span, rows). A
+    widget that doesn't fit what's left of a row starts the next one, so the
+    order you set is the order you read. A Tall one covers two rows; the
+    cursor skips the cells under it and never goes back to fill holes. Tall
+    is one row in a single column, and beside the Stage (w-91 fixes that
+    row's height to the art)."""
+    out, taken, row, col = [], set(), 0, 0
+    srow = None
     for it in items:
         if it.get('hidden') or it['id'] in skip:
             continue
         span = min(DASH_SPAN.get(it['size'], 1), cols)
-        if col and col + span > cols:
-            row, col = row + 1, 0
-        out.append((it['id'], row, col, span))
+        while True:
+            if col and col + span > cols:
+                row, col = row + 1, 0
+            if any((row, c) in taken for c in range(col, col + span)):
+                col += 1
+                if col >= cols:
+                    row, col = row + 1, 0
+                continue
+            break
+        if it['id'] == 'stage':
+            srow = row
+        rows = DASH_ROWS.get(it['size'], 1)
+        if cols == 1 or (srow is not None and row == srow and it['id'] != 'stage'):
+            rows = 1
+        out.append((it['id'], row, col, span, rows))
+        for r in range(row, row + rows):
+            taken.update((r, c) for c in range(col, col + span))
         col += span
         if col >= cols:
             row, col = row + 1, 0
     return out
+
+
+def dash_pack(items, cols: int, skip=()) -> list[tuple[str, int, int, int]]:
+    """dash_grid without the row span: (id, row, col, span)."""
+    return [(k, r, c, s) for k, r, c, s, _n in dash_grid(items, cols, skip)]
 
 
 def dash_move(items, wid: str, direction: str, cols: int, skip=()) -> list[dict]:
@@ -404,11 +415,13 @@ def dash_move(items, wid: str, direction: str, cols: int, skip=()) -> list[dict]
             a, b = vis[k], vis[j]
             items[a], items[b] = items[b], items[a]
         return items
-    packed = dash_pack(items, cols, skip)
-    where = {i: (r, c, s) for i, r, c, s in packed}
-    r, c, _s = where[wid]
-    target_row = r - 1 if direction == 'up' else r + 1
-    row_items = [(i, cc, ss) for i, rr, cc, ss in packed if rr == target_row]
+    packed = dash_grid(items, cols, skip)
+    where = {i: (r, c, n) for i, r, c, _s, n in packed}
+    r, c, n = where[wid]
+    target_row = r - 1 if direction == 'up' else r + n
+    # What covers that row (a tall from above counts), apart from my own row.
+    row_items = [(i, cc, ss) for i, rr, cc, ss, nn in packed
+                 if rr != r and rr <= target_row < rr + nn]
     if not row_items:
         return items
     # The widget in that row under our column (or the nearest one).
@@ -547,18 +560,14 @@ class DashWidget(QFrame):
         self.btn_shelf.clicked.connect(lambda: self.edit.emit(self.KIND, 'shelf'))
         self.btn_shelf.setVisible(False)
         bl.addWidget(self.btn_shelf)
-        self.btn_style = QPushButton()            # Style: … (DASH_STYLE_LABELS)
-        self.btn_style.setObjectName("Ghost")
-        self.btn_style.setToolTip("Change how this shows")
-        self.btn_style.clicked.connect(lambda: self.edit.emit(self.KIND, 'style'))
-        self.btn_style.setVisible(False)
-        bl.addWidget(self.btn_style)
-        self.btn_bg = QPushButton()               # Background: … (DASH_BG_LABELS, w-90)
-        self.btn_bg.setObjectName("Ghost")
-        self.btn_bg.setToolTip("What's behind the Stage")
-        self.btn_bg.clicked.connect(lambda: self.edit.emit(self.KIND, 'bg'))
-        self.btn_bg.setVisible(False)
-        bl.addWidget(self.btn_bg)
+        for key, (_prefix, tip) in OPTION_BAR.items():    # Style, Background… (w-137)
+            btn = QPushButton()
+            btn.setObjectName("Ghost")
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _=False, k=key: self.edit.emit(self.KIND, k))
+            btn.setVisible(False)
+            bl.addWidget(btn)
+            setattr(self, f'btn_{key}', btn)          # btn_style, btn_bg
         hide = icon_button(G['eye_off'], "Hide this widget", 28, "Ghost", round_=True)
         hide.clicked.connect(lambda: self.edit.emit(self.KIND, 'hide'))
         bl.addWidget(hide)
@@ -576,17 +585,14 @@ class DashWidget(QFrame):
         self.btn_shelf.setVisible(shelf is not None)
         if shelf is not None:
             self.btn_shelf.setText(f"Shelf: {shelf}")
-        styles = DASH_STYLE_LABELS.get(self.KIND)
-        self.btn_style.setVisible(styles is not None)
-        if styles is not None:
-            cur = self.options.get('style') or DASH_OPTIONS[self.KIND]['style'][0]
-            self.btn_style.setText(f"Style: {styles.get(cur, cur)}")
-        bgs = DASH_BG_LABELS.get(self.KIND)
-        self.btn_bg.setVisible(bgs is not None)
-        if bgs is not None:
-            cur = self.options.get('bg') or DASH_OPTIONS[self.KIND]['bg'][0]
-            self.btn_bg.setText(f"Background: {bgs.get(cur, cur)}")
-        self.btn_size.setText({'small': "Small", 'wide': "Wide", 'full': "Full width",
+        for key, (prefix, _tip) in OPTION_BAR.items():
+            btn, pairs = getattr(self, f'btn_{key}'), SPEC[self.KIND].options.get(key)
+            btn.setVisible(pairs is not None)
+            if pairs is not None:
+                labels = dict(pairs)
+                cur = self.options.get(key) or pairs[0][0]
+                btn.setText(f"{prefix}: {labels.get(cur, cur)}")
+        self.btn_size.setText({'small': "Small", 'tall': "Tall", 'wide': "Wide", 'full': "Full width",
                                'cinematic': "Cinematic", 'banner': "Banner"}[size])
         self.setProperty('editing', on)
         self.style().unpolish(self)
@@ -1665,7 +1671,7 @@ class NewsWidget(DashWidget):
                 self.body.addWidget(label("Loading headlines…", "Muted"))
                 hub.newspage.refresh()            # once; cached by the CLI
             return
-        n = {'small': 3, 'wide': 4, 'full': 6}[self.size_]
+        n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
         for it in items[:n]:
             self.body.addWidget(self._story_row(it, hub))
 
@@ -1720,7 +1726,7 @@ class DealsWidget(DashWidget):
                                       "Muted", wrap=True))
             return
         items.sort(key=lambda g: -((g.get('price') or {}).get('cutPct') or 0))
-        n = {'small': 3, 'wide': 4, 'full': 6}[self.size_]
+        n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
         for g in items[:n]:
             price = g.get('price') or {}
             cur = label(price.get('currentStr') or '', None)
@@ -2132,7 +2138,7 @@ class UpcomingWidget(DashWidget):
             self.body.addWidget(label("Nothing unreleased on your wishlist.", "Muted",
                                       wrap=True))
             return
-        n = {'small': 3, 'wide': 4, 'full': 6}[self.size_]
+        n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
         for g in items[:n]:
             text, preorder = gamedb.price_line(g)
             when = label(gamedb.release_label(g), None)
@@ -2175,7 +2181,11 @@ class WeekWidget(DashWidget):
         self._filling = True
         try:
             # Ask first: a cached answer comes back right here, inside fill.
-            if self._hist is None or time.monotonic() - self._asked > 300:
+            per_ = (self._hist or {}).get('periods') or {}
+            moved = bool(per_.get('today')) and per_['today'] != today().isoformat()
+            if self._hist is None or moved or time.monotonic() - self._asked > 300:
+                if moved:                    # midnight passed: yesterday's memo is no answer
+                    cli_cache_forget(['--history', '--json'])
                 self._asked = time.monotonic()
                 cli_json(['--history', '--json'],
                          lambda d, e, hub=hub: self._arrived(hub, d, e), 30000, ttl=60)
@@ -2284,6 +2294,7 @@ class Dashboard(QWidget):
     def __init__(self, hub):
         super().__init__()
         self.hub = hub
+        self.feed = HomeFeed(self)                # midnight, hour, insights (w-138)
         self.editing = False
         self.widgets: dict[str, DashWidget] = {}
         lay = QVBoxLayout(self)
@@ -2367,6 +2378,10 @@ class Dashboard(QWidget):
             # ours, sets the columns (w-101).
             self._view.installEventFilter(self)
 
+    def insights_consumers(self) -> set:
+        """The shown widgets that read the insights payload."""
+        return FED_BY.get('insights', set()) & {i['id'] for i in self.items if not i['hidden']}
+
     @property
     def stage(self) -> StageWidget:
         return self.widgets['stage']
@@ -2396,8 +2411,9 @@ class Dashboard(QWidget):
 
     # ---- data ----
     def refresh(self, kinds=None):
-        if kinds is not None and set(kinds) & FORYOU_FEEDS:
-            kinds = set(kinds) | {'foryou'}      # what For you now reads moved
+        if kinds is not None:
+            kinds = fed(kinds)                   # what the feeds say moved with them
+        self.feed.ask(kinds)                     # ask first: the answer is there for the fill
         for k, w in self.widgets.items():
             if kinds is None or k in kinds:
                 it = next((i for i in self.items if i['id'] == k), None)
@@ -2485,22 +2501,26 @@ class Dashboard(QWidget):
             self.grid.setColumnStretch(c, 0)
         self._cols = cols
         self._skipped = self._skip()
-        placed = dash_pack(self.items, cols, self._skipped)
+        placed = dash_grid(self.items, cols, self._skipped)
         on = {k for k, *_ in placed}
         # Beside a Wide Stage (3 columns): a widget as tall as the art, at the
         # top, not stretched to the art and its Continue row (w-91).
-        srow = next((r for k, r, _c, _s in placed if k == 'stage'), None)
+        srow = next((r for k, r, *_ in placed if k == 'stage'), None)
         wide = cols == 3 and srow is not None and self.stage.size_ == 'wide'
-        beside = {k for k, r, _c, _s in placed if wide and r == srow and k != 'stage'}
-        for k, r, c, span in placed:
+        beside = {k for k, r, *_ in placed if wide and r == srow and k != 'stage'}
+        for k, r, c, span, rows in placed:
             it = next(i for i in self.items if i['id'] == k)
             self.widgets[k].options = _dash_options(k, it)
             self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
                                         else dash_shelf_label(self.hub, it['shelf']))
             if k in beside:
                 self.grid.addWidget(self.widgets[k], r, c, 1, span, Qt.AlignmentFlag.AlignTop)
+            elif rows == 1 and span < cols and k != 'stage':
+                # A card keeps its own height instead of stretching to a
+                # taller neighbour in the row (w-143); a Tall one fills both.
+                self.grid.addWidget(self.widgets[k], r, c, 1, span, Qt.AlignmentFlag.AlignTop)
             else:
-                self.grid.addWidget(self.widgets[k], r, c, 1, span)
+                self.grid.addWidget(self.widgets[k], r, c, rows, span)
         for k in self._beside - beside:
             self.widgets[k].setMinimumHeight(0)
             self.widgets[k].setMaximumHeight(QWIDGETSIZE_MAX)
@@ -2581,33 +2601,30 @@ class Dashboard(QWidget):
                 cur = _dash_shelf(it.get('shelf'))
                 it['shelf'] = rules[(rules.index(cur) + 1) % len(rules)] if cur in rules \
                     else rules[0]
-            elif action == 'style':
-                styles = DASH_OPTIONS[kind]['style']
-                cur = it.get('style') if it.get('style') in styles else styles[0]
-                it['style'] = styles[(styles.index(cur) + 1) % len(styles)]
-            elif action == 'bg':
-                bgs = DASH_OPTIONS[kind]['bg']
-                cur = it.get('bg') if it.get('bg') in bgs else bgs[0]
-                nxt = bgs[(bgs.index(cur) + 1) % len(bgs)]
-                slug = self.stage.art.game.get('slug')
-                if nxt == 'pinned' and not slug:      # nothing shown to pin: skip it
-                    nxt = bgs[(bgs.index(nxt) + 1) % len(bgs)]
-                it['bg'] = nxt
-                if nxt == 'pinned':
-                    it['pin'] = slug                  # Pinned art pins the game shown
-                else:
-                    it.pop('pin', None)
+            elif action in OPTION_BAR:
+                vals = DASH_OPTIONS[kind][action]
+                cur = it.get(action) if it.get(action) in vals else vals[0]
+                nxt = vals[(vals.index(cur) + 1) % len(vals)]
+                if action == 'bg':
+                    slug = self.stage.art.game.get('slug')
+                    if nxt == 'pinned' and not slug:      # nothing shown to pin: skip it
+                        nxt = vals[(vals.index(nxt) + 1) % len(vals)]
+                    if nxt == 'pinned':
+                        it['pin'] = slug                  # Pinned art pins the game shown
+                    else:
+                        it.pop('pin', None)
+                it[action] = nxt
             elif action == 'hide':
                 it['hidden'] = True
             elif action == 'show':
                 it['hidden'] = False
         self.hub.prefs.dashboard = new
-        self.refresh([kind]) if action in ('size', 'show', 'shelf', 'style', 'bg') else None
+        self.refresh([kind]) if action in ('size', 'show', 'shelf', *OPTION_BAR) else None
         self.relayout(force=True)
         self.hub.prefs.save()
         # Keep the controller's focus on the widget that moved.
         w = self.widgets.get(kind)
-        btn = {'style': getattr(w, 'btn_style', None), 'bg': getattr(w, 'btn_bg', None)}.get(action)
+        btn = getattr(w, f'btn_{action}', None) if action in OPTION_BAR else None
         if btn is not None and btn.isVisibleTo(w):
             QTimer.singleShot(0, lambda: alive(btn) and focus_and_reveal(btn))
         if w is not None and w.isVisible() and action in ('left', 'right', 'up', 'down'):
@@ -2853,7 +2870,7 @@ from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .layouts_bar import LayoutsBar, LayoutsView, time_rule_body  # noqa: E402
-from .jobs import cli_json  # noqa: E402
+from .jobs import cli_cache_forget, cli_json  # noqa: E402
 from .library import featured_games, ShelfRow  # noqa: E402
 from .newspage import news_style, NewsArt  # noqa: E402
 from .system import _add, _bar_rows, _columns, _day_bars, play_rows  # noqa: E402

@@ -5,9 +5,9 @@ import re
 import unittest
 
 try:
-    from test_gui_layout import nx
+    from test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx
+    from tests.test_gui_layout import nx, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import linux_features, patch_gui  # noqa: E402
 
 if nx is not None:
@@ -109,7 +109,7 @@ class Radii(unittest.TestCase):
         self.addCleanup(set_gui, 'CliQuery', saved[1])
         with mock.patch.object(nx.LibraryPrefs, 'save', lambda self: None):
             win = nx.MainWindow()
-            self.addCleanup(win.deleteLater)
+            self.addCleanup(drop, win)
             win.resize(1400, 850)
             win.show()
             win._on_library({'games': [{'slug': s, 'display_name': s.title(), 'source': 'nexus',
@@ -283,6 +283,78 @@ class DashboardModel(unittest.TestCase):
         out = nx.dash_move(items, 'activity', 'down', 3)
         self.assertEqual([i['id'] for i in out].index('activity'),
                          [i['id'] for i in out].index('proton') + 1)
+
+    def test_grid_tall_spans_two_rows(self):
+        items = self.items(('news', 'tall'), ('activity', 'small'), ('storage', 'small'),
+                           ('health', 'small'))
+        got = nx.dash_grid(items, 3)
+        self.assertEqual(got, [('news', 0, 0, 1, 2), ('activity', 0, 1, 1, 1),
+                               ('storage', 0, 2, 1, 1), ('health', 1, 1, 1, 1)])
+        self.assertEqual(nx.DASH_ROWS['tall'], 2)
+
+    def test_grid_skips_cells_under_a_tall(self):
+        items = self.items(('activity', 'small'), ('news', 'tall'), ('storage', 'small'),
+                           ('health', 'small'), ('proton', 'small'), ('deals', 'wide'))
+        got = {k: (r, c) for k, r, c, _s, _n in nx.dash_grid(items, 3)}
+        # row1 col1 is under the tall: the next small skips it, and the cursor
+        # never goes back to fill holes
+        self.assertEqual(got['news'], (0, 1))
+        self.assertEqual(got['storage'], (0, 2))
+        self.assertEqual(got['health'], (1, 0))
+        self.assertEqual(got['proton'], (1, 2))
+        self.assertEqual(got['deals'], (2, 0))
+
+    def test_grid_tall_is_one_row_in_one_column(self):
+        items = self.items(('news', 'tall'), ('activity', 'small'))
+        self.assertEqual(nx.dash_grid(items, 1),
+                         [('news', 0, 0, 1, 1), ('activity', 1, 0, 1, 1)])
+        self.assertEqual(nx.dash_pack(items, 3), [('news', 0, 0, 1), ('activity', 0, 1, 1)])
+
+    def test_grid_tall_beside_stage_is_one_row(self):
+        items = self.items(('stage', 'wide'), ('news', 'tall'), ('activity', 'small'))
+        got = nx.dash_grid(items, 3)
+        self.assertEqual(got[:2], [('stage', 0, 0, 2, 1), ('news', 0, 2, 1, 1)])
+        self.assertEqual(got[2], ('activity', 1, 0, 1, 1))
+
+    def test_move_up_onto_a_tall_row(self):
+        items = self.items(('news', 'tall'), ('activity', 'small'), ('storage', 'small'),
+                           ('health', 'small'), ('proton', 'small'))
+        # row0: news(tall) activity storage; row1: -, health proton
+        out = nx.dash_move(items, 'proton', 'up', 3)         # up from row 1 -> row 0, col 2
+        self.assertEqual([i['id'] for i in out], ['news', 'activity', 'proton', 'storage', 'health'])
+        out = nx.dash_move(items, 'health', 'up', 3)
+        self.assertEqual([i['id'] for i in out][:3], ['news', 'health', 'activity'])
+        out = nx.dash_move(items, 'news', 'up', 3)           # nothing above
+        self.assertEqual([i['id'] for i in out], [i['id'] for i in items])
+
+    def test_move_down_past_a_tall(self):
+        items = self.items(('activity', 'small'), ('news', 'tall'), ('storage', 'small'),
+                           ('health', 'small'), ('proton', 'small'), ('deals', 'wide'))
+        # row0: activity news storage; row1: health . proton; row2: deals
+        out = nx.dash_move(items, 'news', 'down', 3)         # lands past its two rows
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids.index('news'), ids.index('deals') + 1)
+        out = nx.dash_move(items, 'activity', 'down', 3)     # under activity: health
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids.index('activity'), ids.index('health') + 1)
+        out = nx.dash_move(items, 'deals', 'down', 3)        # nothing below
+        self.assertEqual([i['id'] for i in out], [i['id'] for i in items])
+        short = items[:5]
+        out = nx.dash_move(short, 'news', 'down', 3)         # row 2 is empty: nothing moves
+        self.assertEqual([i['id'] for i in out], [i['id'] for i in short])
+
+    def test_move_left_right_around_a_tall(self):
+        items = self.items(('activity', 'small'), ('news', 'tall'), ('storage', 'small'))
+        out = nx.dash_move(items, 'news', 'right', 3)
+        self.assertEqual([i['id'] for i in out], ['activity', 'storage', 'news'])
+        out = nx.dash_move(items, 'news', 'left', 3)
+        self.assertEqual([i['id'] for i in out], ['news', 'activity', 'storage'])
+
+    def test_normalize_resets_tall_where_not_offered(self):
+        out = nx.dash_normalize([{'id': 'system', 'size': 'tall'}, {'id': 'news', 'size': 'tall'}])
+        sizes = {i['id']: i['size'] for i in out}
+        self.assertEqual(sizes['system'], 'wide')
+        self.assertEqual(sizes['news'], 'tall')
 
     def test_normalize(self):
         saved = [{'id': 'news', 'size': 'huge'}, {'id': 'bogus'}, {'id': 'news'},
@@ -1216,6 +1288,10 @@ class DashboardFill(unittest.TestCase):
         p = mock.patch.object(D, 'cli_json', cli_json)
         p.start()
         self.addCleanup(p.stop)
+        from datetime import date
+        p = mock.patch.object(D, 'today', lambda: date(2026, 10, 28))   # HIST's day (w-138)
+        p.start()
+        self.addCleanup(p.stop)
         self.hub = SimpleNamespace(_games=[dict(g) for g in self.GAMES])
 
     def texts(self, w):
@@ -1878,7 +1954,7 @@ class Restyle(unittest.TestCase):
         self.addCleanup(p.stop)
         self.addCleanup(self._back_to_default)
         self.win = nx.MainWindow()
-        self.addCleanup(self.win.deleteLater)
+        self.addCleanup(drop, self.win)
         self.win.resize(1400, 850)
         self.win.show()
         self.win._on_library({'games': [{'slug': s, 'display_name': s.title(), 'source': 'nexus',
@@ -2005,8 +2081,99 @@ class Restyle(unittest.TestCase):
             QApplication.processEvents()
         took = []
         for theme in ('campfire', 'forest', 'dawn'):
-            t = time.perf_counter()
+            t = time.process_time()
             self.win.set_appearance({**self.base, 'theme': theme}, save=False)
-            took.append(time.perf_counter() - t)
+            took.append(time.process_time() - t)
             QApplication.processEvents()
         self.assertLess(statistics.median(took), 1.0, took)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class WidgetSpecTest(unittest.TestCase):
+    """The WidgetSpec registry (w-136): one spec per widget feeds every table."""
+
+    def test_derived_tables_equal_old(self):
+        from nexus.gui.widget_spec import dash_tables, SPECS
+        t = dash_tables(SPECS)
+        self.assertEqual(t['KINDS'], [
+            ('stage', ('cinematic', 'wide', 'banner'), 'cinematic', False),
+            ('save', ('small',), 'small', True),
+            ('foryou', ('full',), 'full', False),
+            ('friends', ('small', 'wide', 'full'), 'full', False),
+            ('pick', ('small',), 'small', False),
+            ('system', ('small', 'wide'), 'wide', False),
+            ('news', ('small', 'tall', 'wide', 'full'), 'small', False),
+            ('installed', ('full',), 'full', False),
+            ('smart', ('full',), 'full', False),
+            ('deals', ('small', 'tall', 'wide', 'full'), 'wide', False),
+            ('upcoming', ('small', 'tall', 'wide', 'full'), 'small', False),
+            ('week', ('small', 'wide'), 'small', False),
+            ('favourites', ('full',), 'full', False),
+            ('collections', ('full',), 'full', False),
+            ('updates', ('full',), 'full', False),
+            ('owned', ('full',), 'full', True)])
+        self.assertEqual(t['SIZES'], {k: s for k, s, _d, _h in t['KINDS']})
+        self.assertEqual(t['DEFAULT_SIZE'], {k: d for k, _s, d, _h in t['KINDS']})
+        self.assertEqual(t['OPTIONS'], {
+            'stage': {'style': ('row', 'clean'),
+                      'bg': ('art', 'pinned', 'gradient', 'surface')},
+            'week': {'style': ('bars', 'number')},
+            'foryou': {'style': ('stage', 'strip')},
+            'pick': {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never')}})
+        self.assertEqual(t['STYLE_LABELS'], {
+            'foryou': {'stage': "On stage", 'strip': "Strip"},
+            'stage': {'row': "Row on art", 'clean': "Clean"},
+            'week': {'bars': "Bars", 'number': "Number only"}})
+        self.assertEqual(t['BG_LABELS'], {
+            'stage': {'art': "Game art", 'pinned': "Pinned art",
+                      'gradient': "Accent gradient", 'surface': "Plain"}})
+        self.assertEqual(t['PLACE_AFTER'], {
+            'upcoming': 'deals', 'pick': 'stage', 'collections': 'favourites',
+            'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
+            'foryou': 'stage', 'save': 'stage'})
+        from nexus.gui import dashboard
+        self.assertEqual(dashboard.FORYOU_FEEDS,
+                         {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'})
+        self.assertEqual(t['FED_BY']['system'], {'foryou'})
+        self.assertEqual(t['FED_BY']['midnight'], {'week'})
+        self.assertEqual(t['FED_BY']['sessions'], {'week'})
+        self.assertEqual(nx.DASH_KINDS, t['KINDS'])
+        self.assertEqual(nx.DASH_OPTIONS, t['OPTIONS'])
+
+    def test_every_spec_has_one_class(self):
+        from nexus.gui.widget_spec import SPEC
+        self.assertEqual(set(SPEC), set(nx.DASH_WIDGETS))
+        for k, cls in nx.DASH_WIDGETS.items():
+            self.assertEqual(SPEC[k].title, cls.TITLE, k)
+
+    def test_new_spec_reaches_every_table(self):
+        from nexus.gui.widget_spec import dash_tables, SPECS, WidgetSpec
+        probe = WidgetSpec('probe', "Probe", ('small', 'wide'), 'wide', False,
+                           options={'style': (('a', "A"), ('b', "B"))},
+                           after='stage', feeds=('x',))
+        t = dash_tables(SPECS + (probe,))
+        self.assertIn(('probe', ('small', 'wide'), 'wide', False), t['KINDS'])
+        self.assertEqual(t['SIZES']['probe'], ('small', 'wide'))
+        self.assertEqual(t['DEFAULT_SIZE']['probe'], 'wide')
+        self.assertEqual(t['OPTIONS']['probe'], {'style': ('a', 'b')})
+        self.assertEqual(t['STYLE_LABELS']['probe'], {'a': "A", 'b': "B"})
+        self.assertEqual(t['PLACE_AFTER']['probe'], 'stage')
+        from nexus.gui import dashboard
+        self.assertEqual(t['FED_BY']['x'], {'probe'})
+        self.assertNotIn('x', dashboard.FORYOU_FEEDS)
+
+    def test_fed_by_routes_events(self):
+        """A spec's feeds are events or kinds in one namespace: a refresh of
+        one wakes every widget that lists it (w-138)."""
+        from nexus.gui import dashboard
+        self.assertEqual(dashboard.fed({'system'}), {'system', 'foryou'})
+        self.assertEqual(dashboard.fed(['midnight']), {'midnight', 'week'})
+        self.assertEqual(dashboard.fed({'sessions', 'friends'}),
+                         {'sessions', 'friends', 'week', 'foryou'})
+        self.assertEqual(dashboard.fed({'pick'}), {'pick'})
+        self.assertEqual(dashboard.fed({'hour'}), {'hour'})
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

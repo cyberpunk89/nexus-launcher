@@ -514,6 +514,11 @@ def cli_cache_clear():
     _CLI_MEMO.clear()
 
 
+def cli_cache_forget(args):
+    """Forget one remembered answer (it is stale: the day or the data moved)."""
+    _CLI_MEMO.pop(tuple(args), None)
+
+
 def cli_json(args, callback, timeout_ms=60000, ttl: float = 0):
     """CliQuery that parses stdout as JSON: callback(dict_or_None, error).
     With `ttl` (seconds), a recent answer is handed back at once and an

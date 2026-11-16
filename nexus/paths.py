@@ -18,6 +18,7 @@ CONFIG_DIR = platform.config_dir(HOME)
 CACHE_DIR = platform.cache_dir(HOME)
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 NEWS_CONFIG = CONFIG_DIR / "news.toml"
+LIBRARY_CACHE = CACHE_DIR / "library.json"            # the last Library scan (GUI start-up, --insights)
 GAMEDB_CACHE = CACHE_DIR / "gamedb"                # Game-db summary (0600, personal)
 
 LOG_DIR = DATA_DIR / "logs"

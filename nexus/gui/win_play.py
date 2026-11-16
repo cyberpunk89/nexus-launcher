@@ -390,6 +390,9 @@ class PlayMixin:
         # anim_ms: a wall-clock 400 ms outlived the test that closed the
         # game and opened the session page in the middle of it (CI, 0.5.2).
         QTimer.singleShot(anim_ms(400), self._back_from_game)
+        # The launch tracker writes its session line as the game ends: give it
+        # a moment, then let Home's play-time widgets read it again (w-138).
+        QTimer.singleShot(2000, lambda: alive(self) and self._poke_home('sessions'))
 
 
 def last_exit_code(slug: str) -> int | None:

@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 try:
-    from test_gui_layout import nx, stop_leftovers
+    from test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 except ImportError:             # run as tests.<module>
-    from tests.test_gui_layout import nx, stop_leftovers
+    from tests.test_gui_layout import nx, stop_leftovers, drop, flush_deletes, check_no_leaked_windows
 from tests.patching import linux_features, patch_gui, set_gui  # noqa: E402
 from tests.oskind import linux_only  # noqa: E402
 
@@ -559,13 +559,13 @@ class Window(unittest.TestCase):
         from nexus import features
         with mock.patch.object(features, 'FEATURES', frozenset()):
             w = nx.MainWindow()
-        self.addCleanup(w.deleteLater)
+        self.addCleanup(drop, w)
         self.assertNotIn('heroic', w.chips)
         self.assertEqual(w.filter.findData('no-heroic'), -1)
         self.assertLessEqual({'nexus', 'steam', 'epic'}, set(w.chips))
         with mock.patch.object(features, 'FEATURES', features.ALL):
             w = nx.MainWindow()
-        self.addCleanup(w.deleteLater)
+        self.addCleanup(drop, w)
         self.assertIn('heroic', w.chips)                       # Linux keeps it
         self.assertGreaterEqual(w.filter.findData('no-heroic'), 0)
 
@@ -700,9 +700,7 @@ class Window(unittest.TestCase):
                     saved = json.loads(cache.read_text())
                     self.assertEqual(len(saved['data']['games']), 2)  # the new scan is kept
                 finally:
-                    win.close()
-                    win.deleteLater()
-                    QApplication.processEvents()
+                    drop(win)
 
     def test_pad_opens_deal_links_in_the_sheet(self):
         card = nx.DealCard({'title': 'Deal Game', 'appid': 10, 'links': {}}, 'deals', None,
@@ -2221,6 +2219,18 @@ class Window(unittest.TestCase):
         self.assertEqual([id(t) for t in row.tiles], tiles)
         d.set_editing(False)
 
+    def test_edit_bar_option_buttons_come_from_the_spec(self):
+        """w-137: a button for every OPTION_BAR key on every widget, shown
+        only for the specs that list that option (Pick's vibe has none)."""
+        from nexus.gui.widget_spec import OPTION_BAR, SPEC
+        w, _stage = self._stage()
+        w.dashboard.set_editing(True)
+        for kind, dw in w.dashboard.widgets.items():
+            for key in OPTION_BAR:
+                self.assertEqual(getattr(dw, f'btn_{key}').isVisibleTo(dw), key in SPEC[kind].options,
+                                 (kind, key))
+        self.assertFalse(hasattr(w.dashboard.widgets['pick'], 'btn_vibe'))
+
     def test_stage_background_skips_pinned_without_a_game(self):
         w, stage = self._stage()
         stage.art.games = []                                        # nothing shown
@@ -3215,7 +3225,7 @@ class Window(unittest.TestCase):
             w.jobs.jobs.clear()
             w.close()
             w.deleteLater()
-            QApplication.processEvents()
+            flush_deletes()
         finally:
             app.removeEventFilter(spy)
         self.assertEqual(spy.seen, [])
@@ -6046,7 +6056,7 @@ class ForYou(unittest.TestCase):
             self.assertEqual([m['kind'] for m in fy.moments],
                              ['broken'] * 2 + ['quiet'])          # problems show, then w-107's notice
             w2 = nx.MainWindow()
-            self.addCleanup(w2.deleteLater)
+            self.addCleanup(drop, w2)
             self.assertIn(first['snooze_key'], w2.prefs.snoozes)
             self.assertIsNotNone(w2.prefs.quiet_until)
             w2.prefs.dashboard = nx.dash_default()
@@ -6388,6 +6398,79 @@ class HomeColumns(unittest.TestCase):
         for target, cols in ((1200, 3), (900, 2), (600, 1)):
             self._resize_to(dash, target)
             self.assertEqual(dash._cols, cols, (target, dash.width()))
+
+
+class HomeGrid(unittest.TestCase):
+    """w-143: a Tall widget covers two grid rows, and a card narrower than
+    the grid keeps its own height at the top of its row instead of
+    stretching to a taller neighbour. Run in Customise so empty widgets
+    still take part in the layout."""
+    setUpClass = Window.__dict__['setUpClass']
+    tearDownClass = Window.__dict__['tearDownClass']
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+
+    def _home(self, *sizes):
+        """Home at 3 columns with (id, size) pairs first, the rest hidden."""
+        w = self.win
+        picked = dict(sizes)
+        order = [k for k, _ in sizes]
+        items = [{'id': k, 'size': picked.get(k, s), 'hidden': k not in picked}
+                 for k, _sizes, s, _h in nx.DASH_KINDS]
+        items.sort(key=lambda i: order.index(i['id']) if i['id'] in order else 99)
+        w.prefs.dashboard = items
+        w.go(w.HOME)
+        w.resize(1300, 900)
+        w.dashboard.set_editing(True)
+        w.dashboard.refresh()
+        for _ in range(6):
+            QApplication.processEvents()
+        return w, w.dashboard
+
+    def test_tall_widget_spans_two_rows(self):
+        w, dash = self._home(('news', 'tall'), ('save', 'small'), ('pick', 'small'),
+                             ('week', 'small'))
+        self.assertEqual(dash._cols, 3)
+        idx = dash.grid.indexOf(dash.widgets['news'])
+        self.assertGreaterEqual(idx, 0)
+        r, c, rowspan, colspan = dash.grid.getItemPosition(idx)
+        self.assertEqual(rowspan, 2)
+        self.assertEqual(colspan, 1)
+
+    def test_small_card_keeps_its_own_height_beside_a_wide(self):
+        w, dash = self._home(('system', 'wide'), ('news', 'small'), ('deals', 'wide'))
+        news = dash.widgets['news']
+        self.assertTrue(news.isVisible())
+        self.assertTrue(dash.grid.itemAtPosition(0, 2) is not None)
+        item = dash.grid.itemAt(dash.grid.indexOf(news))
+        self.assertTrue(item.alignment() & Qt.AlignmentFlag.AlignTop)
+        self.assertGreaterEqual(news.height(), news.layout().totalHeightForWidth(news.width()))
+
+    def test_tall_news_fills(self):
+        w, dash = self._home(('news', 'tall'), ('system', 'wide'))
+        news = dash.widgets['news']
+        dash.hub.newspage.data = {'items': [
+            {'title': f"Story {i}", 'source': "Src", 'url': f"https://x/{i}", 'ts': 0}
+            for i in range(8)]}
+        dash.refresh(['news'])                   # six rows at Tall, no KeyError
+        for _ in range(4):
+            QApplication.processEvents()
+        self.assertTrue(news.isVisible())
+        self.assertGreaterEqual(news.height(), news.layout().totalHeightForWidth(news.width()))
+
+    def test_pad_move_down_keeps_focus_on_the_arrow(self):
+        w, dash = self._home(('save', 'small'), ('news', 'tall'), ('pick', 'small'),
+                             ('upcoming', 'small'), ('week', 'small'), ('system', 'wide'))
+        w.show()
+        dash._edit('news', 'down')
+        for _ in range(4):
+            QApplication.processEvents()
+        ids = [i['id'] for i in dash.items if not i['hidden']]
+        self.assertEqual(ids.index('news'), ids.index('system') + 1)
+        f = QApplication.focusWidget()
+        self.assertIsNotNone(f)
+        self.assertTrue(dash.widgets['news'].isAncestorOf(f))
+        self.assertTrue(f.toolTip().lower().endswith('down'))
 
 
 class HomeAsk(unittest.TestCase):
@@ -6854,3 +6937,171 @@ class HomeLayouts(unittest.TestCase):
         self.assertIs(QApplication.focusWidget(), chips[1])
         self.assertEqual(self._item('stage')['size'], 'wide')
         d.set_editing(False)
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class HomeFeedTests(unittest.TestCase):
+    """w-138: Home refreshes widgets by feed (midnight, hour, sessions,
+    library, insights); its timers run only while Home shows."""
+    D1, D2 = datetime(2026, 11, 16).date(), datetime(2026, 11, 17).date()
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = (nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery)
+        set_gui('cli_json', lambda *a, **k: None)
+        nx.LibraryPrefs.save = lambda self: None
+        set_gui('CliQuery', lambda *a, **k: None)
+
+    @classmethod
+    def tearDownClass(cls):
+        set_gui('cli_json', cls._saved[0])
+        nx.LibraryPrefs.save = cls._saved[1]
+        set_gui('CliQuery', cls._saved[2])
+
+    def setUp(self):
+        from nexus.gui import home_feed
+        self.hf = home_feed
+        self.day = self.D1
+        for name, ret in (('power_caps', set()), ('power', True), ('bluetooth_pads', []),
+                          ('bluetooth_disconnect', True)):
+            p = mock.patch(f'nexus.platform.{name}', return_value=ret)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(nx.MainWindow, '_poll_running', lambda self: None)
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(home_feed, 'today', lambda: self.day)
+        p.start()
+        self.addCleanup(p.stop)
+        self.win = nx.MainWindow()
+        self.win.resize(1300, 850)
+        self.win.prefs.close_to_tray_set = True
+        self.win.show()
+        self.win._on_library({'games': fake_games(), 'disks': []}, '')
+        self.win.prefs.dashboard = nx.dash_kind_defaults()
+        self.win.dashboard.refresh()
+        QApplication.processEvents()
+        self.feed = self.win.dashboard.feed
+
+    def tearDown(self):
+        from PyQt6.QtCore import QEvent
+        stop_leftovers(self.win.jobs)
+        self.win.close()
+        self.win.deleteLater()
+        QApplication.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+
+    def test_midnight_refreshes_fed_widgets(self):
+        w, d = self.win, self.win.dashboard
+        self.feed.set_live(True)
+        week = d.widgets['week']
+        with mock.patch.object(week, 'fill') as fill:
+            self.day = self.D2
+            self.feed._on_midnight()
+            w._flush_dashboard()
+            self.assertTrue(fill.called)
+        self.assertTrue(self.feed._midnight.isActive())          # armed for the next night
+        self.day = self.D2
+        with mock.patch.object(d.widgets['week'], 'fill') as fill:
+            self.feed._on_midnight()                             # the same day again: nothing
+            w._flush_dashboard()
+            self.assertFalse(fill.called)
+
+    def test_midnight_timer_aims_a_second_past_midnight(self):
+        with mock.patch.object(self.hf, 'now', lambda: datetime(2026, 11, 16, 23, 59, 0)):
+            self.feed.set_live(True)
+        self.assertEqual(self.feed._midnight.interval(), 61000)
+
+    def test_timers_only_while_home_shows(self):
+        w, feed = self.win, self.feed
+        w.go(w.HOME)
+        QApplication.processEvents()
+        self.assertTrue(feed._hourly.isActive() and feed._midnight.isActive())
+        w.go(w.LIBRARY)
+        self.assertFalse(feed._hourly.isActive() or feed._midnight.isActive())
+        w.go(w.HOME)
+        self.assertTrue(feed._hourly.isActive())
+        with mock.patch.object(w, 'isMinimized', return_value=True):
+            w._sync_presence()
+        self.assertFalse(feed._hourly.isActive() or feed._midnight.isActive())
+        w._sync_presence()
+        self.assertTrue(feed._hourly.isActive())
+        w._theatre = True
+        w._sync_presence()
+        self.assertFalse(feed._hourly.isActive())
+        w._theatre = False
+
+    def test_day_change_after_suspend_fires_on_show(self):
+        w, feed = self.win, self.feed
+        feed.set_live(True)
+        feed.set_live(False)                                     # a page, or the lid closed
+        self.day = self.D2
+        with mock.patch.object(w, 'dash_update') as upd:
+            feed.set_live(True)
+        upd.assert_called_once_with('midnight')
+        with mock.patch.object(w, 'dash_update') as upd:
+            feed.set_live(False)
+            feed.set_live(True)                                  # same day: no refresh
+        upd.assert_not_called()
+
+    def test_insights_ask_first_inside_fill(self):
+        """A fresh memo calls back before cli_json returns: the answer is
+        stored for the fill that is about to run, and nothing is queued."""
+        from nexus.gui import dashboard
+        w, d = self.win, self.win.dashboard
+        payload = {'v': 1, 'today': '2026-11-16'}
+        order, asked = [], []
+        week = d.widgets['week']
+
+        def cli(args, cb, *a, **k):
+            if args == ['--insights', '--json']:
+                asked.append(k.get('ttl'))
+                order.append('ask')
+                cb(payload, '')
+
+        with mock.patch.dict(dashboard.FED_BY, {'insights': {'week'}}), \
+                patch_gui('cli_json', cli), mock.patch.object(w, 'dash_update') as upd, \
+                mock.patch.object(week, 'fill', lambda hub: order.append('fill')):
+            d.refresh(['week'])
+        self.assertEqual(order, ['ask', 'fill'])
+        self.assertEqual(asked, [300])
+        self.assertEqual(self.feed.data, payload)
+        upd.assert_not_called()
+        late = []
+        with mock.patch.dict(dashboard.FED_BY, {'insights': {'week'}}), \
+                patch_gui('cli_json', lambda args, cb, *a, **k: late.append(cb)), \
+                mock.patch.object(w, 'dash_update') as upd:
+            d.refresh(['week'])
+            late[0]({'v': 1, 'today': '2026-11-17'}, '')         # the answer comes later
+        upd.assert_called_once_with('insights')
+        self.assertEqual(self.feed.data['today'], '2026-11-17')
+
+    def test_no_ask_without_insights_widget(self):
+        asked = []
+        with patch_gui('cli_json', lambda args, cb, *a, **k: asked.append(args)):
+            self.win.dashboard.refresh()
+            self.feed.poke('midnight', 'hour', 'sessions', 'library')
+            self.win._flush_dashboard()
+        self.assertNotIn(['--insights', '--json'], asked)
+
+    def test_week_reasks_after_midnight(self):
+        w, d = self.win, self.win.dashboard
+        week = d.widgets['week']
+        asked = []
+        hist = {'since': '2026-10-01', 'periods': {'today': '2026-11-16', 'week': {
+            'minutes': 60, 'games': [], 'days': []}}}
+        with patch_gui('cli_json', lambda args, cb, *a, **k: asked.append(args)):
+            week._hist, week._asked = hist, time.monotonic()
+            week.size_ = 'small'
+            with mock.patch.object(self.hf, 'today', lambda: self.D1), \
+                    mock.patch('nexus.gui.dashboard.today', lambda: self.D1, create=True):
+                week.fill(w)
+                self.assertNotIn(['--history', '--json'], asked)     # same day, asked lately
+            with mock.patch('nexus.gui.dashboard.today', lambda: self.D2, create=True):
+                week.fill(w)
+                self.assertIn(['--history', '--json'], asked)        # the week has moved on
+
+
+def tearDownModule():
+    if nx is not None:
+        check_no_leaked_windows()

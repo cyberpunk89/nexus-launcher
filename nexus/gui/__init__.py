@@ -81,11 +81,12 @@ from .dashboard import (
     _game_store_id, _visible_games, ClickRow, CollectionsWidget,
     DASH_BG_LABELS, dash_cols, dash_default, dash_kind_defaults, DASH_DEFAULT_SIZE, DASH_DENSITY, DASH_KINDS,
     DASH_MERGED, DASH_MERGED_SHOWN, dash_move,
-    dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
+    dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_grid, DASH_ROWS, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
     DASH_STYLE_LABELS, InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget,
     stage_height, stage_pin,
     StageArt, StageWidget,
+    dash_tables, SPEC, SPECS, WidgetSpec,
     last_unlock, PickWidget, pick_note, save_rows, SaveWidget,
     ShelfWidget, system_badge, system_status, SystemWidget,
     SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401

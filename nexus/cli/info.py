@@ -29,6 +29,27 @@ def cmd_history(as_json: bool) -> None:
         print(f"  {t['minutes'] / 60:6.1f} h  {t['name']}")
 
 
+def cmd_insights(as_json: bool) -> None:
+    """The local numbers behind Home's widgets (nexus/insights.py)."""
+    from nexus import insights
+    out = insights.gather()
+    if as_json:
+        print(json.dumps(out, separators=(',', ':')))
+        return
+    b = out['backlog']
+    print(f"Streak: {out['streak']['now']} days (best this year {out['streak']['best']}); "
+          f"{out['year_minutes'] / 60:.1f} h played this year")
+    print(f"Backlog: {b['done']} done, {b['playing']} playing, {b['started']} started, "
+          f"{b['never']} never played; {b['main_hours_left']:.0f} h of main stories left "
+          f"at {b['pace_hours_week']:.1f} h a week")
+    if out['daily']:
+        print(f"Game of the day: {out['daily']['slug']} ({out['daily']['reason']})")
+    for e in out['on_this_day']:
+        print(f"  {e['years_ago']} y ago: {e['name']}, {e['minutes'] / 60:.1f} h on {e['date']}")
+    for e in out['space'][:5]:
+        print(f"  {e['bytes'] / 1e9:6.1f} GB  {e['slug']}")
+
+
 def cmd_store_info(ident: str, as_json: bool, refresh: bool = False) -> None:
     """Store page facts for any game: trailers, reviews, metacritic, genres
     and similar games (owned ones marked)."""

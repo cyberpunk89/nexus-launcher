@@ -761,7 +761,7 @@ class LibraryMixin:
     # The last scan, painted at start-up while the real one runs: the window
     # shows the library at once instead of "Loading…". Games from it can't
     # be played until the fresh scan confirms them (g['stale']).
-    LIB_CACHE = NX.CACHE_DIR / 'library.json'
+    LIB_CACHE = NX.LIBRARY_CACHE
 
     def _paint_cached_library(self):
         try:
@@ -841,6 +841,8 @@ class LibraryMixin:
             same = True
         else:
             raw = [dict(g) for g in data.get('games', [])]       # before we add to them
+            if not cached:
+                self._poke_home('library')        # w-138: widgets fed by the library
             self._games, self._load_error = data.get('games', []), ''
             for g in self._games:
                 g['stale'] = cached
@@ -1132,6 +1134,7 @@ class LibraryMixin:
         """Home came up or went away (a page, a tab, Theatre, the window's
         focus): start or stop the presence timer; ask now when the last
         answer is over a minute old."""
+        self._sync_home_feed()
         timer = getattr(self, '_presence_timer', None)
         if timer is None:
             return                            # still being built
@@ -1145,6 +1148,23 @@ class LibraryMixin:
         age = FRIENDS.age()
         if age is None or age > PRESENCE_AGE:
             self._ask_presence()
+
+    def _home_feed(self):
+        return getattr(getattr(self, 'dashboard', None), 'feed', None)
+
+    def _sync_home_feed(self):
+        """Home's clock (midnight, hour) runs only while desktop Home shows:
+        not on another page, in Theatre or minimised (w-138). `isVisible()`
+        stays true while minimised, so the window state decides."""
+        feed = self._home_feed()
+        if feed is not None:
+            feed.set_live(not self._theatre and self.current() == self.HOME
+                          and not self.isMinimized())
+
+    def _poke_home(self, *events):
+        feed = self._home_feed()
+        if feed is not None:
+            feed.poke(*events)
 
     def _presence_tick(self):
         if not self._presence_wanted():

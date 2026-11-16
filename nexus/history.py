@@ -101,6 +101,17 @@ def current_streak(sessions: list[dict], today: date | None = None) -> int:
     return n
 
 
+def best_streak(days) -> int:
+    """The longest run of consecutive dates in `days`."""
+    streak = best = 0
+    prev = None
+    for d in sorted(days):
+        streak = streak + 1 if prev and d - prev == timedelta(days=1) else 1
+        best = max(best, streak)
+        prev = d
+    return best
+
+
 def periods(sessions: list[dict] | None = None, today: date | None = None) -> dict:
     """This week (Monday on) and this month, by day and by game: what Home's
     Your week and Play history's month chart show; and the current streak
@@ -138,12 +149,7 @@ def summary(sessions: list[dict] | None = None, today: date | None = None,
     for s in ys:
         per_game[s['slug']] += s['minutes']
     days = {s['_start'].date() for s in ys}
-    streak = best = 0
-    prev = None
-    for d in sorted(days):
-        streak = streak + 1 if prev and d - prev == timedelta(days=1) else 1
-        best = max(best, streak)
-        prev = d
+    best = best_streak(days)
     longest = max(ys, key=lambda s: s['minutes'], default=None)
     weekday = Counter()
     for s in ys:

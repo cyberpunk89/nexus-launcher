@@ -486,6 +486,9 @@ def build_parser() -> argparse.ArgumentParser:
     g5.add_argument('--history', action='store_true',
                     help='Play sessions: the last 12 weeks, this year in review and (--json) '
                          'sessions per game')
+    g5.add_argument('--insights', action='store_true',
+                    help="Internal: local numbers for Home's widgets from your play history and "
+                         "library (--json); nothing leaves the machine")
     g5.add_argument('--notify-test', action='store_true', dest='notify_test',
                     help='Send a test push to the phone targets in config [notify]')
     g5.add_argument('--apply-recipe', nargs=2, metavar=('SLUG', 'RECIPE'), dest='apply_recipe',
@@ -970,6 +973,7 @@ COMMANDS = (
      lambda a, base: cmd_torrent(a, base)),
     ('check_repack', lambda a, base: cmd_check_repack(a.check_repack, a.json, a.clamav)),
     ('history', lambda a, base: cmd_history(a.json)),
+    ('insights', lambda a, base: cmd_insights(a.json)),
     ('store_info', lambda a, base: cmd_store_info(a.store_info, a.json, a.refresh)),
     ('game_facts', lambda a, base: cmd_game_facts(a.refresh, a.json, a.facts_fill)),
     ('notify_test', _cmd_notify_test),
@@ -1073,7 +1077,7 @@ from .gamecmds import (add_existing_to_steam, cmd_achievements, cmd_add_heroic, 
 from .friends import cmd_friends  # noqa: E402
 from .heroic import remove_heroic_entry  # noqa: E402
 from .info import (cmd_apply_recipe, cmd_explain_log, cmd_game_facts, cmd_game_tips, cmd_gamedb,
-    cmd_history, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402
+    cmd_history, cmd_insights, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info)  # noqa: E402
 from .manage import cmd_library, cmd_list, cmd_running  # noqa: E402
 from .protoncmds import (cmd_list_protons, cmd_proton_install, cmd_proton_migrate,
     cmd_proton_releases, cmd_proton_remove, cmd_protondb, cmd_protons)  # noqa: E402
