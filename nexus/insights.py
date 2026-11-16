@@ -13,9 +13,16 @@ from . import history, smart
 
 V = 1
 DAYS = 371                  # the heatmap: 53 weeks and a day
+DAY_GAMES = 4               # games named in a day's card
+AVG_DAYS = 90               # `avg_minutes` averages the played days of the last 90
 ON_THIS_DAY = 3             # +- days around today's date in earlier years
 SPACE_TOP = 12
 PACE_DAYS = 28
+MILESTONES_TOP = 4
+MILESTONE_NEAR = 0.8        # have/goal of at least this is "close"
+HOUR_GOALS = (10, 25, 50, 100, 200, 300, 500, 1000, 2000)
+COUNT_GOALS = (5, 10, 25, 50, 100, 250, 500, 1000)
+YEAR_GOALS = (10, 25, 50, 100, 250, 500, 1000, 2000)
 
 
 def _local(t: datetime) -> datetime:
@@ -144,6 +151,72 @@ def _space(games, today: date) -> list[dict]:
     return rows[:SPACE_TOP]
 
 
+def _next_goal(have: float, goals) -> int | None:
+    return next((g for g in goals if g > have), None)
+
+
+def _milestones(games, facts, year_minutes: float) -> list[dict]:
+    """The round numbers you are close to: hours in one game, games
+    finished, hours played this year. Closest first (have/goal), at most
+    MILESTONES_TOP. `slug` is None for the library-wide ones."""
+    out = []
+    done = 0
+    for g in games:
+        p = smart.progress(g, facts.get(g['slug']))
+        if p is not None and p >= smart.DONE_AT:
+            done += 1
+        have = smart._hours(g)
+        goal = _next_goal(have, HOUR_GOALS)
+        if goal and have / goal >= MILESTONE_NEAR:
+            out.append({'kind': 'hours', 'slug': g['slug'], 'name': _name(g),
+                        'have': round(have, 1), 'goal': goal})
+    goal = _next_goal(done, COUNT_GOALS)
+    if done and goal and done / goal >= MILESTONE_NEAR:
+        out.append({'kind': 'finished', 'slug': None, 'name': None, 'have': done, 'goal': goal})
+    hours = year_minutes / 60
+    goal = _next_goal(hours, YEAR_GOALS)
+    if goal and hours / goal >= MILESTONE_NEAR:
+        out.append({'kind': 'year', 'slug': None, 'name': None,
+                    'have': round(hours, 1), 'goal': goal})
+    out.sort(key=lambda m: (-m['have'] / m['goal'], m['kind'], m['slug'] or ''))
+    return out[:MILESTONES_TOP]
+
+
+def _streak_pos(all_days) -> dict:
+    """{day: (k, n)} for every day that sits in a run of 2+ played days."""
+    out, run = {}, []
+    ordered = sorted(all_days)
+    for i, d in enumerate(ordered):
+        run.append(d)
+        if i + 1 == len(ordered) or ordered[i + 1] - d != timedelta(days=1):
+            if len(run) > 1:
+                for k, x in enumerate(run, 1):
+                    out[x] = (k, len(run))
+            run = []
+    return out
+
+
+def _day_games(per_day: dict, day_n: dict, day_t: dict, pos: dict) -> dict:
+    """{day: {'n': sessions, 'games': [top DAY_GAMES by minutes], 'more': others,
+    'first'/'last': HH:MM of the first and last session START (local),
+    'streak_pos': {'day': k, 'of': n} or None}} for the heatmap's card, played
+    days only. Each game has `source` (the one with most of its minutes)."""
+    out = {}
+    for d, games in sorted(per_day.items()):
+        ranked = sorted(games.items(), key=lambda kv: (-kv[1][0], kv[0]))
+        lo, hi = day_t[d]
+        k = pos.get(d)
+        out[d.isoformat()] = {
+            'n': day_n[d],
+            'games': [{'slug': g, 'name': v[1], 'minutes': round(v[0], 1),
+                       'source': max(v[2].items(), key=lambda kv: (kv[1], kv[0]))[0]}
+                      for g, v in ranked[:DAY_GAMES]],
+            'more': max(0, len(ranked) - DAY_GAMES),
+            'first': lo.strftime('%H:%M'), 'last': hi.strftime('%H:%M'),
+            'streak_pos': {'day': k[0], 'of': k[1]} if k else None}
+    return out
+
+
 def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> dict:
     games = [g for g in games if isinstance(g, dict) and g.get('slug')]
     facts = facts or {}
@@ -156,6 +229,11 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
     first_played: dict[str, date] = {}
     rows = []
     all_days = set()
+    per_day: dict[date, dict[str, list]] = defaultdict(dict)   # day -> slug -> [minutes, name]
+    day_n: dict[date, int] = defaultdict(int)
+    day_t: dict[date, list] = {}
+    avg_from = today - timedelta(days=AVG_DAYS - 1)
+    avg_days: dict[date, float] = defaultdict(float)
     for s in sessions:
         t = _start(s)
         if t is None:
@@ -164,6 +242,19 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
         all_days.add(d)
         if first <= d <= today:
             by_day[d] += m
+            day_n[d] += 1
+            cell = per_day[d].setdefault(slug, [0.0, s.get('name') or slug, defaultdict(float)])
+            cell[0] += m
+            cell[2][s.get('source') or 'nexus'] += m
+            lh = day_t.get(d)
+            if lh is None:
+                day_t[d] = [t, t]
+            elif t < lh[0]:
+                lh[0] = t
+            elif t > lh[1]:
+                lh[1] = t
+            if d >= avg_from:
+                avg_days[d] += m
         if d.year == today.year:
             year_days.add(d)
             year_minutes += m
@@ -183,6 +274,8 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
         'v': V,
         'today': today.isoformat(),
         'days': {k.isoformat(): round(v, 1) for k, v in sorted(by_day.items())},
+        'day_games': _day_games(per_day, day_n, day_t, _streak_pos(all_days)),
+        'avg_minutes': round(sum(avg_days.values()) / len(avg_days), 1) if avg_days else 0.0,
         'streak': {'now': now, 'best': history.best_streak(year_days)},
         'busiest_day': (history.WEEKDAYS[max(weekday.items(), key=lambda kv: (kv[1], -kv[0]))[0]]
                         if weekday else None),
@@ -192,6 +285,7 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date) -> 
         'daily_alt': alt,
         'backlog': _backlog(games, facts, week_minutes, today),
         'space': _space(games, today),
+        'milestones': _milestones(games, facts, year_minutes),
     }
 
 

@@ -794,7 +794,8 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual(rest[:4], ['stage', 'system', 'pick', 'news'])
         self.assertNotIn('surprise', ids)
         pick = out[ids.index('pick')]
-        self.assertEqual(pick, {'id': 'pick', 'size': 'small', 'hidden': True, 'vibe': 'any'})
+        self.assertEqual(pick, {'id': 'pick', 'size': 'small', 'hidden': True, 'vibe': 'any',
+                                'style': 'chips'})
         self.assertEqual(nx.dash_normalize(out), out)                # idempotent
         saved[2]['hidden'] = False
         self.assertFalse(next(i for i in nx.dash_normalize(saved) if i['id'] == 'pick')['hidden'])
@@ -806,7 +807,8 @@ class DashboardModel(unittest.TestCase):
 
     def test_pick_vibe_is_checked(self):
         self.assertEqual(nx.DASH_OPTIONS['pick'],
-                         {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never')})
+                         {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
+                          'style': ('chips', 'wheel')})
         for bad in ('chill', ['coop'], {'a': 1}, None, 3):
             out = nx.dash_normalize([{'id': 'pick', 'size': 'wide', 'vibe': bad}])
             pick = next(i for i in out if i['id'] == 'pick')
@@ -2111,7 +2113,11 @@ class WidgetSpecTest(unittest.TestCase):
             ('favourites', ('full',), 'full', False),
             ('collections', ('full',), 'full', False),
             ('updates', ('full',), 'full', False),
-            ('owned', ('full',), 'full', True)])
+            ('owned', ('full',), 'full', True),
+            ('onthisday', ('small', 'wide'), 'small', True),
+            ('daily', ('small',), 'small', True),
+            ('heatmap', ('wide', 'full'), 'full', True),
+            ('milestones', ('small', 'wide'), 'small', True)])
         self.assertEqual(t['SIZES'], {k: s for k, s, _d, _h in t['KINDS']})
         self.assertEqual(t['DEFAULT_SIZE'], {k: d for k, _s, d, _h in t['KINDS']})
         self.assertEqual(t['OPTIONS'], {
@@ -2119,8 +2125,10 @@ class WidgetSpecTest(unittest.TestCase):
                       'bg': ('art', 'pinned', 'gradient', 'surface')},
             'week': {'style': ('bars', 'number')},
             'foryou': {'style': ('stage', 'strip')},
-            'pick': {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never')}})
+            'pick': {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
+                     'style': ('chips', 'wheel')}})
         self.assertEqual(t['STYLE_LABELS'], {
+            'pick': {'chips': "Chips", 'wheel': "Wheel"},
             'foryou': {'stage': "On stage", 'strip': "Strip"},
             'stage': {'row': "Row on art", 'clean': "Clean"},
             'week': {'bars': "Bars", 'number': "Number only"}})
@@ -2135,7 +2143,8 @@ class WidgetSpecTest(unittest.TestCase):
         self.assertEqual(dashboard.FORYOU_FEEDS,
                          {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'})
         self.assertEqual(t['FED_BY']['system'], {'foryou'})
-        self.assertEqual(t['FED_BY']['midnight'], {'week'})
+        self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'daily', 'heatmap'})
+        self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'daily', 'heatmap', 'milestones'})
         self.assertEqual(t['FED_BY']['sessions'], {'week'})
         self.assertEqual(nx.DASH_KINDS, t['KINDS'])
         self.assertEqual(nx.DASH_OPTIONS, t['OPTIONS'])
@@ -2167,7 +2176,8 @@ class WidgetSpecTest(unittest.TestCase):
         one wakes every widget that lists it (w-138)."""
         from nexus.gui import dashboard
         self.assertEqual(dashboard.fed({'system'}), {'system', 'foryou'})
-        self.assertEqual(dashboard.fed(['midnight']), {'midnight', 'week'})
+        self.assertEqual(dashboard.fed(['midnight']),
+                         {'midnight', 'week', 'onthisday', 'daily', 'heatmap'})
         self.assertEqual(dashboard.fed({'sessions', 'friends'}),
                          {'sessions', 'friends', 'week', 'foryou'})
         self.assertEqual(dashboard.fed({'pick'}), {'pick'})

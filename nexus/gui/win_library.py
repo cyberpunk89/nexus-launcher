@@ -687,11 +687,12 @@ class LibraryMixin:
         self.toast(f"Deleted the collection “{cname}”.", 'info', None, 2500)
 
     # ---- surprise me ----
-    def surprise(self, pool=None):
+    def surprise(self, pool=None, g=None):
         """Pick a game (from `pool`, else everything installed) and open its
-        page with Play focused; the toast offers another pick."""
+        page with Play focused; the toast offers another pick. `g`: a pick
+        already decided (the wheel's)."""
         games = pool if pool is not None else self._games
-        g = surprise_pick(games, random, tuple(self._surprise_recent))
+        g = g or surprise_pick(games, random, tuple(self._surprise_recent))
         if g is None:
             self.toast("Nothing to pick from here — every game shown is running, hidden "
                        "or not installed." if games else "Install a game first.", 'info',
@@ -707,22 +708,35 @@ class LibraryMixin:
         self.toast(f"How about {g.get('display_name') or g['slug']}?", 'info',
                    ("Pick again", lambda p=pool: self.surprise(p)), 6000)
 
-    def spin(self, vibe: str = 'any'):
+    def _on_stage(self) -> bool:
+        it = next((i for i in self.prefs.dashboard if i.get('id') == 'stage'), None)
+        return not (it is None or it.get('hidden') or not self.dashboard.stage.art.games)
+
+    def _vibe_pool(self, vibe: str) -> list[dict]:
+        pools = vibe_pools(_visible_games(self), self._smart_facts(), linux=has('proton'))
+        return pools.get(vibe) or pools.get('any') or []
+
+    def pick_for(self, vibe: str = 'any'):
+        """Decide Spin's pick (w-142: the wheel decides first, then spins to
+        it): from the vibe's pool, never a recent pick or the game already on
+        the Stage while there's anything else. None when there is none."""
+        pool = self._vibe_pool(vibe)
+        if self._on_stage():
+            on_stage = self.dashboard.stage.art.game.get('slug')
+            pool = [x for x in pool if x.get('slug') != on_stage] or pool
+        return surprise_pick(pool, random, tuple(self._surprise_recent))
+
+    def spin(self, vibe: str = 'any', g=None):
         """Pick for me's Spin (w-91): a pick from the vibe's pool (never a
         recent pick or the game already on the Stage, while there's anything
         else) goes on the Stage, the page goes to the top and Play takes
-        focus. It launches nothing. Without the Stage: Surprise me."""
-        dash = self.dashboard
-        stage = dash.stage
-        it = next((i for i in self.prefs.dashboard if i.get('id') == 'stage'), None)
-        pools = vibe_pools(_visible_games(self), self._smart_facts(), linux=has('proton'))
-        pool = pools.get(vibe) or pools.get('any') or []
-        if it is None or it.get('hidden') or not stage.art.games:
-            self.surprise(pool)
+        focus. It launches nothing. Without the Stage: Surprise me. `g`: a
+        pick already decided (the wheel's, w-142)."""
+        stage = self.dashboard.stage
+        if not self._on_stage():
+            self.surprise(self._vibe_pool(vibe), g)
             return
-        on_stage = stage.art.game.get('slug')
-        g = surprise_pick([x for x in pool if x.get('slug') != on_stage] or pool, random,
-                          tuple(self._surprise_recent))
+        g = g or self.pick_for(vibe)
         if g is None or not stage.show_pick(g, vibe):
             return
         self._surprise_recent = [*self._surprise_recent, g['slug']][-3:]

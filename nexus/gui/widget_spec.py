@@ -38,6 +38,7 @@ _STYLE = {
     'stage': (('row', "Row on art"), ('clean', "Clean")),
     'week': (('bars', "Bars"), ('number', "Number only")),
     'foryou': (('stage', "On stage"), ('strip', "Strip")),
+    'pick': (('chips', "Chips"), ('wheel', "Wheel")),
 }
 _BG = (('art', "Game art"), ('pinned', "Pinned art"), ('gradient', "Accent gradient"),
        ('surface', "Plain"))
@@ -53,7 +54,7 @@ SPECS = (
     WidgetSpec('friends', "Friends playing now", ('small', 'wide', 'full'), 'full',
                after='stage'),
     WidgetSpec('pick', "Pick for me", ('small',), 'small',
-               options={'vibe': VIBES}, after='stage'),
+               options={'vibe': VIBES, 'style': _STYLE['pick']}, after='stage'),
     WidgetSpec('system', "System", ('small', 'wide'), 'wide'),
     WidgetSpec('news', "News", ('small', 'tall', 'wide', 'full'), 'small'),
     WidgetSpec('installed', "Recently installed", ('full',), 'full'),
@@ -67,6 +68,16 @@ SPECS = (
     WidgetSpec('collections', "Collections", ('full',), 'full', after='favourites'),
     WidgetSpec('updates', "Updates ready", ('full',), 'full'),
     WidgetSpec('owned', "In your library", ('full',), 'full', True),
+    # The insight widgets (w-139, w-140): read the insights payload; last, hidden,
+    # so a saved layout is unchanged and they wait in Add widgets.
+    WidgetSpec('onthisday', "On this day", ('small', 'wide'), 'small', True,
+               feeds=('midnight', 'insights')),
+    WidgetSpec('daily', "Game of the day", ('small',), 'small', True,
+               feeds=('midnight', 'insights')),
+    WidgetSpec('heatmap', "Your year", ('wide', 'full'), 'full', True,
+               feeds=('midnight', 'insights')),
+    WidgetSpec('milestones', "Next milestones", ('small', 'wide'), 'small', True,
+               feeds=('insights',)),
 )
 SPEC = {s.kind: s for s in SPECS}
 

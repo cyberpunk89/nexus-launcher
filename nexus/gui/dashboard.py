@@ -1,6 +1,7 @@
 """The Home dashboard: its layout model and widgets."""
 
 import html
+import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import _pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, vibe_pools
 from .moments import DISK_FULL
 from .home_feed import HomeFeed, today  # noqa: F401
+from .pick_wheel import PickWheel, SEGMENTS
 from .widget_spec import dash_tables, OPTION_BAR, SPEC, SPECS, WidgetSpec  # noqa: F401
 from .theme import FONTS, FS, G, GLYPH_H, GRAD, P, PERSON_H, PILL_H, R, scaled, SP, STAGE_FACT_H
 from .theme import collection_look
@@ -522,7 +524,7 @@ class DashWidget(QFrame):
             head.addWidget(t)
             head.addStretch()
             if self.LINK:
-                more = QPushButton("Open")
+                more = self.open_btn = QPushButton("Open")
                 more.setObjectName("Ghost")
                 more.setCursor(Qt.CursorShape.PointingHandCursor)
                 more.clicked.connect(lambda: self.go.emit(self.LINK))
@@ -1298,6 +1300,8 @@ class PickWidget(DashWidget):
         self.vibe = 'any'
         self.pools: dict[str, list[dict]] = {}
         self._sig = None                  # the chips drawn (the vibes that have games)
+        self.wheel: PickWheel | None = None     # Wheel style (w-142): built on first use
+        self._wheel_sig = None            # the pool the wheel shows
 
     def bind(self, hub):
         self._hub = hub
@@ -1320,6 +1324,7 @@ class PickWidget(DashWidget):
         self.pools = pools = self.pools_of(hub)
         vibe = self.options.get('vibe', 'any')
         self.vibe = vibe if vibe in pools else 'any'
+        self._fill_wheel()
         sig = tuple(pools)
         if sig != self._sig:              # same vibes: keep the chips (and pad focus)
             self._sig = sig
@@ -1366,7 +1371,7 @@ class PickWidget(DashWidget):
             self.btn.setText("Spin")
             self.note.setText(text)
             return
-        self.btn.setEnabled(bool(pools))
+        self.btn.setEnabled(bool(pools) and not (self.wheel and self.wheel.spinning))
         self.btn.setToolTip("Put a game on the Stage")
         self.btn.setText("Spin again" if picked else "Spin")
         if picked:
@@ -1390,8 +1395,48 @@ class PickWidget(DashWidget):
         hub.prefs.save()
         hub.dashboard.refresh([self.KIND])
 
+    def _fill_wheel(self):
+        """Wheel style: the wheel shows the vibe's games; Chips: no wheel."""
+        if self.options.get('style') != 'wheel':
+            if self.wheel is not None:
+                self.wheel.setVisible(False)
+            return
+        if self.wheel is None:
+            self.wheel = PickWheel()
+            self.body.insertWidget(0, self.wheel, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.wheel.setVisible(True)
+        pool = self.pools.get(self.vibe) or self.pools.get('any') or []
+        sig = (self.vibe, tuple(g.get('slug') for g in pool[:SEGMENTS]))
+        if sig != self._wheel_sig:        # a landed wheel stays until the pool moves
+            self._wheel_sig = sig
+            self.wheel.set_names([_name_of(g) for g in pool[:SEGMENTS]])
+
     def _spin(self):
-        self.spun.emit(self.vibe)
+        pick_for = getattr(self._hub, 'pick_for', None)
+        if self.options.get('style') != 'wheel' or self.wheel is None or pick_for is None:
+            self.spun.emit(self.vibe)
+            return
+        if self.wheel.spinning:
+            return
+        g = pick_for(self.vibe)           # decided first; the wheel only animates to it
+        if g is None:
+            return
+        pool = self.pools.get(self.vibe) or self.pools.get('any') or []
+        rest = [x for x in pool if x.get('slug') != g.get('slug')]
+        random.shuffle(rest)
+        segs = rest[:SEGMENTS - 1]
+        at = random.randrange(len(segs) + 1)
+        segs.insert(at, g)
+        self._wheel_sig = None
+        self.wheel.set_names([_name_of(x) for x in segs])
+        self.btn.setEnabled(False)
+        self.wheel.spin_to(at, lambda: self._landed(g))
+
+    def _landed(self, g: dict):
+        self.btn.setEnabled(True)
+        hub = self._hub
+        if hub is not None and getattr(hub, 'spin', None) is not None:
+            hub.spin(self.vibe, g)
 
     def keyPressEvent(self, ev):
         """Enter on a chip or Spin (a button outside a dialog ignores it)."""
@@ -1401,6 +1446,10 @@ class PickWidget(DashWidget):
             f.click()
             return
         super().keyPressEvent(ev)
+
+
+def _name_of(g: dict) -> str:
+    return g.get('display_name') or g.get('slug') or ''
 
 
 # How Pick for me's note names a pool: (one, many).
@@ -2235,13 +2284,14 @@ class WeekWidget(DashWidget):
 
 
 from .foryou import ForYouWidget  # noqa: E402  (it builds on DashWidget)
+from .insight_widgets import INSIGHT_WIDGETS  # noqa: E402  (so does this)
 
 DASH_WIDGETS = {cls.KIND: cls for cls in (
     StageWidget, SaveWidget, ForYouWidget, FriendsWidget, PickWidget, SystemWidget, NewsWidget,
     InstalledWidget, SmartShelfWidget,
     DealsWidget,
-    UpcomingWidget, WeekWidget, FavouritesWidget, CollectionsWidget, UpdatesWidget,
-    OwnedWidget)}
+    UpcomingWidget, WeekWidget, *INSIGHT_WIDGETS, FavouritesWidget, CollectionsWidget,
+    UpdatesWidget, OwnedWidget)}
 
 
 class StatsAsk(QFrame):
@@ -2432,6 +2482,8 @@ class Dashboard(QWidget):
             self.relayout(force=True)
         elif 'foryou' in kinds and self._skip() != self._skipped:
             self.relayout(force=True)            # the Strip came or went
+        elif fed(['insights']) & set(kinds) and self._skip() != self._skipped:
+            self.relayout(force=True)            # an insight widget came or went (w-139)
         self.foryou.sync_pill()
 
     # ---- layout ----

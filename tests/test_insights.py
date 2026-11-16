@@ -19,15 +19,18 @@ from nexus import history, insights  # noqa: E402
 TODAY = date(2026, 11, 16)
 
 
-def sess(slug, when, minutes=60.0, name=None):
+def sess(slug, when, minutes=60.0, name=None, source=None):
     """A session as history.load() returns it."""
     if isinstance(when, str):
         when = datetime.fromisoformat(when)
     elif not isinstance(when, datetime):
         when = datetime.combine(when, datetime.min.time()) + timedelta(hours=10)
     t = when
-    return {'slug': slug, 'name': name or slug.title(), 'start': t.isoformat(timespec='seconds'),
-            'minutes': float(minutes), '_start': t}
+    out = {'slug': slug, 'name': name or slug.title(), 'start': t.isoformat(timespec='seconds'),
+           'minutes': float(minutes), '_start': t}
+    if source:
+        out['source'] = source
+    return out
 
 
 def game(slug, minutes=0, days_ago=None, size=None, **kw):
@@ -183,6 +186,137 @@ class Space(unittest.TestCase):
 
     def test_never_played_has_no_idle_days(self):
         self.assertIsNone(build(games=[game('n', size=10)])['space'][0]['idle_days'])
+
+
+class DayDetail(unittest.TestCase):
+    """The heatmap's hover: what was played on each day."""
+
+    def test_top_games_per_day_with_session_count_and_rest(self):
+        d = TODAY - timedelta(days=2)
+        ss = [sess('a', d, 90), sess('b', d, 30), sess('a', d, 20),
+              sess('c', d, 10), sess('d', d, 5)]
+        det = build(sessions=ss)['day_games'][d.isoformat()]
+        self.assertEqual(det['n'], 5)
+        self.assertEqual([(g['slug'], g['name'], g['minutes']) for g in det['games']],
+                         [('a', 'A', 110.0), ('b', 'B', 30.0), ('c', 'C', 10.0), ('d', 'D', 5.0)])
+        self.assertEqual(det['more'], 0)
+        ss.append(sess('e', d, 1))
+        det = build(sessions=ss)['day_games'][d.isoformat()]
+        self.assertEqual(len(det['games']), 4)
+        self.assertEqual(det['more'], 1)
+
+    def test_only_played_days_inside_the_window(self):
+        old = TODAY - timedelta(days=insights.DAYS + 5)
+        got = build(sessions=[sess('a', TODAY, 10), sess('a', old, 10)])['day_games']
+        self.assertEqual(list(got), [TODAY.isoformat()])
+        self.assertEqual(build()['day_games'], {})
+
+
+class DayDetailRich(unittest.TestCase):
+    """w-147: first/last start, source per game, average day, streak position."""
+
+    def test_first_and_last_session_start_local_hhmm(self):
+        d = TODAY - timedelta(days=1)
+        ss = [sess('a', datetime.combine(d, datetime.min.time()) + timedelta(hours=19, minutes=5), 30),
+              sess('b', datetime.combine(d, datetime.min.time()) + timedelta(hours=9, minutes=2), 30),
+              sess('a', datetime.combine(d, datetime.min.time()) + timedelta(hours=23, minutes=10), 30)]
+        det = build(sessions=ss)['day_games'][d.isoformat()]
+        self.assertEqual((det['first'], det['last']), ('09:02', '23:10'))
+
+    def test_day_across_midnight_counts_on_its_start_date(self):
+        d = TODAY - timedelta(days=3)
+        ss = [sess('a', datetime.combine(d, datetime.min.time()) + timedelta(hours=23, minutes=40), 120)]
+        got = build(sessions=ss)['day_games']
+        self.assertEqual(list(got), [d.isoformat()])
+        self.assertEqual((got[d.isoformat()]['first'], got[d.isoformat()]['last']), ('23:40', '23:40'))
+
+    def test_aware_start_shown_in_local_time(self):
+        d = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
+        s = {'slug': 'a', 'name': 'A', 'start': d.isoformat(), 'minutes': 10.0}
+        det = build(sessions=[s])['day_games']
+        local = d.astimezone().replace(tzinfo=None)
+        self.assertEqual(det[local.date().isoformat()]['first'], local.strftime('%H:%M'))
+
+    def test_source_per_game_is_the_one_with_most_minutes(self):
+        d = TODAY - timedelta(days=1)
+        ss = [sess('a', d, 10, source='nexus'), sess('a', d, 50, source='steam'),
+              sess('b', d, 5), sess('c', d, 7, source='heroic')]
+        det = build(sessions=ss)['day_games'][d.isoformat()]
+        self.assertEqual({g['slug']: g['source'] for g in det['games']},
+                         {'a': 'steam', 'b': 'nexus', 'c': 'heroic'})
+
+    def test_average_is_over_played_days_of_the_last_90(self):
+        ss = [sess('a', TODAY, 60), sess('a', TODAY - timedelta(days=10), 120),
+              sess('a', TODAY - timedelta(days=89), 90),
+              sess('a', TODAY - timedelta(days=90), 9999)]        # outside
+        self.assertEqual(build(ss)['avg_minutes'], 90.0)
+        self.assertEqual(build()['avg_minutes'], 0.0)
+
+    def test_streak_pos_inside_a_run_else_null(self):
+        run = [TODAY - timedelta(days=i) for i in (5, 4, 3)]
+        ss = [sess('a', d, 30) for d in run] + [sess('a', TODAY - timedelta(days=1), 30)]
+        got = build(ss)['day_games']
+        self.assertEqual([got[d.isoformat()]['streak_pos'] for d in run],
+                         [{'day': 1, 'of': 3}, {'day': 2, 'of': 3}, {'day': 3, 'of': 3}])
+        self.assertIsNone(got[(TODAY - timedelta(days=1)).isoformat()]['streak_pos'])
+
+    def test_streak_counts_days_before_the_window(self):
+        first = TODAY - timedelta(days=insights.DAYS - 1)
+        ss = [sess('a', first - timedelta(days=1), 30), sess('a', first, 30)]
+        got = build(ss)['day_games']
+        self.assertEqual(got[first.isoformat()]['streak_pos'], {'day': 2, 'of': 2})
+
+    def test_old_keys_and_version_unchanged(self):
+        out = build([sess('a', TODAY, 10)])
+        self.assertEqual(out['v'], 1)
+        for k in ('days', 'day_games', 'streak', 'busiest_day', 'year_minutes'):
+            self.assertIn(k, out)
+        det = out['day_games'][TODAY.isoformat()]
+        for k in ('n', 'games', 'more'):
+            self.assertIn(k, det)
+        json.dumps(out)
+
+
+class Milestones(unittest.TestCase):
+    """w-140: the closest round numbers, each with the game it is about."""
+
+    def test_hours_in_a_game_close_to_a_round_number(self):
+        games = [game('near', 97 * 60), game('far', 30 * 60), game('over', 101 * 60)]
+        ms = build(games=games)['milestones']
+        near = next(m for m in ms if m.get('slug') == 'near')
+        self.assertEqual((near['kind'], near['have'], near['goal']), ('hours', 97.0, 100))
+        self.assertEqual(near['name'], 'Near')
+        slugs = [m.get('slug') for m in ms]
+        self.assertNotIn('far', slugs)                      # 30 of 50 h is not close
+        self.assertNotIn('over', slugs)                     # 101 of 200 h neither
+
+    def test_closest_first_and_one_per_game(self):
+        games = [game('a', 85 * 60), game('b', 99 * 60), game('c', 48 * 60)]
+        ms = [m for m in build(games=games)['milestones'] if m['kind'] == 'hours']
+        self.assertEqual([m['slug'] for m in ms], ['b', 'c', 'a'])
+        self.assertEqual(len({m['slug'] for m in ms}), len(ms))
+
+    def test_games_finished(self):
+        games = [game(f'd{i}', 600, 100) for i in range(9)]
+        facts = {g['slug']: fact(10) for g in games}
+        ms = build(games=games, facts=facts)['milestones']
+        fin = next(m for m in ms if m['kind'] == 'finished')
+        self.assertEqual((fin['have'], fin['goal']), (9, 10))
+        self.assertIsNone(fin['slug'])
+
+    def test_year_hours(self):
+        s = [sess('a', TODAY - timedelta(days=i), 60) for i in range(1, 9)]
+        ms = build(s)['milestones']
+        yr = next(m for m in ms if m['kind'] == 'year')
+        self.assertEqual((yr['have'], yr['goal']), (8.0, 10))
+
+    def test_nothing_close_is_an_empty_list(self):
+        self.assertEqual(build()['milestones'], [])
+        self.assertEqual(build(games=[game('x', 5 * 60)])['milestones'], [])
+
+    def test_at_most_four(self):
+        games = [game(f'g{i}', (90 + i) * 60) for i in range(9)]
+        self.assertEqual(len(build(games=games)['milestones']), insights.MILESTONES_TOP)
 
 
 class Empty(unittest.TestCase):
