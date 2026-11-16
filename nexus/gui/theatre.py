@@ -2,7 +2,7 @@
 
 import random
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import NamedTuple
 
 from PyQt6.QtCore import (pyqtSignal, QEvent, QObject, QPoint, QRectF, Qt, QTimer, QUrl,
@@ -933,6 +933,9 @@ class TheatreView(QWidget):
         self._by_slug: dict[str, dict] = {}
         self._friend_entries: list[dict] = []
         self._week_item: dict | None = None
+        self._insight_cards: list[dict] = []     # Home's memory and milestone cards (w-144)
+        self._insight_data: dict | None = None   # the payload they come from
+        self._insight_on = True
         self.reader = TheatreReader(self)
         self.reader.options.connect(self.reader_options)
         self.reader.show_game.connect(self._reader_show_game)
@@ -980,6 +983,7 @@ class TheatreView(QWidget):
         self.games = games
         self.everything = everything
         self._by_slug = {g['slug']: g for g in everything}
+        self._sync_insights()                    # a hidden or removed game drops its card
         self.hero.set_games(featured_games(games))
         self.hero.setVisible(bool(games))
         self._sync_art()
@@ -1048,6 +1052,20 @@ class TheatreView(QWidget):
                 focus_and_reveal(nxt)
         self.week_row.setVisible(show)
         self.refresh_ribbon()
+
+    def set_insights(self, data, on: bool = True, today=None):
+        """The insights payload for Home's On this day, Game of the day and
+        Next milestones cards (w-144): none with the setting off or no answer."""
+        self._insight_data, self._insight_on = (data if on else None), on
+        self._sync_insights(today)
+
+    def _sync_insights(self, today=None):
+        from .insight_widgets import theatre_cards
+        data = self._insight_data
+        cards = theatre_cards(data, self._by_slug, today or date.today()) if data else []
+        if cards != self._insight_cards:
+            self._insight_cards = cards
+            self.refresh_ribbon()
 
     def _week_game(self) -> dict | None:
         slug = self._week_slug
@@ -1933,6 +1951,7 @@ class TheatreView(QWidget):
             games=self.games, library=games, lib_groups=groups,
             lib_label=f"{show_t}  ·  {sort_t}", lib_show_label=show_t,
             playing=run, playing_kicker=kicker, week=self._week_item,
+            insight=self._insight_cards,
             friends=[{'key': f"friend:{e['appid']}", 'title': e['title'], 'sub': who_text(e),
                       'slug': e.get('slug')} for e in self._friend_entries],
             settings=settings, discover=not self.tabs.item('discover').isHidden(),
@@ -1985,6 +2004,10 @@ class TheatreView(QWidget):
                 self._activated(g)
         elif item.key == 'card:week':
             self._week_open()
+        elif item.key.startswith('card:') and item.slug:      # a memory or milestone (w-144)
+            g = self._by_slug.get(item.slug)
+            if g is not None:
+                self.open_game(g)
         elif item.key.startswith('friend:'):
             e = self._friend_entry(item.key)
             g = self._by_slug.get(item.slug) if item.slug else None

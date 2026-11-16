@@ -93,6 +93,36 @@ def reason_text(entry: dict) -> str:
     return "Today's pick"
 
 
+def theatre_cards(data, shown: dict, today: date) -> list[dict]:
+    """Theatre's Home cards from the payload (w-144): On this day, Game of
+    the day, Next milestones, each {key, kicker, title, sub, glyph, slug} and
+    only when it has a game of `shown` to open. The widgets' words."""
+    def name(slug, fallback=None):
+        g = shown[slug]
+        return g.get('display_name') or fallback or slug
+    out = []
+    mem = memories(data, shown)
+    if mem:
+        e = mem[0]
+        out.append({'key': 'card:onthisday', 'kicker': "ON THIS DAY",
+                    'title': name(e['slug'], e.get('name')),
+                    'sub': f"{years_ago_text(e['years_ago'])}  ·  {fmt_duration(e['minutes'])}",
+                    'glyph': 'history', 'slug': e['slug']})
+    daily = daily_choices(data, shown, today)[0] if data else None
+    if daily:
+        out.append({'key': 'card:daily', 'kicker': "GAME OF THE DAY",
+                    'title': name(daily['slug']), 'sub': reason_text(daily),
+                    'glyph': 'sparkles', 'slug': daily['slug']})
+    for m in (data or {}).get('milestones') or []:
+        if isinstance(m, dict) and m.get('goal') and m.get('slug') in shown:
+            title, have, left = milestone_text(m)
+            out.append({'key': 'card:milestones', 'kicker': "NEXT MILESTONE",
+                        'title': name(m['slug'], title), 'sub': f"{have}  ·  {left}",
+                        'glyph': 'trophy', 'slug': m['slug']})
+            break
+    return out
+
+
 def heat_columns(today: date, weeks: int) -> list[list]:
     """`weeks` columns, oldest first, each Monday to Sunday; the last is
     this week and days after today are None."""

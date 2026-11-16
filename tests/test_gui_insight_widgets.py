@@ -703,6 +703,42 @@ class Milestones(WidgetCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class TheatreCards(unittest.TestCase):
+    """Theatre's Home cards from the payload (w-144): pure, same words as the widgets."""
+
+    def shown(self):
+        return {g['slug']: g for g in games() if not g.get('hidden')}
+
+    def test_cards_in_order_with_the_widgets_words(self):
+        cards = W.theatre_cards(payload(), self.shown(), TODAY)
+        self.assertEqual([c['key'] for c in cards],
+                         ['card:onthisday', 'card:daily', 'card:milestones'])
+        otd, daily, ms = cards
+        self.assertEqual((otd['kicker'], otd['title'], otd['slug']),
+                         ("ON THIS DAY", "Disco Elysium", 'disco'))
+        self.assertTrue(otd['sub'].startswith("A year ago today"))
+        self.assertEqual((daily['kicker'], daily['title'], daily['sub'], daily['slug']),
+                         ("GAME OF THE DAY", "Hades", "Released 5 years ago today", 'hades'))
+        self.assertEqual((ms['kicker'], ms['title'], ms['slug']),
+                         ("NEXT MILESTONE", "Disco Elysium", 'disco'))
+        self.assertIn("97 of 100 h", ms['sub'])
+        for c in cards:
+            self.assertEqual(set(c), {'key', 'kicker', 'title', 'sub', 'glyph', 'slug'})
+
+    def test_hidden_games_and_no_data_give_no_card(self):
+        self.assertEqual(W.theatre_cards(None, self.shown(), TODAY), [])
+        self.assertEqual(W.theatre_cards(payload(), {}, TODAY), [])
+        only_hidden = payload(on_this_day=[payload()['on_this_day'][2]],
+                              milestones=[payload()['milestones'][3]])
+        keys = [c['key'] for c in W.theatre_cards(only_hidden, self.shown(), TODAY)]
+        self.assertEqual(keys, ['card:daily'])
+
+    def test_a_milestone_without_a_game_is_skipped(self):
+        data = payload(milestones=payload()['milestones'][1:3])     # finished, year: no page to open
+        keys = [c['key'] for c in W.theatre_cards(data, self.shown(), TODAY)]
+        self.assertNotIn('card:milestones', keys)
+
+
 class InTheRegistry(unittest.TestCase):
     def test_specs_and_tables(self):
         for kind, sizes, default in (('onthisday', ('small', 'wide'), 'small'),

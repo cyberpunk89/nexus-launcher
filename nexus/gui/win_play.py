@@ -136,6 +136,7 @@ class PlayMixin:
         focus back where it belongs."""
         if self._theatre:
             self._feed_theatre_week(ttl=0)          # the week just grew
+            self._feed_theatre_insights(fresh=True)
         if not self._show_session():
             focus_and_reveal(self.default_focus())
 

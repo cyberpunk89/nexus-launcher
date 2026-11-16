@@ -4483,7 +4483,7 @@ class Window(unittest.TestCase):
             w.set_theatre(True)
             QApplication.processEvents()
             th = w.theatre
-            self.assertEqual(calls[-1], (['--history', '--json'], 60))
+            self.assertIn((['--history', '--json'], 60), calls)
             self.assertTrue(th.week_row.isVisibleTo(th))
             titles = [th.rows.itemAt(i).widget() for i in range(th.rows.count())]
             self.assertEqual(titles.index(th.week_row), 1)          # after Jump back in
@@ -4519,6 +4519,48 @@ class Window(unittest.TestCase):
             self.assertFalse(th.week_row.isVisibleTo(th))
             w._theatre_setting('week_home', True)
             self.assertTrue(th.week_row.isVisibleTo(th))
+            w.set_theatre(False)
+
+    def test_theatre_insight_cards_on_home(self):
+        """w-144: On this day, Game of the day and Next milestones join Your
+        week on the Ribbon's Home from the insights answer; the setting off
+        takes them away; A opens the game."""
+        from nexus.gui import ribbon_model
+        w = self.win
+        g = w._games[0]
+        data = {'v': 1, 'today': '2026-11-16',
+                'on_this_day': [{'slug': g['slug'], 'name': 'X', 'years_ago': 1,
+                                 'date': '2025-11-15', 'minutes': 90.0}],
+                'daily': {'slug': g['slug'], 'reason': 'pick', 'years': None},
+                'milestones': [{'kind': 'hours', 'slug': g['slug'], 'name': 'X',
+                                'have': 9.0, 'goal': 10}]}
+        asked = []
+
+        def fake(args, cb, *a, **k):
+            asked.append((args, k.get('ttl')))
+            cb(data if args == ['--insights', '--json'] else {}, '')
+
+        def home_keys():
+            cats = ribbon_model.categories(w.theatre._ribbon_feed())
+            return [it.key for c in cats if c.key == 'home' for it in c.items
+                    if it.key.startswith('card:')]
+        with mock.patch('nexus.gui.window.cli_json', fake):
+            w.activateWindow()
+            w.set_theatre(True)
+            QApplication.processEvents()
+            self.assertIn((['--insights', '--json'], 300), asked)
+            self.assertEqual(home_keys(), ['card:onthisday', 'card:daily', 'card:milestones'])
+            w._theatre_setting('insight_home', False)
+            self.assertEqual(home_keys(), [])
+            w._theatre_setting('insight_home', True)
+            self.assertEqual(home_keys(), ['card:onthisday', 'card:daily', 'card:milestones'])
+            th = w.theatre
+            item = next(it for c in ribbon_model.categories(th._ribbon_feed()) if c.key == 'home'
+                        for it in c.items
+                        if it.key == 'card:daily')
+            with mock.patch.object(th, 'open_game') as og:
+                th._ribbon_activate(item)
+            self.assertEqual(og.call_args[0][0]['slug'], g['slug'])
             w.set_theatre(False)
 
     def test_session_band_after_a_long_session(self):

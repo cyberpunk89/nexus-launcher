@@ -109,6 +109,20 @@ class Categories(unittest.TestCase):
         self.assertEqual(home.items[-2].kind, 'card')
         self.assertEqual(home.items[-1].sub, "Ana · 1 h")
 
+    def test_home_insight_cards_sit_between_week_and_friends(self):
+        friends = [{'key': 'friend:7', 'title': "Seven", 'sub': "", 'slug': None}]
+        cards = [{'key': 'card:onthisday', 'kicker': "ON THIS DAY", 'title': "Alpha",
+                  'sub': "A year ago today", 'glyph': 'history', 'slug': 'alpha'}]
+        home = cat(categories(feed(week={'sub': "6 h", 'slug': 'beta'}, friends=friends,
+                                   insight=cards)), 'home')
+        self.assertEqual([it.key for it in home.items][-3:],
+                         ['card:week', 'card:onthisday', 'friend:7'])
+        it = home.items[-2]
+        self.assertEqual((it.kind, it.kicker, it.title, it.slug, it.glyph),
+                         ('card', "ON THIS DAY", "Alpha", 'alpha', 'history'))
+        home = cat(categories(feed()), 'home')
+        self.assertFalse([i for i in home.items if i.key.startswith('card:')])
+
     def test_jump_back_in_is_capped(self):
         many = [game(f"g{i:02}", f"2026-10-{i + 1:02}T10:00:00") for i in range(20)]
         home = cat(categories(feed(games=many, library=many)), 'home')

@@ -557,6 +557,7 @@ class ControllerMixin:
             self.cursor_hider.start()
             self._on_activity()                   # the screensaver clock starts
             self._feed_theatre_week()
+            self._feed_theatre_insights()
             self.background.set_wash(True)        # w-65: the tint follows focus, low wash
             self._sync_ribbon()
             if now_playing(self._games) is not None:

@@ -20,7 +20,7 @@ GROUP_KICKER = {'ready': "READY TO PLAY", 'progress': "IN PROGRESS", 'queue': "U
 SETTING_GLYPH = {'theatre_layout': 'grid', 'ribbon_motion': 'sparkles', 'ribbon_classic': 'palette',
                  'pad_a': 'gamepad',
                  'theatre_on_pad': 'gamepad', 'theatre_start': 'tv', 'attract': 'moon',
-                 'week_home': 'calendar', 'sounds': 'bell', 'volume': 'activity',
+                 'week_home': 'calendar', 'insight_home': 'sparkles', 'sounds': 'bell', 'volume': 'activity',
                  'theme': 'palette', 'art_tint': 'image'}
 
 NO_GAMES = "No games yet"
@@ -78,6 +78,7 @@ class Feed:
     playing_kicker: str = 'NOW PLAYING'
     week: dict | None = None                           # {'sub', 'slug'}: Your week, shown
     friends: list = field(default_factory=list)        # [{'key', 'title', 'sub', 'slug'}]
+    insight: list = field(default_factory=list)        # Home's On this day, Game of the day, Milestones (w-144)
     settings: list = field(default_factory=list)       # [(group, key, title, choices, value, enabled)]
     discover: bool = True                              # the tabs' gates (sync_tabs)
     downloads: bool = True
@@ -184,6 +185,10 @@ def _home(feed: Feed) -> Category:
         items.append(Item(key='card:week', kind='card', title="Your week",
                           sub=feed.week.get('sub', ''), slug=feed.week.get('slug'),
                           glyph='calendar', kicker='THIS WEEK'))
+    for e in feed.insight:
+        items.append(Item(key=e['key'], kind='card', title=e['title'], sub=e.get('sub', ''),
+                          slug=e.get('slug'), glyph=e.get('glyph', 'calendar'),
+                          kicker=e.get('kicker', '')))
     for e in feed.friends:
         items.append(Item(key=e['key'], kind='card', title=e['title'], sub=e.get('sub', ''),
                           slug=e.get('slug'), glyph='friends', kicker='FRIENDS PLAYING'))

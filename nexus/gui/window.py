@@ -1048,6 +1048,8 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.settings.set_controls(self.prefs.controls)
         if key == 'week_home':
             self._feed_theatre_week()
+        if key == 'insight_home':
+            self._feed_theatre_insights()
         if key in ('volume', 'sounds'):
             self.sounds.sample()                # at the new level; turning them on says so
         else:
@@ -1100,6 +1102,20 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.theatre.set_week(None, on=False)
             return
         cli_json(['--history', '--json'], self._week_arrived, 30000, ttl=ttl)
+
+    def _feed_theatre_insights(self, fresh: bool = False):
+        """On this day, Game of the day and Next milestones on Theatre's Home
+        (w-144), from the insights answer Home's widgets share (same args, so
+        the same memo). Ask first: a fresh memo answers before cli_json returns."""
+        if not self.prefs.controls.get('insight_home', True):
+            self.theatre.set_insights(None, on=False)
+            return
+        if fresh:
+            cli_cache_forget(['--insights', '--json'])      # a session just ended
+        cli_json(['--insights', '--json'], self._insights_arrived, 30000, ttl=300)
+
+    def _insights_arrived(self, data, _err=''):
+        self.theatre.set_insights(data, self.prefs.controls.get('insight_home', True))
 
     def _week_arrived(self, data, _err=''):
         per = (data or {}).get('periods') or {}
@@ -1396,7 +1412,7 @@ from .input import (ControllerInput, focus_and_reveal, FocusRing, HintBar,  # no
     install_input_mode, SpatialNav)
 from .install import InstallPage, RepackWatcher  # noqa: E402
 from .friends import PRESENCE_MS  # noqa: E402
-from .jobs import cli_json, in_thread, JobManager  # noqa: E402
+from .jobs import cli_cache_forget, cli_json, in_thread, JobManager  # noqa: E402
 from .modal import Modal  # noqa: E402
 from .setup import found_counts, SetupPage  # noqa: E402
 from .palette import action_entries, CommandPalette, game_entries, page_entries  # noqa: E402

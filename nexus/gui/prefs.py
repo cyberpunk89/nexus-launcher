@@ -186,6 +186,8 @@ class LibraryPrefs:
             'volume': _volume(ctl.get('volume')),
             # The "Your week" card on Theatre's Home.
             'week_home': ctl.get('week_home') is not False,
+            # On this day, Game of the day and Milestones on Theatre's Home (w-144).
+            'insight_home': ctl.get('insight_home') is not False,
             # Theatre's layout (tabs or the Ribbon) and whether the Ribbon's
             # background glides as you move (w-108).
             'theatre_layout': ctl.get('theatre_layout') if ctl.get('theatre_layout') in
