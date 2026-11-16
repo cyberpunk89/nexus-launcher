@@ -29,6 +29,15 @@ class Stylesheet(unittest.TestCase):
         self.assertEqual(re.findall(r'border-radius:\s*\d', tpl), [])
         self.assertNotIn('border-radius: 0', nx.build_stylesheet())
 
+    def test_deals_widgets_use_tokens(self):
+        """The Deals home and search (w-146): colours and radii from P / R,
+        never a literal hex or a px radius."""
+        for name in ('deals_home.py', 'deals_catalogue.py', 'deal_model.py'):
+            src = (nx._REPO / 'nexus' / 'gui' / name).read_text()
+            with self.subTest(name=name):
+                self.assertEqual(re.findall(r'#[0-9a-fA-F]{3,8}\b', src), [])
+                self.assertEqual(re.findall(r'border-radius:\s*\d', src), [])
+
     def test_substitutes(self):
         css = nx.build_stylesheet()
         self.assertNotIn('$', css.replace('$$', ''))

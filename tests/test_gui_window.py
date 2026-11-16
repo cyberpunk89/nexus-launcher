@@ -759,8 +759,8 @@ class Window(unittest.TestCase):
     def _deals(self):
         d = self.win.dealspage
         # Not the state the real app left in library.json.
-        d._section, d._filter, d._sort, d._hide_owned, d._query = (
-            'deals', 'sale', 'best', False, '')
+        d._section, d._view, d._filter, d._sort, d._hide_owned, d._query = (
+            'deals', 'grid', 'sale', 'best', False, '')
         d.owned_chip.blockSignals(True)
         d.owned_chip.setChecked(False)
         d.owned_chip.blockSignals(False)
@@ -837,7 +837,8 @@ class Window(unittest.TestCase):
 
     def test_spotlight_redecodes_after_a_resize_mid_decode(self):
         from PyQt6.QtGui import QPixmap
-        sp = self.win.dealspage.spot
+        sp = nx.DealSpotlight()                 # Theatre-era widget; not on the page (w-146)
+        self.addCleanup(sp.deleteLater)
         asked = []
         with mock.patch.object(nx.ART, 'peek', lambda *a: None), \
                 mock.patch.object(nx.ART, 'request', lambda p, w, h, cb: asked.append((w, h))):
@@ -890,7 +891,7 @@ class Window(unittest.TestCase):
         d.forget_repack('11')
         self.assertEqual([c.item['appid'] for c in d._cards], [10])
 
-    def test_deals_sort_search_owned_and_spotlight(self):
+    def test_deals_sort_search_and_owned(self):
         d = self._deals()
         d.res['owned_appids'] = [11]
         wl = d.res['summary']['wishlist']
@@ -898,10 +899,7 @@ class Window(unittest.TestCase):
         wl[1]['price'].update(cutPct=50, current=20, atHistoricalLow=True)
         wl[2]['price'].update(cutPct=30, current=1)
         with mock.patch.object(d, '_save_state'):
-            d.spot.items = []                    # it keeps its place on a refresh otherwise
             d._render()
-            self.assertFalse(d.spot.isHidden())
-            self.assertEqual(d.spot.current()['appid'], 11)          # ATL first
             self.assertEqual([c.item['appid'] for c in d._cards], [11, 12, 10])
             d._pick('_sort', 'price')
             self.assertEqual([c.item['appid'] for c in d._cards], [12, 10, 11])
@@ -909,11 +907,9 @@ class Window(unittest.TestCase):
                           .art.badges())
             d.owned_chip.setChecked(True)
             self.assertEqual([c.item['appid'] for c in d._cards], [12, 10])
-            self.assertNotEqual(d.spot.current().get('appid'), 11)
             d.search.setText("silk")
             d._search_timer.timeout.emit()
             self.assertEqual([c.item['appid'] for c in d._cards], [10])
-            self.assertTrue(d.spot.isHidden())                       # not while searching
 
     def test_deal_price_helpers(self):
         self.assertEqual(nx.deal_was({'current': 10.03, 'cutPct': 44, 'currentStr': '€10.03'}),
@@ -5798,6 +5794,250 @@ class Window(unittest.TestCase):
         tiles = {t.game['slug']: t.mark_new for t in w.dashboard.widgets['installed']._tiles}
         self.assertEqual((tiles['alpha'], tiles['gamma']), (False, True))
 
+
+def _sale(appid, title, cur, cut, low=False, hours=None):
+    g = {'appid': appid, 'title': title, 'reviews': {'steamPercent': 90},
+         'price': {'current': cur, 'currentStr': f"${cur:.2f}", 'onSale': True, 'cutPct': cut,
+                   'atHistoricalLow': low}}
+    if hours:
+        g['hltb'] = {'main': hours}
+    return g
+
+
+def deals_home_res():
+    """A Game-db answer for the Deals home (w-146), invented titles only."""
+    return {'configured': True, 'url': None, 'fetched_at': time.time(), 'summary': {
+        'currency': 'USD', 'region': 'US', 'radar': {'onSaleCount': 6}, 'wishlist': [
+            _sale(101, 'Moss Lantern', 8.99, 70, low=True, hours=11),
+            _sale(102, 'Tin Harbour', 9.99, 60, low=True, hours=9),
+            _sale(103, 'Quiet Orbit', 13.99, 80, low=True, hours=21),
+            _sale(104, 'Paper Comet', 5.99, 85),
+            _sale(105, 'Glass Fable', 4.99, 90, low=True),
+            _sale(106, 'Rust Choir', 7.99, 60, hours=6),
+            {'appid': 107, 'title': 'Velvet Static',
+             'price': {'current': 30, 'currentStr': '$30.00', 'onSale': False}}]},
+        'genres': {'102': ['Role-playing (RPG)'], '103': ['Adventure']},
+        'watch': {'dropped': [{'appid': 101, 'was': 14.99, 'now': 8.99},
+                              {'appid': 104, 'was': 9.99, 'now': 5.99}],
+                  'new_atl': [], 'since': time.time() - 3 * 86400},
+        'repacks': {'101': {'slug': 'moss-lantern', 'title': 'Moss Lantern',
+                            'url': 'https://fitgirl-repacks.site/moss-lantern/',
+                            'confidence': 'exact'}},
+        'owned_appids': []}
+
+
+CATALOGUE = {'rows': [
+    {'slug': 'moss-lantern', 'title': 'Moss Lantern', 'tail': 'v1.2 + DLC', 'date': '2026-11-10',
+     'hv': False, 'older': 0, 'keys': ['moss lantern'], 'marks': ['wishlist'], 'appid': 101},
+    {'slug': 'lantern-keeper-2', 'title': 'Lantern Keeper 2', 'tail': 'Deluxe Edition',
+     'date': '2026-11-12', 'hv': True, 'older': 1, 'keys': ['lantern keeper 2'], 'marks': []},
+    {'slug': 'lantern-keeper', 'title': 'Lantern Keeper', 'tail': 'Build 41',
+     'date': '2025-02-01', 'hv': False, 'older': 0, 'keys': ['lantern keeper'],
+     'marks': ['steam'], 'appid': 900},
+    {'slug': 'harbour-days', 'title': 'Harbour Days', 'tail': '', 'date': '2026-11-14',
+     'hv': False, 'older': 0, 'keys': ['harbour days'], 'marks': ['nexus']}],
+    'count': 5, 'synced_at': time.time() - 7200, 'building': False}
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
+class Deals(unittest.TestCase):
+    """The Deals home, search and pad (w-146)."""
+    setUpClass = classmethod(Window.setUpClass.__func__)
+    tearDownClass = classmethod(Window.tearDownClass.__func__)
+    setUp, tearDown = Window.setUp, Window.tearDown
+
+    def _home(self, width=1400, taste=(('RPG', 600, 'Owned Quest'),), res=None):
+        w = self.win
+        w.resize(width, 850)
+        d = w.dealspage
+        d._section, d._view, d._filter, d._sort, d._hide_owned, d._query = (
+            'deals', 'home', 'sale', 'best', False, '')
+        d.set_taste(list(taste))
+        d.res = res or deals_home_res()
+        d._loaded = True
+        with mock.patch.object(d, 'load_catalogue'):
+            w.go(w.DEALS)
+        d._render()
+        QApplication.processEvents()
+        return d
+
+    # ---- slice 4: the home ----
+    def test_home_shows_for_you_chips_and_shelves(self):
+        d = self._home()
+        self.assertEqual(d.view(), 'home')
+        self.assertIs(self.win.topbar.page_tabs(), d.tabs)        # tabs ride in the top bar
+        self.assertFalse(d.home.isHidden())
+        picks = d.home.for_you_cards
+        self.assertEqual(len(picks), 3)
+        self.assertEqual(picks[0].item['appid'], 102)              # the RPG one first
+        self.assertEqual(picks[0].reason.text(),
+                         "Because you play a lot of RPG (Owned Quest)")
+        self.assertIn("Top rated on your wishlist", picks[1].reason.text())
+        self.assertEqual([c.text() for c in d.home.jump_chips],
+                         ["All-time lows  4", "Under 10  5", "75% off or more  3",
+                          "Short, under 10 h  2"])
+        self.assertEqual(list(d.home.shelves), ['atl', 'under', 'big', 'short'])
+        atl = d.home.shelves['atl']
+        self.assertEqual(atl.count.text(), "4")
+        self.assertTrue(atl.visible_cards())
+        self.assertTrue(all(c.item['price']['atHistoricalLow'] for c in atl.visible_cards()))
+        self.assertEqual(d._cards, [])                             # no See all grid built
+        self.assertFalse(hasattr(d, 'spot'))                       # the spotlight left
+        # Tiles share the shelf's row: one row, columns from the viewport.
+        rows = {c.y() for c in atl.visible_cards()}
+        self.assertEqual(len(rows), 1)
+
+    def test_rail_folds_below_1100_on_viewport_resize(self):
+        d = self._home(1400)
+        self.assertTrue(d.rail.isVisibleTo(d))
+        self.assertFalse(d.watch_btn.isVisibleTo(d))
+        self.assertEqual(d.rail.width(), nx.deals_home.RAIL_W)
+        names = [r.title for r in d.rail.rows('dropped')]
+        self.assertEqual(names, ["Moss Lantern", "Paper Comet"])
+        self.assertIn("None today", d.rail.quiet('new_atl'))
+        self.win.resize(1000, 850)
+        QApplication.processEvents()
+        self.assertFalse(d.rail.isVisibleTo(d))
+        self.assertTrue(d.watch_btn.isVisibleTo(d))
+        self.assertEqual(d.watch_btn.text(), "Price watch  2")
+        self.win.resize(1400, 850)
+        QApplication.processEvents()
+        self.assertTrue(d.rail.isVisibleTo(d))
+        self.assertFalse(d.watch_btn.isVisibleTo(d))
+
+    def test_see_all_opens_grid_with_filter(self):
+        d = self._home()
+        d._sort = 'price'
+        with mock.patch.object(d, '_save_state'):
+            d.home.shelves['under'].see_all_btn.click()
+            self.assertEqual(d.view(), 'grid')
+            self.assertEqual((d._filter, d._sort), ('under', 'price'))
+            self.assertEqual([c.item['appid'] for c in d._cards], [105, 104, 106, 101, 102])
+            self.assertTrue(d.home.isHidden())
+            self.assertFalse(d.back_btn.isHidden())
+            chips = [b.text() for b in d.sub_host.findChildren(QPushButton) if not b.isHidden()]
+            self.assertIn("All-time low  4", chips)                # today's chips stay
+            self.assertTrue(d.back())
+            self.assertEqual(d.view(), 'home')
+            self.assertFalse(d.back())
+
+    def test_owned_tiles_dimmed(self):
+        res = deals_home_res()
+        res['owned_appids'] = [105]
+        d = self._home(res=res)
+        tiles = [c for s in d.home.shelves.values() for c in s.cards if c.item['appid'] == 105]
+        self.assertTrue(tiles)
+        for c in tiles:
+            self.assertTrue(c.property('dimmed'))
+            self.assertIn("Owned", c.art.badges())
+        d.owned_chip.setChecked(True)
+        self.assertFalse([c for s in d.home.shelves.values() for c in s.cards
+                          if c.item['appid'] == 105])
+
+    # ---- slice 5: the FitGirl search ----
+    def _with_catalogue(self):
+        d = self._home()
+        with patch_gui('cli_json', lambda args, cb, *_a, **_k: cb(
+                json.loads(json.dumps(CATALOGUE)) if args[0] == '--repack-catalogue'
+                else None, None)):
+            d._cat_busy = False
+            d.load_catalogue()
+        return d
+
+    def test_scope_chip_hidden_when_repacks_off(self):
+        d = self._with_catalogue()
+        self.assertFalse(d.scope.isHidden())
+        self.assertEqual(d.search.placeholderText(), "Search by title")
+        self.assertEqual([r.title for r in d.rail.rows('newest')],
+                         ["Harbour Days", "Lantern Keeper 2", "Moss Lantern"])
+        d.set_repacks(False)
+        self.assertTrue(d.scope.isHidden())
+        self.assertEqual(d.search.placeholderText(), "Search your wishlist")
+        d.set_repacks(True)
+        self.assertFalse(d.scope.isHidden())
+
+    def test_typing_filters_without_cli_calls(self):
+        d = self._with_catalogue()
+        asked = []
+        with patch_gui('cli_json', lambda args, *_a, **_k: asked.append(args)):
+            d.search.setFocus()
+            d.search.setText("lantern")
+            d._search_timer.timeout.emit()
+            d.search.setText("lantern keeper")
+            d._search_timer.timeout.emit()
+        self.assertEqual(asked, [])
+        self.assertTrue(d.suggest.isVisible())
+        self.assertIs(d.suggest.parentWidget(), d)
+        self.assertEqual(d.suggest.kinds, [('fitgirl', 'Lantern Keeper 2'),
+                                           ('fitgirl', 'Lantern Keeper'),
+                                           ('all', 'See all 2 FitGirl results')])
+        d.search.setText("lantern")
+        d._search_timer.timeout.emit()
+        self.assertEqual([k for k, _t in d.suggest.kinds], ['wish', 'fitgirl', 'fitgirl', 'all'])
+        self.assertIs(self.win.spatial.move(d.search, Qt.Key.Key_Down), d.suggest.rows[0])
+
+    def test_see_all_opens_results_grouped(self):
+        d = self._with_catalogue()
+        d.search.setFocus()
+        d.search.setText("lantern")
+        d._search_timer.timeout.emit()
+        d.suggest.rows[-1].clicked.emit()                       # See all 3
+        self.assertEqual(d.view(), 'results')
+        self.assertEqual(d.title.text(), "FitGirl results")
+        self.assertEqual(d.results.headings, ["ON YOUR WISHLIST  1",
+                                              "ON FITGIRL, NOT ON YOUR WISHLIST  2"])
+        self.assertEqual(d.tag_count.text(), "3 for “lantern”")
+        rows = d.results.rows
+        self.assertEqual([r.title for r in rows], ["Moss Lantern", "Lantern Keeper 2",
+                                                   "Lantern Keeper"])
+        d.results.hide_have.setChecked(True)                    # Owned on Steam goes
+        self.assertEqual([r.title for r in d.results.rows], ["Moss Lantern", "Lantern Keeper 2"])
+        page = {'repack_size': '3.1 GB', 'original_size': '5.6 GB', 'size_bytes': 3 << 30,
+                'original_bytes': 6 << 30, 'free_bytes': 200 << 30, 'magnets': 1,
+                'client': 'transmission', 'dest': '/dl'}
+        asked = []
+        with patch_gui('cli_json', lambda a, cb, *_x, **_k: (asked.append(a), cb(page, None))):
+            d.results.rows[1].clicked.emit()
+        self.assertEqual(asked, [['--repack-page', 'lantern-keeper-2', '--json']])
+        self.assertIsNotNone(d.results.rows[1].panel)
+        texts = [b.text() for b in d.results.rows[1].panel.findChildren(QPushButton)]
+        self.assertEqual(texts, ["Grab — install when it's done", "Download only", "Open page"])
+        self.assertTrue(d.back())
+        self.assertEqual(d.view(), 'home')
+
+    # ---- slice 6: pad ----
+    def test_pad_moves_shelf_to_rail(self):
+        d = self._home(1400)
+        self.win.input.set('pad')
+        last = d.home.shelves['atl'].visible_cards()[-1]
+        nxt = self.win.spatial.move(last, Qt.Key.Key_Right)
+        self.assertTrue(d.rail.isAncestorOf(nxt), nxt)
+        chip = d.home.jump_chips[0]
+        down = self.win.spatial.move(chip, Qt.Key.Key_Down)
+        self.assertIn(down, d.home.all_cards() + [w for w in d.home.findChildren(QPushButton)])
+        # Folded, the price watch is a sheet on a pad, not a popover.
+        self.win.resize(1000, 850)
+        QApplication.processEvents()
+        d.watch_btn.click()
+        self.assertTrue(self.win.sheet.isVisible())
+        rows = [b.text() for b in self.win.sheet.findChildren(QPushButton)
+                if b.objectName() == 'SheetRow']
+        self.assertEqual(rows, ["Moss Lantern", "Paper Comet"])
+        self.win.sheet.close_sheet()
+
+    def test_pad_b_leaves_results(self):
+        d = self._with_catalogue()
+        self.win.input.set('pad')
+        self.assertTrue(d.open_results('lantern'))
+        d.results.rows[0].setFocus()
+        self.win._escape()                                       # B
+        self.assertEqual(d.view(), 'home')
+        self.assertEqual(self.win.current(), self.win.DEALS)    # not Home
+        d.see_all('atl')
+        self.win._escape()
+        self.assertEqual(d.view(), 'home')
+        self.win._escape()                                       # then the page, as before
+        self.assertEqual(self.win.current(), self.win.HOME)
 
 
 GE = {'update': True, 'latest': 'GE-Proton10-25'}

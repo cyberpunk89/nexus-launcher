@@ -279,6 +279,8 @@ class NavigationMixin:
                 self.close_category()
         elif self.current() in (self.SETTINGS, self.PROTON, self.SYSTEM) and self.go_back():
             self._focus_view()                  # side pages: back where you came from
+        elif self.current() == self.DEALS and self.dealspage.escape():
+            pass                                # suggestions, then results / See all (w-146)
         elif self.current() != self.HOME:
             self.go(self.HOME)
             self._focus_view()

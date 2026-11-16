@@ -413,6 +413,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
         self.dealspage.repack.connect(self._deal_repack)
         self._add_page(self.DEALS, self.dealspage)
+        self.topbar.mount_page_tabs(self.DEALS, self.dealspage.tabs)   # w-146
         self.downloads = DownloadsPage(game_of=self._card_game, job_of=self._card_job)
         self.downloads.card_action.connect(self._pipeline_action)
         self.downloads.toast.connect(self.toast)

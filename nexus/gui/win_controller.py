@@ -638,6 +638,10 @@ class ControllerMixin:
                 hints = [('a', 'Resume' if it.primary == 'resume' else
                           'Play' if th.a_plays and g and can_quick_play(g) else 'Open'),
                          ('x', 'Options')]
+            elif it.kind == 'setting' and steps_in_place(th.ribbon.state, th.ribbon.cats):
+                # Inside a settings group (w-145): Left/Right change it in place.
+                return ([('← → A', 'Change')] if it.primary == 'step' else []) + [
+                    ('↕', 'Choose'), ('x', 'More'), ('b', 'Back'), ('Menu', 'Quick menu')]
             elif it.kind == 'setting':
                 hints = ([('a', 'Change')] if it.primary == 'step' else []) + [('x', 'More')]
             elif it.key.startswith('friend:'):
@@ -817,6 +821,7 @@ from .input import focus_and_reveal  # noqa: E402
 from .jobs import in_thread  # noqa: E402
 from .quickmenu import QuickRow  # noqa: E402
 from .library import ListView  # noqa: E402
+from .ribbon_model import steps_in_place  # noqa: E402
 from .theatre import TheatreDownloadRow  # noqa: E402
 from .theatre_discover import TheatreCard, TheatreSetupCard  # noqa: E402
 from .theatre_settings import CouchRow  # noqa: E402

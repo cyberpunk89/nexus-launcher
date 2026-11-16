@@ -159,6 +159,28 @@ class Window(unittest.TestCase):
         QApplication.processEvents()
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
 
+    def test_deals_hides_catalogue_search(self):
+        """w-146: with repack features off, Deals searches the wishlist only:
+        no scope chip, no catalogue call, no results view, no Newest on FitGirl."""
+        w = self.win
+        d = w.dealspage
+        d.catalogue = {'rows': [{'slug': 'tin-harbour', 'title': 'Tin Harbour', 'date': '2026-11-01',
+                                 'keys': ['tin harbour'], 'marks': []}], 'building': False}
+        d.res = {'configured': True, 'summary': {'wishlist': []}, 'watch': {}}
+        d._section, d._view = 'deals', 'results'
+        w.config = {**w.config, 'repacks': False, 'gamedb_enabled': True}
+        w._apply_repacks()
+        self.assertEqual(d.view(), 'home')
+        self.assertTrue(d.scope.isHidden())
+        self.assertEqual(d.search.placeholderText(), "Search your wishlist")
+        self.assertFalse(d.open_results('tin'))
+        self.assertNotIn('newest', [k for k in d.rail._rows])
+        asked = []
+        with patch_gui('cli_json', lambda args, *_a, **_k: asked.append(args[0])):
+            d._cat_busy = False
+            d.load_catalogue()
+        self.assertEqual(asked, [])
+
     def test_switch_off_hides_repack_parts_and_stops_their_checks(self):
         w = self.win
         w.config = {**w.config, 'repacks': False, 'gamedb_enabled': True}

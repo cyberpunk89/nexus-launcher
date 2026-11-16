@@ -427,6 +427,18 @@ def _ago(ts: float) -> str:
     return f'{mins // 1440} days ago'
 
 
+def _wishlist_genres(gamedb, wishlist) -> dict:
+    """{appid (str): [genre]} for the wishlist games Game-db's games cache
+    has genres for (cache only; empty without v2/games)."""
+    out = {}
+    for g in wishlist:
+        row = gamedb.meta(g.get('appid')) if isinstance(g, dict) else None
+        genres = [x for x in (row or {}).get('genres') or [] if isinstance(x, str)]
+        if genres:
+            out[str(g['appid'])] = genres
+    return out
+
+
 def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1to3') -> None:
     """Wishlist deals, upcoming releases and backlog picks from Game-db
     (cached 45 min; --refresh to bypass). section: all|deals|upcoming|backlog."""
@@ -467,6 +479,8 @@ def cmd_gamedb(section: str, refresh: bool, as_json: bool, time_budget: str = '1
         if section in ('deals', 'all'):
             from nexus import repackindex
             out['repacks'] = repackindex.wishlist_matches(data.get('wishlist') or [])
+            out['watch'] = gamedb.price_watch(data.get('wishlist') or [])
+            out['genres'] = _wishlist_genres(gamedb, data.get('wishlist') or [])
         if section == 'deals':
             out['wishlist'] = data.get('wishlist', [])
             out['radar'] = data.get('radar')

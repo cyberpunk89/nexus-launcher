@@ -327,6 +327,76 @@ def wishlist_matches(wishlist, data: dict | None = None) -> dict[str, dict]:
     return out
 
 
+def _source_keys(titles) -> dict[str, object]:
+    """{first match key: payload} for a list of (title, payload)."""
+    out = {}
+    for title, payload in titles:
+        for k in keys(title)[:1]:
+            out.setdefault(k, payload)
+    return out
+
+
+def catalogue(data: dict, wishlist, games, owned_titles) -> dict:
+    """The whole index as browsable rows, from the stored data only (no
+    network): {rows, count, synced_at, building}. One row per game: posts
+    are grouped by their base title and the newest post speaks for the
+    group, with 'older' counting the rest. Rows come newest first.
+    Row: {slug, title, tail (version/edition after the title), date, hv,
+    older, keys (Matcher keys, for filtering in the GUI), marks, appid?}.
+    marks: 'wishlist' (wishlist items [{appid, title}]), 'nexus' (installed
+    entries by slug or display_name), 'steam' (owned Steam titles
+    [{appid, title}]); 'appid' is the wishlist, else the Steam, game."""
+    posts = (data or {}).get('posts') or {}
+    groups: dict[str, list[dict]] = {}
+    for p in posts.values():
+        if not isinstance(p, dict) or not p.get('title'):
+            continue
+        ks = keys(p['title'])
+        if ks:
+            groups.setdefault(ks[0], []).append(p)
+    wish = _source_keys((i.get('title') or '', str(i['appid']))
+                        for i in wishlist or []
+                        if isinstance(i, dict) and i.get('appid') is not None)
+    steam = _source_keys((i.get('title') or '', str(i['appid']))
+                         for i in owned_titles or []
+                         if isinstance(i, dict) and i.get('appid') is not None)
+    nexus_slugs, nexus_titles = set(), []
+    for g in games or []:
+        if isinstance(g, dict):
+            if g.get('slug'):
+                nexus_slugs.add(g['slug'])
+            nexus_titles.append((g.get('display_name') or '', None))
+    nexus = _source_keys(nexus_titles)
+    rows = []
+    for key, group in groups.items():
+        group.sort(key=lambda p: (p.get('date') or '', p.get('modified') or ''), reverse=True)
+        newest = group[0]
+        full = newest['title']
+        title = re.split(r'\s\(', base_title(full), maxsplit=1)[0].strip() or full
+        tail = full[len(title):].strip(' –—-+,') if full.startswith(title) else ''
+        ks = keys(full)
+        marks, appid = [], None
+        if any(k.lstrip('~') in wish for k in ks if not k.startswith('~')):
+            marks.append('wishlist')
+            appid = next(wish[k] for k in ks if k in wish)
+        if nexus_slugs & {p['slug'] for p in group} or \
+                any(k in nexus for k in ks if not k.startswith('~')):
+            marks.append('nexus')
+        if any(k in steam for k in ks if not k.startswith('~')):
+            marks.append('steam')
+            if appid is None:
+                appid = next(steam[k] for k in ks if k in steam)
+        row = {'slug': newest['slug'], 'title': title, 'tail': tail,
+               'date': newest.get('date') or '', 'hv': newest.get('hv'),
+               'older': len(group) - 1, 'keys': ks, 'marks': marks}
+        if appid is not None:
+            row['appid'] = int(appid) if appid.isdigit() else appid
+        rows.append(row)
+    rows.sort(key=lambda r: r['date'], reverse=True)
+    return {'rows': rows, 'count': len(posts), 'synced_at': (data or {}).get('synced_at'),
+            'building': not posts}
+
+
 def reject(appid: str, slug: str | None) -> None:
     """Hide a wrong match (slug), or forget the rejection (None)."""
     data = load()

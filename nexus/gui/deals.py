@@ -5,8 +5,8 @@ import re
 from datetime import datetime
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QPoint, QRectF, Qt, QTimer, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
-    QLinearGradient, QPainter, QPainterPath, QPixmap)
+from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPainterPath,
+    QPixmap)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
     QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
@@ -15,7 +15,8 @@ from nexus import gamedb, hypervisor
 from nexus.features import has
 
 from .fmt import fmt_ago
-from .theme import FONTS, FS, G, GRAD, P, PILL_H, pill_qss, R, SP
+from . import deal_model
+from .theme import FONTS, FS, G, P, PILL_H, pill_qss, R, SOFT_TAG_H, SP
 
 
 def _pill(text: str, role: str) -> QLabel:
@@ -516,322 +517,21 @@ class DealCard(QFrame):
         m.deleteLater()
 
 
-class DealSpotlight(QFrame):
-    """The best deals right now, one at a time: the game's Steam hero art
-    with the price over a scrim, Open deal / Grab / Steam buttons, and
-    ‹ › to step through the top few."""
-    H = 236
-    activated = pyqtSignal(str)
-    repack_action = pyqtSignal(str, dict, dict)
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("DealSpotlight")
-        self.setFixedHeight(self.H)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.items: list[dict] = []
-        self.repacks: dict = {}
-        self.base = None
-        self.index = 0
-        self.primary = None
-        self._pm: QPixmap | None = None
-        self._path = self._want = None
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(SP['5'], SP['4'], SP['4'], SP['4'])
-        col = QVBoxLayout()
-        col.setSpacing(SP['1_5'])
-        col.addStretch()
-        self.kicker = label("", "HeroKicker")
-        col.addWidget(self.kicker)
-        self.headline = QLabel()
-        self.headline.setObjectName("NewsHeadline")
-        col.addWidget(self.headline)
-        prow = QHBoxLayout()
-        prow.setSpacing(SP['2'])
-        self.cut = _pill("", 'accent')
-        prow.addWidget(self.cut)
-        self.price = label("", None)
-        self.price.setStyleSheet(f"color: {P['on_art']}; font-size: 22px; font-weight: 600;")
-        prow.addWidget(self.price)
-        self.was = label("", None)
-        self.was.setTextFormat(Qt.TextFormat.RichText)
-        self.was.setStyleSheet(f"color: {P['subtext']}; font-size: {FS['sm']}px;")
-        prow.addWidget(self.was, 0, Qt.AlignmentFlag.AlignBottom)
-        prow.addStretch()
-        col.addLayout(prow)
-        self.meta = label("", "NewsLede")
-        self.meta.setTextFormat(Qt.TextFormat.RichText)
-        col.addWidget(self.meta)
-        brow = QHBoxLayout()
-        brow.setSpacing(SP['2'])
-        self.btn_open = QPushButton("Open deal")
-        self.btn_open.setObjectName("Primary")
-        self.btn_open.clicked.connect(self.activate)
-        self.btn_grab = QPushButton("Grab from FitGirl")
-        self.btn_grab.setObjectName("Glass")
-        set_glyph_icon(self.btn_grab, G['download'], 15, 'on_art', hover_role=None)
-        self.btn_grab.clicked.connect(self._grab)
-        self.btn_steam = QPushButton("Steam page")
-        self.btn_steam.setObjectName("Glass")
-        self.btn_steam.clicked.connect(self._steam)
-        for b in (self.btn_open, self.btn_grab, self.btn_steam):
-            b.setFixedHeight(34)
-            brow.addWidget(b)
-        brow.addStretch()
-        col.addSpacing(SP['1'])
-        col.addLayout(brow)
-        lay.addLayout(col, 6)
-        lay.addStretch(3)
-        nav = QVBoxLayout()
-        nav.addStretch()
-        nrow = QHBoxLayout()
-        nrow.setSpacing(SP['1'])
-        self.btn_prev = icon_button(G['chevron_left'], "Previous deal", 30, "GlassIcon")
-        self.btn_prev.clicked.connect(lambda: self.step(-1))
-        self.counter = label("", "HeroKicker")
-        self.counter.setContentsMargins(SP['2'], 0, SP['2'], 0)   # inside its backing
-        self.btn_next = icon_button(G['chevron_right'], "Next deal", 30, "GlassIcon")
-        self.btn_next.clicked.connect(lambda: self.step(1))
-        nrow.addWidget(self.btn_prev)
-        nrow.addWidget(self.counter)
-        nrow.addWidget(self.btn_next)
-        nav.addLayout(nrow)
-        lay.addLayout(nav)
-        for w in (self.kicker, self.headline, self.price, self.was, self.meta, self.cut,
-                  self.counter):
-            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-    def set_items(self, items: list[dict], repacks: dict, base):
-        keep = self.items[self.index]['appid'] if self.items else None
-        self.items, self.repacks, self.base = items, repacks, base
-        self.index = next((i for i, g in enumerate(items) if g.get('appid') == keep), 0)
-        if items:
-            self._show()
-
-    def step(self, d: int):
-        if len(self.items) > 1:
-            self.index = (self.index + d) % len(self.items)
-            self._show()
-
-    def current(self) -> dict:
-        return self.items[self.index] if self.items else {}
-
-    def _show(self):
-        g = self.current()
-        price = g.get('price') or {}
-        self.primary, _lab, self.links = deal_links(g, 'deal', self.base, set())
-        bits = ["BEST DEAL RIGHT NOW" if self.index == 0 else f"TOP DEAL #{self.index + 1}"]
-        if price.get('atHistoricalLow'):
-            bits.append("ALL-TIME LOW")
-        elif price.get('historicalLowStr'):
-            bits.append(f"LOWEST EVER {price['historicalLowStr']}")
-        self.kicker.setText("  ·  ".join(bits))
-        self.cut.setText(f"-{price['cutPct']}%" if price.get('cutPct') else '')
-        self.cut.setVisible(bool(price.get('cutPct')))
-        self.price.setText(price.get('currentStr') or '')
-        was = deal_was(price)
-        self.was.setText(f"<s>{html.escape(was)}</s>" if was else '')
-        meta = deal_meta(g)
-        rv = g.get('reviews') or {}
-        if rv.get('steamDesc'):
-            meta.insert(1 if meta and g.get('protonTier') else 0, (rv['steamDesc'], None))
-        self.meta.setText(meta_html(meta))
-        self.btn_open.setVisible(bool(self.primary))
-        m = self.repacks.get(str(g.get('appid')))
-        self.btn_grab.setVisible(m is not None)
-        hv = hypervisor.badge((m or {}).get('hv'))
-        self.btn_grab.setText(f"Grab from FitGirl ({hv})" if hv else "Grab from FitGirl")
-        self.btn_grab.setToolTip(hypervisor.note(m['hv']) if hv else '')
-        self.btn_steam.setVisible(bool(gamedb.safe_url(g.get('steamUrl'))))
-        many = len(self.items) > 1
-        for w in (self.btn_prev, self.btn_next, self.counter):
-            w.setVisible(many)
-        self.counter.setText(f"{self.index + 1} / {len(self.items)}")
-        self._relabel()
-        self._pm = self._path = None
-        hero, header = steam_hero_url(g.get('appid')), gamedb.safe_url(g.get('headerImage'))
-        self._want = g.get('appid')
-        for url in (header, hero):              # the header now, the hero once it's here
-            if not url:
-                continue
-            path = ART.cached(url)
-            if path:
-                self._arrived(path, g.get('appid'), url == hero)
-            else:
-                ART.fetch(url, lambda p, a=g.get('appid'), h=(url == hero):
-                          self._arrived(p, a, h))
-        self.update()
-
-    def _arrived(self, path, appid, is_hero):
-        try:
-            if appid != self._want or (not is_hero and self._path and 'hero' in self._kind):
-                return
-        except RuntimeError:
-            return
-        self._path, self._kind = path, ('hero' if is_hero else 'header')
-        self._decode()
-
-    _kind = ''
-
-    def _size(self):
-        return max(64, (self.width() + 63) // 64 * 64), self.H
-
-    def _decode(self):
-        if not self._path:
-            return
-        w, h = self._size()
-        pm = ART.peek(self._path, w, h)
-        if pm is not None:
-            self._pm = pm
-            self.update()
-        else:
-            want = (self._path, w, h)
-            ART.request(self._path, w, h, lambda pm, k=want: self._decoded(k, pm))
-
-    def _decoded(self, key, pm):
-        try:
-            if key[0] == self._path and pm is not None:
-                self._pm = pm                  # better than nothing while we re-ask
-                self.update()
-                if key[1:] != self._size():    # resized while it decoded: resizeEvent
-                    self._decode()             # only re-asks once there's a pixmap
-        except RuntimeError:
-            pass
-
-    def _relabel(self):
-        w = max(200, int(self.width() * 0.62) - SP['5'])
-        hf = QFont(FONTS.ui, -1, QFont.Weight.DemiBold)      # as #NewsHeadline
-        hf.setPixelSize(26)
-        self.headline.setText(elide_lines(self.current().get('title') or '',
-                                          QFontMetrics(hf), w, 1))
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if self.items:
-            self._relabel()
-            if self._pm is not None and self._pm.width() != self._size()[0]:
-                self._decode()
-
-    def paintEvent(self, ev):
-        pt = QPainter(self)
-        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect())
-        clip = QPainterPath()
-        clip.addRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), R['card'], R['card'])
-        pt.setClipPath(clip)
-        pt.fillRect(r, QColor(P['surface_2']))
-        if self._pm is not None:
-            pt.drawPixmap((self.width() - self._pm.width()) // 2, 0, self._pm)
-        else:
-            a, b = (QColor(c) for c in GRAD['dawn'])
-            a.setAlphaF(0.5)
-            b.setAlphaF(0.2)
-            g = QLinearGradient(r.topLeft(), r.bottomRight())
-            g.setColorAt(0.0, a)
-            g.setColorAt(1.0, b)
-            pt.fillRect(r, QBrush(g))
-        s = QLinearGradient(r.topLeft(), r.topRight())
-        base = QColor(P['scrim'])       # dark under the white text on a light theme too
-        for at, alpha in ((0.0, 0.94), (0.45, 0.75), (0.8, 0.15), (1.0, 0.05)):
-            c = QColor(base); c.setAlphaF(alpha)
-            s.setColorAt(at, c)
-        pt.fillRect(r, QBrush(s))
-        if self.counter.isVisible():
-            # "2 / 5" sits where the scrim has faded out: over light art, or
-            # a light theme's light fallback, its white text needs a backing
-            # of its own (dark like the glass ‹ › beside it, in every theme).
-            g, h = self.counter.geometry(), self.btn_prev.height()
-            box = QRectF(g.x(), g.center().y() + 0.5 - h / 2, g.width(), h)
-            bg = QColor(P['scrim'])
-            bg.setAlphaF(0.78)
-            pt.setPen(Qt.PenStyle.NoPen)
-            pt.setBrush(bg)
-            pt.drawRoundedRect(box, h / 2, h / 2)
-        pt.end()
-
-    def activate(self):
-        if self.primary:
-            self.activated.emit(self.primary)
-
-    def _grab(self):
-        g = self.current()
-        m = self.repacks.get(str(g.get('appid')))
-        if m:
-            self.repack_action.emit('grab', g, m)
-
-    def _steam(self):
-        u = gamedb.safe_url(self.current().get('steamUrl'))
-        if u:
-            self.activated.emit(u)
-
-    def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and self.rect().contains(
-                ev.position().toPoint()):
-            self.activate()
-        super().mouseReleaseEvent(ev)
-
-    def keyPressEvent(self, ev):
-        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self.activate()
-        elif ev.key() == Qt.Key.Key_BracketRight:
-            self.step(1)
-        elif ev.key() == Qt.Key.Key_BracketLeft:
-            self.step(-1)
-        elif ev.key() == Qt.Key.Key_Menu:
-            self._menu(self.mapToGlobal(QPoint(self.width() // 3, self.height() // 2)))
-        else:
-            super().keyPressEvent(ev)
-
-    def contextMenuEvent(self, ev):
-        self._menu(ev.globalPos())
-
-    def menu_items(self) -> list[tuple]:
-        """What the buttons do, plus the deal's links: (text, glyph, fn)."""
-        g = self.current()
-        if not g:
-            return []
-        items = []
-        if self.primary:
-            items.append(("Open deal", G['external'], self.activate))
-        if self.repacks.get(str(g.get('appid'))):
-            items.append(("Grab from FitGirl", G['download'], self._grab))
-        steam = gamedb.safe_url(g.get('steamUrl'))
-        if steam:
-            items.append(("Steam page", G['external'], self._steam))
-        seen = {self.primary, steam}
-        for text, url in self.links:
-            if url not in seen:
-                seen.add(url)
-                items.append((text, G['external'], lambda u=url: self.activated.emit(u)))
-        if len(self.items) > 1:
-            items += [("Next deal", G['chevron_right'], lambda: self.step(1)),
-                      ("Previous deal", G['chevron_left'], lambda: self.step(-1))]
-        return items
-
-    def _menu(self, pos):
-        items = self.menu_items()
-        if not items:
-            return
-        sheet = getattr(self.window(), 'sheet', None)
-        if input_mode() == 'pad' and isinstance(sheet, ActionSheet):
-            # A controller gets the sheet, never a desktop menu.
-            sheet.choose(self.current().get('title') or "Deal", items)
-            return
-        m = QMenu(self)
-        for text, _glyph, fn in items:
-            m.addAction(text, fn)
-        m.exec(pos)
-        m.deleteLater()
+# The home and the search live in their own modules (w-146); they need
+# DealCard and friends from above, so they are imported here.
+from . import deals_catalogue as DC, deals_home as DH  # noqa: E402
+from . import deal_spotlight as DS  # noqa: E402
+from .deal_spotlight import DealSpotlight  # noqa: E402,F401  (win_controller, tests)
 
 
-class DealsPage(QWidget):
-    """Game-db in Nexus, as a storefront: the best deal in a spotlight,
-    the wishlist's numbers, then a grid of store tiles — deals (sortable,
-    searchable, FitGirl matches marked), upcoming releases by month, and
-    tonight's backlog picks. Everything comes from one cached
-    `nexus-cli --gamedb --json` call; nothing is fetched until the page
-    (or the Library's background warm-up) asks."""
+class DealsPage(DH.HomeMixin, DC.SearchMixin, QWidget):
+    """Game-db in Nexus, as a storefront (w-146): For you picks, jump chips
+    and four shelves beside a price-watch rail (deals_home); See all opens
+    the grid of store tiles — deals (sortable, FitGirl matches marked),
+    upcoming releases by month, tonight's backlog picks; the search also
+    looks through FitGirl's catalogue (deals_catalogue). Game-db data comes
+    from one cached `nexus-cli --gamedb --json` call; nothing is fetched
+    until the page (or the Library's background warm-up) asks."""
     toast = pyqtSignal(str, str)
     counts = pyqtSignal(int)
     open_settings = pyqtSignal()
@@ -860,7 +560,9 @@ class DealsPage(QWidget):
         self._sort = st.get('sort') if st.get('sort') in dict(self.SORTS) else 'best'
         self._budget = st.get('budget') if st.get('budget') in dict(self.BUDGETS) else '1to3'
         self._hide_owned = st.get('hide_owned') is True
+        self._view = 'grid' if st.get('view') == 'grid' else 'home'    # 'results' never kept
         self._query = ''
+        self._taste: list = []
         self._loaded = self._busy = False
         self._cards: list[DealCard] = []
         self._grids: list[QGridLayout] = []
@@ -870,37 +572,78 @@ class DealsPage(QWidget):
         outer.setSpacing(SP['2'])
         head = QHBoxLayout()
         head.setSpacing(SP['2'])
-        head.addWidget(label("Deals", "PageTitle"))
-        head.addSpacing(SP['3'])
+        self.back_btn = QPushButton("Deals")
+        self.back_btn.setObjectName("Ghost")
+        set_glyph_icon(self.back_btn, G['chevron_left'], 14)
+        self.back_btn.clicked.connect(self.back)
+        self.back_btn.hide()
+        head.addWidget(self.back_btn)
+        self.title = label("Deals", "PageTitle")
+        head.addWidget(self.title)
+        self.tag_count = label("", "SoftTagAccent")
+        self.status = label("", "SoftTag")
+        for t in (self.tag_count, self.status):
+            t.setFixedHeight(SOFT_TAG_H)
+            t.hide()
+            head.addWidget(t)
+        head.addStretch()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search your wishlist")
         self.search.setClearButtonEnabled(True)
-        self.search.setMaximumWidth(320)
+        self.search.setFixedHeight(DC.SEARCH_H)
+        self.search.setMaximumWidth(DC.SEARCH_W)
         self.search.textChanged.connect(self._searched)
+        self.search.installEventFilter(self)
+        self.search.nav_jump = self.search_jump
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(150)
-        self._search_timer.timeout.connect(self._fill)
+        self._search_timer.timeout.connect(self._search_now)
         self._art_settle = QTimer(self)
         self._art_settle.setSingleShot(True)
         self._art_settle.setInterval(150)
         self._art_settle.timeout.connect(self._settle_art)
         head.addWidget(self.search, 1)
-        head.addStretch()
-        self.status = label("", "Muted")
-        head.addWidget(self.status)
+        self.scope = DC.ScopeChip(st.get('scope') or 'all')
+        self.scope.hide()
+        head.addWidget(self.scope)
+        self.owned_chip = QPushButton("Hide owned")
+        self.owned_chip.setObjectName("Chip")
+        self.owned_chip.setCheckable(True)
+        self.owned_chip.setChecked(self._hide_owned)
+        self.owned_chip.setToolTip("Hide wishlist games you already have: in your Steam "
+                                   "library, installed, or installed from a repack")
+        self.owned_chip.toggled.connect(self._owned_toggled)
+        head.addWidget(self.owned_chip)
         self.btn_refresh = icon_button(G['refresh'], "Refresh from Game-db (bypasses the "
                                                      "45-minute cache)", 32)
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         head.addWidget(self.btn_refresh)
-        self.btn_site = QPushButton("Open Game-db")
-        self.btn_site.clicked.connect(self._open_site)
-        head.addWidget(self.btn_site)
+        self.btn_more = icon_button(G['more'], "More", 32)
+        self.btn_more.clicked.connect(self._more_menu)
+        head.addWidget(self.btn_more)
+        self.watch_btn = QPushButton("Price watch")
+        self.watch_btn.setObjectName("Chip")
+        set_glyph_icon(self.watch_btn, G['deals'], 14)
+        self.watch_btn.clicked.connect(self._open_watch)
+        self.watch_btn.hide()
+        head.addWidget(self.watch_btn)
         outer.addLayout(head)
         self.banner = label("", "Banner", wrap=True)
         self.banner.setContentsMargins(SP['3'], SP['2'], SP['3'], SP['2'])
         self.banner.setVisible(False)
         outer.addWidget(self.banner)
+        # Deals · Upcoming · Backlog ride in the top bar (the window mounts them).
+        self.tabs = QWidget()
+        tl = QHBoxLayout(self.tabs)
+        tl.setContentsMargins(0, 0, 0, 0)
+        self.seg = SegmentedControl('underline', 36)
+        for key, text in self.SECTIONS:
+            self.seg.add(key, text)
+        self.seg.set_current(self._section, animate=False)
+        self.seg.changed.connect(lambda k: self._pick('_section', k))
+        tl.addWidget(self.seg)
+        tl.addStretch()
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -910,36 +653,22 @@ class DealsPage(QWidget):
         body = QVBoxLayout(host)
         body.setContentsMargins(0, 0, SP['2'], SP['4'])
         body.setSpacing(SP['3'])
-        self.spot = DealSpotlight()
-        self.spot.activated.connect(self._open)
-        self.spot.repack_action.connect(self.repack)
-        body.addWidget(self.spot)
-        self.spot.setVisible(False)
-        self.stats_host = QWidget()
-        self.stats = QHBoxLayout(self.stats_host)
-        self.stats.setContentsMargins(0, 0, 0, 0)
-        self.stats.setSpacing(SP['2'])
-        body.addWidget(self.stats_host)
-        self.stats_host.setVisible(False)
+        self.home = DH.DealsHome()
+        self.home.see_all.connect(self.see_all)
+        self.home.right = self.rail_for
+        body.addWidget(self.home)
+        self.results = DC.ResultsView()
+        self.results.hide()
+        body.addWidget(self.results)
         self.bar_host = QWidget()
         bar = QHBoxLayout(self.bar_host)
         bar.setContentsMargins(0, SP['1'], 0, 0)
         bar.setSpacing(SP['2'])
-        self.seg = SegmentedControl('underline', 34)
-        for key, text in self.SECTIONS:
-            self.seg.add(key, text)
-        self.seg.set_current(self._section, animate=False)
-        self.seg.changed.connect(lambda k: self._pick('_section', k))
-        bar.addWidget(self.seg)
-        bar.addStretch()
-        self.owned_chip = QPushButton("Hide owned")
-        self.owned_chip.setObjectName("Chip")
-        self.owned_chip.setCheckable(True)
-        self.owned_chip.setChecked(self._hide_owned)
-        self.owned_chip.setToolTip("Hide wishlist games you already have: in your Steam "
-                                   "library, installed, or installed from a repack")
-        self.owned_chip.toggled.connect(self._owned_toggled)
-        bar.addWidget(self.owned_chip)
+        self.sub_host = QWidget()
+        self.sub = QHBoxLayout(self.sub_host)
+        self.sub.setContentsMargins(0, 0, 0, 0)
+        self.sub.setSpacing(SP['1_5'])
+        bar.addWidget(self.sub_host, 1)
         self.sort = QComboBox()
         for key, text in self.SORTS:
             self.sort.addItem(f"Sort: {text}", key)
@@ -947,11 +676,6 @@ class DealsPage(QWidget):
         self.sort.activated.connect(lambda _i: self._pick('_sort', self.sort.currentData()))
         bar.addWidget(self.sort)
         body.addWidget(self.bar_host)
-        self.sub_host = QWidget()
-        self.sub = QHBoxLayout(self.sub_host)
-        self.sub.setContentsMargins(0, 0, 0, 0)
-        self.sub.setSpacing(SP['1_5'])
-        body.addWidget(self.sub_host)
         self.summary = label("", "Muted", wrap=True)
         body.addWidget(self.summary)
         self.list = QVBoxLayout()
@@ -964,7 +688,39 @@ class DealsPage(QWidget):
         # gets its real viewport width only when first shown, with no resize of
         # its own.
         self.scroll.viewport().installEventFilter(self)
-        outer.addWidget(self.scroll, 1)
+        row = QHBoxLayout()
+        row.setSpacing(SP['4'])
+        row.addWidget(self.scroll, 1)
+        self.rail = DH.PriceWatchRail()
+        for sig, fn in ((self.rail.open_deal, self._open_deal),
+                        (self.rail.open_title, self.open_results),
+                        (self.rail.see_newest, self._see_newest),
+                        (self.rail.see_upcoming, self._see_upcoming)):
+            sig.connect(fn)
+        self.rail.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
+        rail_scroll = QScrollArea()
+        rail_scroll.setObjectName("RailScroll")
+        rail_scroll.setWidget(self.rail)
+        rail_scroll.setWidgetResizable(True)
+        rail_scroll.setAlignment(Qt.AlignmentFlag.AlignTop)
+        rail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rail_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        rail_scroll.setFixedWidth(DH.RAIL_W)
+        self.rail_scroll = rail_scroll
+        rail_scroll.hide()
+        row.addWidget(rail_scroll, 0)
+        outer.addLayout(row, 1)
+        self._folded = False
+        self.suggest = DC.Suggestions(self)
+        self.suggest.picked.connect(self._suggested)
+        self.home.activated.connect(self._open)
+        self.home.repack.connect(self.repack)
+        self.results.back.connect(self.back)
+        self.results.repack.connect(self.repack)
+        self.results.expand.connect(self._expand_row)
+        self.results.changed.connect(self._fill_results)
+        self.scope.changed.connect(self._scope_changed)
         self._fill_tabs()
 
     # ---- data ----
@@ -1033,37 +789,51 @@ class DealsPage(QWidget):
     def _save_state(self):
         if self.prefs is None:
             return
+        # view and scope are new (w-146): older builds ignore them.
         self.prefs.deals_state = {'section': self._section, 'filter': self._filter,
                                   'sort': self._sort, 'budget': self._budget,
-                                  'hide_owned': self._hide_owned}
+                                  'hide_owned': self._hide_owned,
+                                  'view': 'grid' if self._view == 'grid' else 'home',
+                                  'scope': self.scope.scope()}
         self.prefs.save()
 
     # ---- rendering ----
     def _render(self):
         r = self.res
         err = r.get('error') or {}
-        configured = r.get('configured', False)
-        if not configured:
-            self.status.setText("")
-            self.banner.setVisible(False)
-        elif err:
+        if r.get('configured', False) and err:
             msg = err.get('message', 'unknown error')
             ago = fmt_ago(r.get('fetched_at'))
             when = ((f" — showing data from {ago}" if ago else " — showing the last data")
                     if r.get('summary') else '')
             self.banner.setText(html.escape(msg) + when)
-            self.banner.setVisible(True)
-        else:
-            self.banner.setVisible(False)
+        self.banner.setVisible(bool(r.get('configured', False) and err))
         if r.get('summary'):
-            d = self._data()
-            self.status.setText(f"synced {fmt_ago(r.get('fetched_at'))} · region "
-                                f"{d.get('region', '?')}")
-            self.counts.emit(int((d.get('radar') or {}).get('onSaleCount') or 0))
-        elif configured:
-            self.status.setText("")
+            self.counts.emit(int((self._data().get('radar') or {}).get('onSaleCount') or 0))
         self._fill_tabs()
         self._fill()
+
+    def _sync_tags(self):
+        """The soft tags by the title: "9 on sale" and the sync age, or in
+        the results "9 for “x”" and the FitGirl list's age."""
+        d, view = self._data(), self.view()
+        if view == 'results':
+            cat = self.catalogue or {}
+            q = self.search.text().strip()
+            n = self.results.total
+            count = f"{n} for “{q}”" if q else f"{n} games"
+            ago = fmt_ago(cat.get('synced_at'))
+            sync = f"FitGirl list updated {ago}" if ago else ''
+        elif d:
+            on = (d.get('radar') or {}).get('onSaleCount')
+            count = f"{on} on sale" if on and self._section == 'deals' else ''
+            sync = f"synced {fmt_ago(self.res.get('fetched_at'))} · region {d.get('region', '?')}"
+        else:
+            count, sync = '', ("Loading…" if self._busy else '')
+        self.tag_count.setText(count)
+        self.tag_count.setVisible(bool(count))
+        self.status.setText(sync)
+        self.status.setVisible(bool(sync))
 
     def _chip(self, lay, text, checked, fn):
         c = QPushButton(text)
@@ -1075,7 +845,8 @@ class DealsPage(QWidget):
         return c
 
     def _filtered(self, key: str) -> list[dict]:
-        """The wishlist under one deal filter (before search / hide owned)."""
+        """The wishlist under one deal filter (before search / hide owned);
+        a shelf's key (See all) gives that shelf's games."""
         items = self._data().get('wishlist') or []
         if key == 'sale':
             return [g for g in items if (g.get('price') or {}).get('onSale')]
@@ -1083,11 +854,20 @@ class DealsPage(QWidget):
             return [g for g in items if (g.get('price') or {}).get('atHistoricalLow')]
         if key == 'fitgirl':
             return [g for g in items if str(g.get('appid')) in self.repacks()]
+        if key in self.SHELF_FILTERS:
+            cur = self._data().get('currency') or ''
+            return [g for g in items if deal_model.in_shelf(g, key, cur)]
         return list(items)
+
+    def view(self) -> str:
+        """'home' (For you and shelves), 'grid' (See all, and Upcoming and
+        Backlog) or 'results' (the FitGirl search)."""
+        return self._view if self._section == 'deals' else 'grid'
 
     def _fill_tabs(self):
         d = self._data()
         has = bool(self.res.get('summary'))
+        view = self.view()
         n = {'deals': (d.get('radar') or {}).get('onSaleCount'),
              'upcoming': len(gamedb.upcoming(d)) or None}
         for key, _text in self.SECTIONS:
@@ -1095,7 +875,9 @@ class DealsPage(QWidget):
         self.seg.set_current(self._section, animate=False)
         clear_layout(self.sub)
         if self._section == 'deals':
-            for key, text in self.DEAL_FILTERS:
+            shelf = dict((k, t) for k, t, _s in deal_model.SHELVES)
+            for key, text in self.DEAL_FILTERS + tuple(
+                    (k, shelf[k]) for k in self.SHELF_FILTERS if k == self._filter):
                 if key == 'fitgirl' and not self._repacks_on:
                     continue
                 count = len(self._filtered(key)) if has else 0
@@ -1107,40 +889,24 @@ class DealsPage(QWidget):
                 self._chip(self.sub, text, key == self._budget,
                            lambda _=False, k=key: self._pick('_budget', k))
         self.sub.addStretch()
+        grid = view == 'grid'
         self.sub_host.setVisible(has and self._section in ('deals', 'backlog'))
-        self.bar_host.setVisible(has)
+        self.bar_host.setVisible(has and grid and self._section != 'upcoming')
+        self.summary.setVisible(grid)
         self.sort.setVisible(self._section == 'deals')
-        self.owned_chip.setVisible(self._section in ('deals', 'upcoming'))
+        self.owned_chip.setVisible(has and self._section in ('deals', 'upcoming')
+                                   and view != 'results')
         self.search.setVisible(has)
-
-    def _fill_stats(self):
-        clear_layout(self.stats)
-        d = self._data()
-        tiles = []
-        if self._section == 'deals':
-            radar = d.get('radar') or {}
-            cur = d.get('currency') or ''
-            wl = d.get('wishlist') or []
-            tiles = [(G['deals'], "on sale", str(radar.get('onSaleCount', 0)), 'accent'),
-                     (G['trophy'], "at their all-time low",
-                      str(len(self._filtered('atl'))), 'success'),
-                     (G['star'], "you'd save on all of them",
-                      f"{radar['totalSavings']:.2f} {cur}" if radar.get('totalSavings')
-                      else None, 'warning'),
-                     (G['download'], "on FitGirl", str(len(self.repacks())) if self.repacks()
-                      else None, 'success'),
-                     (G['library'], "games on your wishlist", str(len(wl)), 'subtext')]
-        elif self._section == 'backlog':
-            b = d.get('backlog') or {}
-            tiles = [(G['trophy'], "beaten", b.get('beaten'), 'success'),
-                     (G['play'], "in progress", b.get('inProgress'), 'accent'),
-                     (G['clock'], "not started", b.get('notStarted'), 'warning'),
-                     (G['timer'], "hours left", b.get('backlogHours'), 'subtext')]
-        for glyph, cap, val, role in tiles:
-            t = StatTile(glyph, cap, role)
-            t.set(str(val) if val is not None else None)
-            self.stats.addWidget(t, 1)
-        self.stats_host.setVisible(bool(tiles))
+        self.home.setVisible(has and view == 'home')
+        self.results.setVisible(view == 'results')
+        self.back_btn.setVisible(self._section == 'deals' and view != 'home')
+        self.title.setText("FitGirl results" if view == 'results' else "Deals")
+        fitgirl = self._repacks_on and self.catalogue is not None
+        self.scope.setVisible(has and fitgirl and self._section == 'deals')
+        self.search.setPlaceholderText("Search by title" if self._catalogue_scope()
+                                       else "Search your wishlist")
+        self._sync_tags()
+        self._sync_rail()
 
     def section(self) -> str:
         return self._section
@@ -1152,9 +918,52 @@ class DealsPage(QWidget):
             self._fill_tabs()
             self._fill()
 
+    def see_all(self, key: str):
+        """A shelf's See all (or the FitGirl toast's Show): today's grid
+        with that filter; the sort and the chips stay as they were."""
+        self._section, self._view = 'deals', 'grid'
+        self._filter = key if key in dict(self.DEAL_FILTERS) or key in self.SHELF_FILTERS \
+            else 'sale'
+        self._save_state()
+        self._fill_tabs()
+        self._fill()
+        self.scroll.verticalScrollBar().setValue(0)
+
+    def back(self) -> bool:
+        """‹ Deals (or B): the results or a See all grid back to the home."""
+        if self._section != 'deals' or self._view == 'home':
+            return False
+        inside = self.isAncestorOf(QApplication.focusWidget())
+        was = self._view
+        self._view = self._before if was == 'results' and self._before != 'results' else 'home'
+        self._before = 'home'
+        if was == 'results':
+            self.search.blockSignals(True)
+            self.search.clear()
+            self.search.blockSignals(False)
+            self._query = ''
+        self._save_state()
+        self._fill_tabs()
+        self._fill()
+        if inside:
+            cards = self.home.all_cards() if self._view == 'home' else self._cards
+            focus_and_reveal(cards[0] if cards else self.search)
+        return True
+
+    def set_taste(self, taste: list):
+        """What you play, for For you: [(genre, weight, top title)] (the
+        window builds it from the facts index and play time)."""
+        taste = list(taste or [])
+        if taste != self._taste:
+            self._taste = taste
+            if self._data() and self.view() == 'home':
+                self._fill()
+
     def _pick(self, attr, key):
         if getattr(self, attr) == key and attr != '_section':
             return
+        if attr == '_section' and key == self._section == 'deals':
+            self._view = 'home'                   # the Deals tab again: back home
         setattr(self, attr, key)
         self._save_state()
         self._fill_tabs()
@@ -1296,6 +1105,13 @@ class DealsPage(QWidget):
         return (id(g), kind, base, g.get('appid') in installed, repr(repack), owned)
 
     def _fill(self):
+        self._filling = True
+        try:
+            self._fill_now()
+        finally:
+            self._filling = False
+
+    def _fill_now(self):
         pool = self._pooled()
         self._clear_list()
         self._cards, self._grids = [], []
@@ -1303,14 +1119,18 @@ class DealsPage(QWidget):
         self.summary.setText("")
         r = self.res
         d = self._data()
-        self._fill_stats() if d else self.stats_host.setVisible(False)
-        self._fill_spotlight(d)
         if r and not r.get('configured'):
             self.list.addWidget(self._empty_state())
             return
         if not d:
             if r:
                 self.list.addWidget(EmptyState(G['deals'], "Nothing to show yet"))
+            return
+        if self.view() == 'home':
+            self._fill_home()
+            return
+        if self.view() == 'results':
+            self._fill_results()
             return
         installed = set(r.get('installed_appids') or [])
         owned = self._owned()
@@ -1361,19 +1181,6 @@ class DealsPage(QWidget):
         if not total:
             self.list.addWidget(EmptyState(G['deals'], empty))
 
-    def _fill_spotlight(self, d: dict):
-        on = (self._section == 'deals' and bool(d) and not self._query)
-        top = []
-        if on:
-            sale = [g for g in d.get('wishlist') or [] if (g.get('price') or {}).get('onSale')]
-            if self._hide_owned:
-                owned = self._owned()
-                sale = [g for g in sale if g.get('appid') not in owned]
-            top = sorted(sale, key=deal_sort_key('best'))[:self.SPOTLIGHT]
-        self.spot.setVisible(bool(top))
-        if top:
-            self.spot.set_items(top, self.repacks(), self._base())
-
     # Columns fill the row: as many MIN_TILE-wide tiles as fit, then
     # stretched to share the width evenly.
     def _avail(self) -> int:
@@ -1388,6 +1195,10 @@ class DealsPage(QWidget):
         return (self._avail() - self.GAP * (cols - 1)) // cols
 
     def _place(self):
+        if self.view() == 'home':
+            if self.home.place(self._avail()):
+                self._art_settle.start()
+            return
         cols, w = self._columns(), self._tile_w()
         if any(card.W != w for card in self._cards):
             for card in self._cards:
@@ -1404,16 +1215,20 @@ class DealsPage(QWidget):
                 card.show()                        # a pooled card was hidden
 
     def _settle_art(self):
-        for card in self._cards:
+        for card in self._cards + self.home.all_cards():
             try:
                 card.art.refresh_size()
             except RuntimeError:
                 pass
 
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Type.Resize and getattr(self, '_cards', None):
+        if obj is getattr(self, 'search', None):
+            return self._search_event(ev) or super().eventFilter(obj, ev)
+        if ev.type() == QEvent.Type.Resize and hasattr(self, 'rail_scroll'):
             try:
-                self._place()
+                self._sync_rail()
+                if self._cards or self.view() == 'home':
+                    self._place()
             except RuntimeError:
                 pass
         return super().eventFilter(obj, ev)
@@ -1427,6 +1242,10 @@ class DealsPage(QWidget):
         self._repacks_on = on
         if not on and self._filter == 'fitgirl':
             self._filter = 'sale'
+        if not on and self._view == 'results':
+            self._view = 'home'
+        if not on:
+            self.suggest.close()
         if self.res:
             self._render()
 
@@ -1446,7 +1265,7 @@ class DealsPage(QWidget):
         if by_appid == self._downloads:
             return
         self._downloads = by_appid
-        for card in getattr(self, '_cards', []):
+        for card in getattr(self, '_cards', []) + self.home.all_cards():
             try:
                 card.set_download(by_appid.get(str(card.item.get('appid'))))
             except RuntimeError:
@@ -1457,10 +1276,13 @@ class DealsPage(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .actions import ActionSheet  # noqa: E402
 from .art import ART  # noqa: E402
-from .details import ElideLabel, StatTile  # noqa: E402
+from .details import ElideLabel  # noqa: E402
 from .gameinfo import TIER_COLORS  # noqa: E402
-from .input import input_mode  # noqa: E402
+from .input import focus_and_reveal, input_mode  # noqa: E402
 from .jobs import cli_json, CliQuery  # noqa: E402
 from .newspage import elide_lines  # noqa: E402
 from .widgets import (clear_layout, EmptyState, icon_button, label, SegmentedControl,
     set_glyph_icon)  # noqa: E402
+DH.late_imports()
+DC.late_imports()
+DS.late_imports()

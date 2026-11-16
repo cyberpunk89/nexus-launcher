@@ -8,6 +8,8 @@ result, so the tests read this module, not pixels."""
 
 from dataclasses import dataclass, field, replace
 
+from nexus.smart import main_hours, MODE_NAMES
+
 KINDS = ('game', 'card', 'page', 'setting', 'action', 'folder', 'empty', 'news', 'deal',
          'download')
 HOME_PLAYED = 8                       # Jump back in: this many recently played games
@@ -45,6 +47,7 @@ class Item:
     track: tuple = ()                 # a download's pipeline stages (pipeline.cards track)
     figure: str = ''                  # a download's one big number
     tags: tuple = ()                  # ((text, role), ...): drawn as soft tags instead of `sub`
+    progress: tuple | None = None     # a game's (fraction, words) through its main story (w-145)
 
     @property
     def value_text(self) -> str:
@@ -75,7 +78,7 @@ class Feed:
     playing_kicker: str = 'NOW PLAYING'
     week: dict | None = None                           # {'sub', 'slug'}: Your week, shown
     friends: list = field(default_factory=list)        # [{'key', 'title', 'sub', 'slug'}]
-    settings: list = field(default_factory=list)       # [(key, title, choices, value, enabled)]
+    settings: list = field(default_factory=list)       # [(group, key, title, choices, value, enabled)]
     discover: bool = True                              # the tabs' gates (sync_tabs)
     downloads: bool = True
     downloads_sub: str = ''
@@ -87,6 +90,8 @@ class Feed:
     shelves: list = field(default_factory=list)        # theatre_discover.shelves: (title, kind, items)
     gamedb_off: bool = False                           # Discover: Game-db isn't on (setup item)
     dl_rows: list = field(default_factory=list)        # downloads.theatre_rows
+    facts: dict = field(default_factory=dict)          # the facts index's games: {slug: record}
+    source_label: object = None                        # game -> its source's name (the kicker's fallback)
 
 
 def clamp(i: int, n: int) -> int:
@@ -109,11 +114,55 @@ def _name(g: dict) -> str:
     return g.get('display_name') or g.get('slug') or ''
 
 
+SEP = "  ·  "
+_MODES = dict(MODE_NAMES)
+
+
+def game_kicker(g: dict, fact: dict | None, fallback: str = '') -> str:
+    """The small caps over a focused game's title (w-145): its first genre
+    and its first mode ("RPG  ·  SINGLE-PLAYER"); without either, the
+    `fallback` (its source, as on the game page)."""
+    fact = fact or {}
+    genre = next(iter(fact.get('genres') or ()), '')
+    mode = next((_MODES[m] for m in fact.get('modes') or () if m in _MODES), '')
+    text = SEP.join(p for p in (genre, mode) if p)
+    return (text or fallback or '').upper()
+
+
+def _amount(minutes: float) -> str:
+    return f"{int(minutes)} min" if minutes < 60 else f"{minutes / 60:.0f} h"
+
+
+def progress(g: dict, fact: dict | None) -> tuple | None:
+    """How far through the main story you are: (fraction, words), only when
+    the length is known and the game was played; capped at 1. Past the end it
+    reads "60 h, past the usual 55 h"."""
+    main = main_hours(fact)
+    minutes = g.get('playtime_minutes') or 0
+    if main is None or minutes <= 0:
+        return None
+    frac = minutes / 60 / main
+    if frac > 1:
+        return 1.0, f"{_amount(minutes)}, past the usual {main:g} h"
+    return frac, f"{_amount(minutes)} of about {main:g} h to finish"
+
+
+def rail_pos(i: int, n: int) -> float | None:
+    """Where the position rail's thumb sits (0 top .. 1 bottom) for item i
+    of n; None when there is nothing to scroll (fewer than two items)."""
+    if n < 2:
+        return None
+    return max(0, min(n - 1, i)) / (n - 1)
+
+
 def _game(g: dict, feed: Feed, kicker: str = '', key: str | None = None) -> Item:
+    fact = feed.facts.get(g['slug'])
+    if not kicker:
+        kicker = game_kicker(g, fact, feed.source_label(g) if feed.source_label else '')
     return Item(key=key or f"game:{g['slug']}", kind='game', title=_name(g),
                 sub=feed.fact(g) if feed.fact else '', slug=g['slug'], kicker=kicker,
                 tags=feed.fact_tags(g) if feed.fact_tags else (),
-                primary='play' if feed.a_plays else 'open')
+                primary='play' if feed.a_plays else 'open', progress=progress(g, fact))
 
 
 def _home(feed: Feed) -> Category:
@@ -124,6 +173,7 @@ def _home(feed: Feed) -> Category:
                           slug=run['slug'], sub=feed.fact(run) if feed.fact else '',
                           tags=feed.fact_tags(run) if feed.fact_tags else (),
                           kicker=feed.playing_kicker,
+                          progress=progress(run, feed.facts.get(run['slug'])),
                           primary='resume' if run.get('playing') else 'open'))
     live = bool(run and run.get('playing'))      # not while it's only starting
     skip = run['slug'] if run else None
@@ -170,12 +220,22 @@ def _library(feed: Feed) -> Category:
                     tags=count_tag(count) + split_tags(feed.lib_label))
 
 
+# The glyph of each settings group (theatre_settings.ROWS' groups, w-145).
+GROUP_GLYPH = {'Controller': 'gamepad', 'Theatre': 'tv', 'Sound': 'bell', 'Look': 'palette'}
+
+
 def _settings(feed: Feed) -> Category:
-    items = [Item(key=f"set:{key}", kind='setting', title=title, value=value, choices=choices,
-                  glyph=SETTING_GLYPH.get(key, 'settings'),
-                  primary='step' if enabled else 'none')
-             for key, title, choices, value, enabled in feed.settings]
-    items = [replace(it, sub=it.value_text) for it in items]
+    """Settings as groups (w-145): a folder per group of the sheet's rows, in
+    their order, its settings inside (Left/Right change one in place:
+    steps_in_place), then All settings."""
+    groups: dict[str, list] = {}
+    for group, key, title, choices, value, enabled in feed.settings:
+        it = Item(key=f"set:{key}", kind='setting', title=title, value=value, choices=choices,
+                  glyph=SETTING_GLYPH.get(key, 'settings'), primary='step' if enabled else 'none')
+        groups.setdefault(group, []).append(replace(it, sub=it.value_text))
+    items = [Item(key=f"setgrp:{g}", kind='folder', title=g, glyph=GROUP_GLYPH.get(g, 'settings'),
+                  sub=_count(len(kids), 'setting'), children=tuple(kids))
+             for g, kids in groups.items()]
     items.append(Item(key='action:all_settings', kind='action', title="All settings",
                       sub="Leaves Theatre for the desktop's Settings.", glyph='external',
                       primary='all_settings'))
@@ -377,6 +437,13 @@ def current(state: RibbonState, cats: list[Category]) -> Item | None:
     return items[clamp(state.focus.get(cid, 0), len(items))] if items else None
 
 
+def steps_in_place(state: RibbonState, cats: list[Category]) -> bool:
+    """Inside a settings group (w-145): Left/Right change the focused
+    setting's value instead of moving."""
+    path = resolve(state, cats).path
+    return state.cat == 'settings' and bool(path) and path[-1].startswith('setgrp:')
+
+
 def nav(state: RibbonState, cats: list[Category], action: str) -> RibbonState:
     """One move: left and right (the category, stopping at the ends; inside a
     folder Left goes up and Right opens a folder), in (open the focused
@@ -386,6 +453,8 @@ def nav(state: RibbonState, cats: list[Category], action: str) -> RibbonState:
     if not cats:
         return state
     state = resolve(state, cats)
+    if action in ('left', 'right') and steps_in_place(state, cats):
+        return state                            # the view steps the setting (RibbonView.stepped)
     i = state.index(cats)
     focus = dict(state.focus)
     path = state.path

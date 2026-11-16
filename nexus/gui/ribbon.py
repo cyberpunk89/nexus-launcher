@@ -18,8 +18,8 @@ from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QLinearGradient, Q
     QPainterPath, QPen, QStaticText)
 from PyQt6.QtWidgets import QWidget
 
-from .ribbon_model import (clamp, column, columns, crumbs, current, find, nav, resolve,
-                           RibbonState)
+from .ribbon_model import (clamp, column, columns, crumbs, current, find, nav, rail_pos,
+                           resolve, RibbonState, steps_in_place)
 from .theme import ACCENTS, FONTS, FS, G, GRAD, LOOK, P, R
 
 
@@ -196,7 +196,9 @@ def geometry(w: int, h: int, scale: float) -> dict:
     """Every size from the view's size; u = 1 at 900 px tall."""
     u = max(0.62, min(1.6, h / 900))
     by = int(h * 0.27)
-    label = QFontMetrics(font('base', scale)).height() + QFontMetrics(font('sm', scale)).height()
+    # The focused category's name, its underline, then its tags (w-145).
+    label = QFontMetrics(font('display', scale, QFont.Weight.DemiBold)).height() \
+        + int(UNDERLINE[1] * u) + int(20 * u) + QFontMetrics(font('sm', scale)).height()
     # The focused art never runs off the left edge (a narrow window).
     return dict(u=u, ax=max(int(214 * u), int(w * 0.17)), by=by, gap=int(210 * u),
                 icon_on=int(72 * u), icon_off=int(46 * u),
@@ -206,10 +208,28 @@ def geometry(w: int, h: int, scale: float) -> dict:
                 step=int(18 * u), focus_gap=int(34 * u))
 
 
+def qcolor(value: str) -> QColor:
+    """A token's colour: '#rrggbb' or the stylesheet's 'rgba(r,g,b,a)'
+    (the glass tokens), which QColor can't read itself."""
+    m = re.fullmatch(r'\s*rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)\s*', value)
+    if m:
+        c = QColor(int(m[1]), int(m[2]), int(m[3]))
+        c.setAlphaF(max(0.0, min(1.0, float(m[4]))))
+        return c
+    return QColor(value)
+
+
 def color(key: str, alpha: float = 1.0) -> QColor:
-    c = QColor(P[key])
+    c = qcolor(P[key])
     c.setAlphaF(c.alphaF() * alpha)
     return c
+
+
+def glass(key: str = 'glass_hi') -> QColor:
+    """A glass fill for text in the page's own colours: the glass tokens on
+    a dark theme; on a light one they are dark (made for white text over
+    art), so the raised surface instead."""
+    return color('surface_2') if LOOK['light'] else color(key)
 
 
 def plain(text: str) -> str:
@@ -217,9 +237,103 @@ def plain(text: str) -> str:
     return ' '.join(unescape(re.sub(r'<[^>]+>', '', text or '')).split())
 
 
+def tag_h(f: QFont, u: float) -> float:
+    return QFontMetrics(f).height() + 12 * u
+
+
+def paint_tags(p, tags, x: float, y: float, u: float, f: QFont, max_w: float,
+               center: bool = False, pad: float = 12.0) -> tuple:
+    """Soft tags in one line from (x, y) (centred on x with `center`):
+    a tinted capsule per (text, role); a role is a palette key or a
+    '#rrggbb' colour (then a dot in it, the text stays plain). Tags that
+    don't fit `max_w` are left out. Returns (right edge, height). The
+    Ribbon's items and the game rail's strip (TagStrip) both paint them."""
+    fm = QFontMetrics(f)
+    h, gap, pad = tag_h(f, u), 8 * u, pad * u
+    dot = 8 * u
+    sized = []
+    total = 0.0
+    for text, role in tags:
+        hexed = role.startswith('#')
+        w = fm.horizontalAdvance(text) + 2 * pad + (dot + 6 * u if hexed else 0)
+        if sized and total + gap + w > max_w or not sized and w > max_w:
+            break
+        total += (gap if sized else 0) + w
+        sized.append((text, role, hexed, w))
+    cx = x - total / 2 if center else x
+    p.save()
+    p.setFont(f)
+    for text, role, hexed, w in sized:
+        tint = QColor(role) if hexed else color(role)
+        plain_tag = role == 'subtext'
+        r = QRectF(cx, y, w, h)
+        fill = color('surface_2', 0.85) if plain_tag else QColor(tint)
+        if not plain_tag:
+            fill.setAlphaF(0.16)
+        edge = color('muted', 0.30) if plain_tag else QColor(tint)
+        if not plain_tag:
+            edge.setAlphaF(0.40)
+        p.setBrush(fill)
+        p.setPen(QPen(edge, max(1.0, 1.2 * u)))
+        p.drawRoundedRect(r, h / 2, h / 2)
+        tx = cx + pad
+        if hexed:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tint)
+            p.drawEllipse(QPointF(tx + dot / 2, r.center().y()), dot / 2, dot / 2)
+            tx += dot + 6 * u
+        p.setPen(color('subtext') if plain_tag or hexed else tint)
+        p.drawText(QRectF(tx, y, w, h), int(Qt.AlignmentFlag.AlignVCenter), text)
+        cx += w + gap
+    p.restore()
+    return cx - gap if sized else x, h
+
+
+class TagStrip(QWidget):
+    """A line of soft tags as a widget (the game rail's facts, w-145),
+    painted by paint_tags at the Ribbon's sizes."""
+
+    def __init__(self, scale: float = 1.0, parent=None):
+        super().__init__(parent)
+        self.scale = scale
+        self.tags: tuple = ()
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedHeight(int(tag_h(self._font(), self._u())) + 2)
+
+    def _u(self) -> float:
+        return 1.2
+
+    def _font(self) -> QFont:
+        return font('sm', self.scale)
+
+    def set_tags(self, tags):
+        self.tags = tuple(tags or ())
+        self.setAccessibleName(", ".join(t for t, _r in self.tags))
+        self.update()
+
+    def paintEvent(self, ev):
+        if not self.tags:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_tags(p, self.tags, 1.0, 1.0, self._u(), self._font(), self.width() - 2.0)
+        p.end()
+
+
 # What A does on the focused item, as a pill: only Play and Resume earn one,
 # the hint bar says the rest.
 PILLS = {'play': "Play", 'resume': "Resume"}
+
+# w-145 (Ribbon refine), sizes at u = 1: the focused category's underline,
+# the position rail (track width, thumb length, gap to the art), the
+# progress bar, and the dark wash behind the column (its alpha on dark and
+# light themes, where it starts as shares of the height and the width, and
+# the share of its width that stays solid).
+UNDERLINE = (28, 3)
+RAIL = dict(w=3, thumb=44, gap=30)
+PROGRESS = dict(w=250, h=6)
+WASH = dict(dark=0.70, light=0.50, top=0.43, width=0.57, solid=0.55)
+TITLE_ZOOM = 1.25                                # the focused title over the headline size
 
 
 class RibbonView(QWidget):
@@ -237,6 +351,7 @@ class RibbonView(QWidget):
     options = pyqtSignal(object)                 # Item: X
     moved = pyqtSignal(int)                      # a move happened: +1 right/down, -1 left/up
     category_changed = pyqtSignal(str)
+    stepped = pyqtSignal(object, int)            # Item, -1 / +1: Left/Right in a settings group (w-145)
     MOVE_MS = 166
     PAINT_BEFORE, PAINT_AFTER = 2, 7             # items painted around the focused one
     PREFETCH = 3                                 # art decoded ahead either side
@@ -328,6 +443,11 @@ class RibbonView(QWidget):
         if not self.cats:
             return False
         old = resolve(self.state, self.cats)
+        if action in ('left', 'right') and steps_in_place(old, self.cats):
+            it = self.current()                  # a settings group: the value, in place
+            if it is not None and it.kind == 'setting':
+                self.stepped.emit(it, 1 if action == 'right' else -1)
+            return False
         new = nav(old, self.cats, action)
         i0, i1 = old.index(self.cats), new.index(self.cats)
         (cid0, items0), (cid1, items1) = column(old, self.cats), column(new, self.cats)
@@ -461,7 +581,9 @@ class RibbonView(QWidget):
         if hit is None:
             return
         kind, i = hit
-        if kind == 'cat':
+        if kind not in ('cat', 'label', 'item'):
+            return                               # the rail, a progress bar: nothing to press
+        if kind in ('cat', 'label'):
             cur = self.state.index(self.cats)
             if i != cur:
                 self.select(self.cats[i].key)
@@ -550,9 +672,26 @@ class RibbonView(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         gm = geometry(self.width(), self.height(), self.scale)
         self._hits = []
+        self._wash(p)
         self._bar(p, gm)
-        self._column(p, gm)
+        if steps_in_place(self.state, self.cats):
+            self._settings_group(p, gm)
+        else:
+            self._column(p, gm)
         p.end()
+
+    def _wash(self, p):
+        """A dark wash behind the column (w-145), so the ribbon and the art
+        panel never fight the titles: the page colour, solid over the first
+        part of its width, then fading out to the right."""
+        w, h = self.width(), self.height()
+        r = QRectF(0, h * WASH['top'], w * WASH['width'], h * (1 - WASH['top']))
+        a = WASH['light'] if LOOK['light'] else WASH['dark']
+        g = QLinearGradient(r.left(), 0.0, r.right(), 0.0)
+        g.setColorAt(0.0, color('bg', a))
+        g.setColorAt(WASH['solid'], color('bg', a))
+        g.setColorAt(1.0, color('bg', 0.0))
+        p.fillRect(r, g)
 
     def _glyph(self, p, key, cx, cy, px, c):
         p.setFont(glyph_font(px))
@@ -576,9 +715,14 @@ class RibbonView(QWidget):
         self._col_x = (min(a, x0), max(b, x1))
 
     def _bar(self, p, gm):
+        """The categories: an icon each with its quiet name under it; the
+        focused one bigger, its name large with an accent underline and its
+        tags (w-145)."""
         u, by = gm['u'], gm['by']
         ax = gm['ax'] + (0.0 if self._folder_slide else self._off.x())
         cur = self.state.index(self.cats)
+        quiet = font('sm', self.scale)
+        qh = QFontMetrics(quiet).height()
         for i, c in enumerate(self.cats):
             x = ax + (i - cur) * gm['gap']
             if x < -gm['gap'] or x > self.width() + gm['gap']:
@@ -592,8 +736,15 @@ class RibbonView(QWidget):
                 p.setBrush(color('success'))
                 p.drawEllipse(QPointF(x + px * 0.42, by - px * 0.42), 6 * u, 6 * u)
             if not on:
+                lw = gm['gap'] - 16 * u
+                lr = QRectF(x - lw / 2, by + px * 0.5 + 6 * u, lw, qh)
+                p.save()
+                p.setOpacity(0.8)
+                self._text(p, lr, c.title, quiet, color('muted'), Qt.AlignmentFlag.AlignCenter)
+                p.restore()
+                self._hits.append((lr, 'label', i))
                 continue
-            f, fs = font('base', self.scale, QFont.Weight.Medium), font('sm', self.scale)
+            f, fs = font('display', self.scale, QFont.Weight.DemiBold), font('sm', self.scale)
             lh, sh = QFontMetrics(f).height(), QFontMetrics(fs).height()
             ly = by + px * 0.5 + 8 * u
             half = min(300 * u, max(gm['gap'], x - 8))
@@ -601,13 +752,34 @@ class RibbonView(QWidget):
             title = " › ".join([c.title] + [f.title for f in open_f])
             sub = open_f[-1].sub if open_f else c.sub
             tags = open_f[-1].tags if open_f else c.tags
-            self._text(p, QRectF(x - half, ly, 2 * half, lh), title, f, color('text'),
-                       Qt.AlignmentFlag.AlignCenter)
+            lr = QRectF(x - half, ly, 2 * half, lh)
+            self._text(p, lr, title, f, color('text'), Qt.AlignmentFlag.AlignCenter)
+            self._hits.append((QRectF(x - gm['gap'] / 2, ly, gm['gap'], lh), 'label', i))
+            uy = ly + lh + 2 * u
+            self._underline(p, QRectF(x - UNDERLINE[0] * u / 2, uy, UNDERLINE[0] * u,
+                                      max(2.0, UNDERLINE[1] * u)), u)
+            ty = uy + UNDERLINE[1] * u + 12 * u
             if tags:
-                self._tags(p, tags, x, ly + lh + 4 * u, u, fs, 2 * half, center=True)
+                self._tags(p, tags, x, ty, u, fs, 2 * half, center=True)
             elif sub:
-                self._text(p, QRectF(x - half, ly + lh, 2 * half, sh), sub, fs,
+                self._text(p, QRectF(x - half, ty, 2 * half, sh), sub, fs,
                            color('muted'), Qt.AlignmentFlag.AlignCenter)
+
+    def _underline(self, p, r: QRectF, u: float):
+        """The focused category's short accent line; a soft glow round it
+        unless Glow is off."""
+        p.save()
+        if LOOK['glow'] > 0:
+            g = color('accent')
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for s in range(4, 0, -1):
+                g.setAlphaF(min(1.0, 0.06 * (5 - s) * LOOK['glow']))
+                p.setPen(QPen(g, s * 3 * u))
+                p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color('accent'))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.restore()
 
     def _art_rect(self, it, on: bool, gm: dict, y: float) -> QRectF:
         if it.kind == 'game' and it.slug:
@@ -624,6 +796,7 @@ class RibbonView(QWidget):
         fi = clamp(self.state.focus.get(cid, 0), len(items))
         u, dy, ht = gm['u'], self._off.y(), self.height()
         self._col_x = None
+        self._rail(p, gm, fi, len(items))
         # Above the bar: up to two of the items you came from, dimmer further up.
         y = gm['by'] - gm['icon_on'] * 0.75 - 24 * u + dy
         for k, i in enumerate(range(fi - 1, max(-1, fi - 1 - self.PAINT_BEFORE), -1)):
@@ -647,6 +820,195 @@ class RibbonView(QWidget):
                                'item', i))
             # A small window: the focused text can run below its art.
             y = max(r.bottom(), bottom) + (gm['focus_gap'] if on else gm['step'])
+
+    # ---- a settings group (w-145) ----
+    SWITCH_CHOICES = ((False, "Off"), (True, "On"))
+
+    def _settings_group(self, p, gm: dict):
+        """Settings with a group open: the group's tile on the left, a thin
+        accent rule, then its settings as rows. The focused row is a pill
+        with its value between ‹ › (a switch for an on/off one), its help
+        line and a dot per choice; the others fade with their distance."""
+        cid, items = column(self.state, self.cats)
+        if not items:
+            return
+        folder = crumbs(self.state, self.cats)[-1]
+        fi = clamp(self.state.focus.get(cid, 0), len(items))
+        u, top, ht = gm['u'], gm['col_top'], self.height()
+        self._col_x = None
+        # The group's tile, slid to the left.
+        x0, tile = 64 * u, 120 * u
+        r = QRectF(x0 + 50 * u, top, tile, tile)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(glass())
+        p.drawRoundedRect(r, R['card'], R['card'])
+        p.restore()
+        self._glyph(p, folder.glyph or 'settings', r.center().x(), r.center().y(), tile * 0.32,
+                    color('text'))
+        tf, sf = font('lg', self.scale, QFont.Weight.DemiBold), font('sm', self.scale)
+        th = QFontMetrics(tf).height()
+        tw = 220 * u
+        self._text(p, QRectF(x0, r.bottom() + 10 * u, tw, th), folder.title, tf, color('text'),
+                   Qt.AlignmentFlag.AlignCenter)
+        self._text(p, QRectF(x0, r.bottom() + 10 * u + th, tw, QFontMetrics(sf).height()),
+                   folder.sub, sf, color('muted'), Qt.AlignmentFlag.AlignCenter)
+        self._span(x0, x0 + tw)
+        # The rule between the group and its settings.
+        rx = x0 + tw + 30 * u
+        g = QLinearGradient(0.0, top - 20 * u, 0.0, ht - 40 * u)
+        g.setColorAt(0.0, color('accent', 0.0))
+        g.setColorAt(0.2, color('accent', 0.35))
+        g.setColorAt(0.7, color('accent', 0.35))
+        g.setColorAt(1.0, color('accent', 0.0))
+        p.fillRect(QRectF(rx, top - 20 * u, max(1.5, 2 * u), ht - top - 20 * u), g)
+        # The rows.
+        lx = rx + 40 * u
+        rw = max(200.0, min(self.width() - lx - 80 * u, 1080 * u))
+        self._span(rx - 2, lx + rw + 30 * u)
+        row_h, pill_h = 56 * u, 80 * u
+        y = top + self._off.y() - 8 * u
+        for i in range(max(0, fi - 2), len(items)):
+            it = items[i]
+            if y > ht:
+                break
+            alpha = max(0.35, 1.0 - 0.14 * abs(i - fi))
+            if it.primary == 'none':
+                alpha *= 0.5
+            if i == fi:
+                rr = QRectF(lx - 32 * u, y, rw + 64 * u, pill_h)
+                bottom = self._setting_focused(p, it, rr, u, alpha)
+                self._hits.append((rr, 'item', i))
+                y = bottom + 16 * u
+            else:
+                rr = QRectF(lx, y, rw, row_h)
+                self._setting_row(p, it, rr, u, alpha)
+                self._hits.append((rr, 'item', i))
+                y += row_h + 12 * u
+
+    def _switch(self, p, at: QPointF, on: bool, u: float):
+        """An on/off setting's switch, its right edge at `at`."""
+        w, h = 56 * u, 32 * u
+        r = QRectF(at.x() - w, at.y() - h / 2, w, h)
+        p.save()
+        if on:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(color('accent'))
+        else:
+            p.setPen(QPen(color('overlay'), 2 * u))
+            p.setBrush(glass('glass'))
+        p.drawRoundedRect(r, h / 2, h / 2)
+        d = (24 if on else 20) * u
+        cx = r.right() - h / 2 if on else r.left() + h / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color('on_accent' if on else 'muted'))
+        p.drawEllipse(QPointF(cx, r.center().y()), d / 2, d / 2)
+        p.restore()
+        return r.left()
+
+    def _setting_row(self, p, it, r: QRectF, u: float, alpha: float):
+        p.save()
+        p.setOpacity(p.opacity() * alpha)
+        f = font('lg', self.scale)
+        if it.choices == self.SWITCH_CHOICES:
+            left = self._switch(p, QPointF(r.right(), r.center().y()), bool(it.value), u)
+        else:
+            vw = min(r.width() * 0.45, QFontMetrics(f).horizontalAdvance(it.value_text) + 4)
+            left = r.right() - vw
+            self._text(p, QRectF(left, r.y(), vw, r.height()), it.value_text, f,
+                       color('muted'), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._text(p, QRectF(r.x(), r.y(), max(0.0, left - r.x() - 24 * u), r.height()),
+                   it.title, f, color('subtext'))
+        p.restore()
+
+    def _setting_focused(self, p, it, r: QRectF, u: float, alpha: float) -> float:
+        """The focused setting: a pill, its help line, a dot per choice.
+        Returns where it ends."""
+        p.save()
+        p.setOpacity(p.opacity() * alpha)
+        if LOOK['glow'] > 0:
+            g = color('accent')
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for s in range(5, 0, -1):
+                g.setAlphaF(min(1.0, 0.03 * (6 - s) * LOOK['glow']))
+                p.setPen(QPen(g, s * 3 * u))
+                p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setBrush(glass())
+        p.setPen(QPen(color('accent' if it.primary == 'step' else 'muted'), 2 * u))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        pad = 32 * u
+        inner = r.adjusted(pad, 0, -pad, 0)
+        if it.choices == self.SWITCH_CHOICES:
+            left = self._switch(p, QPointF(inner.right(), inner.center().y()), bool(it.value), u)
+        else:
+            vf = font('lg', self.scale, QFont.Weight.DemiBold)
+            fm = QFontMetrics(vf)
+            arrows = it.primary == 'step'
+            gap = 14 * u
+            aw = fm.horizontalAdvance("‹") if arrows else 0
+            text_w = min(inner.width() * 0.5, fm.horizontalAdvance(it.value_text) + 4)
+            x = inner.right() - text_w - (aw + gap if arrows else 0)
+            left = x - (aw + gap if arrows else 0)
+            tint = color('accent' if arrows else 'muted')
+            if arrows:
+                faint = QColor(tint)
+                faint.setAlphaF(0.7)
+                self._text(p, QRectF(left, inner.y(), aw, inner.height()), "‹", vf, faint)
+                self._text(p, QRectF(x + text_w + gap, inner.y(), aw, inner.height()), "›", vf,
+                           faint)
+            self._text(p, QRectF(x, inner.y(), text_w, inner.height()), it.value_text, vf, tint,
+                       Qt.AlignmentFlag.AlignCenter)
+        hf = font('display', self.scale, QFont.Weight.DemiBold)
+        self._text(p, QRectF(inner.x(), inner.y(), max(0.0, left - inner.x() - 24 * u),
+                             inner.height()), it.title, hf, color('text'))
+        p.restore()
+        # The help line under the pill, and the choices as dots at its right.
+        sf = font('sm', self.scale)
+        sh = QFontMetrics(sf).height()
+        y = r.bottom() + 10 * u
+        help_text = self.help.get(it.key[4:], '')
+        n = len(it.choices)
+        dots_w = (28 + 18 * (n - 1)) * u if 1 < n <= 12 else 0
+        if help_text:
+            self._text(p, QRectF(r.x() + pad, y, r.width() - 2 * pad - dots_w - 20 * u, sh),
+                       help_text, sf, color('muted'))
+        if dots_w:
+            values = [c[0] for c in it.choices]
+            cur = values.index(it.value) if it.value in values else 0
+            x = r.right() - pad - dots_w
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            for k in range(n):
+                w = (28 if k == cur else 10) * u
+                p.setBrush(color('accent' if k == cur else 'overlay'))
+                p.drawRoundedRect(QRectF(x, y + sh / 2 - 3 * u, w, 6 * u), 3 * u, 3 * u)
+                x += w + 8 * u
+            p.restore()
+        return y + sh
+
+    def _rail(self, p, gm: dict, i: int, n: int):
+        """Your place in a long column (w-145): a thin track left of the
+        art and a short accent thumb at the focused item's share of it. It
+        sits inside the column's painted range, so a slide repaints it."""
+        at = rail_pos(i, n)
+        if at is None:
+            return
+        u = gm['u']
+        w = max(2.0, RAIL['w'] * u)
+        x = gm['ax'] - gm['art_on'][0] / 2 - RAIL['gap'] * u - w
+        top = gm['col_top'] - 6 * u
+        track = QRectF(x, top, w, max(0.0, self.height() - top - 60 * u))
+        thumb_h = min(track.height(), RAIL['thumb'] * u)
+        thumb = QRectF(x, top + at * (track.height() - thumb_h), w, thumb_h)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color('glass_hi'))
+        p.drawRoundedRect(track, w / 2, w / 2)
+        p.setBrush(color('accent'))
+        p.drawRoundedRect(thumb, w / 2, w / 2)
+        p.restore()
+        self._span(x - 2, x + w + 2)
+        self._hits.append((track, 'rail', -1))
 
     def _item(self, p, it, r: QRectF, on: bool, gm: dict, alpha: float) -> float:
         """One item; returns where its text ends (it can pass the art)."""
@@ -713,8 +1075,12 @@ class RibbonView(QWidget):
         """Kicker, title, then the facts and the Play pill, or a setting's
         value and its help. Returns where it ends."""
         hf = font('headline', self.scale, QFont.Weight.DemiBold)
+        if it.kind == 'game':                    # a game's name a size up (w-145)
+            hf.setPixelSize(int(hf.pixelSize() * TITLE_ZOOM))
         sf = font('base', self.scale)
         hh, sh = QFontMetrics(hf).height(), QFontMetrics(sf).height()
+        pf = font('sm', self.scale)
+        prog_h = QFontMetrics(pf).height() + 14 * u if it.progress else 0
         pill = 46 * u if it.primary in PILLS else 0
         tf = self._track_font(u) if it.track else None
         track_h = 0.0
@@ -723,7 +1089,7 @@ class RibbonView(QWidget):
         tag_f = font('sm', self.scale, QFont.Weight.DemiBold)
         line_h = self._tag_h(tag_f, u) + 2 * u if it.tags else sh
         block = (26 * u if it.kicker else 0) + hh + 6 * u + line_h \
-            + (16 * u + pill if pill else 0) + track_h
+            + (16 * u + pill if pill else 0) + track_h + prog_h
         y = r.center().y() - block / 2 if r.height() > block else r.y()
         ends = [tx]
         if it.kicker:
@@ -745,6 +1111,8 @@ class RibbonView(QWidget):
             right, th = self._tags(p, it.tags, tx, y + 2 * u, u, tag_f, tw)
             ends.append(right)
             y += th + 2 * u + 16 * u
+            if it.progress:
+                y = self._progress(p, it.progress, tx, y - 6 * u, tw, u, pf, ends)
         elif it.sub:
             st = self._texts.get((it.sub, int(tw)))
             if st is None:
@@ -757,6 +1125,8 @@ class RibbonView(QWidget):
             p.drawStaticText(QPointF(tx, y), st)
             ends.append(tx + tw)                 # wrapped rich text: its whole width
             y += max(sh, st.size().height()) + 16 * u
+            if it.progress:
+                y = self._progress(p, it.progress, tx, y - 6 * u, tw, u, pf, ends)
         if tf is not None:
             y = self._download_track(p, it, tf, tx, y, tw, u, ends)
         elif it.kind == 'download' and it.figure:
@@ -770,55 +1140,34 @@ class RibbonView(QWidget):
         self._span(tx, max(ends) + 2)
         return y
 
-    @staticmethod
-    def _tag_h(f: QFont, u: float) -> float:
-        return QFontMetrics(f).height() + 12 * u
-
-    def _tags(self, p, tags, x: float, y: float, u: float, f: QFont, max_w: float,
-              center: bool = False, pad: float = 12.0) -> tuple:
-        """Soft tags in one line from (x, y) (centred on x with `center`):
-        a tinted capsule per (text, role); a role is a palette key or a
-        '#rrggbb' colour (then a dot in it, the text stays plain). Tags that
-        don't fit `max_w` are left out. Returns (right edge, height)."""
-        fm = QFontMetrics(f)
-        h, gap, pad = self._tag_h(f, u), 8 * u, pad * u
-        dot = 8 * u
-        sized = []
-        total = 0.0
-        for text, role in tags:
-            hexed = role.startswith('#')
-            w = fm.horizontalAdvance(text) + 2 * pad + (dot + 6 * u if hexed else 0)
-            if sized and total + gap + w > max_w or not sized and w > max_w:
-                break
-            total += (gap if sized else 0) + w
-            sized.append((text, role, hexed, w))
-        cx = x - total / 2 if center else x
+    def _progress(self, p, progress: tuple, x: float, y: float, tw: float, u: float, f: QFont,
+                  ends: list) -> float:
+        """How far through the main story (w-145): a thin aurora bar and its
+        words beside it ("25 h of about 55 h to finish"). Returns the next y."""
+        frac, words = progress
+        fh = QFontMetrics(f).height()
+        bw = min(PROGRESS['w'] * u, tw * 0.45)
+        bh = max(3.0, PROGRESS['h'] * u)
+        track = QRectF(x, y + (fh - bh) / 2, bw, bh)
         p.save()
-        p.setFont(f)
-        for text, role, hexed, w in sized:
-            tint = QColor(role) if hexed else color(role)
-            plain_tag = role == 'subtext'
-            r = QRectF(cx, y, w, h)
-            fill = color('surface_2', 0.85) if plain_tag else QColor(tint)
-            if not plain_tag:
-                fill.setAlphaF(0.16)
-            edge = color('muted', 0.30) if plain_tag else QColor(tint)
-            if not plain_tag:
-                edge.setAlphaF(0.40)
-            p.setBrush(fill)
-            p.setPen(QPen(edge, max(1.0, 1.2 * u)))
-            p.drawRoundedRect(r, h / 2, h / 2)
-            tx = cx + pad
-            if hexed:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(tint)
-                p.drawEllipse(QPointF(tx + dot / 2, r.center().y()), dot / 2, dot / 2)
-                tx += dot + 6 * u
-            p.setPen(color('subtext') if plain_tag or hexed else tint)
-            p.drawText(QRectF(tx, y, w, h), int(Qt.AlignmentFlag.AlignVCenter), text)
-            cx += w + gap
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color('glass_hi'))
+        p.drawRoundedRect(track, bh / 2, bh / 2)
+        fill = QRectF(track.x(), track.y(), max(bh, bw * max(0.0, min(1.0, frac))), bh)
+        g = QLinearGradient(fill.topLeft(), fill.topRight())
+        g.setColorAt(0, QColor(GRAD['aurora'][0]))
+        g.setColorAt(1, QColor(GRAD['aurora'][1]))
+        p.setBrush(g)
+        p.drawRoundedRect(fill, bh / 2, bh / 2)
         p.restore()
-        return cx - gap if sized else x, h
+        tx = x + bw + 16 * u
+        ends.append(self._text(p, QRectF(tx, y, max(0.0, x + tw - tx), fh), words, f,
+                               color('muted')))
+        self._hits.append((QRectF(x, y, ends[-1] - x, fh), 'progress', -1))
+        return y + fh + 14 * u
+
+    _tag_h = staticmethod(tag_h)
+    _tags = staticmethod(paint_tags)
 
     def _track_font(self, u: float) -> QFont:
         f = QFont(FONTS.mono)

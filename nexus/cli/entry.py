@@ -420,6 +420,9 @@ def build_parser() -> argparse.ArgumentParser:
     g5.add_argument('--repack-index', action='store_true', dest='repack_index',
                     help="Sync FitGirl's whole catalogue and show which wishlist games have "
                          "a repack (incremental, at most every 6 h; --refresh forces it)")
+    g5.add_argument('--repack-catalogue', action='store_true', dest='repack_catalogue',
+                    help="List every repack in the local catalogue, grouped by game, with what you "
+                         "wishlist, own or run (from the last --repack-index; --json for the app)")
     g5.add_argument('--repack-page', metavar='SLUG', dest='repack_page',
                     help="Internal (used by the app): a repack's sizes and where a grab would download it")
     g5.add_argument('--repack-grab', metavar='SLUG', dest='repack_grab',
@@ -963,6 +966,7 @@ COMMANDS = (
      lambda a, base: cmd_perf(require_slug(a.perf[0], '--perf'), a.perf[1:], load_config())),
     ('repack_feed', lambda a, base: cmd_repack_feed(a.refresh, a.json)),
     ('repack_index', lambda a, base: cmd_repack_index(a.refresh, a.json)),
+    ('repack_catalogue', lambda a, base: cmd_repack_catalogue(a.json)),
     ('repack_page', lambda a, base: cmd_repack_page(a.repack_page, a.json, base)),
     ('repack_grab',
      lambda a, base: cmd_repack_grab(a.repack_grab, a.appid, a.auto_install, a.json)),
@@ -1069,8 +1073,8 @@ from .config import load_config, resolve_install_base, resolve_scan_dirs  # noqa
 from .setupfacts import cmd_setup_facts  # noqa: E402
 from .doctor import (cmd_clean_orphan_compatdata, cmd_cleanup, cmd_cleanup_scan, cmd_doctor,
     cmd_list_steam_accounts, cmd_prune, cmd_quarantine_restore, find_orphan_compatdata)  # noqa: E402
-from .downloads import (cmd_check_repack, cmd_repack_feed, cmd_repack_grab, cmd_repack_index,
-    cmd_repack_page, cmd_repack_reject, cmd_torrent)  # noqa: E402
+from .downloads import (cmd_check_repack, cmd_repack_catalogue, cmd_repack_feed,
+    cmd_repack_grab, cmd_repack_index, cmd_repack_page, cmd_repack_reject, cmd_torrent)  # noqa: E402
 from .gamecmds import (add_existing_to_steam, cmd_achievements, cmd_add_heroic, cmd_add_steam,
     cmd_detect, cmd_discard_incomplete, cmd_prefix_tool, cmd_refetch_art, cmd_reindex,
     cmd_rename, cmd_repair_launchers, cmd_scan, cmd_set_exe, cmd_trash_repack)  # noqa: E402

@@ -14,6 +14,7 @@ from nexus import categories, facts, net, paths as NX, smart
 from nexus.facts import NEXUS_GENRES
 
 from .common import alive, COLLECTION_LOOK, COLLECTION_NAMES, MAX_COLLECTION_NAME
+from .deal_model import taste as deal_taste
 from .theme import G, SP
 
 
@@ -72,12 +73,19 @@ class LibraryMixin:
         self.prefs.owned_view = own
         self._set_chip(chip if chip in self.chips else 'all')
 
+    def _show_group(self, game, group: str):
+        """The game rail's Collections or Maintenance card (w-145): the
+        options sheet with only that group."""
+        self._show_menu(game, QPoint(), group=group)
+
     def _build_library(self):
         self._facts_stamp = None              # (mtime, size) of facts.json last read
         self._facts_idx = facts.read_index()
         self._smart_sig = None                # what the Smart group was built from
         self._smart_temp = None               # a key shown only while in use (a genre)
         self._smart_want = None               # a restored key waiting for its entry
+        # Theatre is built by now: its game rail's group cards open the sheet (w-145).
+        self.theatre.menu_group.connect(self._show_group)
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -924,6 +932,7 @@ class LibraryMixin:
         self._load_protondb()
         self._watch_installs()
         self._load_friends()
+        self.dealspage.set_taste(deal_taste(self._games, self._smart_facts()))   # w-146
         if data is not None and not self._feed_timer.isActive():
             self._feed_timer.start(8000)            # first check soon, then every 6 h
         if data is not None and not getattr(self, '_art_filled', False) \
@@ -2114,12 +2123,16 @@ class LibraryMixin:
             w = max(min(w, total - 300), d.MIN_W)
             self.split.setSizes([max(total - w, 300), w])
 
-    def _show_menu(self, game, pos, stage=None):
+    def _show_menu(self, game, pos, stage=None, group=None):
         """The game menu: the desktop QMenu for mouse and keyboard; for a
         controller (and anything in Theatre) the ActionSheet instead. `stage`
-        ('pin' or 'unpin') comes from the Stage's ⋮ only (w-90)."""
+        ('pin' or 'unpin') comes from the Stage's ⋮ only (w-90); `group`
+        (a submenu's name) from the Ribbon's game rail: only that group."""
         if self._theatre:
-            self.theatre_sheet.open(game, game_actions(game, theatre=True), theatre=True)
+            acts = game_actions(game, theatre=True)
+            if group:
+                acts = [a for a in acts if a.sub == group]
+            self.theatre_sheet.open(game, acts, theatre=True)
         elif self.input.mode == 'pad':
             self.sheet.open(game, game_actions(game, stage=stage))
         else:

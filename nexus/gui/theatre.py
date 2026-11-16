@@ -700,6 +700,7 @@ class TheatreView(QWidget):
     play = pyqtSignal(dict)
     action = pyqtSignal(str, dict)
     menu = pyqtSignal(dict, QPoint)
+    menu_group = pyqtSignal(dict, str)           # the game rail's Collections / Maintenance (w-145)
     exit = pyqtSignal()
     surprise = pyqtSignal()
     library_sheet = pyqtSignal()                 # View on Library: the window opens Sort & filter
@@ -917,6 +918,7 @@ class TheatreView(QWidget):
         self.ribbon.options.connect(self._ribbon_options)
         self.ribbon.moved.connect(self._ribbon_moved)
         self.ribbon.category_changed.connect(self._ribbon_category)
+        self.ribbon.stepped.connect(self._ribbon_step)
         self.pages.addWidget(self.ribbon)
         self._ribbon_sub: str | None = None      # the tab page open over the Ribbon
         self._mirroring = False                  # the tabs follow the Ribbon (no page switch)
@@ -950,6 +952,7 @@ class TheatreView(QWidget):
         self.details.back_asked.connect(self.back)
         self.details.trailer.connect(self._play_trailer)
         self.details.home_asked.connect(self.go_home)
+        self.details.group_asked.connect(self.menu_group)
         self._store: dict[str, dict] = {}
         # Trailers from the game page's Media play here, over Theatre (the
         # desktop's overlay lives in the hidden desk shell).
@@ -1813,6 +1816,7 @@ class TheatreView(QWidget):
         on_page = cur is not None and self.catpage.isAncestorOf(cur)
         self._drop_category()                    # a category page doesn't survive the switch
         self.layout_mode = mode
+        self.details.set_rail(mode == 'ribbon')  # the game page: the rail or the stage (w-145)
         if mode == 'ribbon':
             self._ribbon_sub = sub               # first: the tabs stay on that page
             self._ribbon_build()
@@ -1900,7 +1904,7 @@ class TheatreView(QWidget):
         """What Theatre holds, for ribbon_model.categories."""
         controls, appearance = self.settings_values()
         settings = []
-        for _grp, key, title, choices in ROWS:
+        for grp, key, title, choices in ROWS:
             if key == 'theatre_layout':
                 value = self.layout_mode
             else:
@@ -1908,7 +1912,7 @@ class TheatreView(QWidget):
                                                                                 choices[0][0])
             enabled = not (key == 'volume' and not controls.get('sounds')) \
                 and not (key == 'ribbon_motion' and self.layout_mode != 'ribbon')
-            settings.append((key, title, choices, value, enabled))
+            settings.append((grp, key, title, choices, value, enabled))
         sort_t, show_t = self._library_labels()
         games = self._lib_games()
         groups = self._collection_groups(games) \
@@ -1938,7 +1942,8 @@ class TheatreView(QWidget):
                   for c in self._pin_cats],
             groups=categories.browse(self._cat_groups, self.category_prefs().hidden, caps={}),
             shelves=self.discover.found, gamedb_off=self.discover.gamedb_off,
-            dl_rows=self.downloads_page.shown)
+            dl_rows=self.downloads_page.shown, facts=self.facts,
+            source_label=lambda g: SOURCE_LABEL.get(g.get('source', 'nexus'), ''))
 
     def ribbon_home(self):
         """Home's first item (Now playing while a game runs): entering
@@ -2010,6 +2015,16 @@ class TheatreView(QWidget):
             self.library_sheet.emit()
         elif item.primary == 'all_settings':
             self.all_settings.emit()
+
+    def _ribbon_step(self, item, d: int):
+        """Left/Right on a setting inside its group (w-145): the next or
+        previous value, stopping at the ends (A wraps); a greyed one stays."""
+        if item.kind != 'setting' or item.primary != 'step':
+            return
+        value = ribbon_model.step_value(item, d, wrap=False)
+        if value != item.value:
+            self.ribbon_setting.emit(item.key[4:], value)
+            self.ribbon_moved.emit(d)            # the move sound
 
     def _ribbon_row(self, item):
         """The Downloads row a Ribbon download item stands for."""
@@ -2100,10 +2115,15 @@ class TheatreView(QWidget):
         self._sync_art()
         return True
 
+    # The Ribbon's art panel (w-145): its share of the width, its strength,
+    # where across it fades in (transparent until the first share, full from
+    # the second) and the share of its height faded out at the bottom.
+    PANEL_FADE = dict(width=0.62, alpha=0.5, ramp=(0.11, 0.71), bottom=0.35)
+
     def _paint_panel(self):
         """The Ribbon's focused game, quiet, on the right: its hero art over
-        60% of the width, faded in from the left and out at the bottom. Dark
-        themes only (not on a light theme, nor High contrast)."""
+        PANEL_FADE's share of the width, faded in from the left and out at
+        the bottom. Dark themes only (not on a light theme, nor High contrast)."""
         if self.details.isVisible() or self.pages.currentWidget() is not self.ribbon \
                 or LOOK['light'] or LOOK['contrast']:
             return
@@ -2113,7 +2133,7 @@ class TheatreView(QWidget):
         if not path:
             return
         w, h = self.width(), self.height()
-        pw = int(w * 0.6)
+        pw = int(w * self.PANEL_FADE['width'])
         key = ART.key(path, pw, h)
         if key is None or key in self._panel_bad:
             return                               # no file, or it didn't decode: no panel
@@ -2145,12 +2165,14 @@ class TheatreView(QWidget):
         pt = QPainter(out)
         pt.drawPixmap(0, 0, art)
         pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        f = self.PANEL_FADE
+        full = int(255 * f['alpha'])
         g = QLinearGradient(0.0, 0.0, float(w), 0.0)
-        for at, a in ((0.0, 0), (0.55, 50), (1.0, 95)):
+        for at, a in ((0.0, 0), (f['ramp'][0], 0), (f['ramp'][1], full), (1.0, full)):
             g.setColorAt(at, QColor(0, 0, 0, a))
         pt.fillRect(QRectF(0, 0, w, h), QBrush(g))
         g = QLinearGradient(0.0, 0.0, 0.0, float(h))
-        for at, a in ((0.0, 60), (0.18, 255), (0.60, 255), (1.0, 0)):   # quieter under the clock
+        for at, a in ((0.0, 255), (1.0 - f['bottom'], 255), (1.0, 0)):
             g.setColorAt(at, QColor(0, 0, 0, a))
         pt.fillRect(QRectF(0, 0, w, h), QBrush(g))
         pt.end()
@@ -2491,7 +2513,7 @@ class CursorHider(QObject):
 from .art import ART, art_source, HERO_KINDS, screen_pixmap, WIDE_KINDS  # noqa: E402
 from .fmt import fmt_hours  # noqa: E402
 from .gameinfo import (can_quick_play, is_installed, live_kicker, now_playing,  # noqa: E402
-    played_minutes, session_minutes)
+    played_minutes, session_minutes, SOURCE_LABEL)
 from .input import focus_and_reveal  # noqa: E402
 from .jobs import cli_json  # noqa: E402
 from .library import Dwell, featured_games, ShelfRow, surprise_pick  # noqa: E402

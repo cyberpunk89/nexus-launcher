@@ -5,7 +5,14 @@ Play, a round Favourite and Options) with the section tabs along its
 bottom edge. D-pad Down (or LB / RB) slides those tabs up into a glass
 drawer over the lower half: Overview, Friends (w-82), Media, News,
 Achievements and Compatibility, each hidden while it has nothing to show. While the drawer
-is open the game shrinks to a band at the top, with Play one Up away."""
+is open the game shrinks to a band at the top, with Play one Up away.
+
+In the Ribbon layout (w-145) the page opens as a rail instead of the stage:
+the logo and a strip of facts, Play, a glass card per section and a small
+grid of actions, beside a pane that previews the focused section
+(game_rail.py says what goes in them). A on a card opens that section in
+the same drawer (B comes back to the card); the session band keeps the
+stage."""
 
 import html
 import time
@@ -22,7 +29,7 @@ from nexus.features import has
 from .common import alive
 from .fmt import fmt_duration, fmt_hours, fmt_relative, fmt_size
 from .overview import credits_text, overview_facts, overview_model, OverviewTiles, Tile, TierBadge
-from .theme import G, P, pill, R, SP
+from .theme import G, LOOK, P, pill, R, SP
 
 
 SECTIONS = (('overview', "Overview"), ('friends', "Friends"), ('media', "Media"),
@@ -365,6 +372,103 @@ class TheatreDrawer(QFrame):
             self.show_section('overview')
 
 
+class RailCard(QPushButton):
+    """A glass card on the game rail (w-145): glyph, title, and a count on
+    the right; `small` for the action grid's cells."""
+
+    def __init__(self, card, h: int, small: bool = False):
+        super().__init__()
+        self.card = card
+        self.setObjectName("RailCard")
+        self.setProperty('small', small)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(h)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(SP['5'] if not small else SP['4'], 0, SP['5'], 0)
+        lay.setSpacing(SP['4'] if not small else SP['3'])
+        self.icon = QLabel()
+        self.icon.setFixedWidth(30 if not small else 26)
+        lay.addWidget(self.icon)
+        self.title = plain_label("", "RailCardTitle")
+        lay.addWidget(self.title, 1)
+        self.count = plain_label("", "RailCardCount")
+        lay.addWidget(self.count)
+        self.small = small
+        self.set_card(card)
+
+    def set_card(self, card):
+        self.card = card
+        self.setAccessibleName(f"{card.title}, {card.count}" if card.count else card.title)
+        self.title.setText(card.title)
+        self.count.setText(card.count)
+        self.count.setVisible(bool(card.count))
+        role = 'danger' if card.danger else 'warning' if card.checked else 'on_art'
+        self.icon.setPixmap(glyph_pixmap(G[card.glyph], P[role], 24 if not self.small else 20))
+        if self.property('danger') != card.danger:
+            self.setProperty('danger', card.danger)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+
+class RailPreview(QFrame):
+    """The rail's preview pane (w-145): what the focused section holds,
+    without pressing A (game_rail.preview)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("RailPreview")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(SP['8'], SP['8'], SP['8'], SP['6'])
+        v.setSpacing(SP['4'])
+        self.kicker = label("", "RailLabel")
+        self.big = plain_label("", "RailBig")
+        self.big.setWordWrap(True)
+        v.addWidget(self.kicker)
+        v.addWidget(self.big)
+        self.bar_row = QWidget()
+        h = QHBoxLayout(self.bar_row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(SP['4'])
+        self.bar = _bar()
+        self.bar.setFixedWidth(420)
+        self.bar_words = plain_label("", "RailLine")
+        h.addWidget(self.bar)
+        h.addWidget(self.bar_words, 1)
+        v.addWidget(self.bar_row)
+        self.line = plain_label("", "RailLine")
+        self.line.setWordWrap(True)
+        v.addWidget(self.line)
+        self.rule = QFrame()
+        self.rule.setObjectName("RailRule")
+        v.addWidget(self.rule)
+        self.about_label = label("ABOUT", "RailLabel")
+        self.about = plain_label("", "RailAbout")
+        self.about.setWordWrap(True)
+        v.addWidget(self.about_label)
+        v.addWidget(self.about)
+        v.addStretch()
+        self.hint = plain_label("", "RailHint")
+        v.addWidget(self.hint)
+        self.text = None
+
+    def set_text(self, pv):
+        self.text = pv
+        self.kicker.setText(pv.kicker)
+        self.big.setText(pv.big)
+        self.bar_row.setVisible(pv.progress is not None)
+        if pv.progress is not None:
+            _set_bar(self.bar, pv.progress[0])
+            self.bar_words.setText(pv.progress[1])
+        self.line.setText(pv.line)
+        self.line.setVisible(bool(pv.line))
+        for w in (self.rule, self.about_label, self.about):
+            w.setVisible(bool(pv.about))             # no data: no About block
+        self.about.setText(pv.about)
+        self.hint.setText(pv.hint)
+        self.hint.setVisible(bool(pv.hint))
+
+
 class SessionBand(QWidget):
     """After a game closes (w-60): what the session was, in place of the
     facts and the Play row. Session length, total play time and, when there
@@ -454,9 +558,12 @@ class TheatreDetails(QWidget):
     back_asked = pyqtSignal()                    # the (mouse-only) ‹ in the corner
     trailer = pyqtSignal(dict)
     home_asked = pyqtSignal()                    # the session band's Back to Home
+    group_asked = pyqtSignal(dict, str)          # the rail's Collections / Maintenance: the sheet, that group
 
     LOGO = (760, 280)
     BAND_LOGO = (420, 150)
+    RAIL_LOGO = (360, 150)
+    RAIL_W = 460                                 # the rail's column (Play, the cards, the grid)
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -475,6 +582,11 @@ class TheatreDetails(QWidget):
         self._reader_from = None
         self._session: dict | None = None        # the band's text while it shows
         self._shown_at = 0.0
+        self._rail_on = False                    # the Ribbon layout: the rail, not the stage (w-145)
+        self._rail_from = None                   # the rail card that opened the drawer
+        self._rail_cards: dict = {}              # key -> RailCard (kept: pad focus survives a refill)
+        self._rail_grid: dict = {}
+        self._preview_key = 'overview'
         m = SP['8'] * 3
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, SP['6'], 0, 0)
@@ -533,6 +645,10 @@ class TheatreDetails(QWidget):
         self.session.hide()
         sv.addStretch(1)
         lay.addWidget(self.stage, 1)
+        # The Ribbon layout's rail (w-145), in the stage's place.
+        self.rail = self._build_rail(m)
+        lay.addWidget(self.rail, 1)
+        self.rail.hide()
         # Drawer open: the game as one band at the top, Play one Up away.
         self.band = QWidget()
         bh = QHBoxLayout(self.band)
@@ -562,6 +678,186 @@ class TheatreDetails(QWidget):
         self._slide.finished.connect(self._slide_done)
         QApplication.instance().focusChanged.connect(self._focus_changed)
         self.setVisible(False)
+
+    def _build_rail(self, m: int) -> QWidget:
+        """The rail: the logo (or the title), the kicker and a strip of
+        facts; under them Play, the section cards and the action grid on the
+        left, the preview pane on the right."""
+        w = QWidget()
+        w.setObjectName("GameRail")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(m, 0, m, SP['6'])
+        v.setSpacing(0)
+        v.addStretch(1)
+        self.rail_logo = QLabel()
+        self.rail_logo.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        v.addWidget(self.rail_logo)
+        self.rail_title = label("", "HeroTitle", wrap=True)
+        self.rail_title.setStyleSheet("font-size: 48px;")
+        v.addWidget(self.rail_title)
+        v.addSpacing(SP['5'])
+        self.rail_kicker = label("", "RailKicker")
+        self.rail_kicker.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(self.rail_kicker)
+        v.addSpacing(SP['3'])
+        self.rail_strip = TagStrip(THEATRE_SCALE)
+        v.addWidget(self.rail_strip)
+        v.addSpacing(SP['6'])
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(SP['8'] + SP['3'])
+        left = QVBoxLayout()
+        left.setSpacing(SP['2'])
+        self.rail_play = self._play_button(self.RAIL_W, 76)
+        left.addWidget(self.rail_play)
+        left.addSpacing(SP['1'])
+        self.rail_cards = QVBoxLayout()
+        self.rail_cards.setSpacing(SP['2'])
+        left.addLayout(self.rail_cards)
+        left.addSpacing(SP['3'])
+        self.rail_grid_lay = QGridLayout()
+        self.rail_grid_lay.setHorizontalSpacing(SP['2'])
+        self.rail_grid_lay.setVerticalSpacing(SP['2'])
+        left.addLayout(self.rail_grid_lay)
+        left.addStretch()
+        row.addLayout(left)
+        self.preview = RailPreview()
+        self.preview.setMaximumWidth(900)
+        row.addWidget(self.preview, 1)
+        row.addStretch(0)
+        v.addLayout(row)
+        return w
+
+    def _rail_k(self) -> float:
+        """The rail's sizes follow the page height: 1 at 1080 p, less on a
+        720 p screen so every card fits."""
+        return max(0.62, min(1.0, (self.height() or 1080) / 1080))
+
+    def _rail_sizes(self):
+        k = self._rail_k()
+        self.rail_play.setFixedSize(self.RAIL_W, int(76 * k))
+        for c in self._rail_cards.values():
+            c.setFixedHeight(int(52 * k))
+        for c in self._rail_grid.values():
+            c.setFixedSize((self.RAIL_W - SP['2']) // 2, int(48 * k))
+
+    # ---- the rail (the Ribbon layout, w-145) ----
+    def set_rail(self, on: bool):
+        """The Ribbon layout's page: the rail instead of the stage."""
+        if on == self._rail_on:
+            return
+        self._rail_on = on
+        self._rail_from = None
+        self._present()
+        if on:
+            self._sync_rail()
+        self.update()
+
+    def rail_shown(self) -> bool:
+        """The rail is on screen (the Ribbon layout, no drawer, no session band)."""
+        return self._rail_on and self._session is None and not self.expanded()
+
+    def _present(self):
+        """The stage or the rail, as the layout and the session band say.
+        Focus moves first, then the other one hides (w-60)."""
+        if self.expanded():
+            return
+        rail = self._rail_on and self._session is None
+        show, hide = (self.rail, self.stage) if rail else (self.stage, self.rail)
+        show.show()
+        f = QApplication.focusWidget()
+        if f is not None and (hide.isAncestorOf(f) or (rail and self.drawer.isAncestorOf(f))):
+            t = self.default_focus()
+            if t is not None and t.isVisible():
+                t.setFocus(Qt.FocusReason.OtherFocusReason)
+        hide.hide()
+        self.drawer.setVisible(not rail)        # the rail's cards are the sections
+
+    def _game_info(self) -> 'GameInfo':
+        g = self.game
+        appid = _game_store_id(g) if g else None
+        known = appid is not None or _store_key(g) is not None
+        owners = FRIENDS.owners_of(g) if known and FRIENDS.usable() else []
+        return GameInfo(overview_facts(g, self.store, self.tips), self.store, self.tips,
+                        self.news, owners, self._achievements())
+
+    def _sync_rail(self):
+        """The rail follows what the page knows: cards and grid kept by key
+        (a late answer never drops pad focus), the strip, the kicker, the
+        preview of the focused section."""
+        if not self._rail_on or not self.game:
+            return
+        g, info = self.game, self._game_info()
+        cards, grid = rail(self.drawer.visible_keys(), info, game_actions(g, theatre=True), g)
+        k = self._rail_k()
+        self._refill(self.rail_cards, self._rail_cards, cards,
+                     lambda c: RailCard(c, int(52 * k)), None)
+        self._refill(self.rail_grid_lay, self._rail_grid, grid,
+                     lambda c: RailCard(c, int(48 * k), small=True), 2)
+        self._rail_sizes()
+        kicker = live_kicker(g) if g.get('playing') or g.get('launching') else html.escape(
+            game_kicker(g, info.rec, SOURCE_LABEL.get(g.get('source', 'nexus'), '')))
+        self.rail_kicker.setText(kicker)
+        self.rail_kicker.setVisible(bool(kicker))
+        added = fmt_relative(g.get('added_at') or g.get('installed_at'))
+        size = fmt_size(g.get('disk_bytes'))
+        extra = tuple((t, 'subtext') for t in (size, added and f"Installed {added}") if t)
+        tags = fact_tags(g)
+        self.rail_strip.set_tags(tags[:2] + extra + tags[2:])
+        if self._preview_key not in self._rail_cards:
+            self._preview_key = next(iter(self._rail_cards), 'overview')
+        self.preview.set_text(preview(self._preview_key, g, info))
+
+    def _refill(self, lay, have: dict, cards: list, make, cols):
+        """Cards into `lay` in order: the same key keeps its widget (updated
+        in place), a gone one leaves (focus first goes to Play), a new one
+        is made. `cols`: a grid of that many columns."""
+        keys = [c.key for c in cards]
+        f = QApplication.focusWidget()
+        for key in [k for k in have if k not in keys]:
+            w = have.pop(key)
+            if f is w:
+                focus_and_reveal(self.default_focus())
+            lay.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+        for i, c in enumerate(cards):
+            w = have.get(c.key)
+            if w is None:
+                w = make(c)
+                w.clicked.connect(lambda _=False, b=w: self._rail_pressed(b))
+                have[c.key] = w
+            else:
+                w.set_card(c)
+                lay.removeWidget(w)
+            if cols:
+                lay.addWidget(w, i // cols, i % cols)
+            else:
+                lay.addWidget(w)
+            w.show()                             # added first, then shown (w-54, w-57)
+        if not cols and keys != list(have):
+            ordered = {k: have[k] for k in keys}
+            have.clear()
+            have.update(ordered)
+
+    def _rail_pressed(self, card: 'RailCard'):
+        """A on a rail card: a section opens in the drawer (B comes back to
+        the card); Favourite toggles; Collections and Maintenance open the
+        options sheet on that group; Uninstall asks as the sheet does."""
+        c = card.card
+        if c.key in SECTION_CARDS:
+            self.open_section(c.key, card)
+        elif c.key in ('collections', 'maintenance'):
+            self.group_asked.emit(self.game, "Collections" if c.key == 'collections'
+                                  else "Maintenance")
+        elif c.action:
+            self.action.emit(c.action, self.game)
+
+    def open_section(self, key: str, origin=None):
+        """The rail's layer 3: today's drawer, open on `key`."""
+        self._rail_from = origin
+        self.drawer.show_section(key)
+        self.expand()
 
     def _play_button(self, w, h) -> QPushButton:
         b = QPushButton("Play")
@@ -608,6 +904,8 @@ class TheatreDetails(QWidget):
             self.clear_session()
             self.tips, self.launch, self.store, self.news = None, None, None, []
             self.collapse(instant=True, refocus=False)
+            self._rail_from = None
+            self._preview_key = 'overview'
             self.drawer.show_section('overview')
         self.fill()
         path, url = art_source(g, HERO_KINDS)
@@ -650,7 +948,7 @@ class TheatreDetails(QWidget):
         """Play's text and state, on the stage and in the band. A running
         game gets Resume (Quit game is under Options)."""
         self.set_kicker(g)
-        for b in (self.btn_play, self.band_play):
+        for b in (self.btn_play, self.band_play, self.rail_play):
             b.setText("Resume" if g.get('playing') else play_label(g))
             b.setEnabled(bool(g.get('playing')) or play_enabled(g))
         self.session.again.setEnabled(bool(g.get('playing')) or play_enabled(g))
@@ -660,6 +958,10 @@ class TheatreDetails(QWidget):
             return self.drawer.tabs.item(self.drawer.tabs.current())
         if self._session is not None:
             return self.session.again if self.session.again.isEnabled() else self.session.home
+        if self._rail_on:
+            if self.rail_play.isEnabled():
+                return self.rail_play
+            return next(iter(self._rail_cards.values()), None) or self.rail_play
         return self.btn_play if self.btn_play.isEnabled() else self.btn_fav
 
     # ---- the session band (w-60) ----
@@ -680,6 +982,7 @@ class TheatreDetails(QWidget):
             self.default_focus().setFocus()
         self.facts.hide()
         self.actions.hide()
+        self._present()                          # the band keeps the stage (w-145)
         QTimer.singleShot(0, self._focus_default)
 
     def set_session_achievements(self, items: list[dict]):
@@ -697,6 +1000,7 @@ class TheatreDetails(QWidget):
         if had_focus:                    # hiding the focused button would throw focus into the drawer
             self.default_focus().setFocus()
         self.session.hide()
+        self._present()                  # the Ribbon layout: back to the rail
         self.set_kicker(self.game)
 
     def session_shown(self) -> bool:
@@ -742,6 +1046,7 @@ class TheatreDetails(QWidget):
             d.pages.setCurrentWidget(d.reader)
         else:
             d.show_section(d.tabs.current())
+        self._sync_rail()
 
     def _rows(self, key) -> QVBoxLayout:
         lay = self.drawer.sections[key].layout()
@@ -924,6 +1229,7 @@ class TheatreDetails(QWidget):
         d = self.drawer
         if not d.reader_open():
             d.show_section(d.tabs.current())
+        self._sync_rail()
 
     def _fill_media(self):
         """Trailers from the Steam store (screenshots wait for Game-db)."""
@@ -1099,16 +1405,18 @@ class TheatreDetails(QWidget):
         if self.expanded():
             return
         self.clear_session()
-        self.top.hide()
-        self.stage.hide()
         self.band.show()
         self.gap.show()
+        self.drawer.show()                       # the rail hides it while closed
         self.drawer.set_open(True)
-        self._slide_to(self._open_h())
-        self.update()
         f = QApplication.focusWidget()
         if f is None or not (self.drawer.isAncestorOf(f) or f is self.band_play):
-            focus_and_reveal(self.default_focus())
+            focus_and_reveal(self.default_focus())   # first, then hide what had it (w-60)
+        self.top.hide()
+        self.stage.hide()
+        self.rail.hide()
+        self._slide_to(self._open_h())
+        self.update()
 
     def collapse(self, instant: bool = False, refocus: bool = True):
         """Back to the stage (the reader closes with it)."""
@@ -1117,16 +1425,28 @@ class TheatreDetails(QWidget):
             d.show_section(d.tabs.current())
         if not self.expanded():
             return
+        rail = self._rail_on and self._session is None
+        self.top.show()
+        (self.rail if rail else self.stage).show()
+        if rail:                                 # back to the card that opened it, first (w-60)
+            back = self._rail_from if alive(self._rail_from) and \
+                self._rail_from.isVisible() else None
+            self._rail_from = None
+            f = QApplication.focusWidget()
+            if refocus and not instant or (f is not None and self.isAncestorOf(f)):
+                t = back or self.default_focus()
+                if t is not None:
+                    focus_and_reveal(t)
         d.set_open(False)
         self.band.hide()
         self.gap.hide()
-        self.top.show()
-        self.stage.show()
         self._slide.stop()
         d.setMinimumHeight(0)
         d.setMaximumHeight(16777215)
+        if rail:
+            d.hide()
         self.update()
-        if refocus and not instant:
+        if refocus and not instant and not rail:
             focus_and_reveal(self.default_focus())
 
     def _slide_to(self, h: int):
@@ -1151,6 +1471,7 @@ class TheatreDetails(QWidget):
         super().resizeEvent(ev)
         if self.expanded() and self._slide.state() != QVariantAnimation.State.Running:
             self.drawer.setFixedHeight(self._open_h())
+        self._rail_sizes()
 
     def cycle_section(self, d: int):
         """LB / RB on the game page: open the drawer, then switch sections."""
@@ -1170,6 +1491,10 @@ class TheatreDetails(QWidget):
         if new is not None and self.isVisible() and not self.expanded() \
                 and self.drawer.isAncestorOf(new):
             self.expand()
+        elif isinstance(new, RailCard) and self.rail.isAncestorOf(new) \
+                and new.card.key in SECTION_CARDS and new.card.key != self._preview_key:
+            self._preview_key = new.card.key     # the pane previews the focused section
+            self.preview.set_text(preview(new.card.key, self.game, self._game_info()))
 
     def mousePressEvent(self, ev):
         # A click on the art above the open drawer: back to the stage.
@@ -1219,6 +1544,9 @@ class TheatreDetails(QWidget):
         if self._session is not None:
             return [('a', "Play again" if f is self.session.again else "Select"),
                     ('x', 'Options'), ('↓', 'More about this game'), ('b', 'Home')]
+        if self._rail_on:
+            return [('a', self._play_word() if f is self.rail_play else "Open"),
+                    ('↕', 'Choose'), ('b', 'Back')]
         return [('a', self._play_word() if f is self.btn_play else "Select"), ('x', 'Options'),
                 ('↓', 'More about this game'), ('b', 'Back')]
 
@@ -1242,27 +1570,67 @@ class TheatreDetails(QWidget):
         if has_logo:
             self.logo.setPixmap(pm.scaled(*self.LOGO, Qt.AspectRatioMode.KeepAspectRatio,
                                           Qt.TransformationMode.SmoothTransformation))
+            self.rail_logo.setPixmap(pm.scaled(*self.RAIL_LOGO, Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation))
             self.band_logo.setPixmap(pm.scaled(*self.BAND_LOGO,
                                                Qt.AspectRatioMode.KeepAspectRatio,
                                                Qt.TransformationMode.SmoothTransformation))
         name = self.game.get('display_name', '')
         self.logo.setVisible(has_logo)
         self.band_logo.setVisible(has_logo)
+        self.rail_logo.setVisible(has_logo)
         self.title.setText(name)
         self.band_title.setText(name)
+        self.rail_title.setText(name)
         self.title.setVisible(not has_logo)
         self.band_title.setVisible(not has_logo)
+        self.rail_title.setVisible(not has_logo)
 
     def _set_hero(self, path):
         self._pm = screen_pixmap(path, self)
         self._scaled = None
         self.update()
 
+    # The rail's art (w-145): full bleed, faded to the page colour from the
+    # left (stops: share of the width, alpha) and from the bottom; on a light
+    # theme it shows at a third of its strength, under High contrast not at all.
+    RAIL_FADE = ((0.0, 1.0), (0.22, 0.88), (0.48, 0.35), (0.85, 0.0))
+    RAIL_BOTTOM = 0.30
+    RAIL_ART = {'dark': 0.95, 'light': 0.35}
+
+    def _paint_rail(self, pt, r: QRectF):
+        if not LOOK['contrast'] and self._pm is not None and not self._pm.isNull():
+            pt.setOpacity(self.RAIL_ART['light' if LOOK['light'] else 'dark'])
+            self._draw_hero(pt)
+            pt.setOpacity(1.0)
+        base = QColor(P['bg'])
+        g = QLinearGradient(0.0, 0.0, r.width(), 0.0)
+        for at, a in self.RAIL_FADE:
+            c = QColor(base); c.setAlphaF(a); g.setColorAt(at, c)
+        pt.fillRect(r, QBrush(g))
+        g = QLinearGradient(0.0, r.bottom(), 0.0, r.top())
+        for at, a in ((0.0, 1.0), (self.RAIL_BOTTOM, 0.0)):
+            c = QColor(base); c.setAlphaF(a); g.setColorAt(at, c)
+        pt.fillRect(r, QBrush(g))
+
+    def _draw_hero(self, pt):
+        key = (self.width(), self.height())
+        if self._scaled is None or self._scaled[0] != key:
+            self._scaled = (key, self._pm.scaled(
+                self.width(), self.height(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation))
+        s = self._scaled[1]
+        pt.drawPixmap((self.width() - s.width()) // 2, -(s.height() - self.height()) // 3, s)
+
     def paintEvent(self, ev):
         pt = QPainter(self)
         pt.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         r = QRectF(self.rect())
         pt.fillRect(r, QColor(P['bg']))
+        if self.rail_shown():
+            self._paint_rail(pt, r)
+            pt.end()
+            return
         if self._pm is not None and not self._pm.isNull():
             key = (self.width(), self.height())
             if self._scaled is None or self._scaled[0] != key:
@@ -1290,6 +1658,10 @@ class TheatreDetails(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import (anim_ms, ART, art_source, fit_image, HERO_KINDS, LOGO_KINDS,
     screen_pixmap)  # noqa: E402
+from .actions import game_actions  # noqa: E402
+from .game_rail import GameInfo, preview, rail, SECTION_CARDS  # noqa: E402
+from .ribbon import TagStrip  # noqa: E402
+from .ribbon_model import game_kicker  # noqa: E402
 from .gameinfo import (compat_facts, live_kicker, play_enabled, play_label,  # noqa: E402
     played_minutes, SOURCE_LABEL, TIER_COLORS)
 from .friends import _game_store_id, _store_key, _ts, Avatar, FRIENDS, names_text  # noqa: E402

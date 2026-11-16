@@ -79,6 +79,23 @@ def cmd_repack_index(refresh: bool, as_json: bool, desktop: bool = False) -> Non
         print(f"  {titles.get(a) or a}: {m['title']}{likely}{hv}\n    {m['url']}")
 
 
+def cmd_repack_catalogue(as_json: bool) -> None:
+    """The whole FitGirl index as rows for the Deals search (cache only:
+    --repack-index builds and syncs it). Always JSON (ascii)."""
+    from nexus import gamedb, repackindex as RI
+    data = RI.load()
+    try:
+        owned = gamedb.owned_library()                    # cache only
+    except Exception:                                     # noqa: BLE001 — optional
+        owned = []
+    out = RI.catalogue(data, _cached_wishlist() or [], load_registry()['games'].values(), owned)
+    if as_json:
+        print(json.dumps(out))
+        return
+    print(f"FitGirl catalogue: {out['count']} posts, {len(out['rows'])} games"
+          + (" (not built yet: run --repack-index)" if out['building'] else "."))
+
+
 def _size_bytes(text: str | None) -> int | None:
     """"from 47.4 GB [Selective Download]" -> bytes (the largest figure)."""
     units = {'kb': 1 << 10, 'mb': 1 << 20, 'gb': 1 << 30, 'tb': 1 << 40}

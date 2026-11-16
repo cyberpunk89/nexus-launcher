@@ -1480,6 +1480,60 @@ class SyncCommand(unittest.TestCase):
         self.assertNotIn('library', err.getvalue())
 
 
+def _wish(appid, current, atl=False, title=None):
+    return {'appid': appid, 'title': title or f"Game {appid}",
+            'price': {'current': current, 'atHistoricalLow': atl}}
+
+
+class PriceWatch(Base):
+    NOW = 1_800_000_000.0
+
+    def watch(self, wishlist, at):
+        with mock.patch.object(gamedb.time, 'time', return_value=at):
+            return gamedb.price_watch(wishlist)
+
+    def test_first_run_is_quiet(self):
+        out = self.watch([_wish(1, 20.0, True)], self.NOW)
+        self.assertEqual(out, {'dropped': [], 'new_atl': [], 'since': None})
+        f = self.cache / 'prices-base.json'
+        self.assertTrue(f.exists())
+        self.assertEqual(why_not_private(f), '')
+
+    def test_drop_since_baseline(self):
+        self.watch([_wish(1, 20.0), _wish(2, 10.0), _wish(3, 5.0, True), _wish(4, 8.0)], self.NOW)
+        out = self.watch([_wish(1, 12.5), _wish(2, 10.0), _wish(3, 5.0, True),
+                          _wish(4, 8.0, True), _wish(5, 1.0, True),
+                          {'appid': 6, 'title': 'No price', 'price': None}], self.NOW + 3600)
+        self.assertEqual(out['dropped'], [{'appid': 1, 'was': 20.0, 'now': 12.5}])
+        self.assertEqual(out['new_atl'], [4])          # 5 had no baseline
+        self.assertEqual(out['since'], self.NOW)
+
+    def test_baseline_rolls_after_a_day(self):
+        self.watch([_wish(1, 20.0)], self.NOW)
+        late = self.NOW + gamedb.PRICE_BASE_AGE + 60
+        out = self.watch([_wish(1, 15.0)], late)
+        self.assertEqual(out['dropped'], [{'appid': 1, 'was': 20.0, 'now': 15.0}])
+        self.assertEqual(out['since'], self.NOW)
+        # The snapshot moved on to 15, but the drop is still shown today.
+        again = self.watch([_wish(1, 15.0)], late + 60)
+        self.assertEqual(again['dropped'], [{'appid': 1, 'was': 20.0, 'now': 15.0}])
+        # A further drop reports against the new baseline.
+        more = self.watch([_wish(1, 9.0)], late + 120)
+        self.assertEqual(more['dropped'], [{'appid': 1, 'was': 15.0, 'now': 9.0}])
+        # Carried drops stay for one more window, then they are forgotten.
+        gone = self.watch([_wish(1, 9.0)], late + gamedb.PRICE_BASE_AGE + 60)
+        self.assertEqual(gone['dropped'], [{'appid': 1, 'was': 15.0, 'now': 9.0}])
+        self.watch([_wish(1, 9.0)], late + 2 * gamedb.PRICE_BASE_AGE + 120)
+        quiet = self.watch([_wish(1, 9.0)], late + 3 * gamedb.PRICE_BASE_AGE + 180)
+        self.assertEqual(quiet['dropped'], [])
+
+    def test_clear_cache_drops_baseline(self):
+        self.watch([_wish(1, 20.0)], self.NOW)
+        gamedb.clear_cache()
+        self.assertFalse((self.cache / 'prices-base.json').exists())
+        self.assertEqual(self.watch([_wish(1, 5.0)], self.NOW + 60)['dropped'], [])
+
+
 class Cli(unittest.TestCase):
     """The real CLI against a fake HOME with a pre-seeded cache: proves the
     lookup/deals paths work offline and never need the network."""
@@ -1551,6 +1605,39 @@ class Cli(unittest.TestCase):
         r = self.cli('--repack-reject', '1086940', 'baldurs-gate-3')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(self.cli('--gamedb', '--json').stdout)['repacks'], {})
+
+    def test_gamedb_json_has_watch_and_genres(self):
+        games = tests.sandbox.cache_dir(Path(self.env['HOME'])) / 'gamedb' / 'games.json'
+        games.write_text(json.dumps({
+            'fingerprint': gamedb._fingerprint('https://gdb.invalid', TOKEN),
+            'synced_at': time.time(), 'since': 'S1',
+            'games': {'1086940': {'appid': 1086940, 'genres': ['RPG', 'Strategy']}}}))
+        first = json.loads(self.cli('--gamedb', '--json').stdout)
+        self.assertEqual(first['watch'], {'dropped': [], 'new_atl': [], 'since': None})
+        self.assertIn('1086940', first['genres'])
+        self.assertNotIn('999', first['genres'])
+        second = json.loads(self.cli('--gamedb', '--json').stdout)
+        self.assertEqual(second['watch']['new_atl'], [])
+        self.assertIsNotNone(second['watch']['since'])
+
+    def test_repack_catalogue_offline(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        data = tests.sandbox.data_dir(Path(self.env['HOME']))
+        data.mkdir(parents=True, exist_ok=True)
+        (data / 'repack-index.json').write_text(json.dumps({
+            'posts': {'baldurs-gate-3': {
+                'id': 1, 'slug': 'baldurs-gate-3', 'modified': '2026-01-01T00:00:00',
+                'date': '2026-01-01T00:00:00+00:00',
+                'title': "Baldur’s Gate 3 – v4.1"}},
+            'built_at': now, 'synced_at': now, 'max_modified': None, 'rejected': {}}))
+        r = self.cli('--repack-catalogue', '--json')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.isascii())
+        out = json.loads(r.stdout)
+        self.assertEqual(out['count'], 1)
+        self.assertEqual(out['rows'][0]['marks'], ['wishlist'])
+        self.assertEqual(out['rows'][0]['appid'], 1086940)
 
     def test_sync_offline_fails_soft(self):
         r = self.cli('--gamedb-sync', '--json')          # gdb.invalid never resolves

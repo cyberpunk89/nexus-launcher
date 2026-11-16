@@ -37,7 +37,8 @@ def fake_games():
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
-class Ribbon(unittest.TestCase):
+class _RibbonWindow(unittest.TestCase):
+    """The window, offscreen, with three games; no tests of its own."""
     @classmethod
     def setUpClass(cls):
         cls._saved = (nx.cli_json, nx.LibraryPrefs.save, nx.CliQuery)
@@ -100,6 +101,29 @@ class Ribbon(unittest.TestCase):
         it = rb.current()
         return rb.state.cat, it.key if it else None
 
+    def _into(self, rb, cat, *keys):
+        """Select `cat` and open the folders `keys` (A on each)."""
+        rb.select(cat, keys[0] if keys else None)
+        for i, k in enumerate(keys):
+            rb.select(cat, k) if i == 0 else self._focus_key(rb, k)
+            self._press(Qt.Key.Key_Return, rb)
+            self._pump()
+
+    def _focus_key(self, rb, key):
+        from nexus.gui import ribbon_model as rm
+        cid, items = rm.column(rb.state, rb.cats)
+        rb.state = rm.RibbonState(rb.state.cat, {**rb.state.focus, cid: [
+            i for i, it in enumerate(items) if it.key == key][0]}, rb.state.path)
+
+    def _setting(self, rb, key):
+        """Open the settings group that holds `key`, focus on it (w-145)."""
+        st = next(c for c in rb.cats if c.key == 'settings')
+        grp = next(g for g in st.items if any(k.key == f'set:{key}' for k in g.children))
+        self._into(rb, 'settings', grp.key)
+        self._focus_key(rb, f'set:{key}')
+
+
+class Ribbon(_RibbonWindow):
     # ---- tests ----
     # ---- Classic colours (w-110: a setting; the secret code is parked) ----
     def test_classic_colours_is_a_ribbon_setting(self):
@@ -475,17 +499,31 @@ class Ribbon(unittest.TestCase):
         w.set_theatre(False)
 
     def test_settings_items_step_and_x_opens_the_sheet_on_that_row(self):
+        """w-145: Settings opens a group; inside it Right/Left change the
+        value in place and stop at the ends, A steps and wraps, X opens the
+        sheet on that row, B goes up to the groups, then Home."""
         w = self.win
         th = w.theatre
         rb = self._ribbon()
-        rb.select('settings', 'set:pad_a')
+        self._setting(rb, 'pad_a')
+        self.assertEqual(rb.state.path, ('setgrp:Controller',))
         self.assertEqual(rb.current().value, 'details')
-        self._press(Qt.Key.Key_Return, rb)                        # A steps it
+        self._press(Qt.Key.Key_Right, rb)                         # Right steps it in place
         self._pump()
         self.assertEqual(w.prefs.controls['pad_a'], 'play')
         self.assertTrue(th.a_plays)
         self.assertEqual(self._where(rb), ('settings', 'set:pad_a'))
         self.assertEqual(rb.current().value, 'play')              # the item shows it
+        self._press(Qt.Key.Key_Right, rb)                         # the end: no wrap
+        self._pump()
+        self.assertEqual(w.prefs.controls['pad_a'], 'play')
+        self.assertEqual(rb.state.cat, 'settings')                # and no category move
+        self._press(Qt.Key.Key_Return, rb)                        # A wraps round
+        self._pump()
+        self.assertEqual(w.prefs.controls['pad_a'], 'details')
+        w._update_hints()
+        self.assertIn(('b', 'Back'), w.hints._shown[1])
+        self.assertEqual(list(w.hints._shown[1][:2]), [('← → A', 'Change'), ('↕', 'Choose')])
         self._press(Qt.Key.Key_Menu, rb)                          # X: the sheet, on that row
         self._pump()
         st = w.theatre_settings
@@ -495,8 +533,13 @@ class Ribbon(unittest.TestCase):
         w._escape()
         self._pump()
         self.assertIs(QApplication.focusWidget(), rb)
+        w._escape()                                               # B: up to the groups
+        self.assertEqual((rb.state.cat, rb.state.path, rb.current().key),
+                         ('settings', (), 'setgrp:Controller'))
+        w._escape()                                               # B again: Home
+        self.assertEqual(rb.state.cat, 'home')
         # Layout from the Ribbon's own Settings: back to Tabs, focus on a page.
-        rb.select('settings', 'set:theatre_layout')
+        self._setting(rb, 'theatre_layout')
         self._press(Qt.Key.Key_Return, rb)
         self._pump()
         self.assertEqual(w.prefs.controls['theatre_layout'], 'tabs')
@@ -577,6 +620,18 @@ class Ribbon(unittest.TestCase):
             self._press(Qt.Key.Key_Return, rb)
             self._pump()
             self.win.theatre.back()
+            self._pump()
+            rb.select('library', 'game:alpha')                     # the game rail (w-145)
+            self._press(Qt.Key.Key_Return, rb)
+            self._pump()
+            d = self.win.theatre.details
+            d.set_info(store={'store': {'trailers': [{'url': 'https://x/1.mp4'}]}})
+            self._pump()
+            d._rail_pressed(d._rail_cards['overview'])            # layer 3
+            self._pump()
+            self.win.theatre.back()
+            self.win.theatre.back()
+            self._pump()
             self.win._apply_controls({'theatre_layout': 'tabs'})
             self._pump()
             self.win._apply_controls({'theatre_layout': 'ribbon'})
@@ -612,6 +667,29 @@ class Ribbon(unittest.TestCase):
         self.assertFalse(w.theatre_sheet.isVisible())
         w.set_theatre(False)
 
+    def test_disabled_setting_does_not_step(self):
+        """Volume is greyed while menu sounds are off: Left/Right and A leave it."""
+        w = self.win
+        rb = self._ribbon()
+        w._theatre_setting('sounds', False)
+        w.theatre._ribbon_flush()
+        self._setting(rb, 'volume')
+        it = rb.current()
+        self.assertEqual(it.primary, 'none')
+        before = w.prefs.controls['volume']
+        sent = []
+        w.theatre.ribbon_setting.connect(lambda k, v: sent.append(k))
+        for k in (Qt.Key.Key_Right, Qt.Key.Key_Left, Qt.Key.Key_Return):
+            self._press(k, rb)
+        self.assertEqual(sent, [])
+        self.assertEqual(w.prefs.controls['volume'], before)
+        self.assertEqual(self._where(rb), ('settings', 'set:volume'))
+        rb.grab()                                                 # the group's rows take clicks
+        rows = {i for _r, kind, i in rb._hits if kind == 'item'}
+        self.assertIn(1, rows)
+        self.assertNotIn('cat', {kind for _r, kind, _i in rb._hits if _r.top() > rb.height() / 2})
+        w.set_theatre(False)
+
     def test_two_quick_steps_of_the_theme_advance_twice(self):
         """A look change waits a moment before it restyles (one restyle for
         a held D-pad); the Ribbon steps on from the waiting value."""
@@ -619,7 +697,7 @@ class Ribbon(unittest.TestCase):
         rb = self._ribbon()
         themes = list(nx.THEMES)
         start = themes.index(w.prefs.appearance['theme'])
-        rb.select('settings', 'set:theme')
+        self._setting(rb, 'theme')
         with mock.patch.object(w, '_flush_appearance'):            # the restyle never comes
             self._press(Qt.Key.Key_Return, rb)
             self._press(Qt.Key.Key_Return, rb)
@@ -723,20 +801,6 @@ class Ribbon(unittest.TestCase):
             self.assertNotIn('col:src:heroic', folders)
         self.assertIn('group:stores', folders)
         w.set_theatre(False)
-
-    def _into(self, rb, cat, *keys):
-        """Select `cat` and open the folders `keys` (A on each)."""
-        rb.select(cat, keys[0] if keys else None)
-        for i, k in enumerate(keys):
-            rb.select(cat, k) if i == 0 else self._focus_key(rb, k)
-            self._press(Qt.Key.Key_Return, rb)
-            self._pump()
-
-    def _focus_key(self, rb, key):
-        from nexus.gui import ribbon_model as rm
-        cid, items = rm.column(rb.state, rb.cats)
-        rb.state = rm.RibbonState(rb.state.cat, {**rb.state.focus, cid: [
-            i for i, it in enumerate(items) if it.key == key][0]}, rb.state.path)
 
     def test_nested_column_b_goes_up_then_home(self):
         w = self.win
@@ -947,6 +1011,212 @@ class Ribbon(unittest.TestCase):
         self.assertLess(bar.height(), rb.height() // 2)
         self.assertLess(col.width(), rb.width())
         self.assertGreater(col.width(), 0)
+        rail = next((r for r, kind, _i in rb._hits if kind == 'rail'), None)
+        self.assertIsNotNone(rail)                                 # Home has two games: a rail
+        self.assertGreaterEqual(rail.left(), col.left())           # a slide repaints it too
+        w.set_theatre(False)
+
+    # ---- w-145: the Ribbon refined ----
+    def test_every_visible_category_has_a_label(self):
+        """Every category on screen has its quiet name under it; a click on
+        a name picks it, as on its icon."""
+        from PyQt6.QtTest import QTest
+        w = self.win
+        rb = self._ribbon()
+        rb.grab()
+        icons = {i for _r, kind, i in rb._hits if kind == 'cat'}
+        labels = {i: r for r, kind, i in rb._hits if kind == 'label'}
+        self.assertGreater(len(icons), 1)
+        self.assertEqual(set(labels), icons)
+        cur = rb.state.index(rb.cats)
+        other = next(i for i in labels if i != cur)
+        QTest.mouseClick(rb, Qt.MouseButton.LeftButton, pos=labels[other].center().toPoint())
+        self.assertEqual(rb.state.index(rb.cats), other)
+        w.set_theatre(False)
+
+    def test_focused_game_shows_progress_when_known(self):
+        w = self.win
+        th = w.theatre
+        rb = self._ribbon()
+        th.set_facts({'alpha': {'genres': ["RPG"], 'modes': ['single'], 'length': {'main': 10}}})
+        th._ribbon_build()
+        rb.select('library', 'game:alpha')
+        it = rb.current()
+        self.assertEqual(it.kicker, "RPG  ·  SINGLE-PLAYER")
+        self.assertEqual(it.progress, (0.2, "2 h of about 10 h to finish"))
+        rb.grab()
+        self.assertTrue(any(kind == 'progress' for _r, kind, _i in rb._hits))
+        rb.select('library', 'game:gamma')                         # no length, never played
+        rb.grab()
+        self.assertIsNone(rb.current().progress)
+        self.assertEqual(rb.current().kicker, "REPACK")            # no facts: its source
+        self.assertFalse(any(kind == 'progress' for _r, kind, _i in rb._hits))
+        w.set_theatre(False)
+
+
+class GameLayer(_RibbonWindow):
+    """w-145: in the Ribbon layout a game opens as a rail (Play, a glass card
+    per section, a small action grid, a preview pane); A on a card opens the
+    section in the drawer; B walks back reader, drawer, rail, Ribbon item."""
+
+    def _a(self, w=None):
+        """A on a button: the pad posts Space (input.ControllerInput)."""
+        w = w or QApplication.focusWidget()
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(w, QKeyEvent(kind, Qt.Key.Key_Space,
+                                                Qt.KeyboardModifier.NoModifier, ' '))
+        self._pump()
+
+    def _rail(self, slug='alpha'):
+        rb = self._ribbon()
+        rb.select('library', f'game:{slug}')
+        self._press(Qt.Key.Key_Return, rb)
+        self._pump()
+        return rb, self.win.theatre.details
+
+    def test_a_opens_the_rail_with_play_focused(self):
+        w = self.win
+        rb, d = self._rail()
+        self.assertTrue(d.isVisible())
+        self.assertEqual(d.game['slug'], 'alpha')
+        self.assertTrue(d.rail_shown())
+        self.assertFalse(d.rail.isHidden())
+        self.assertTrue(d.stage.isHidden())
+        self.assertTrue(d.drawer.isHidden())                      # the cards are the sections
+        self.assertIs(QApplication.focusWidget(), d.rail_play)
+        self.assertEqual(list(d._rail_cards), d.drawer.visible_keys())
+        self.assertEqual(d.preview.text.kicker, "YOUR PROGRESS")
+        self.assertEqual(d.hints(d.rail_play)[0], ('a', "Play"))
+        self.assertIn(('↕', 'Choose'), d.hints(d.rail_play))
+        grid = list(d._rail_grid)
+        self.assertIn('favorite', grid)
+        self.assertEqual(grid[-1], 'uninstall')                   # a repack: Uninstall…
+        with mock.patch.object(w.theatre_sheet, 'open') as sheet:
+            d._rail_grid['collections'].setFocus()
+            self._a()
+            acts = sheet.call_args[0][1]
+            self.assertTrue(acts)
+            self.assertEqual({a.sub for a in acts}, {"Collections"})   # only that group
+        w.set_theatre(False)
+
+    def test_a_on_a_section_opens_it_and_b_returns_to_that_card(self):
+        w = self.win
+        rb, d = self._rail()
+        d.set_info(store={'store': {'trailers': [{'url': 'https://x/1.mp4', 'name': "One"}]}})
+        self._pump()
+        self.assertEqual(d._rail_cards['media'].card.count, "1 trailer")
+        card = d._rail_cards['media']
+        card.setFocus()
+        self._pump()
+        self.assertEqual(d.preview.text.big, "1 trailer")         # the pane follows focus
+        self._a(card)
+        self.assertTrue(d.expanded())
+        self.assertEqual(d.drawer.tabs.current(), 'media')
+        self.assertTrue(d.rail.isHidden())
+        self.assertTrue(d.drawer.isAncestorOf(QApplication.focusWidget()))
+        w._escape()                                               # B: back to the card
+        self._pump()
+        self.assertFalse(d.expanded())
+        self.assertTrue(d.rail_shown())
+        self.assertTrue(d.drawer.isHidden())
+        self.assertIs(QApplication.focusWidget(), card)
+        w.set_theatre(False)
+
+    def test_b_from_the_rail_returns_to_the_same_ribbon_item(self):
+        w = self.win
+        rb, d = self._rail('gamma')
+        w._escape()
+        self._pump()
+        self.assertFalse(d.isVisible())
+        self.assertIs(QApplication.focusWidget(), rb)
+        self.assertEqual(self._where(rb), ('library', 'game:gamma'))
+        self.assertTrue(w._theatre)
+        w.set_theatre(False)
+
+    def test_b_order_reader_drawer_rail_ribbon(self):
+        w = self.win
+        rb, d = self._rail()
+        card = d._rail_cards['overview']
+        card.setFocus()
+        self._a(card)
+        self.assertTrue(d.expanded())
+        d.open_reader("Details", "<p>More</p>")
+        self.assertTrue(d.drawer.reader_open())
+        steps = []
+        for _ in range(3):
+            w._escape()
+            self._pump()
+            steps.append((d.isVisible() and d.drawer.reader_open(),
+                          d.isVisible() and d.expanded(), d.isVisible() and d.rail_shown(),
+                          QApplication.focusWidget() is rb))
+        self.assertEqual(steps, [(False, True, False, False),     # the reader closed
+                                 (False, False, True, False),     # the drawer: back to the rail
+                                 (False, False, False, True)])    # the rail: the Ribbon item
+        self.assertEqual(self._where(rb), ('library', 'game:alpha'))
+        w.set_theatre(False)
+
+    def test_tabs_layout_keeps_the_stage(self):
+        w = self.win
+        th = w.theatre
+        w.activateWindow()
+        w.set_theatre(True)
+        self._pump()
+        self.assertEqual(th.layout_mode, 'tabs')
+        th.open_game(th._by_slug['alpha'])
+        self._pump()
+        d = th.details
+        self.assertFalse(d.rail_shown())
+        self.assertTrue(d.rail.isHidden())
+        self.assertFalse(d.stage.isHidden())
+        self.assertFalse(d.drawer.isHidden())
+        self.assertIs(QApplication.focusWidget(), d.btn_play)
+        th.close_game()
+        w._apply_controls({'theatre_layout': 'ribbon'})          # and back: the rail
+        self._pump()
+        th.open_game(th._by_slug['alpha'])
+        self._pump()
+        self.assertTrue(d.rail_shown())
+        w.set_theatre(False)
+
+    def test_session_band_uses_the_stage(self):
+        w = self.win
+        rb, d = self._rail()
+        w.theatre.show_session(d.game, {'ended': "12:00", 'session': "1 h", 'total': "2 h"})
+        self._pump()
+        self.assertTrue(d.session_shown())
+        self.assertFalse(d.rail_shown())
+        self.assertFalse(d.stage.isHidden())
+        self.assertTrue(d.rail.isHidden())
+        f = QApplication.focusWidget()
+        self.assertTrue(f is not None and d.session.isAncestorOf(f), f)
+        d.clear_session()
+        self._pump()
+        self.assertTrue(d.rail_shown())
+        self.assertTrue(d.stage.isHidden())
+        f = QApplication.focusWidget()
+        self.assertTrue(f is not None and d.rail.isAncestorOf(f), f)
+        w.set_theatre(False)
+
+    def test_moving_pauses_on_the_rail(self):
+        w = self.win
+        bg = w.background
+        running = lambda: bg._live_timer.isActive()  # noqa: E731
+        with mock.patch.object(art, 'MOTION', True):
+            self._ribbon()
+            w._apply_controls({'ribbon_motion': 'live'})
+            w._ribbon_app_state(Qt.ApplicationState.ApplicationActive)
+            self.assertTrue(running())
+            rb, d = self._rail()
+            self.assertFalse(running())                           # the rail
+            d._rail_pressed(d._rail_cards['overview'])
+            self._pump()
+            self.assertFalse(running())                           # the drawer over it
+            w._escape()
+            self._pump()
+            self.assertFalse(running())
+            w._escape()
+            self._pump()
+            self.assertTrue(running())                            # the Ribbon again
         w.set_theatre(False)
 
 
@@ -1036,7 +1306,7 @@ class Wording(unittest.TestCase):
         self.assertEqual(bad, [])
 
     def test_the_ribbon_files_name_it_ribbon(self):
-        for name in ('ribbon.py', 'ribbon_model.py'):
+        for name in ('ribbon.py', 'ribbon_model.py', 'game_rail.py'):
             text = (REPO / 'nexus' / 'gui' / name).read_text(encoding='utf-8')
             self.assertIn("Ribbon", text)
             self.assertIsNone(self.BRAND.search(text))

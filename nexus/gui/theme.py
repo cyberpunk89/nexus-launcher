@@ -987,6 +987,14 @@ def build_stylesheet(scale: float = 1.0) -> str:
                border-radius: ${r_sm}px; }
     #DashRow:hover { background: $accent_09; }
     #DashRow:focus { background: $accent_09; }
+    #DealsRow { background: transparent; border: 1px solid transparent;
+                border-radius: ${r_control}px; }
+    #DealsRow:hover, #DealsRow:focus { background: $accent_09; }
+    #DealsRow[open="true"] { background: $surface; border-color: $accent; }
+    QLabel#ShelfTitle { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
+    QLabel#ForYouReason { color: $accent; font-size: ${fs_xs}px; }
+    QLabel#Initials { background: $surface_2; color: $subtext; border-radius: ${r_sm}px;
+                      font-size: ${fs_base}px; font-weight: 600; }
     #SysTile { background: $surface_1; border: 1px solid $border_card;
                border-radius: ${r_control}px; }
     #SysTile:hover, #SysTile:focus { background: $accent_09; border-color: $accent_35; }
@@ -1058,6 +1066,27 @@ def build_stylesheet(scale: float = 1.0) -> str:
     /* Session end band (w-60) */
     QLabel#SessionBig { color: $on_art; font-size: ${fs_display}px; font-weight: 600; }
     QLabel#SessionUnit { color: $on_art; font-size: ${fs_xs}px; font-weight: 600; }
+    /* The game rail in the Ribbon layout (w-145): glass cards, a 2x2 grid of
+       actions, and the preview pane. Glass is dark in every theme, so the
+       text on it is on_art (as on Theatre's other glass). */
+    #TheatreDetails QPushButton#RailCard { background: $glass; border: 1px solid $overlay;
+                                           border-radius: ${r_xl}px; text-align: left; }
+    #TheatreDetails QPushButton#RailCard:hover { background: $glass_hi; }
+    #TheatreDetails QPushButton#RailCard:focus { background: $glass_hi;
+                                                 border: 1px solid $accent; }
+    QLabel#RailCardTitle { color: $on_art; font-size: ${fs_base}px; }
+    #RailCard[small="true"] QLabel#RailCardTitle { font-size: ${fs_sm}px; }
+    #RailCard[danger="true"] QLabel#RailCardTitle { color: $danger; }
+    QLabel#RailCardCount { color: $on_art_72; font-size: ${fs_sm}px; }
+    #TheatreDetails QFrame#RailPreview { background: $glass; border: 1px solid $overlay;
+                                         border-radius: ${r_panel}px; }
+    QLabel#RailKicker { color: $accent; font-size: ${fs_xs}px; font-weight: 600; }
+    QLabel#RailLabel { color: $on_art_72; font-size: ${fs_xs}px; font-weight: 600; }
+    QLabel#RailBig { color: $on_art; font-size: ${fs_big}px; font-weight: 600; }
+    QLabel#RailLine { color: $on_art_72; font-size: ${fs_sm}px; }
+    QLabel#RailAbout { color: $on_art; font-size: ${fs_base}px; }
+    QLabel#RailHint { color: $on_art_72; font-size: ${fs_sm}px; }
+    QFrame#RailRule { background: $on_art_16; max-height: 1px; min-height: 1px; }
     #AchChip { background: $glass; border: 1px solid $glass_hi; border-radius: ${r_card}px; }
     QLabel#AchTitle { color: $on_art; font-size: ${fs_base}px; font-weight: 600; }
     #TheatreShot { background: $glass; border-radius: ${r_tile}px; }

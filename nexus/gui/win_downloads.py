@@ -465,6 +465,8 @@ class DownloadsMixin:
             self.dealspage.forget_repack(appid)
             self.toast(f"Won't suggest “{match.get('title')}” for {item.get('title')} again.",
                        'info', None, 5000)
+        elif action in ('download', 'download_auto'):    # the Deals results' inline panel
+            self._grab(item, match, action == 'download_auto')
         elif action == 'grab':
             self.toast(f"Reading the repack page for {item.get('title')}…", 'info', None, 3000)
             cli_json(['--repack-page', match['slug'], '--json'],
@@ -514,7 +516,9 @@ class DownloadsMixin:
                        + (" — it installs when it's done." if auto else "."), 'success',
                        [("Downloads", lambda: self.go(self.DOWNLOADS))], 6000)
             self._poll_torrents()
-        cli_json(['--repack-grab', match['slug'], '--appid', str(item.get('appid')), '--json']
+        # A FitGirl catalogue game has no appid: never send "None" (w-146).
+        appid = ['--appid', str(item['appid'])] if item.get('appid') is not None else []
+        cli_json(['--repack-grab', match['slug']] + appid + ['--json']
                  + (['--auto-install'] if auto else []), done, 40000)
 
     def _check_repack_feed(self):
@@ -605,11 +609,8 @@ class DownloadsMixin:
         cli_json(['--repack-index', '--json'], done, 300000)
 
     def _show_fitgirl_deals(self):
-        self.dealspage._filter = 'fitgirl'
-        self.dealspage.show_section('deals')
+        self.dealspage.see_all('fitgirl')
         self.go(self.DEALS)
-        self.dealspage._fill_tabs()
-        self.dealspage._fill()
 
     def _repack_scanned(self, cands: list[dict]):
         if not self.repacks_on():

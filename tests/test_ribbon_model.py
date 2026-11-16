@@ -20,10 +20,18 @@ def game(slug, played=None, **kw):
 GAMES = [game('alpha', '2026-11-01T10:00:00'), game('beta', '2026-11-05T10:00:00'),
          game('gamma')]
 SWITCH = ((False, "Off"), (True, "On"))
-SETTINGS = [('theatre_layout', "Layout", (('tabs', "Tabs"), ('ribbon', "Ribbon")), 'ribbon',
-             True),
-            ('sounds', "Menu sounds", SWITCH, False, True),
-            ('volume', "Volume", tuple((v, f"{v}%") for v in range(0, 101, 10)), 50, False)]
+SETTINGS = [("Theatre", 'theatre_layout', "Layout", (('tabs', "Tabs"), ('ribbon', "Ribbon")),
+             'ribbon', True),
+            ("Sound", 'sounds', "Menu sounds", SWITCH, False, True),
+            ("Sound", 'volume', "Volume", tuple((v, f"{v}%") for v in range(0, 101, 10)), 50,
+             False)]
+
+
+def setting(cats, key):
+    """A setting item, inside its group (w-145)."""
+    st = cat(cats, 'settings')
+    return next(k for g in st.items if g.kind == 'folder' for k in g.children
+                if k.key == f'set:{key}')
 
 
 def feed(**kw):
@@ -143,20 +151,21 @@ class Categories(unittest.TestCase):
     def test_settings_items_follow_the_rows_and_end_with_all_settings(self):
         st = cat(categories(feed()), 'settings')
         self.assertEqual([it.key for it in st.items],
-                         ['set:theatre_layout', 'set:sounds', 'set:volume',
-                          'action:all_settings'])
-        layout = st.items[0]
+                         ['setgrp:Theatre', 'setgrp:Sound', 'action:all_settings'])
+        self.assertEqual([k.key for k in st.items[1].children], ['set:sounds', 'set:volume'])
+        layout = st.items[0].children[0]
         self.assertEqual((layout.kind, layout.primary, layout.value_text, layout.glyph),
                          ('setting', 'step', "Ribbon", 'grid'))
-        self.assertEqual(st.items[2].primary, 'none')                   # disabled: greyed
+        self.assertEqual(st.items[1].children[1].primary, 'none')       # disabled: greyed
         self.assertEqual(st.items[-1].primary, 'all_settings')
 
     def test_settings_match_theatre_settings_rows(self):
         from nexus.gui.theatre_settings import ROWS
-        rows = [(k, t, ch, ch[0][0], True) for _g, k, t, ch in ROWS]
+        rows = [(g, k, t, ch, ch[0][0], True) for g, k, t, ch in ROWS]
         st = cat(categories(feed(settings=rows)), 'settings')
-        self.assertEqual([it.key[4:] for it in st.items[:-1]], [k for _g, k, _t, _c in ROWS])
-        self.assertEqual([it.title for it in st.items[:-1]], [t for _g, _k, t, _c in ROWS])
+        inner = [k for g in st.items[:-1] for k in g.children]
+        self.assertEqual([it.key[4:] for it in inner], [k for _g, k, _t, _c in ROWS])
+        self.assertEqual([it.title for it in inner], [t for _g, _k, t, _c in ROWS])
         self.assertIn('theatre_layout', [k for _g, k, _t, _c in ROWS])
         self.assertIn('ribbon_motion', [k for _g, k, _t, _c in ROWS])
         self.assertEqual(set(rm.SETTING_GLYPH), {k for _g, k, _t, _c in ROWS})
@@ -396,15 +405,106 @@ class Tags(unittest.TestCase):
     def test_sentences_and_settings_stay_text(self):
         cats = categories(feed())
         self.assertEqual(cat(cats, 'library').items[0].tags, ())     # no fact_tags given
-        self.assertTrue(all(not it.tags for it in cat(cats, 'settings').items))
+        self.assertTrue(all(not it.tags for g in cat(cats, 'settings').items
+                            for it in (g, *g.children)))
         self.assertEqual(cat(cats, 'discover').items[0].tags, ())
         self.assertEqual(rm.split_tags(""), ())
 
 
+class Refine(unittest.TestCase):
+    """w-145 slice 1: the focused game's kicker (genre · mode), its progress
+    through the main story, and the position rail."""
+    FACTS = {'alpha': {'genres': ["RPG", "Strategy"], 'modes': ['single', 'coop'],
+                       'length': {'main': 55}},
+             'beta': {'genres': [], 'modes': ['coop']},
+             'gamma': {'genres': ["Puzzle"], 'length': {'main': 4}}}
+
+    def test_game_kicker_genre_and_mode(self):
+        self.assertEqual(rm.game_kicker(GAMES[0], self.FACTS['alpha']), "RPG  ·  SINGLE-PLAYER")
+        self.assertEqual(rm.game_kicker(GAMES[1], self.FACTS['beta']), "CO-OP")
+        self.assertEqual(rm.game_kicker(GAMES[2], self.FACTS['gamma']), "PUZZLE")
+        self.assertEqual(rm.game_kicker(GAMES[2], None, "Steam"), "STEAM")   # no facts: the source
+        self.assertEqual(rm.game_kicker(GAMES[2], {}), "")
+        lib = cat(categories(feed(facts=self.FACTS)), 'library')
+        self.assertEqual([it.kicker for it in lib.items], ["RPG  ·  SINGLE-PLAYER", "CO-OP",
+                                                          "PUZZLE"])
+        groups = [("Couch", [GAMES[0]])]                                   # a collection's name wins
+        lib = cat(categories(feed(facts=self.FACTS, lib_groups=groups)), 'library')
+        self.assertEqual(lib.items[0].kicker, "COUCH")
+
+    def test_progress_only_with_length_and_play(self):
+        alpha = dict(GAMES[0], playtime_minutes=25 * 60)
+        self.assertEqual(rm.progress(alpha, self.FACTS['alpha']),
+                         (25 / 55, "25 h of about 55 h to finish"))
+        self.assertIsNone(rm.progress(dict(GAMES[0], playtime_minutes=0), self.FACTS['alpha']))
+        self.assertIsNone(rm.progress(alpha, self.FACTS['beta']))          # no length
+        self.assertIsNone(rm.progress(alpha, None))
+        online = {'modes': ['online'], 'length': {'main': 20}}             # nothing to finish
+        self.assertIsNone(rm.progress(alpha, online))
+        past = rm.progress(dict(GAMES[2], playtime_minutes=6 * 60), self.FACTS['gamma'])
+        self.assertEqual(past, (1.0, "6 h, past the usual 4 h"))           # capped
+        short = rm.progress(dict(GAMES[2], playtime_minutes=40), self.FACTS['gamma'])
+        self.assertEqual(short[1], "40 min of about 4 h to finish")
+        games = [alpha, GAMES[1], GAMES[2]]
+        lib = cat(categories(feed(games=games, library=games, facts=self.FACTS)), 'library')
+        self.assertEqual([it.progress for it in lib.items],
+                         [(25 / 55, "25 h of about 55 h to finish"), None, None])
+
+    def test_now_playing_kicker_wins(self):
+        run = dict(GAMES[0], playing=True)
+        home = cat(categories(feed(playing=run, playing_kicker="NOW PLAYING",
+                                   facts=self.FACTS)), 'home')
+        self.assertEqual(home.items[0].kicker, "NOW PLAYING")
+        self.assertEqual(home.items[1].kicker, "CO-OP")                    # beta: its own
+
+    def test_rail_pos(self):
+        self.assertIsNone(rm.rail_pos(0, 0))
+        self.assertIsNone(rm.rail_pos(0, 1))                               # one item: no rail
+        self.assertEqual(rm.rail_pos(0, 5), 0.0)
+        self.assertEqual(rm.rail_pos(4, 5), 1.0)
+        self.assertEqual(rm.rail_pos(2, 5), 0.5)
+        self.assertEqual(rm.rail_pos(9, 5), 1.0)                           # kept in range
+
+
+class SettingsGroups(unittest.TestCase):
+    """w-145 slice 3: Settings as groups from the sheet's rows; inside a
+    group Left/Right change the value in place (the view steps it), so nav
+    leaves them alone."""
+
+    def test_groups_from_rows_in_order(self):
+        from nexus.gui.theatre_settings import ROWS
+        rows = [(g, k, t, ch, ch[0][0], True) for g, k, t, ch in ROWS]
+        st = cat(categories(feed(settings=rows)), 'settings')
+        self.assertEqual([it.title for it in st.items],
+                         ["Controller", "Theatre", "Sound", "Look", "All settings"])
+        self.assertTrue(all(it.kind == 'folder' for it in st.items[:-1]))
+        n = {g: sum(1 for r in ROWS if r[0] == g) for g in ("Controller", "Theatre")}
+        self.assertEqual(st.items[0].sub, f"{n['Controller']} settings")
+        self.assertEqual(st.items[1].sub, f"{n['Theatre']} settings")
+        self.assertEqual(st.items[0].glyph, 'gamepad')
+        self.assertEqual(st.items[-1].key, 'action:all_settings')
+
+    def test_left_right_stay_inside_a_settings_group(self):
+        cats = categories(feed())
+        s = RibbonState('settings')
+        self.assertFalse(rm.steps_in_place(s, cats))
+        s = nav(s, cats, 'in')                                      # Theatre
+        self.assertEqual(s.path, ('setgrp:Theatre',))
+        self.assertTrue(rm.steps_in_place(s, cats))
+        for how in ('left', 'right'):
+            self.assertEqual(nav(s, cats, how), s)                  # the view steps the value
+        self.assertEqual(nav(s, cats, 'out').path, ())              # B goes up
+        down = nav(nav(s, cats, 'out'), cats, 'down')
+        self.assertEqual(nav(down, cats, 'right').path, ('setgrp:Sound',))   # Right still opens one
+        self.assertFalse(rm.steps_in_place(RibbonState('library'), cats))
+        col = nav(RibbonState('collections'), categories(feed(groups=GROUPS)), 'in')
+        self.assertFalse(rm.steps_in_place(col, categories(feed(groups=GROUPS))))
+
+
 class StepValue(unittest.TestCase):
     def test_wraps_or_stops(self):
-        st = cat(categories(feed()), 'settings')
-        layout, volume = st.items[0], st.items[2]
+        cats = categories(feed())
+        layout, volume = setting(cats, 'theatre_layout'), setting(cats, 'volume')
         self.assertEqual(step_value(layout), 'tabs')
         self.assertEqual(step_value(layout, 1, wrap=False), 'ribbon')     # the end
         self.assertEqual(step_value(volume, -1), 40)

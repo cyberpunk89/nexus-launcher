@@ -357,6 +357,16 @@ class Behaviour(unittest.TestCase):
         stop_leftovers(self.win.jobs)
         self.win._busy = frozenset()
 
+    def test_catalogue_grab_omits_appid(self):
+        """A FitGirl catalogue game has no appid: Grab must not send "None" (w-146)."""
+        asked = []
+        with patch_gui('cli_json', lambda args, *_a, **_k: asked.append(args)):
+            self.win._grab({'title': 'Tin Harbour'}, {'slug': 'tin-harbour'}, False)
+            self.win._grab({'title': 'Moss Lantern', 'appid': 101}, {'slug': 'moss'}, True)
+        self.assertEqual(asked, [['--repack-grab', 'tin-harbour', '--json'],
+                                 ['--repack-grab', 'moss', '--appid', '101', '--json',
+                                  '--auto-install']])
+
     def test_same_reload_keeps_the_views(self):
         """An answer that says what the last one did rebuilds nothing (w-122);
         the games the tiles hold stay, and playing is still read again."""

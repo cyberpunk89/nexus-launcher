@@ -113,8 +113,8 @@ from .protoncmds import (
     cmd_protondb, cmd_protons, ge_is_newer, ge_update, install_hint, proton_usage)  # noqa: F401
 from .downloads import (
     _cached_wishlist, _owned_store_ids, _size_bytes, _torrent_dest, _torrent_mark,
-    cmd_check_repack, cmd_repack_feed, cmd_repack_grab, cmd_repack_index, cmd_repack_page,
-    cmd_repack_reject, cmd_torrent, send_alerts)  # noqa: F401
+    cmd_check_repack, cmd_repack_catalogue, cmd_repack_feed, cmd_repack_grab,
+    cmd_repack_index, cmd_repack_page, cmd_repack_reject, cmd_torrent, send_alerts)  # noqa: F401
 from .info import (
     _ago, _llm_config, cmd_apply_recipe, cmd_explain_log, cmd_game_tips, cmd_gamedb,
     cmd_history, cmd_news, cmd_news_feed, cmd_news_source, cmd_store_info, compat_lines, CONFIG_SECRETS,

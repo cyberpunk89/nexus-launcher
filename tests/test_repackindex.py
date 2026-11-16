@@ -176,6 +176,56 @@ class Sync(unittest.TestCase):
         self.assertEqual(repackindex.load()['rejected'], {})
 
 
+class Catalogue(unittest.TestCase):
+    def posts(self, *rows):
+        """rows: (slug, title, date[, hv]) -> a stored index."""
+        out = {}
+        for r in rows:
+            d = {'id': 1, 'slug': r[0], 'title': r[1], 'date': r[2], 'modified': r[2]}
+            if len(r) > 3:
+                d['hv'] = r[3]
+            out[r[0]] = d
+        return {'posts': out, 'synced_at': '2026-10-02T00:00:00+00:00', 'built_at': None,
+                'max_modified': None, 'rejected': {}}
+
+    def test_groups_older_posts_under_newest(self):
+        data = self.posts(
+            ('moss-v1', 'Moss Garden – v1.0', '2026-01-01T00:00:00+00:00'),
+            ('moss-v2', 'Moss Garden – v1.2 + 2 DLCs', '2026-03-01T00:00:00+00:00', 'hv'),
+            ('zeta', 'Zeta Quest: Deluxe Edition', '2026-02-01T00:00:00+00:00'),
+            ('apex', 'Apex Orchard', '2026-04-01T00:00:00+00:00'))
+        out = repackindex.catalogue(data, [], [], [])
+        self.assertEqual([r['slug'] for r in out['rows']], ['apex', 'moss-v2', 'zeta'])
+        moss = out['rows'][1]
+        self.assertEqual((moss['title'], moss['hv'], moss['older']), ('Moss Garden', 'hv', 1))
+        self.assertTrue(moss['tail'].startswith('v1.2'))
+        self.assertEqual(moss['keys'], ['moss garden'])
+        self.assertEqual(out['rows'][0]['older'], 0)
+        self.assertEqual(out['rows'][0]['tail'], '')
+        self.assertEqual(out['count'], 4)
+        self.assertFalse(out['building'])
+        self.assertNotIn('appid', moss)
+        json.dumps(out)                         # plain data
+
+    def test_marks_wishlist_nexus_steam(self):
+        data = self.posts(
+            ('a', 'Apex Orchard – v2', '2026-04-01T00:00:00+00:00'),
+            ('b', 'Brass Harbor', '2026-03-01T00:00:00+00:00'),
+            ('c', 'Cinder Vale', '2026-02-01T00:00:00+00:00'),
+            ('d', 'Dusk Mill', '2026-01-01T00:00:00+00:00'))
+        out = repackindex.catalogue(
+            data, wishlist=[{'appid': 11, 'title': 'Apex Orchard'}],
+            games=[{'slug': 'c', 'display_name': 'Whatever'}, {'display_name': 'Brass Harbor'}],
+            owned_titles=[{'appid': 44, 'title': 'Dusk Mill'}, 'not a dict'])
+        marks = {r['slug']: (r['marks'], r.get('appid')) for r in out['rows']}
+        self.assertEqual(marks, {'a': (['wishlist'], 11), 'b': (['nexus'], None),
+                                 'c': (['nexus'], None), 'd': (['steam'], 44)})
+
+    def test_empty_index_reports_progress(self):
+        out = repackindex.catalogue({'posts': {}, 'synced_at': None}, [], [], [])
+        self.assertEqual((out['rows'], out['count'], out['building']), ([], 0, True))
+
+
 class Page(unittest.TestCase):
     CONTENT = ('<p>Repack Size: <strong>from 47.4 GB</strong><br>Original Size: '
                '<strong>66.4 GB</strong></p><a href="magnet:?xt=urn:btih:'

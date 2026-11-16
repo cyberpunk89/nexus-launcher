@@ -299,6 +299,10 @@ def _games_path():
     return paths.GAMEDB_CACHE / 'games.json'
 
 
+def _prices_path():
+    return paths.GAMEDB_CACHE / 'prices-base.json'
+
+
 def _friends_path():
     return paths.GAMEDB_CACHE / 'friends.json'
 
@@ -335,7 +339,8 @@ def _save_state(**changes) -> None:
 
 
 def clear_cache() -> None:
-    for p in (_summary_path(), _state_path(), _meta_path(), _games_path(), _friends_path()):
+    for p in (_summary_path(), _state_path(), _meta_path(), _games_path(), _friends_path(),
+              _prices_path()):
         p.unlink(missing_ok=True)
     _games_memo.clear()
 
@@ -417,6 +422,63 @@ def lookup(appids) -> dict:
     for a, info in out.items():
         info['fetched_at'] = cache['fetched_at']
         info['url'] = detail_url(s['url'], a)
+    return out
+
+
+PRICE_BASE_AGE = 24 * 3600        # how long a price snapshot stays the baseline
+
+
+def _price_snapshot(wishlist) -> dict:
+    """{appid (str): {'now': price, 'atl': at the all-time low}} for the
+    wishlist games that have a price."""
+    out = {}
+    for g in wishlist or []:
+        p = g.get('price') if isinstance(g, dict) else None
+        if isinstance(p, dict) and isinstance(p.get('current'), (int, float)) \
+                and g.get('appid') is not None:
+            out[str(g['appid'])] = {'now': p['current'], 'atl': bool(p.get('atHistoricalLow'))}
+    return out
+
+
+def price_watch(wishlist) -> dict:
+    """What changed since your last look, from the wishlist the cache holds
+    and a private snapshot (prices-base.json) of the prices then:
+    {dropped: [{appid, was, now}], new_atl: [appid], since: epoch|None}.
+    The snapshot is the baseline for a day; after that it is replaced, and
+    what it found is still shown until the next roll (the 'carry'), so the
+    page doesn't go quiet the minute the baseline moves. A first run only
+    records the snapshot. Games with no baseline price are never news."""
+    now = time.time()
+    cur = _price_snapshot(wishlist)
+    snap = _read_json(_prices_path())
+    if not (isinstance(snap, dict) and isinstance(snap.get('prices'), dict)
+            and isinstance(snap.get('at'), (int, float))):
+        _write_private(_prices_path(), {'at': now, 'prices': cur, 'carry': None})
+        return {'dropped': [], 'new_atl': [], 'since': None}
+    dropped, new_atl = [], []
+    for a, c in cur.items():
+        b = snap['prices'].get(a)
+        if not isinstance(b, dict):
+            continue
+        if c['now'] < b.get('now', 0):
+            dropped.append({'appid': int(a), 'was': b['now'], 'now': c['now']})
+        if c['atl'] and not b.get('atl'):
+            new_atl.append(int(a))
+    live = {'dropped': dropped, 'new_atl': new_atl, 'since': snap['at']}
+    carry = snap.get('carry') if isinstance(snap.get('carry'), dict) else None
+    since = snap['at']
+    if carry:
+        seen = {d['appid'] for d in dropped}
+        # An older drop still stands unless the game has gone back up.
+        dropped = [d for d in carry.get('dropped') or []
+                   if d['appid'] not in seen and str(d['appid']) in cur
+                   and cur[str(d['appid'])]['now'] <= d['now']] + dropped
+        new_atl = [a for a in carry.get('new_atl') or []
+                   if a not in new_atl and cur.get(str(a), {}).get('atl')] + new_atl
+        since = carry.get('since') or since
+    out = {'dropped': dropped, 'new_atl': new_atl, 'since': since}
+    if now - snap['at'] >= PRICE_BASE_AGE:
+        _write_private(_prices_path(), {'at': now, 'prices': cur, 'carry': live})
     return out
 
 

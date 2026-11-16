@@ -1044,6 +1044,7 @@ list. Flags whose help says *Internal* are the app's own plumbing and may change
 | Flag | Does |
 |---|---|
 | `--repack-index` | Sync the whole repack catalogue and show which wishlist games have one (at most every 6 h; `--refresh` forces it) |
+| `--repack-catalogue [--json]` | List the repacks in the local catalogue (from the last `--repack-index`), one row per game with its newest post, marked when you wishlist, own or run it |
 | `--repack-grab SLUG [--auto-install]` | Send a repack's magnet link to your torrent client, and install it when done |
 | `--torrents --all` | Every torrent in the client, not only the ones Nexus added |
 | `--torrent-pause HASH…`, `--torrent-resume HASH…` | Pause / resume torrents |
