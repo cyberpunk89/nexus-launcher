@@ -858,6 +858,24 @@ class SessionsUpload(V2Base):
         self.assertEqual(res['status'], 'idle')
         self.assertNotIn('/api/nexus/v2/sessions', fake.paths())
 
+    def test_imports_and_estimates_are_never_sent(self):
+        """w-150/w-151: Steam-log imports and playtime estimates live in their
+        own files; the upload reads sessions.jsonl and nothing else."""
+        self.write_config(self.ON)
+        self.add(session_line('steam-620', 'steam', 'Portal 2'))
+        imported = {'appid': 70, 'slug': 'steam-70', 'name': 'Half-Life', 'source': 'steam',
+                    'via': 'steam-log', 'start': '2026-10-23T10:00:00',
+                    'end': '2026-10-23T11:00:00', 'minutes': 60.0}
+        estimate = {'slug': 'steam-400', 'source': 'steam', 'name': 'Portal', 'kind': 'estimate',
+                    'start': '2026-10-24T10:00:00', 'end': '2026-10-24T11:00:00', 'minutes': 60.0}
+        (self.data / 'steam-log.jsonl').write_text(json.dumps(imported) + '\n', encoding='utf-8')
+        (self.data / 'playtime-ledger.jsonl').write_text(json.dumps(estimate) + '\n',
+                                                         encoding='utf-8')
+        res, fake = self.upload()
+        self.assertEqual((res['status'], res['sent']), ('uploaded', 1))
+        sent = fake.bodies('POST', '/api/nexus/v2/sessions')[0]['sessions']
+        self.assertEqual([i['storeId'] for i in sent], ['620'])
+
     def test_other_games_only_with_the_switch_and_title_only(self):
         self.write_config(self.ON + 'upload_other = true\n')
         self.add(session_line('elden-ring', 'nexus',

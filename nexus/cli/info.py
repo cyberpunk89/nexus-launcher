@@ -10,9 +10,17 @@ from nexus import features, platform
 from .common import _cached_read, _load_toml, CONFIG_PATH, STEAM_ROOT
 
 
+def _all_sessions() -> list[dict]:
+    """sessions.jsonl plus Steam's game log (w-150), where that is on."""
+    from nexus import history
+    from .config import load_config
+    log = features.has('steam_log') and load_config().get('import_steam_log', True)
+    return history.all_sessions(steam_log=log)
+
+
 def cmd_history(as_json: bool) -> None:
     from nexus import history
-    sm = history.summary()
+    sm = history.summary(_all_sessions())
     if as_json:
         print(json.dumps(sm))
         return
@@ -32,7 +40,7 @@ def cmd_history(as_json: bool) -> None:
 def cmd_insights(as_json: bool) -> None:
     """The local numbers behind Home's widgets (nexus/insights.py)."""
     from nexus import insights
-    out = insights.gather()
+    out = insights.gather(sessions=_all_sessions())
     if as_json:
         print(json.dumps(out, separators=(',', ':')))
         return

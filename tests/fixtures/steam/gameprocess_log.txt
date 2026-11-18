@@ -1,0 +1,12 @@
+[2026-03-01 19:58:02] Client version: 1700000000
+[2026-03-01 20:00:00] AppID 620 adding PID 1001 as a tracked process "/x/steam-launch-wrapper -- /x/game"
+[2026-03-01 20:00:01] AppID 620 adding PID 1002 as a tracked process
+[2026-03-01 21:30:00] AppID 620 no longer tracking PID 1002, exit code 0
+[2026-03-01 21:30:00] Remove 620 from running list
+[2026-03-01 21:30:05] Remove 620 from running list
+[2026-03-02 18:00:00] AppID 9223372041183297536 adding PID 2001 as a tracked process
+[2026-03-02 18:00:01] AppID 9223372041183297536 PID 2001 was launched outside Steam, using container PID 2000 as root
+[2026-03-02 19:00:00] Remove -2147483647 from running list
+[2026-03-03 10:00:00] AppID 70 adding PID 3001 as a tracked process
+[2026-03-03 12:00:00] Client version: 1700000001
+garbage line

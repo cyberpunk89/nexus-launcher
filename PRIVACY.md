@@ -12,6 +12,12 @@ To do its work Nexus also downloads things: update checks and Proton releases fr
 and artwork, game facts and news from the sites you set up or turn on in Settings. Those
 are ordinary downloads with no id; like any download, the site sees your IP address.
 
+On Linux, Play history also reads Steam's local game log (`logs/gameprocess_log.txt`), so
+games you played while Nexus was closed still count. Only the game, start and end times are
+kept, in `steam-log.jsonl` next to your other play sessions; the command Steam ran is not.
+It never leaves your computer, not even with Game-db play-session upload on. Turn it off in
+Settings → System → Privacy → "Read Steam's game log".
+
 ## The install count
 
 At most once a day, Nexus sends one small message to the Nexus relay

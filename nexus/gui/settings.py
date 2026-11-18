@@ -1543,6 +1543,14 @@ class SettingsPage(QWidget):
                   "Report a problem can send a report through the Nexus relay, no GitHub "
                   "account needed. Off also stops the install count.", self.report_relay,
                   keywords="privacy bug report relay anonymous", key='report_relay')
+        if has('steam_log'):                    # Steam's log is read on Linux only
+            self.steam_log = Switch()
+            self._row(sec, "Read Steam's game log",
+                      "Play history also reads Steam's local game log, so games played while "
+                      "Nexus was closed count. It stays on this computer and is never uploaded.",
+                      self.steam_log,
+                      keywords="privacy steam game log play history sessions import "
+                               "closed", key='import_steam_log')
 
     def _peek_row(self, sec, title: str, desc: str, key: str, fill) -> 'QLabel':
         """A row with a Show button that opens a read-only text under it,
@@ -1609,6 +1617,14 @@ class SettingsPage(QWidget):
         """A count went out (the window's ping): an open "Sent so far" shows it."""
         if self.stats_sent.button.isChecked():
             self._load_stats_sent()
+
+    def _steam_log_toggled(self, _on: bool):
+        """The play numbers change with it: forget the answers Home and Play
+        history are holding, then save."""
+        if not self._loading:
+            cli_cache_forget(['--history', '--json'])
+            cli_cache_forget(['--insights', '--json'])
+        self.commit()
 
     def _stats_toggled(self, _on: bool):
         if not self._loading:
@@ -1776,6 +1792,8 @@ class SettingsPage(QWidget):
         self.stats_count.toggled.connect(self._stats_toggled)
         self.report_relay.toggled.connect(self._sync_stats_row)
         self.report_relay.toggled.connect(self.commit)
+        if hasattr(self, 'steam_log'):
+            self.steam_log.toggled.connect(self._steam_log_toggled)
         for cb in (self.runner, self.proton, self.al_sale):
             cb.activated.connect(self.commit)
         self.tor_client.activated.connect(self._torrent_client_changed)
@@ -2212,6 +2230,8 @@ class SettingsPage(QWidget):
         self.stats_count.setChecked(c.get('stats_count') is True)
         self._stats_touched = False
         self.report_relay.setChecked(c.get('report_relay', True))
+        if hasattr(self, 'steam_log'):
+            self.steam_log.setChecked(c.get('import_steam_log', True))
         self._sync_stats_row()
         self.repacks.blockSignals(True)
         self.repacks.setChecked(c.get('repacks', True))
@@ -2327,6 +2347,9 @@ class SettingsPage(QWidget):
         if self._stats_touched or c.get('stats_count') is not None:
             put('stats', 'count', self.stats_count.isChecked(), c.get('stats_count'))
         put('report', 'relay', self.report_relay.isChecked(), c.get('report_relay', True))
+        if hasattr(self, 'steam_log'):
+            put('history', 'import_steam_log', self.steam_log.isChecked(),
+                c.get('import_steam_log', True))
         put('repacks', 'enabled', self.repacks.isChecked(), c.get('repacks', True))
         gamedb_changed = False
         gurl = self.gdb_url.text().strip() or None
@@ -2437,7 +2460,7 @@ from .config import ConfigError, load_config, save_config  # noqa: E402
 from .dashboard import ClickRow, GlyphBadge  # noqa: E402
 from .details import Disclosure, ElideLabel  # noqa: E402
 from .friends import FRIENDS  # noqa: E402
-from .jobs import cli_json, in_thread  # noqa: E402
+from .jobs import cli_cache_forget, cli_json, in_thread  # noqa: E402
 from .tray import tray_available  # noqa: E402
 from .widgets import (amp, clear_layout, FlowLayout, glyph_pixmap, icon_label,  # noqa: E402
     label, NoWheelCombo, open_modal, plain_label, secret_field, SegmentedControl, set_glyph_icon)

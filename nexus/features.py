@@ -26,6 +26,7 @@ LINUX_ONLY = frozenset({
     'desktop_entry',    # freedesktop .desktop launchers (Windows: Start Menu .lnk)
     'sunshine',         # Sunshine apps.json entries (Linux only)
     'heroic',           # Heroic shortcuts and status (Heroic is skipped on Windows)
+    'steam_log',        # play sessions from Steam's gameprocess_log.txt (w-150)
 })
 
 # On both, each its own way: still a feature so a build or test can drop it.

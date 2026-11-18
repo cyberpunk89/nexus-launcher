@@ -18,7 +18,8 @@ def load_config() -> dict:
            'discord_client_id': None, 'keep_awake': True, 'subvolumes': True,
            'snapshots_keep': 1, 'repacks': True,
            'report_relay': True, 'report_url': None, 'steam_web_api_key': None,
-           'friends_enabled': False, 'friends_steamid': None, 'stats_count': None}
+           'friends_enabled': False, 'friends_steamid': None, 'stats_count': None,
+           'import_steam_log': True}
 
     def as_bool(v, default=True):
         # `steam = "no"` is a truthy string; only real TOML booleans count.
@@ -85,6 +86,9 @@ def load_config() -> dict:
         fr = data.get('friends') if isinstance(data.get('friends'), dict) else {}
         cfg['friends_enabled'] = fr.get('enabled', False) is True
         cfg['friends_steamid'] = str(fr.get('steamid') or '').strip() or None
+        # [history] import_steam_log: also read Steam's own game log (nexus/steamlog.py).
+        hi = data.get('history') if isinstance(data.get('history'), dict) else {}
+        cfg['import_steam_log'] = as_bool(hi.get('import_steam_log', True))
         rp = data.get('repacks')
         cfg['repacks'] = not isinstance(rp, dict) or rp.get('enabled', True) is not False
         try:

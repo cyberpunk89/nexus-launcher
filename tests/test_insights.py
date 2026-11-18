@@ -14,7 +14,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import history, insights  # noqa: E402
+from nexus import history, insights, steamlog  # noqa: E402
 
 TODAY = date(2026, 11, 16)
 
@@ -258,6 +258,94 @@ class Hidden(unittest.TestCase):
             self.assertEqual(insights.hidden_slugs(p), frozenset({'a', 'b'}))
             p.write_text('[1]', encoding='utf-8')
             self.assertEqual(insights.hidden_slugs(p), frozenset())
+
+
+class Merged(unittest.TestCase):
+    """w-150: sessions.jsonl plus Steam's game log, merged when read."""
+
+    def setUp(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        for mod, name, path in ((history, 'PATH', d / 'sessions.jsonl'),
+                                (steamlog, 'PATH', d / 'steam-log.jsonl')):
+            p = mock.patch.object(mod, name, path)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def nexus(self, slug, start, minutes, source='steam'):
+        t = datetime.fromisoformat(start)
+        with open(history.PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'slug': slug, 'source': source, 'name': slug,
+                                'start': start, 'minutes': minutes,
+                                'end': (t + timedelta(minutes=minutes)).isoformat()}) + '\n')
+
+    def log(self, slug, start, minutes, appid=620):
+        t = datetime.fromisoformat(start)
+        with open(steamlog.PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'appid': appid, 'slug': slug, 'name': slug, 'start': start,
+                                'end': (t + timedelta(minutes=minutes)).isoformat(),
+                                'minutes': float(minutes), 'source': 'steam',
+                                'via': 'steam-log'}) + '\n')
+
+    def test_log_only_session_is_added(self):
+        self.log('steam-620', '2026-11-10T20:00:00', 90)
+        got = history.all_sessions([])
+        self.assertEqual([(s['slug'], s['minutes']) for s in got], [('steam-620', 90.0)])
+
+    def test_overlap_nexus_record_wins(self):
+        self.nexus('steam-620', '2026-11-10T20:00:30', 80)
+        self.log('steam-620', '2026-11-10T20:05:00', 90)          # starts after 120 s but overlaps
+        self.log('steam-620', '2026-11-10T22:00:00', 30)          # a different session: kept
+        got = history.all_sessions([])
+        self.assertEqual(sorted((s['start'], s['minutes']) for s in got),
+                         [('2026-11-10T20:00:30', 80), ('2026-11-10T22:00:00', 30.0)])
+
+    def test_start_within_120s_dropped(self):
+        self.nexus('steam-620', '2026-11-10T20:00:00', 30)
+        self.log('steam-620', '2026-11-10T19:58:30', 1.5)         # ends as it starts, 90 s before
+        self.assertEqual(len(history.all_sessions([])), 1)
+
+    def test_other_game_overlapping_is_kept(self):
+        self.nexus('steam-620', '2026-11-10T20:00:00', 60)
+        self.log('steam-70', '2026-11-10T20:10:00', 30, appid=70)
+        self.assertEqual(len(history.all_sessions([])), 2)
+
+    def test_steam_log_off_hides_and_keeps_file(self):
+        self.nexus('a', '2026-11-10T20:00:00', 10)
+        self.log('steam-620', '2026-11-11T20:00:00', 90)
+        before = steamlog.PATH.read_text(encoding='utf-8')
+        got = history.all_sessions([], steam_log=False)
+        self.assertEqual([s['slug'] for s in got], ['a'])
+        self.assertEqual(steamlog.PATH.read_text(encoding='utf-8'), before)
+
+    def test_dedupe_same_appid_start(self):
+        self.log('steam-620', '2026-11-10T20:00:00', 60)
+        self.log('steam-620', '2026-11-10T20:00:00', 60)
+        self.assertEqual(len(history.all_sessions([])), 1)
+
+    def test_is_real_and_ledger_param_is_a_no_op(self):
+        self.nexus('a', '2026-11-10T20:00:00', 10)
+        self.assertEqual(len(history.all_sessions([], ledger=True)),
+                         len(history.all_sessions([], ledger=False)))
+        self.assertTrue(history.is_real({'slug': 'a'}))
+        self.assertFalse(history.is_real({'slug': 'a', 'kind': 'estimate'}))
+
+    def test_merged_numbers_reach_history_and_insights(self):
+        d = TODAY - timedelta(days=2)
+        self.log('steam-620', f'{d.isoformat()}T20:00:00', 90)
+        ss = history.all_sessions([])
+        self.assertEqual(history.summary(ss, TODAY)['year']['minutes'], 90.0)
+        det = build(sessions=ss)['day_games'][d.isoformat()]
+        self.assertEqual(det['games'][0]['via'], 'steam-log')
+
+    def test_via_only_when_most_minutes_come_from_the_log(self):
+        d = TODAY - timedelta(days=2)
+        ss = [dict(sess('a', d, 10), via='steam-log'), sess('a', d, 60), sess('b', d, 30)]
+        by = {g['slug']: g for g in build(sessions=ss)['day_games'][d.isoformat()]['games']}
+        self.assertNotIn('via', by['a'])
+        self.assertNotIn('via', by['b'])
 
 
 class DayDetail(unittest.TestCase):

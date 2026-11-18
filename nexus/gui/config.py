@@ -32,7 +32,7 @@ def load_config() -> dict:
            'heroic_proton': None, 'install_base': None,
            'scan_dir': None, 'scan_dirs': [], 'unattended': True, 'trash_repack': False,
            'runner': 'auto', 'repacks': True, 'report_relay': True, 'stats_count': None,
-           'queue_reorder': True, 'slow_while_playing': False,
+           'queue_reorder': True, 'slow_while_playing': False, 'import_steam_log': True,
            'error': None}
     try:
         data = _read_config_toml()
@@ -89,6 +89,8 @@ def load_config() -> dict:
     # The anonymous install count: None until answered (nexus/stats.py).
     sc = data.get('stats') if isinstance(data.get('stats'), dict) else {}
     cfg['stats_count'] = sc.get('count') if isinstance(sc.get('count'), bool) else None
+    hi = data.get('history') if isinstance(data.get('history'), dict) else {}
+    cfg['import_steam_log'] = hi.get('import_steam_log', True) is not False
     al = data.get('alerts', {}) if isinstance(data.get('alerts'), dict) else {}
     for k in ('atl', 'fitgirl', 'repack_updates', 'proton'):
         cfg[f'alerts_{k}'] = al.get(k, True) is not False

@@ -108,5 +108,9 @@ heroic = true             # add installed repacks to Heroic as sideloaded apps
 #                                        # and stops the install count below
 # url = "https://..."                    # another reports relay (testing, or a fork's own)
 
+[history]                 # play history
+# import_steam_log = true                # Linux: also read Steam's own game log, so games played
+#                                        # while Nexus was closed count (stays on this computer)
+
 [stats]                   # the anonymous install count, opt-in (PRIVACY.md lists every field)
 # count = true                           # unset: not asked yet, nothing is sent; false: off

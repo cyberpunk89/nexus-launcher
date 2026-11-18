@@ -4,7 +4,8 @@ launch tracker; Steam and Heroic games by the GUI while it's open (it sees
 them start and stop). Lines are appended with O_APPEND, so the two never
 interleave. summary() turns them into the play-history page: the last
 weeks, a year in review and sessions per game; periods() into its month
-by day and Home's Your week."""
+by day and Home's Your week. all_sessions() adds the sessions read from
+Steam's game log (nexus/steamlog.py) at read time."""
 
 import json
 import os
@@ -61,6 +62,46 @@ def load(path=None) -> list[dict]:
     except OSError:
         pass
     return out
+
+
+def is_real(s: dict) -> bool:
+    """A session someone played, as opposed to an estimate (w-151's ledger
+    lines carry kind 'estimate'): the counts of sessions, streaks and the
+    longest session only take these."""
+    return s.get('kind') != 'estimate'
+
+
+NEAR_START = 120                    # seconds: two records this close are one session
+
+
+def _same_session(a: dict, b: dict) -> bool:
+    """Two records of the same game that describe one play: starts within
+    NEAR_START seconds, or overlapping by at least half of the shorter."""
+    a0, b0 = a['_start'], b['_start']
+    if abs((a0 - b0).total_seconds()) <= NEAR_START:
+        return True
+    a1, b1 = a0 + timedelta(minutes=a['minutes']), b0 + timedelta(minutes=b['minutes'])
+    overlap = (min(a1, b1) - max(a0, b0)).total_seconds() / 60
+    return overlap > 0 and overlap >= 0.5 * min(a['minutes'], b['minutes'])
+
+
+def all_sessions(games=None, steam_log: bool = True, ledger: bool = True) -> list[dict]:
+    """What the play-history numbers are built from: sessions.jsonl, plus
+    (with `steam_log`) the sessions imported from Steam's game log
+    (nexus/steamlog.py), minus the ones sessions.jsonl already has: Nexus's
+    own record wins. Callers pass `steam_log` from the setting and
+    features.has('steam_log'). `ledger` is the seam for the playtime estimates
+    (w-151) and does nothing yet; `games` is the Library list, for the same."""
+    out = load()
+    if not steam_log:
+        return out
+    from . import steamlog
+    mine: dict[str, list[dict]] = defaultdict(list)
+    for s in out:
+        mine[s['slug']].append(s)
+    extra = [s for s in steamlog.load()
+             if not any(_same_session(s, o) for o in mine.get(s['slug'], ()))]
+    return out + extra
 
 
 def _period(sessions: list[dict], first: date, days: int, names: dict) -> dict:

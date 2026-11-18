@@ -307,6 +307,21 @@ def _add_achievement_counts(games: list[dict]) -> None:
         print(f"  [i] achievements skipped: {e}", file=sys.stderr)
 
 
+def _import_steam_log(games: list[dict]) -> None:
+    """Read what Steam's game log added since the last scan into
+    steam-log.jsonl (w-150). Linux only and off with [history]
+    import_steam_log = false; a log that can't be read or written is skipped."""
+    from nexus import features, steamlog
+    from .config import load_config
+    if not features.has('steam_log') or not load_config().get('import_steam_log', True):
+        return
+    try:
+        steamlog.import_new(STEAM_ROOT / 'logs' / steamlog.LOG_NAME, steamlog.PATH,
+                            steamlog.CURSOR_PATH, games)
+    except OSError:
+        pass
+
+
 def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -> None:
     """Everything playable in one list: games installed by Nexus
     (kind 'nexus'), installed Steam games ('steam') and installed Heroic store
@@ -334,6 +349,7 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
             h['download_bytes'] = size
     stores = sources.installed_games()            # Epic etc.; a failing one is skipped
     games += steam + stores + heroic + extra
+    _import_steam_log(games)
     _add_achievement_counts(games)
     try:
         sun_apps = json.loads(SUNSHINE_APPS.read_text(encoding='utf-8')).get('apps') or []

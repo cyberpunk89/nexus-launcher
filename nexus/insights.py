@@ -246,7 +246,8 @@ def _day_games(per_day: dict, day_n: dict, day_t: dict, pos: dict) -> dict:
     """{day: {'n': sessions, 'games': [top DAY_GAMES by minutes], 'more': others,
     'first'/'last': HH:MM of the first and last session START (local),
     'streak_pos': {'day': k, 'of': n} or None}} for the heatmap's card, played
-    days only. Each game has `source` (the one with most of its minutes)."""
+    days only. Each game has `source` (the one with most of its minutes), and `via:
+    'steam-log'` when most of its minutes were read from Steam's game log."""
     out = {}
     for d, games in sorted(per_day.items()):
         ranked = sorted(games.items(), key=lambda kv: (-kv[1][0], kv[0]))
@@ -255,7 +256,8 @@ def _day_games(per_day: dict, day_n: dict, day_t: dict, pos: dict) -> dict:
         out[d.isoformat()] = {
             'n': day_n[d],
             'games': [{'slug': g, 'name': v[1], 'minutes': round(v[0], 1),
-                       'source': max(v[2].items(), key=lambda kv: (kv[1], kv[0]))[0]}
+                       'source': max(v[2].items(), key=lambda kv: (kv[1], kv[0]))[0],
+                       **({'via': 'steam-log'} if v[3] * 2 > v[0] else {})}
                       for g, v in ranked[:DAY_GAMES]],
             'more': max(0, len(ranked) - DAY_GAMES),
             'first': lo.strftime('%H:%M'), 'last': hi.strftime('%H:%M'),
@@ -292,8 +294,10 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date,
         if first <= d <= today:
             by_day[d] += m
             day_n[d] += 1
-            cell = per_day[d].setdefault(slug, [0.0, s.get('name') or slug, defaultdict(float)])
+            cell = per_day[d].setdefault(slug, [0.0, s.get('name') or slug, defaultdict(float), 0.0])
             cell[0] += m
+            if s.get('via') == 'steam-log':
+                cell[3] += m                    # minutes that came from Steam's game log
             cell[2][s.get('source') or 'nexus'] += m
             lh = day_t.get(d)
             if lh is None:
@@ -365,9 +369,11 @@ def hidden_slugs(path=None) -> frozenset:
     return frozenset(s for s in rows if isinstance(s, str)) if isinstance(rows, list) else frozenset()
 
 
-def gather(today: date | None = None) -> dict:
-    """build() from what is on disk: sessions.jsonl, the Library cache and
-    the facts index."""
+def gather(today: date | None = None, sessions: list[dict] | None = None) -> dict:
+    """build() from what is on disk: sessions.jsonl (or the merged `sessions`
+    the caller made with history.all_sessions), the Library cache and the
+    facts index."""
     from . import facts
-    return build(history.load(), library_games(), facts.read_index().get('games') or {},
-                 today or date.today(), hidden_slugs())
+    games = library_games()
+    return build(history.load() if sessions is None else sessions, games,
+                 facts.read_index().get('games') or {}, today or date.today(), hidden_slugs())

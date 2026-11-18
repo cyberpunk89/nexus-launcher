@@ -962,7 +962,8 @@ class Settings(unittest.TestCase):
         stack = [mock.patch.dict('os.environ', {'DO_NOT_TRACK': '', 'NEXUS_NO_STATS': ''}),
                  patch_gui('save_config', lambda u: (saved.append(u), base.update(
                      {('stats_count' if k == ('stats', 'count') else
-                       'report_relay' if k == ('report', 'relay') else '_'): v
+                       'report_relay' if k == ('report', 'relay') else
+                       'import_steam_log' if k == ('history', 'import_steam_log') else '_'): v
                       for k, v in u.items()}))),
                  patch_gui('load_config', lambda: dict(base)),
                  patch_gui('cli_json', lambda args, cb, *a, **k: answers.append(args))]
@@ -1009,6 +1010,27 @@ class Settings(unittest.TestCase):
         self.assertIn("2026-11-09 10:00:00  counted", page.stats_sent.text())
         page._stats_sent_loaded({'sent': []}, '')
         self.assertEqual(page.stats_sent.text(), "Nothing sent yet.")
+
+    @linux_features
+    def test_steam_log_switch_saves_and_is_hidden_on_windows(self):
+        from nexus import features
+        page, saved, _ = self.page({'import_steam_log': True})
+        self.assertTrue(page.steam_log.isChecked())
+        forgot = []
+        with mock.patch('nexus.gui.settings.cli_cache_forget', lambda args: forgot.append(list(args))):
+            page.steam_log.toggle()                       # nothing else wired it: must save by itself
+        self.assertEqual(saved[-1], {('history', 'import_steam_log'): False})
+        self.assertIn(['--history', '--json'], forgot)
+        self.assertIn(['--insights', '--json'], forgot)
+        page.load()
+        self.assertFalse(page.steam_log.isChecked())      # read back from the config
+        page.steam_log.toggle()
+        self.assertEqual(saved[-1], {('history', 'import_steam_log'): True})
+        with mock.patch.object(features, 'FEATURES', features.ALL - {'steam_log'}):
+            win_page, win_saved, _ = self.page({'import_steam_log': True})
+            self.assertFalse(hasattr(win_page, 'steam_log'))
+            win_page.news.toggle()
+            self.assertFalse(any(('history', 'import_steam_log') in u for u in win_saved))
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
