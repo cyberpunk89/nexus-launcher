@@ -246,21 +246,24 @@ def _day_games(per_day: dict, day_n: dict, day_t: dict, pos: dict) -> dict:
     """{day: {'n': sessions, 'games': [top DAY_GAMES by minutes], 'more': others,
     'first'/'last': HH:MM of the first and last session START (local),
     'streak_pos': {'day': k, 'of': n} or None}} for the heatmap's card, played
-    days only. Each game has `source` (the one with most of its minutes), and `via:
-    'steam-log'` when most of its minutes were read from Steam's game log."""
+    days only. Each game has `source` (the one with most of its minutes; 'estimated'
+    when most of them are ledger estimates, w-151), `via: 'steam-log'` when most
+    were read from Steam's game log, and `kind: 'estimate'` when all of them are
+    estimates. A day of estimates only has n 0 and no first/last."""
     out = {}
     for d, games in sorted(per_day.items()):
         ranked = sorted(games.items(), key=lambda kv: (-kv[1][0], kv[0]))
-        lo, hi = day_t[d]
+        lo, hi = day_t.get(d) or (None, None)
         k = pos.get(d)
         out[d.isoformat()] = {
-            'n': day_n[d],
+            'n': day_n.get(d, 0),
             'games': [{'slug': g, 'name': v[1], 'minutes': round(v[0], 1),
                        'source': max(v[2].items(), key=lambda kv: (kv[1], kv[0]))[0],
-                       **({'via': 'steam-log'} if v[3] * 2 > v[0] else {})}
+                       **({'via': 'steam-log'} if v[3] * 2 > v[0] else {}),
+                       **({'kind': 'estimate'} if v[4] >= v[0] else {})}
                       for g, v in ranked[:DAY_GAMES]],
             'more': max(0, len(ranked) - DAY_GAMES),
-            'first': lo.strftime('%H:%M'), 'last': hi.strftime('%H:%M'),
+            'first': lo and lo.strftime('%H:%M'), 'last': hi and hi.strftime('%H:%M'),
             'streak_pos': {'day': k[0], 'of': k[1]} if k else None}
     return out
 
@@ -290,22 +293,28 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date,
         if t is None:
             continue
         d, m, slug = t.date(), s['minutes'], s['slug']
+        is_est = not history.is_real(s)     # w-151: minutes and days only, no counts or times
         all_days.add(d)
         if first <= d <= today:
             by_day[d] += m
-            day_n[d] += 1
-            cell = per_day[d].setdefault(slug, [0.0, s.get('name') or slug, defaultdict(float), 0.0])
+            cell = per_day[d].setdefault(slug, [0.0, s.get('name') or slug, defaultdict(float),
+                                                0.0, 0.0])
             cell[0] += m
-            if s.get('via') == 'steam-log':
-                cell[3] += m                    # minutes that came from Steam's game log
-            cell[2][s.get('source') or 'nexus'] += m
-            lh = day_t.get(d)
-            if lh is None:
-                day_t[d] = [t, t]
-            elif t < lh[0]:
-                lh[0] = t
-            elif t > lh[1]:
-                lh[1] = t
+            if is_est:
+                cell[4] += m                    # minutes that are estimates
+                cell[2]['estimated'] += m
+            else:
+                day_n[d] += 1
+                if s.get('via') == 'steam-log':
+                    cell[3] += m                # minutes that came from Steam's game log
+                cell[2][s.get('source') or 'nexus'] += m
+                lh = day_t.get(d)
+                if lh is None:
+                    day_t[d] = [t, t]
+                elif t < lh[0]:
+                    lh[0] = t
+                elif t > lh[1]:
+                    lh[1] = t
             if d >= avg_from:
                 avg_days[d] += m
         if d.year == today.year:
@@ -314,6 +323,8 @@ def build(sessions: list[dict], games: list[dict], facts: dict, today: date,
             weekday[d.weekday()] += m
         if pace_from <= d <= today:
             week_minutes += m
+        if is_est:
+            continue                            # a guess at the day: not a first play or a memory
         if slug not in first_played or d < first_played[slug]:
             first_played[slug] = d
         rows.append((d, slug, s.get('name') or slug, m))

@@ -34,7 +34,7 @@ MAX_WEEKS = 52
 MIN_WEEKS = 4
 LEVEL_ALPHA = (0.0, 0.30, 0.50, 0.75, 1.0)     # heat level 0-4 of the accent
 WEEKDAY_ROWS = {0: "Mon", 2: "Wed", 4: "Fri"}
-ENTER_OPENS = 'game'            # what Enter on a day opens: 'game' (its top game) or 'history'
+ENTER_OPENS = 'one_game'        # Enter on a day: 'one_game' (a day with one game opens it) or 'history'
 
 
 # ---- pure helpers (no Qt state) ----
@@ -143,11 +143,14 @@ def heat_level(minutes: float, most: float) -> int:
 
 
 def enter_target(detail: dict | None) -> tuple[str, str | None]:
-    """What Enter on a heatmap day opens: ('game', slug) for the day's top
-    game, else ('history', None). The user's answer is pending: set
-    ENTER_OPENS = 'history' to always open Play history."""
-    games = (detail or {}).get('games') or []
-    if ENTER_OPENS == 'game' and games and games[0].get('slug'):
+    """What Enter on a heatmap day opens: ('game', slug) when the day has
+    exactly one game, else ('history', None), an empty day too (user,
+    2026-11-16). Play history has no day view, so it opens plain.
+    ENTER_OPENS = 'history' always opens Play history."""
+    det = detail or {}
+    games = det.get('games') or []
+    if (ENTER_OPENS == 'one_game' and len(games) == 1 and not det.get('more')
+            and games[0].get('slug')):
         return 'game', games[0]['slug']
     return 'history', None
 
@@ -646,7 +649,7 @@ class HeatmapWidget(InsightWidget):
 
 
     def _enter(self, day: date):
-        """Enter on a day: its top game's page, else Play history (enter_target)."""
+        """Enter on a day: the page of its one game, else Play history (enter_target)."""
         hub = self._hub
         kind, slug = enter_target(((self.data(hub) or {}).get('day_games') or {}).get(day.isoformat()))
         g = self.shown(hub).get(slug) if kind == 'game' else None

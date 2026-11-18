@@ -18,6 +18,13 @@ kept, in `steam-log.jsonl` next to your other play sessions; the command Steam r
 It never leaves your computer, not even with Game-db play-session upload on. Turn it off in
 Settings → System → Privacy → "Read Steam's game log".
 
+Play history also keeps a daily note of each game's total play time (a game, the total,
+and when you last played it) in `playtime-ledger.jsonl`. Where the total grew without a
+session Nexus knows about (Heroic, Epic, another device), that day counts as play, marked
+"Estimated"; estimates count toward minutes and streaks but never as sessions. It stays on
+this computer and is never uploaded, not even with Game-db play-session upload on. Turn it
+off in Settings → System → Privacy → "Estimate play from play-time totals".
+
 ## The install count
 
 At most once a day, Nexus sends one small message to the Nexus relay

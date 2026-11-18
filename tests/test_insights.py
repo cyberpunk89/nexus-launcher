@@ -14,7 +14,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import tests.sandbox  # noqa: E402,F401  (HOME -> a temp dir; before any nexus import)
-from nexus import history, insights, steamlog  # noqa: E402
+from nexus import history, insights, ledger, steamlog  # noqa: E402
 
 TODAY = date(2026, 11, 16)
 
@@ -269,7 +269,8 @@ class Merged(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         d = Path(tmp.name)
         for mod, name, path in ((history, 'PATH', d / 'sessions.jsonl'),
-                                (steamlog, 'PATH', d / 'steam-log.jsonl')):
+                                (steamlog, 'PATH', d / 'steam-log.jsonl'),
+                                (ledger, 'PATH', d / 'playtime-ledger.jsonl')):
             p = mock.patch.object(mod, name, path)
             p.start()
             self.addCleanup(p.stop)
@@ -325,7 +326,7 @@ class Merged(unittest.TestCase):
         self.log('steam-620', '2026-11-10T20:00:00', 60)
         self.assertEqual(len(history.all_sessions([])), 1)
 
-    def test_is_real_and_ledger_param_is_a_no_op(self):
+    def test_is_real_and_no_ledger_file_adds_nothing(self):
         self.nexus('a', '2026-11-10T20:00:00', 10)
         self.assertEqual(len(history.all_sessions([], ledger=True)),
                          len(history.all_sessions([], ledger=False)))
@@ -346,6 +347,99 @@ class Merged(unittest.TestCase):
         by = {g['slug']: g for g in build(sessions=ss)['day_games'][d.isoformat()]['games']}
         self.assertNotIn('via', by['a'])
         self.assertNotIn('via', by['b'])
+
+    def ledger_lines(self, slug, *rows, source='heroic'):
+        """rows: (iso time, total, last_played)"""
+        with open(ledger.PATH, 'a', encoding='utf-8') as f:
+            for at, total, lp in rows:
+                f.write(json.dumps({'date': at[:10], 'at': at, 'slug': slug, 'name': slug.title(),
+                                    'source': source, 'total': total, 'last_played': lp}) + '\n')
+
+    def estimate(self, d, minutes, slug='hades'):
+        return {'slug': slug, 'name': slug.title(), 'kind': 'estimate', 'source': 'heroic',
+                'start': f'{d.isoformat()}T00:00:00', 'minutes': float(minutes),
+                '_start': datetime.combine(d, datetime.min.time())}
+
+    def test_ledger_estimates_are_read_and_switchable(self):
+        d = TODAY - timedelta(days=3)
+        self.ledger_lines('hades', (f'{(d - timedelta(days=2)).isoformat()}T09:00:00', 100, None),
+                          (f'{TODAY.isoformat()}T09:00:00', 160, f'{d.isoformat()}T21:00:00'))
+        got = history.all_sessions([])
+        self.assertEqual([(s['slug'], s['minutes'], s['kind']) for s in got],
+                         [('hades', 60.0, 'estimate')])
+        self.assertEqual(history.all_sessions([], ledger=False), [])
+        self.assertEqual(history.all_sessions([], steam_log=False)[0]['start'], f'{d.isoformat()}T00:00:00')
+
+    def test_estimates_count_minutes_and_streaks_only(self):
+        d1, d2, d3 = (TODAY - timedelta(days=n) for n in (4, 3, 2))
+        ss = [sess('tunic', d1, 30), self.estimate(d2, 90), self.estimate(d3, 20)]
+        sm = history.summary(ss, TODAY)
+        y = sm['year']
+        self.assertEqual((y['minutes'], y['sessions'], y['games'], y['days'], y['best_streak']),
+                         (140.0, 1, 2, 3, 3))
+        self.assertEqual(y['longest']['slug'], 'tunic')           # not the 90-minute estimate
+        self.assertEqual([r['slug'] for r in sm['recent']], ['tunic'])
+        self.assertEqual(sm['by_game'], {'tunic': {'sessions': 1}})
+        self.assertEqual(sm['since'], d1.isoformat())
+        self.assertEqual(sum(w['minutes'] for w in sm['weeks']), 140.0)
+        p = insights.build(ss, [], {}, TODAY)
+        self.assertEqual(p['streak']['now'], 0)    # nothing today or yesterday
+        self.assertEqual(p['days'][d2.isoformat()], 90.0)
+        self.assertEqual(p['year_minutes'], 140.0)
+        self.assertEqual(p['day_games'][d1.isoformat()]['n'], 1)
+        self.assertEqual(p['day_games'][d2.isoformat()]['n'], 0)
+
+    def test_three_views_agree_on_a_day(self):
+        """w-152: Your year (insights days), Your week and Play history's
+        month (history periods) read one merged list, so a day's total is the
+        same in all three; session counts leave the estimate out."""
+        d = TODAY.isoformat()                         # a Monday: in this week and month
+        self.nexus('disco', f'{d}T10:00:00', 40)
+        self.log('steam-620', f'{d}T14:00:00', 30)
+        merged = history.all_sessions([], ledger=False) + [self.estimate(TODAY, 20)]
+        year = insights.build(merged, [], {}, TODAY)['days'][d]
+        per = history.summary(merged, TODAY)['periods']
+        week = {x['date']: x['minutes'] for x in per['week']['days']}[d]
+        month = {x['date']: x['minutes'] for x in per['month']['days']}[d]
+        self.assertEqual((year, week, month), (90.0, 90.0, 90.0))
+        self.assertEqual(per['week']['sessions'], 2)
+        self.assertEqual(history.summary(merged, TODAY)['year']['sessions'], 2)
+
+    def test_includes_says_which_sources_are_in(self):
+        self.nexus('disco', '2026-11-10T10:00:00', 40)
+        self.assertEqual(history.includes(history.all_sessions([])),
+                         {'steam_log': False, 'estimates': False})
+        self.log('steam-620', '2026-11-12T14:00:00', 30)
+        merged = history.all_sessions([]) + [self.estimate(TODAY, 20)]
+        self.assertEqual(history.includes(merged), {'steam_log': True, 'estimates': True})
+
+    def test_estimates_extend_the_current_streak(self):
+        ss = [sess('a', TODAY - timedelta(days=2), 10), self.estimate(TODAY - timedelta(days=1), 30)]
+        self.assertEqual(insights.build(ss, [], {}, TODAY)['streak']['now'], 2)
+        self.assertEqual(history.current_streak(ss, TODAY), 2)
+
+    def test_periods_count_only_real_sessions(self):
+        per = history.periods([sess('a', TODAY, 10), self.estimate(TODAY, 50)], TODAY)
+        self.assertEqual((per['week']['minutes'], per['week']['sessions']), (60.0, 1))
+        self.assertEqual((per['month']['minutes'], per['month']['sessions']), (60.0, 1))
+        self.assertEqual(per['current_streak'], 1)
+
+    def test_estimate_only_day_has_no_times(self):
+        d = TODAY - timedelta(days=2)
+        det = insights.build([self.estimate(d, 45)], [], {}, TODAY)['day_games'][d.isoformat()]
+        self.assertEqual((det['n'], det['first'], det['last']), (0, None, None))
+        g = det['games'][0]
+        self.assertEqual((g['source'], g['kind'], g['minutes']), ('estimated', 'estimate', 45.0))
+
+    def test_mixed_day_keeps_times_from_real_sessions_and_marks_only_pure_estimates(self):
+        d = TODAY - timedelta(days=2)
+        det = insights.build([sess('tunic', d, 30), self.estimate(d, 45), sess('hades', d, 10)],
+                             [], {}, TODAY)['day_games'][d.isoformat()]
+        self.assertEqual((det['n'], det['first'], det['last']), (2, '10:00', '10:00'))
+        by = {g['slug']: g for g in det['games']}
+        self.assertEqual(by['hades']['source'], 'estimated')       # 45 of 55 minutes
+        self.assertNotIn('kind', by['hades'])                      # not all of it
+        self.assertNotIn('kind', by['tunic'])
 
 
 class DayDetail(unittest.TestCase):

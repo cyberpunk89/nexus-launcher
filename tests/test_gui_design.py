@@ -1400,6 +1400,30 @@ class PlayHistoryFill(unittest.TestCase):
         self.assertEqual(set(p.findChildren(QLabel)), before)
         self.assertEqual(self.asked.count('--history'), 2)          # the 30 s throttle
 
+    def test_includes_note(self):
+        """w-152: a muted line under the year title names the extra sources."""
+        base = dict(self.answers['--history'],
+                    year={'year': 2026, 'minutes': 600, 'sessions': 4, 'games': 2, 'days': 3,
+                          'best_streak': 2, 'longest': None, 'busiest_day': 'Sunday', 'top': []})
+        self.answers['--history'] = base
+        p = self.page()
+        self.assertTrue(p.body.isVisibleTo(p))
+        self.assertFalse(p.sources.isVisibleTo(p))                # none: no line
+        for inc, want in (({'steam_log': True, 'estimates': False}, "Includes Steam's game log"),
+                          ({'steam_log': True, 'estimates': True},
+                           "Includes Steam's game log · estimates from play-time totals"),
+                          ({'steam_log': False, 'estimates': True},
+                           "Includes estimates from play-time totals")):
+            self.answers['--history'] = dict(base, includes=inc)
+            p.refresh(force=True, games=self.games)
+            self.assertTrue(p.sources.isVisibleTo(p), inc)
+            self.assertEqual(p.sources.text(), want)
+
+    def test_empty_text_does_not_need_nexus_open(self):
+        self.answers['--history'] = {}
+        p = self.page()
+        self.assertNotIn('while Nexus is open', ' '.join(self.texts(p)))
+
     def test_no_sessions_still_shows_all_time(self):
         self.answers['--history'] = {}
         p = self.page()

@@ -19,7 +19,7 @@ def load_config() -> dict:
            'snapshots_keep': 1, 'repacks': True,
            'report_relay': True, 'report_url': None, 'steam_web_api_key': None,
            'friends_enabled': False, 'friends_steamid': None, 'stats_count': None,
-           'import_steam_log': True}
+           'import_steam_log': True, 'ledger': True}
 
     def as_bool(v, default=True):
         # `steam = "no"` is a truthy string; only real TOML booleans count.
@@ -89,6 +89,7 @@ def load_config() -> dict:
         # [history] import_steam_log: also read Steam's own game log (nexus/steamlog.py).
         hi = data.get('history') if isinstance(data.get('history'), dict) else {}
         cfg['import_steam_log'] = as_bool(hi.get('import_steam_log', True))
+        cfg['ledger'] = as_bool(hi.get('ledger', True))     # nexus/ledger.py (w-151)
         rp = data.get('repacks')
         cfg['repacks'] = not isinstance(rp, dict) or rp.get('enabled', True) is not False
         try:

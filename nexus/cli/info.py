@@ -11,16 +11,20 @@ from .common import _cached_read, _load_toml, CONFIG_PATH, STEAM_ROOT
 
 
 def _all_sessions() -> list[dict]:
-    """sessions.jsonl plus Steam's game log (w-150), where that is on."""
+    """sessions.jsonl plus Steam's game log (w-150) and the play-time
+    estimates (w-151), where those are on."""
     from nexus import history
     from .config import load_config
-    log = features.has('steam_log') and load_config().get('import_steam_log', True)
-    return history.all_sessions(steam_log=log)
+    cfg = load_config()
+    log = features.has('steam_log') and cfg.get('import_steam_log', True)
+    return history.all_sessions(steam_log=log, ledger=cfg.get('ledger', True))
 
 
 def cmd_history(as_json: bool) -> None:
     from nexus import history
-    sm = history.summary(_all_sessions())
+    sessions = _all_sessions()
+    sm = history.summary(sessions)
+    sm['includes'] = history.includes(sessions)
     if as_json:
         print(json.dumps(sm))
         return
@@ -39,8 +43,10 @@ def cmd_history(as_json: bool) -> None:
 
 def cmd_insights(as_json: bool) -> None:
     """The local numbers behind Home's widgets (nexus/insights.py)."""
-    from nexus import insights
-    out = insights.gather(sessions=_all_sessions())
+    from nexus import history, insights
+    sessions = _all_sessions()
+    out = insights.gather(sessions=sessions)
+    out['includes'] = history.includes(sessions)
     if as_json:
         print(json.dumps(out, separators=(',', ':')))
         return

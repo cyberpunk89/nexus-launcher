@@ -263,7 +263,9 @@ class Wiring(unittest.TestCase):
     def test_cmd_history_merges_only_when_on(self):
         self.library()
         self.assertEqual(self.history_json()['since'], '2026-03-01')
+        self.assertTrue(self.history_json()['includes']['steam_log'])      # w-152 note
         self.assertIsNone(self.history_json(on=False)['since'])
+        self.assertFalse(self.history_json(on=False)['includes']['steam_log'])
         with mock.patch.object(features, 'FEATURES', features.ALL - {'steam_log'}):
             self.assertIsNone(self.history_json()['since'])
 
@@ -276,7 +278,9 @@ class Wiring(unittest.TestCase):
                 mock.patch('nexus.insights.library_games', return_value=[]), \
                 contextlib.redirect_stdout(out):
             info.cmd_insights(True)
-        self.assertIn('2026-03-01', json.loads(out.getvalue())['days'])
+        got = json.loads(out.getvalue())
+        self.assertIn('2026-03-01', got['days'])
+        self.assertEqual(got['includes'], {'steam_log': True, 'estimates': False})
 
 
 if __name__ == '__main__':

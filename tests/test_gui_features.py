@@ -574,8 +574,9 @@ class SettingsCategories(unittest.TestCase):
         rows = [r for cat in page.categories.values() for r in cat.rows]
         self.assertEqual(len(rows), len(set(map(id, rows))))
         from nexus import features
-        # w-150: "Read Steam's game log" is a Linux-only row (steam_log feature)
-        self.assertEqual(len(page.rows), 78 + features.has('steam_log'))
+        # w-150: "Read Steam's game log" is a Linux-only row (steam_log feature);
+        # w-151: "Estimate play from play-time totals" is on both editions
+        self.assertEqual(len(page.rows), 79 + features.has('steam_log'))
         self.assertEqual(sorted(page.rows.values(), key=id), sorted(rows, key=id))
         for key, row in page.rows.items():
             cat, _, short = key.partition('.')

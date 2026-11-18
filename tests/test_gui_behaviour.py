@@ -963,7 +963,8 @@ class Settings(unittest.TestCase):
                  patch_gui('save_config', lambda u: (saved.append(u), base.update(
                      {('stats_count' if k == ('stats', 'count') else
                        'report_relay' if k == ('report', 'relay') else
-                       'import_steam_log' if k == ('history', 'import_steam_log') else '_'): v
+                       'import_steam_log' if k == ('history', 'import_steam_log') else
+                       'ledger' if k == ('history', 'ledger') else '_'): v
                       for k, v in u.items()}))),
                  patch_gui('load_config', lambda: dict(base)),
                  patch_gui('cli_json', lambda args, cb, *a, **k: answers.append(args))]
@@ -1031,6 +1032,25 @@ class Settings(unittest.TestCase):
             self.assertFalse(hasattr(win_page, 'steam_log'))
             win_page.news.toggle()
             self.assertFalse(any(('history', 'import_steam_log') in u for u in win_saved))
+
+    def test_ledger_switch_saves(self):
+        """w-151: on both editions; nothing else wires it, so it must save by itself."""
+        from nexus import features
+        for feats in (features.ALL, features.ALL - {'steam_log'}):
+            with mock.patch.object(features, 'FEATURES', feats):
+                page, saved, _ = self.page({'ledger': True})
+                self.assertTrue(page.ledger.isChecked())
+                forgot = []
+                with mock.patch('nexus.gui.settings.cli_cache_forget',
+                                lambda args: forgot.append(list(args))):
+                    page.ledger.toggle()
+                self.assertEqual(saved[-1], {('history', 'ledger'): False})
+                self.assertIn(['--history', '--json'], forgot)
+                self.assertIn(['--insights', '--json'], forgot)
+                page.load()
+                self.assertFalse(page.ledger.isChecked())     # read back from the config
+                page.ledger.toggle()
+                self.assertEqual(saved[-1], {('history', 'ledger'): True})
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")

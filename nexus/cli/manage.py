@@ -215,6 +215,7 @@ def managed_entries(install_base: Path, compute_sizes: bool = False,
             'disk_bytes_at': disk_bytes_at,
             'last_played': last_played,
             'playtime_minutes': minutes,
+            'external_minutes': int(hst.get('minutes') or 0),   # what Heroic timed: the ledger's part (w-151)
             'exe': exe,
             'origin': g.get('source'),
             'owned_dir': bool(owned_dir(g)),      # Nexus's own folder: can move / snapshot
@@ -322,6 +323,20 @@ def _import_steam_log(games: list[dict]) -> None:
         pass
 
 
+def _snapshot_ledger(games: list[dict]) -> None:
+    """Note each game's play-time total in the ledger (w-151) so days Nexus
+    missed can be estimated later. Both editions; off with [history]
+    ledger = false; an unwritable file is skipped."""
+    from nexus import ledger
+    from .config import load_config
+    if not load_config().get('ledger', True):
+        return
+    try:
+        ledger.snapshot(games, ledger.PATH)
+    except OSError:
+        pass
+
+
 def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -> None:
     """Everything playable in one list: games installed by Nexus
     (kind 'nexus'), installed Steam games ('steam') and installed Heroic store
@@ -350,6 +365,7 @@ def cmd_library(install_base: Path, as_json: bool = True, owned: bool = False) -
     stores = sources.installed_games()            # Epic etc.; a failing one is skipped
     games += steam + stores + heroic + extra
     _import_steam_log(games)
+    _snapshot_ledger(games)
     _add_achievement_counts(games)
     try:
         sun_apps = json.loads(SUNSHINE_APPS.read_text(encoding='utf-8')).get('apps') or []

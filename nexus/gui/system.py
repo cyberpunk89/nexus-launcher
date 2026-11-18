@@ -442,6 +442,15 @@ def _day_bars(period: dict, today: str, height: int, month: bool) -> MinuteBars:
     return chart
 
 
+def sources_note(includes: dict | None) -> str:
+    """The muted line under Play history's year title (w-152): which sources
+    besides Nexus's own sessions the numbers include. '' for none."""
+    inc = includes or {}
+    parts = (["Steam's game log"] if inc.get('steam_log') else []) \
+        + (["estimates from play-time totals"] if inc.get('estimates') else [])
+    return ("Includes " + " · ".join(parts)) if parts else ''
+
+
 class PlayHistoryPage(QWidget):
     """Your play sessions and Steam achievements: this year in review and
     the last twelve weeks, this month by day and by game, all time by game,
@@ -468,7 +477,7 @@ class PlayHistoryPage(QWidget):
         inner.setSpacing(SP['6'])
         self.empty = EmptyState(G['history'], "No sessions yet",
                                 "Every time you play — a repack, or a Steam or Heroic game "
-                                "while Nexus is open — the session is noted here.")
+                                "— the session is noted here.")
         inner.addWidget(self.empty)
         self.body = QWidget()                       # this year
         bl = QVBoxLayout(self.body)
@@ -476,6 +485,9 @@ class PlayHistoryPage(QWidget):
         bl.setSpacing(SP['3'])
         self.year_title = self._title("")
         bl.addWidget(self.year_title)
+        self.sources = label("", "Muted")           # w-152: which extra sources count
+        self.sources.setVisible(False)
+        bl.addWidget(self.sources)
         self.tiles = QGridLayout()
         self.tiles.setHorizontalSpacing(SP['2'])
         self.tiles.setVerticalSpacing(SP['2'])
@@ -629,10 +641,14 @@ class PlayHistoryPage(QWidget):
         y = data.get('year') or {}
         has = bool(y.get('sessions'))
         self._show(self.body, has)
-        if not has or not self._changed('year', (y, data.get('weeks'), data.get('since'))):
+        if not has or not self._changed('year', (y, data.get('weeks'), data.get('since'),
+                                                 data.get('includes'))):
             return
         self.year_title.setText(f"{y['year']} so far"
                                 + (f" · since {data['since']}" if data.get('since') else ''))
+        note = sources_note(data.get('includes'))
+        self.sources.setText(note)
+        self.sources.setVisible(bool(note))
         self.t_hours.set(fmt_hours(int(y['minutes'])) or '0 h')
         self.t_sessions.set(str(y['sessions']))
         self.t_games.set(str(y['games']), f"Games · {y['days']} days")

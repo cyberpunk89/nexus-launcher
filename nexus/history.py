@@ -5,7 +5,8 @@ them start and stop). Lines are appended with O_APPEND, so the two never
 interleave. summary() turns them into the play-history page: the last
 weeks, a year in review and sessions per game; periods() into its month
 by day and Home's Your week. all_sessions() adds the sessions read from
-Steam's game log (nexus/steamlog.py) at read time."""
+Steam's game log (nexus/steamlog.py) and the estimates from the play-time
+ledger (nexus/ledger.py, kind 'estimate') at read time."""
 
 import json
 import os
@@ -71,6 +72,13 @@ def is_real(s: dict) -> bool:
     return s.get('kind') != 'estimate'
 
 
+def includes(sessions: list[dict]) -> dict:
+    """Which extra sources a merged list holds, for the views' small note
+    (w-152): Steam's game log (w-150) and play-time estimates (w-151)."""
+    return {'steam_log': any(s.get('via') == 'steam-log' for s in sessions),
+            'estimates': any(not is_real(s) for s in sessions)}
+
+
 NEAR_START = 120                    # seconds: two records this close are one session
 
 
@@ -90,23 +98,28 @@ def all_sessions(games=None, steam_log: bool = True, ledger: bool = True) -> lis
     (with `steam_log`) the sessions imported from Steam's game log
     (nexus/steamlog.py), minus the ones sessions.jsonl already has: Nexus's
     own record wins. Callers pass `steam_log` from the setting and
-    features.has('steam_log'). `ledger` is the seam for the playtime estimates
-    (w-151) and does nothing yet; `games` is the Library list, for the same."""
+    features.has('steam_log'). With `ledger` (w-151) the play-time estimates
+    follow, last: only minutes the real sessions above don't explain, each
+    marked kind 'estimate' (see is_real). `games` is the Library list, which
+    the ledger doesn't need today."""
     out = load()
-    if not steam_log:
-        return out
-    from . import steamlog
-    mine: dict[str, list[dict]] = defaultdict(list)
-    for s in out:
-        mine[s['slug']].append(s)
-    extra = [s for s in steamlog.load()
-             if not any(_same_session(s, o) for o in mine.get(s['slug'], ()))]
-    return out + extra
+    if steam_log:
+        from . import steamlog
+        mine: dict[str, list[dict]] = defaultdict(list)
+        for s in out:
+            mine[s['slug']].append(s)
+        out = out + [s for s in steamlog.load()
+                     if not any(_same_session(s, o) for o in mine.get(s['slug'], ()))]
+    if ledger:
+        from . import ledger as _ledger
+        out = out + _ledger.estimates(_ledger.load(), out)
+    return out
 
 
 def _period(sessions: list[dict], first: date, days: int, names: dict) -> dict:
     """Minutes per day from `first` for `days` days (days after today stay 0),
-    and per game, most played first. A session counts on its start date."""
+    and per game, most played first. A session counts on its start date;
+    estimates add minutes but are not counted as sessions."""
     last = first + timedelta(days=days - 1)
     by_day = [0.0] * days
     per_game: dict[str, float] = defaultdict(float)
@@ -116,7 +129,7 @@ def _period(sessions: list[dict], first: date, days: int, names: dict) -> dict:
         if first <= d <= last:
             by_day[(d - first).days] += s['minutes']
             per_game[s['slug']] += s['minutes']
-            count += 1
+            count += is_real(s)
     return {
         'start': first.isoformat(),
         'minutes': round(sum(by_day), 1),
@@ -186,12 +199,14 @@ def summary(sessions: list[dict] | None = None, today: date | None = None,
             week_minutes[(d - first).days // 7] += s['minutes']
     year = today.year
     ys = [s for s in sessions if s['_start'].year == year]
+    all_real = [s for s in sessions if is_real(s)]
+    real = [s for s in all_real if s['_start'].year == year]
     per_game = defaultdict(float)
     for s in ys:
         per_game[s['slug']] += s['minutes']
     days = {s['_start'].date() for s in ys}
     best = best_streak(days)
-    longest = max(ys, key=lambda s: s['minutes'], default=None)
+    longest = max(real, key=lambda s: s['minutes'], default=None)
     weekday = Counter()
     for s in ys:
         weekday[s['_start'].weekday()] += s['minutes']
@@ -201,7 +216,7 @@ def summary(sessions: list[dict] | None = None, today: date | None = None,
         'year': {
             'year': year,
             'minutes': round(sum(s['minutes'] for s in ys), 1),
-            'sessions': len(ys),
+            'sessions': len(real),
             'games': len(per_game),
             'days': len(days),
             'best_streak': best,
@@ -213,11 +228,11 @@ def summary(sessions: list[dict] | None = None, today: date | None = None,
             'busiest_day': WEEKDAYS[weekday.most_common(1)[0][0]] if weekday else None,
         },
         'periods': periods(sessions, today),
-        'since': min((s['start'][:10] for s in sessions), default=None),
+        'since': min((s['start'][:10] for s in all_real), default=None),
         # Every session ever, per game (Home's Your save, w-91).
         'by_game': {k: {'sessions': n} for k, n in sorted(
-            Counter(s['slug'] for s in sessions).items())},
+            Counter(s['slug'] for s in all_real).items())},
         'recent': [{'slug': s['slug'], 'name': names[s['slug']], 'start': s['start'],
                     'minutes': s['minutes']}
-                   for s in sorted(sessions, key=lambda s: s['start'], reverse=True)[:8]],
+                   for s in sorted(all_real, key=lambda s: s['start'], reverse=True)[:8]],
     }

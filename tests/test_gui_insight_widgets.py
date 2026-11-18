@@ -170,6 +170,19 @@ class DayCardText(unittest.TestCase):
         self.assertAlmostEqual(ct.rows[0].share, 95 / 140)
         self.assertEqual(ct.rows[0].source, "Nexus")        # the word is kept, the pill is not shown
 
+    def test_card_estimate_only_line(self):
+        det = dict(DET, n=0, first=None, last=None,
+                   games=[{'slug': 'hades', 'name': 'Hades', 'minutes': 45.0,
+                           'source': 'estimated', 'kind': 'estimate'}])
+        ct = DC.card_text(DAY, 45.0, det, 0.0, TODAY)
+        self.assertEqual(ct.line2, "From play-time totals")
+        self.assertEqual([(r.name, r.pill) for r in ct.rows], [("Hades", "Estimated")])
+        self.assertIn("From play-time totals", ct.text())
+        # a day with sessions keeps its own line; a day without detail has none
+        self.assertEqual(DC.card_text(DAY, 140.0, DET, 100.0, TODAY).line2,
+                         "3 sessions \u00b7 19:05 \u2013 23:10")
+        self.assertEqual(DC.card_text(DAY, 45.0, None, 0.0, TODAY).line2, "")
+
     def test_other_year_names_the_year(self):
         self.assertEqual(DC.card_text(DAY.replace(year=2025), 10, None, 0, TODAY).head,
                          "Monday 22 Sep 2025")
@@ -614,31 +627,38 @@ class Heatmap(WidgetCase):
             self.assertEqual(left, [1])
 
     def test_enter_target_is_one_small_function(self):
-        self.assertEqual(W.enter_target(DET), ('game', 'disco'))
-        self.assertEqual(W.enter_target(None), ('history', None))
+        one = {'n': 1, 'more': 0, 'games': [dict(DET['games'][0])]}
+        self.assertEqual(W.enter_target(one), ('game', 'disco'))       # one game: its page
+        self.assertEqual(W.enter_target(DET), ('history', None))        # several: Play history
+        self.assertEqual(W.enter_target(dict(one, more=2)), ('history', None))
+        self.assertEqual(W.enter_target(None), ('history', None))       # empty day too
         self.assertEqual(W.enter_target({'games': []}), ('history', None))
         with mock.patch.object(W, 'ENTER_OPENS', 'history'):
-            self.assertEqual(W.enter_target(DET), ('history', None))
+            self.assertEqual(W.enter_target(one), ('history', None))
 
-    def test_enter_opens_the_top_game_or_play_history(self):
+    def test_enter_opens_the_one_game_or_play_history(self):
         day, data = self._detail()
         with mock.patch('nexus.gui.art.MOTION', False):
             host, g = self._host(data)
             w = host.layout().itemAt(0).widget()
             pages = []
             w.go.connect(pages.append)
-            g.activated.emit(day)
-            self.assertEqual(self.hub.opened, [('page', 'disco')])
-            g.activated.emit(TODAY - timedelta(days=8))      # nothing played
+            g.activated.emit(day)                             # three games: Play history
             self.assertEqual(pages, ['history'])
-            # a top game Home does not show (hidden) falls back to Play history
-            hid = payload(day_games={day.isoformat(): dict(
-                DET, games=[dict(DET['games'][0], slug='hid')])})
-            self.hub.dashboard.feed.data = hid
-            w.fill(self.hub)
-            g2 = w.grid
-            g2.activated.emit(day)
+            self.assertEqual(self.hub.opened, [])
+            g.activated.emit(TODAY - timedelta(days=8))      # nothing played
             self.assertEqual(pages, ['history', 'history'])
+
+            def one(slug):
+                self.hub.dashboard.feed.data = payload(day_games={day.isoformat(): dict(
+                    DET, n=1, more=0, games=[dict(DET['games'][0], slug=slug)])})
+                w.fill(self.hub)
+                return w.grid
+            one('disco').activated.emit(day)                 # one game: its page
+            self.assertEqual(self.hub.opened, [('page', 'disco')])
+            # a game Home does not show (hidden) falls back to Play history
+            one('hid').activated.emit(day)
+            self.assertEqual(pages, ['history', 'history', 'history'])
 
     def test_escape_returns_focus_to_open(self):
         day, data = self._detail()

@@ -1551,6 +1551,12 @@ class SettingsPage(QWidget):
                       self.steam_log,
                       keywords="privacy steam game log play history sessions import "
                                "closed", key='import_steam_log')
+        self.ledger = Switch()
+        self._row(sec, "Estimate play from play-time totals",
+                  "A daily note of each game's total fills days Nexus missed (Heroic, Epic, "
+                  "other devices), marked Estimated. Stays on this computer.", self.ledger,
+                  keywords="privacy estimate play time totals ledger history heroic epic "
+                           "missed days estimated", key='ledger')
 
     def _peek_row(self, sec, title: str, desc: str, key: str, fill) -> 'QLabel':
         """A row with a Show button that opens a read-only text under it,
@@ -1618,9 +1624,9 @@ class SettingsPage(QWidget):
         if self.stats_sent.button.isChecked():
             self._load_stats_sent()
 
-    def _steam_log_toggled(self, _on: bool):
-        """The play numbers change with it: forget the answers Home and Play
-        history are holding, then save."""
+    def _play_sources_toggled(self, _on: bool):
+        """The play numbers change with it (the play-time estimates' switch
+        too): forget the answers Home and Play history are holding, then save."""
         if not self._loading:
             cli_cache_forget(['--history', '--json'])
             cli_cache_forget(['--insights', '--json'])
@@ -1793,7 +1799,8 @@ class SettingsPage(QWidget):
         self.report_relay.toggled.connect(self._sync_stats_row)
         self.report_relay.toggled.connect(self.commit)
         if hasattr(self, 'steam_log'):
-            self.steam_log.toggled.connect(self._steam_log_toggled)
+            self.steam_log.toggled.connect(self._play_sources_toggled)
+        self.ledger.toggled.connect(self._play_sources_toggled)
         for cb in (self.runner, self.proton, self.al_sale):
             cb.activated.connect(self.commit)
         self.tor_client.activated.connect(self._torrent_client_changed)
@@ -2232,6 +2239,7 @@ class SettingsPage(QWidget):
         self.report_relay.setChecked(c.get('report_relay', True))
         if hasattr(self, 'steam_log'):
             self.steam_log.setChecked(c.get('import_steam_log', True))
+        self.ledger.setChecked(c.get('ledger', True))
         self._sync_stats_row()
         self.repacks.blockSignals(True)
         self.repacks.setChecked(c.get('repacks', True))
@@ -2350,6 +2358,7 @@ class SettingsPage(QWidget):
         if hasattr(self, 'steam_log'):
             put('history', 'import_steam_log', self.steam_log.isChecked(),
                 c.get('import_steam_log', True))
+        put('history', 'ledger', self.ledger.isChecked(), c.get('ledger', True))
         put('repacks', 'enabled', self.repacks.isChecked(), c.get('repacks', True))
         gamedb_changed = False
         gurl = self.gdb_url.text().strip() or None

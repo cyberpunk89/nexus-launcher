@@ -113,6 +113,8 @@ def card_text(d: date, minutes: float, detail: dict | None, avg: float = 0.0,
     first, last = det.get('first'), det.get('last')
     if first:
         bits.append(first if not last or last == first else f"{first} – {last}")
+    if not bits and det.get('games'):
+        bits.append("From play-time totals")        # estimates only (w-151): no sessions, no times
     ct.line2 = " · ".join(bits)
     for g in det.get('games') or []:
         m = g.get('minutes') or 0
