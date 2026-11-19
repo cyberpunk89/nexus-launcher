@@ -46,6 +46,7 @@ class WidgetSpec:
     # Packed grid (w-155): given more height than it needs (a short column), the
     # card shows more rows instead of empty space.
     grows: bool = False
+    grow_sizes: tuple = ()            # grows only at these sizes (all of them when empty)
     group: str = 'library'            # the Customise gallery's group (GROUPS)
     note: str = ''                    # what a merged widget took in, shown on its gallery tile
 
@@ -67,7 +68,7 @@ SPECS = (
     WidgetSpec('save', "Your save", ('small',), 'small', True, after='stage', group='stage'),
     WidgetSpec('foryou', "For you now", ('full',), 'full',
                options={'style': _STYLE['foryou']}, after='stage',
-               feeds=('stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'),
+               feeds=('stage', 'friends', 'system', 'deals', 'updates', 'smart'),
                group='stage'),
     WidgetSpec('friends', "Friends", ('small', 'wide', 'full'), 'full',
                options={'lead': (('auto', "Best now"), ('now', "Only playing now"))},
@@ -82,12 +83,13 @@ SPECS = (
     WidgetSpec('installed', "Recently installed", ('full',), 'full', group='library'),
     WidgetSpec('smart', "Smart shelf", ('full',), 'full', after='installed', group='library',
                note="Owned, not installed is a rule now"),
-    WidgetSpec('deals', "Wishlist deals", ('small', 'tall', 'wide', 'full'), 'wide',
-               grows=True, group='store'),
-    WidgetSpec('upcoming', "Upcoming", ('small', 'tall', 'wide', 'full'), 'small', after='deals',
-               grows=True, group='store'),
+    # One ranked list of wishlist sales and releases (w-163); it was Wishlist
+    # deals and Upcoming. The kind stays 'deals'.
+    WidgetSpec('deals', "Wishlist", ('small', 'tall', 'wide', 'full'), 'wide',
+               grows=True, grow_sizes=('small', 'tall'), feeds=('friends',),
+               group='store', note="Deals and Upcoming, now one card"),
     WidgetSpec('week', "Your week", ('small', 'wide'), 'small',
-               options={'style': _STYLE['week']}, after='upcoming',
+               options={'style': _STYLE['week']}, after='deals',
                feeds=('midnight', 'sessions'), group='stats'),
     WidgetSpec('favourites', "Favourites", ('full',), 'full', group='library'),
     WidgetSpec('collections', "Collections", ('full',), 'full', after='favourites',

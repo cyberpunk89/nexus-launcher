@@ -177,27 +177,29 @@ class ReleaseChips(unittest.TestCase):
             self.assertFalse(t & {"Early access", "Delayed", "Cancelled", "Out now"}, t)
             self.assertFalse(card.property('dimmed'))
 
-    def home_tile(self, data, size='full'):
+    def home_tile(self, data, size='small'):
         page = mock.Mock(_loaded=True, error=None)
         page._data.return_value = data
         page._base.return_value = None
         hub = mock.Mock(config={'gamedb_enabled': True}, dealspage=page)
-        w = dashboard.UpcomingWidget()
+        w = dashboard.DealsWidget()
         self.addCleanup(w.deleteLater)
         w.size_ = size
         w.fill(hub)
         return w
 
-    def test_home_upcoming_tile(self):
-        w = self.home_tile(NEW_SERVER)
-        t = self.texts(w)
-        self.assertTrue({"Early access", "Delayed", "Cancelled"} <= t, t)
-        dimmed = [r for r in w.findChildren(dashboard.ClickRow) if r.property('dimmed')]
-        self.assertEqual(len(dimmed), 1)
-        self.assertIn("Game 3", self.texts(dimmed[0]))
-        self.assertNotIn("out now", t)                  # the Out now chip replaces it
+    def test_home_wishlist_card_says_the_status_in_the_why(self):
+        """w-163: the Wishlist card's why line carries Early access, Delayed and
+        Out now (it was a pill each on the Upcoming card); a cancelled game
+        is not on Home."""
+        t = self.texts(self.home_tile(NEW_SERVER))
+        self.assertTrue({"Out in 30 days · early access", "Out in 60 days · delayed",
+                         "Out now"} <= t, t)
+        self.assertFalse([x for x in t if 'ancel' in x], t)
+        self.assertNotIn("Out in 20 days", t)
         old = self.texts(self.home_tile(OLD_SERVER))
-        self.assertFalse(old & {"Early access", "Delayed", "Cancelled", "Out now"}, old)
+        self.assertFalse([x for x in old if 'early' in x or 'delayed' in x], old)
+        self.assertIn("Out in 30 days", old)
 
 
 if __name__ == '__main__':

@@ -407,7 +407,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self.dealspage = DealsPage(self.prefs)
         self.dealspage.toast.connect(self.toast)
         self.dealspage.counts.connect(self._deals_count)
-        self.dealspage.loaded.connect(lambda: self.dash_update('deals', 'upcoming'))
+        self.dealspage.loaded.connect(lambda: self.dash_update('deals'))
         self.newspage.loaded.connect(self._feed_theatre_discover)
         self.dealspage.loaded.connect(self._feed_theatre_discover)
         self.dealspage.open_settings.connect(lambda: self._open_settings('accounts', 'deals'))
@@ -888,7 +888,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
 
     def _deals_count(self, n):
         self.nav[self.DEALS].set_badge(n or '', 'accent')
-        self.dash_update('deals', 'upcoming')
+        self.dash_update('deals')
 
     def _open_settings(self, cat: str | None = None, row: str | None = None):
         """Settings at a category (Overview without one), scrolled to `row`.
@@ -909,7 +909,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
             self.nav[self.DEALS].set_badge('', 'accent')
             if self.config.get('gamedb_enabled'):
                 self.dealspage.refresh()
-        self.dash_update('news', 'deals', 'upcoming')
+        self.dash_update('news', 'deals')
         # Steam friends may have been switched on or off, or got a key.
         self._reload_friends()
         self._poll_torrents()                  # the torrent client may have changed

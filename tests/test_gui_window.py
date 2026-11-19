@@ -5963,7 +5963,9 @@ class Window(unittest.TestCase):
                 self.assertAlmostEqual(g.height(), p.h, delta=1, msg=p)
         self.assertEqual(sysw.tiles, [])
 
-    def test_upcoming_widget(self):
+    def test_wishlist_widget(self):
+        """w-163: Deals and Upcoming are one Wishlist card; sales and releases
+        in one ranked list, each row saying why."""
         w = self.win
         w.config['gamedb_enabled'] = True
         w.prefs.dashboard = nx.dash_kind_defaults()
@@ -5977,14 +5979,18 @@ class Window(unittest.TestCase):
                           'releaseDateText': 'Q3 2099', 'price': None}]}}
         w.dealspage._loaded = True
         w.dashboard.relayout(force=True)
-        w.dashboard.refresh(['upcoming'])
-        up = w.dashboard.widgets['upcoming']
+        w.dashboard.refresh(['deals'])
+        self.assertNotIn('upcoming', w.dashboard.widgets)
+        up = w.dashboard.widgets['deals']
         self.assertTrue(up.isVisibleTo(w.dashboard))
         rows = [r for r in up.findChildren(nx.ClickRow)]
         self.assertEqual(len(rows), 2)
         texts = [l.text() for l in up.findChildren(QLabel)]
-        self.assertIn("€40 · keyshop", texts)
+        self.assertIn("€40 · keyshop", texts)           # Wide: store-art tiles
         self.assertIn("No price yet", texts)
+        badges = [t.art.badges() for t in up.tiles.tiles]
+        self.assertTrue(badges[0][0].startswith("in "), badges)
+        self.assertEqual(badges[1], ["Q3 2099"])
         opened = []
         w.dealspage._open = opened.append
         rows[0].clicked.emit()
@@ -5994,6 +6000,52 @@ class Window(unittest.TestCase):
         w.config['gamedb_enabled'] = False
         w.dashboard.relayout(force=True)
         self.assertFalse(up.isVisibleTo(w.dashboard))       # no Game-db: no card
+
+    def test_friends_arriving_after_game_db_refill_the_wishlist(self):
+        """w-163: the friend line comes with a Friends refresh, not only the
+        next Game-db one."""
+        from nexus.gui import dashboard as dashmod
+        w = self.win
+        w._dash_timer.stop()
+        w.config.update(gamedb_enabled=True, friends_enabled=True)
+        w.prefs.dashboard = [{'id': 'deals', 'size': 'small', 'hidden': False}]
+        w.dealspage.res = {'configured': True, 'url': 'https://gdb.example', 'summary': {
+            'wishlist': [{'appid': 11, 'title': 'Hades II', 'headerImage': None,
+                          'price': {'onSale': True, 'cutPct': 30, 'currentStr': '€17'}}]}}
+        w.dealspage._loaded = True
+        w.dashboard.relayout(force=True)
+        w.dashboard.refresh(['deals'])
+        card = w.dashboard.widgets['deals']
+        texts = lambda: [x.text() for x in card.findChildren(QLabel)]    # noqa: E731
+        self.assertNotIn("-30% today · Cara owns it", texts())
+        fr = mock.Mock(owners=lambda a: [{'name': 'Cara'}] if a == 11 else [])
+        with mock.patch.object(dashmod, 'FRIENDS', fr):
+            w.dashboard.refresh(['friends'])
+            self.assertIn("-30% today · Cara owns it", texts())
+
+    def test_wishlist_needs_game_db_in_customise_and_settings_opens(self):
+        """w-163: with Game-db off the card is not on Home, and Customise lists it
+        as "Needs Game-db · Open Settings" (no connect hint on Home)."""
+        w = self.win
+        w._dash_timer.stop()
+        w.config['gamedb_enabled'] = False
+        w.prefs.dashboard = nx.dash_kind_defaults()
+        w.dashboard.relayout(force=True)
+        d = w.dashboard
+        self.assertFalse(d.widgets['deals'].isVisibleTo(d))
+        self.assertFalse([b for b in d.widgets['deals'].findChildren(QPushButton)
+                          if b.text() == "Open Settings"])
+        d.set_editing(True)
+        tile = d.gallery.tile('deals')
+        self.assertEqual(tile.note.text(), "Needs Game-db · Open Settings")
+        opened = []
+        w._open_settings = lambda *a: opened.append(a)
+        tile.face.click()
+        self.assertEqual(opened, [('accounts', 'deals')])
+        w.config['gamedb_enabled'] = True
+        d._sync_gallery()
+        self.assertEqual(tile.note.text(), "Deals and Upcoming, now one card")
+        d.set_editing(False)
 
     def test_installed_marks_new(self):
         w = self.win
@@ -7191,7 +7243,7 @@ class HomeGrid(unittest.TestCase):
     STATS_MIX = [('heatmap', 'full'), ('news', 'tall'), ('onthisday', 'small'),
                  ('backlog', 'wide'), ('spacemap', 'wide'), ('milestones', 'small'),
                  ('pick', 'small'), ('week', 'small'), ('system', None)]
-    CINEMATIC_PLUS = ['save', 'system', 'news', 'deals', 'upcoming', 'heatmap',
+    CINEMATIC_PLUS = ['save', 'system', 'news', 'deals', 'heatmap',
                       'onthisday', 'backlog', 'milestones', 'spacemap']
 
     def _layouts(self):
@@ -7356,7 +7408,7 @@ class HomeGrid(unittest.TestCase):
 
     def test_pad_move_down_keeps_focus_on_the_arrow(self):
         w, dash = self._home(('save', 'small'), ('news', 'tall'), ('pick', 'small'),
-                             ('upcoming', 'small'), ('week', 'small'), ('system', 'wide'))
+                             ('deals', 'small'), ('week', 'small'), ('system', 'wide'))
         w.show()
         dash._edit('news', 'down')
         for _ in range(4):
@@ -7374,7 +7426,7 @@ class HomeGrid(unittest.TestCase):
 
     def test_move_up_lands_over_the_card_you_see(self):
         w, dash = self._home(('save', 'small'), ('pick', 'small'), ('week', 'small'),
-                             ('system', 'small'), ('news', 'small'), ('upcoming', 'small'))
+                             ('system', 'small'), ('news', 'small'), ('deals', 'small'))
         dash.layout().activate()
         me = self._col_of(dash, 'news')
         above = [p for p in dash.placed if p.id != 'news' and p.col == me.col and p.y < me.y]
@@ -7386,6 +7438,32 @@ class HomeGrid(unittest.TestCase):
         ids = [i['id'] for i in dash.items if not i['hidden']]
         self.assertEqual(ids.index('news'), ids.index(want) - 1)
 
+    def test_wishlist_card_is_as_tall_as_what_it_shows(self):
+        """w-163: the tiles' minimum height (two columns, many rows) must not
+        stretch the card: at Wide it is its content plus padding, and Your
+        week beside it ends on the same line."""
+        w = self.win
+        w._dash_timer.stop()
+        w.config['gamedb_enabled'] = True
+        wish = [{'appid': i, 'title': f"Game {i}", 'headerImage': None,
+                 'price': {'onSale': True, 'cutPct': 10 + i, 'currentStr': '€5'}}
+                for i in range(1, 13)]
+        w.dealspage.res = {'configured': True, 'url': 'https://gdb.example',
+                           'summary': {'wishlist': wish, 'upcoming': []}}
+        w.dealspage._loaded = True
+        w, dash = self._home(('deals', 'wide'), ('week', 'small'))
+        w._dash_timer.stop()
+        w._flush_dashboard()
+        for _ in range(4):
+            QApplication.processEvents()
+        dash.layout().activate()
+        card = dash.widgets['deals']
+        self.assertEqual(card.size_, 'wide')
+        self.assertTrue(card.tiles.isVisibleTo(card))
+        shown = [c for c in card.findChildren(QWidget) if c.isVisibleTo(card) and c.height() > 0]
+        bottom = max(c.mapTo(card, c.rect().bottomLeft()).y() + 1 for c in shown)
+        self.assertLessEqual(card.height() - bottom, nx.SP['4'] + 4)
+
     def test_move_up_with_nothing_above_does_nothing(self):
         w, dash = self._home(('save', 'small'), ('pick', 'small'), ('week', 'small'))
         before = [i['id'] for i in dash.items]
@@ -7394,11 +7472,11 @@ class HomeGrid(unittest.TestCase):
 
     def test_tall_is_at_least_two_small_cards(self):
         w, dash = self._home(('news', 'tall'), ('save', 'small'), ('pick', 'small'),
-                             ('week', 'small'), ('system', 'small'), ('upcoming', 'small'))
+                             ('week', 'small'), ('system', 'small'), ('deals', 'small'))
         dash.layout().activate()
         by = {p.id: p for p in dash.placed}
         nat = []
-        for k in ('save', 'pick', 'week', 'system', 'upcoming'):
+        for k in ('save', 'pick', 'week', 'system', 'deals'):
             wd = dash.widgets[k]
             nat.append(max(wd.heightForWidth(wd.width()), wd.layout().totalHeightForWidth(wd.width()),
                            wd.minimumSizeHint().height()))
@@ -7411,7 +7489,7 @@ class HomeGrid(unittest.TestCase):
 
     def test_stage_neighbours_end_on_the_continue_row(self):
         w, dash = self._home(('stage', 'wide'), ('save', 'small'), ('pick', 'small'),
-                             ('week', 'small'), ('system', 'small'), ('upcoming', 'small'),
+                             ('week', 'small'), ('system', 'small'), ('deals', 'small'),
                              ('news', 'small'))
         dash.layout().activate()
         by = {p.id: p for p in dash.placed}
@@ -7421,7 +7499,7 @@ class HomeGrid(unittest.TestCase):
         self.assertTrue(beside)
         last = max(beside, key=lambda p: p.y)
         # The column reaches the Stage's bottom. With these cards it may go past it: System
-        # (183 px) ends 6 px past the Stage, within tol, so it stays beside; Upcoming and News
+        # (183 px) ends 6 px past the Stage, within tol, so it stays beside; Wishlist and News
         # (88 px each) then sit under the Stage and end the run 108 px lower, and evening
         # stretches System to that line (no placement avoids it, see test_grid_flow
         # BesideAWide.test_a_card_within_tol_is_stretched_to_the_run_line).

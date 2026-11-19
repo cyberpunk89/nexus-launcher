@@ -202,9 +202,13 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
   time, sessions, achievements, HowLongToBeat, friends who own it, the last unlock),
   **System** (four tiles — jobs, disk free, health, Proton — each opening its page; wide adds
   the one thing that needs you, such as a GE-Proton update with Install), News (with
-  thumbnails), Recently installed (never-played games get a **New** pill), Wishlist deals,
-  **Upcoming** (unreleased wishlist games, soonest first, with the cheapest current price —
-  keyshops included — and a Pre-order tag), Favourites, Collections (a row per collection),
+  thumbnails), Recently installed (never-played games get a **New** pill), **Wishlist** (your
+  Game-db wishlist in one ranked list: games on sale and unreleased ones together, each row
+  saying why — "-40% today", "Out in 12 days · pre-order" — plus who among your friends owns
+  it while Friends is on; Small and Tall are rows, Wide and Full are store-art tiles with the
+  reason as a pill; it was Wishlist deals and Upcoming, and a saved layout with either keeps
+  its place; without Game-db, or with nothing on sale and nothing coming, it is not on Home,
+  and Customise lists it as *Needs Game-db · Open Settings*), Favourites, Collections (a row per collection),
   Updates ready, and hidden by default
   Play time and Achievements (recent unlocks, games closest to 100%). Owned games you haven't
   installed are a Smart shelf rule, *Owned, not installed*.

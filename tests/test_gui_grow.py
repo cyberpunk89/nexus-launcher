@@ -1,5 +1,5 @@
 """Cards that grow (w-155): given more height than they need, News, Wishlist
-deals, Upcoming, Next milestones, Friends and Where your space goes show more
+Wishlist, Next milestones, Friends and Where your space goes show more
 rows (a taller treemap). The extra rows never change the card's natural
 height (the grid would grow it, measure again and loop), a row shows only
 when it fits whole, and a refit at the same height builds nothing."""
@@ -98,7 +98,7 @@ class Grow(unittest.TestCase):
 
     def test_specs(self):
         grows = {k for k, s in SPEC.items() if s.grows}
-        self.assertEqual(grows, {'news', 'deals', 'upcoming', 'milestones', 'friends', 'spacemap'})
+        self.assertEqual(grows, {'news', 'deals', 'milestones', 'friends', 'spacemap'})
 
     # ---- News ----
     def news(self, n=12, size='small'):
@@ -224,7 +224,7 @@ class Grow(unittest.TestCase):
     def test_deals_no_refill_when_the_count_holds(self):
         self.no_refill_when_the_count_holds(self.deals())
 
-    # ---- Upcoming ----
+    # ---- Wishlist: the releases side ----
     def upcoming(self, n=10, size='small'):
         rows = [{'appid': i, 'title': f"Game {i}", 'headerImage': None, 'owned': False,
                  'releaseDate': f"2027-0{1 + i % 9}-15T00:00:00.000Z",
@@ -234,7 +234,7 @@ class Grow(unittest.TestCase):
         page._data.return_value = {'schema': 1, 'wishlist': [], 'upcoming': rows}
         page._base.return_value = None
         hub = mock.Mock(config={'gamedb_enabled': True}, dealspage=page)
-        w = D.UpcomingWidget()
+        w = D.DealsWidget()
         self.addCleanup(w.deleteLater)
         w.size_ = size
         w.fill(hub)
@@ -247,7 +247,7 @@ class Grow(unittest.TestCase):
         self.settle(w, self.natural(w) + 120)
         left = [lab.text() for lab in w.findChildren(QLabel) if "Deals page" in lab.text()]
         self.assertEqual(len(left), 1)
-        self.assertIn(f"+{10 - 3 - w.more.shown} more", left[0])     # the line counts what is left
+        self.assertIn(f"+{10 - 5 - w.more.shown} more", left[0])     # the line counts what is left
 
     def test_upcoming_no_refill_when_the_count_holds(self):
         self.no_refill_when_the_count_holds(self.upcoming())

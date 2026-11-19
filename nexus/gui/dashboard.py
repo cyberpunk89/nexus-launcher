@@ -250,6 +250,24 @@ def _fold_daily(items: list[dict]) -> list[dict]:
     return out
 
 
+def _fold_wishlist(items: list[dict]) -> list[dict]:
+    """Wishlist deals and Upcoming became one Wishlist card, kind `deals`
+    (w-163). The first of the two in the layout stays where it is with its
+    size (an Upcoming turns into `deals`); the other goes. Hidden only when
+    every one of them was. Idempotent."""
+    olds = [it for it in items if it.get('id') in ('deals', 'upcoming')]
+    if not any(it.get('id') == 'upcoming' for it in olds):
+        return items
+    first = olds[0]
+    out = []
+    for it in items:
+        if it is first:
+            out.append({**it, 'id': 'deals', 'hidden': all(o.get('hidden') for o in olds)})
+        elif it.get('id') not in ('deals', 'upcoming'):
+            out.append(it)
+    return out
+
+
 DASH_VERSION = 2   # 2: the Stage moved to the top (w-86); renames to new kinds are not gated
 
 
@@ -262,7 +280,7 @@ def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
     items = [it for it in (items if isinstance(items, list) else []) if isinstance(it, dict)]
     if not items:
         return dash_default()                 # nothing saved: the Cinematic preset
-    items = _fold_owned(_fold_daily(items))
+    items = _fold_wishlist(_fold_owned(_fold_daily(items)))
     legacy: dict[str, list[dict]] = {}
     for it in items:
         if it.get('id') in DASH_MERGED:
@@ -784,6 +802,12 @@ class DashWidget(QFrame):
         data already in hand (never an ask): '' when there is no reason."""
         return ''
 
+    def needs_note(self, hub) -> str:
+        """What the Customise gallery says instead of the note while this card
+        cannot show (w-163: "Needs Game-db · Open Settings"); '' when nothing is
+        missing."""
+        return ''
+
     def preview_seed(self, hub):
         """The Customise gallery's preview (w-158): before fill, put in what
         fill would otherwise ask the CLI for, from `hub.sample`. Most widgets
@@ -797,7 +821,8 @@ class DashWidget(QFrame):
     @property
     def grows(self) -> bool:
         """Shows more rows when the grid gives it more height (w-155)."""
-        return SPEC[self.KIND].grows
+        spec = SPEC[self.KIND]
+        return spec.grows and (not spec.grow_sizes or self.size_ in spec.grow_sizes)
 
     def add_more(self, pool, build, cols: int = 1, col_gap: int = 0, on_count=None):
         """After the base rows: the rest of `pool` (built by `build(item)`)
@@ -2139,47 +2164,212 @@ class NewsWidget(DashWidget):
         return w
 
 
+class WishTile(ClickRow):
+    """One Wishlist game as store art (Wide and Full): the 'why' pill on the
+    art (-40%, in 12 days), the title and the price line."""
+
+    def __init__(self, row: dict, on_click, friend: str = ''):
+        super().__init__()
+        self.row = row
+        self.clicked.connect(on_click)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['1'])
+        self.art = FlexArt(R['sm'])
+        self.art.round_all = True
+        self.art.top_left = [(row['pill'], row['role'])]
+        self.art.set_url(row['g'].get('headerImage'))
+        lay.addWidget(self.art)
+        self.title = plain_label(row['g'].get('title') or '', None)
+        self.title.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px;")
+        self.sub = plain_label(" · ".join(x for x in (row['line'], friend) if x), None)
+        self.sub.setStyleSheet(f"color: {P['muted']}; font-size: {FS['2xs']}px;")
+        for x in (self.title, self.sub):
+            x.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            x.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            lay.addWidget(x)
+        self.setToolTip(" · ".join(x for x in (row['g'].get('title'), row['why']) if x))
+
+
+class TileGrid(QWidget):
+    """Tiles in as many columns as fit (at most `max_cols`, at least two), placed
+    by hand so the card's height follows its width. Tiles keep Steam's art
+    shape, so a tile's height is a function of its width."""
+    MIN_W = 132
+
+    def __init__(self, tiles, max_cols: int):
+        super().__init__()
+        self.tiles = list(tiles)
+        self.max_cols = max_cols
+        self.gap_x, self.gap_y = SP['3'], SP['4']
+        for t in self.tiles:
+            t.setParent(self)
+        pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+
+    def columns(self, width: int) -> int:
+        fit = (width + self.gap_x) // (scaled(self.MIN_W) + self.gap_x)
+        return max(2, min(self.max_cols, fit))
+
+    def _rows(self, width: int):
+        cols = self.columns(width)
+        tw = max(1, (width - (cols - 1) * self.gap_x) // cols)
+        heights = []
+        for i in range(0, len(self.tiles), cols):
+            heights.append(max(t.heightForWidth(tw) for t in self.tiles[i:i + cols]))
+        return cols, tw, heights
+
+    def heightForWidth(self, w: int) -> int:
+        _c, _tw, heights = self._rows(w)
+        return sum(heights) + self.gap_y * max(len(heights) - 1, 0)
+
+    def sizeHint(self) -> QSize:
+        w = 2 * scaled(self.MIN_W) + self.gap_x
+        return QSize(w, self.heightForWidth(w))
+
+    def minimumSizeHint(self) -> QSize:
+        # No height floor: at its narrowest the grid is many rows tall, and the
+        # card (whose minimum is summed from it) would be stretched that far.
+        return QSize(2 * scaled(self.MIN_W) + self.gap_x, 0)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.place()
+
+    def place(self):
+        cols, tw, heights = self._rows(self.width())
+        y = 0
+        for r, h in enumerate(heights):
+            for c, t in enumerate(self.tiles[r * cols:(r + 1) * cols]):
+                t.setGeometry(c * (tw + self.gap_x), y, tw, h)
+                t.show()
+            y += h + self.gap_y
+
+
 class DealsWidget(DashWidget):
-    KIND, TITLE, GLYPH, GRAD, LINK = 'deals', "Wishlist deals", G['deals'], 'dawn', 'deals'
+    """Wishlist (w-163; it was Wishlist deals and Upcoming): one ranked list of
+    the wishlist games on sale and the unreleased ones (gamedb.wishlist_rows),
+    each saying why it is there ("-40% today", "Out in 12 days · pre-order").
+    Small and Tall are rows; Wide and Full are store-art tiles, four and six
+    across, with the why as a pill on the art. A friend line ("Cara owns it")
+    only while Friends is on. From the Game-db summary the Deals page already
+    holds: no calls of its own. Without Game-db, or with nothing on sale and
+    nothing coming, the card is not on Home (Customise says what it needs)."""
+    KIND, TITLE, GLYPH, GRAD, LINK = 'deals', "Wishlist", G['deals'], 'dawn', 'deals'
+    ROWS = {'small': 5, 'tall': 9}
+    TILES = {'wide': 8, 'full': 12}
+    ACROSS = {'wide': 4, 'full': 6}
+    NEEDS = "Needs Game-db · Open Settings"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.tiles: TileGrid | None = None
+        self.count = label("", "Muted")                  # "5 on sale · 4 coming"
+        if self.head_lay is not None:
+            at = self.head_lay.indexOf(self.open_btn) if self.LINK else self.head_lay.count()
+            self.head_lay.insertWidget(at, self.count)
+
+    def has_content(self, hub):
+        if not hub.config.get('gamedb_enabled', False):
+            return False
+        page = hub.dealspage
+        return not page._loaded or bool(gamedb.wishlist_rows(page._data()))
+
+    def needs_note(self, hub):
+        return "" if hub.config.get('gamedb_enabled', False) else self.NEEDS
+
+    def clear(self):
+        self.tiles = None
+        super().clear()
+
+    @staticmethod
+    def _friend(hub, g: dict) -> str:
+        if not hub.config.get('friends_enabled') or not g.get('appid'):
+            return ''
+        names = [r.get('name') for r in FRIENDS.owners(g['appid']) if r.get('name')]
+        return f"{_and(names, 2)} {'owns' if len(names) == 1 else 'own'} it" if names else ''
+
+    def _open(self, hub, row: dict):
+        g = row['g']
+        if row['kind'] == 'sale':
+            hub.go(hub.DEALS)
+            return
+        page = hub.dealspage
+        base = page._base()
+        url = g.get('steamUrl') or (gamedb.detail_url(base, g['appid'])
+                                    if base and g.get('appid') else '')
+        page._open(url)
+
+    def _row(self, hub, row: dict) -> ClickRow:
+        why = " · ".join(x for x in (row['why'], self._friend(hub, row['g'])) if x)
+        right = []
+        if row['price']:
+            price = label(row['price'], None)
+            hot = row['kind'] == 'sale'
+            price.setStyleSheet(f"color: {P['text' if hot else 'subtext']}; "
+                                f"font-size: {FS['xs']}px;" + (" font-weight: 600;" if hot else ""))
+            right.append(price)
+        w = game_row(row['g'], right, lambda _=False, r=row: self._open(hub, r), sub=why)
+        w.sub_label.setStyleSheet(f"color: {P[row['role']]}; font-size: {FS['2xs']}px;")
+        w.setToolTip(" · ".join(x for x in (row['g'].get('releaseDateText'), row['line'],
+                                            row['why']) if x))
+        return w
+
+    def _tile(self, hub, row: dict) -> WishTile:
+        return WishTile(row, lambda _=False, r=row: self._open(hub, r),
+                        self._friend(hub, row['g']))
+
+    def _counts(self, rows, d) -> str:
+        sales = sum(r['kind'] == 'sale' for r in rows)
+        parts = [f"{sales} on sale"] * bool(sales) + \
+            [f"{len(rows) - sales} coming"] * bool(len(rows) - sales)
+        radar = d.get('radar') or {}
+        if self.size_ == 'full' and sales and radar.get('totalSavings'):
+            parts.append(f"save ~{radar['totalSavings']:.0f} {d.get('currency') or ''}".strip())
+        return " · ".join(parts)
 
     def fill(self, hub):
         self.clear()
+        self.count.setText("")
         if not hub.config.get('gamedb_enabled', False):
-            self.body.addWidget(label("Connect Game-db in Settings to see deals on your "
-                                      "Steam wishlist.", "Muted", wrap=True))
-            b = QPushButton("Open Settings")
-            b.clicked.connect(lambda: hub._open_settings('accounts', 'deals'))
-            self.body.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+            # Off Home (has_content); Customise still shows the card, so say why.
+            self.body.addWidget(label(self.NEEDS, "Muted", wrap=True))
             return
-        d = hub.dealspage._data()
-        items = [g for g in d.get('wishlist') or [] if (g.get('price') or {}).get('onSale')]
+        page = hub.dealspage
+        d = page._data()
         if not d:
-            if not self._error(hub.dealspage.error, hub.dealspage.retry):
-                self.body.addWidget(label("Loading deals…", "Muted"))
-                hub.dealspage.refresh()
+            if not self._error(page.error, page.retry):
+                self.body.addWidget(label("Loading your wishlist…", "Muted"))
+                page.refresh()
             return
-        if not items:
-            self.body.addWidget(label("Nothing on your wishlist is on sale right now.",
+        rows = gamedb.wishlist_rows(d)
+        if not rows:
+            self.body.addWidget(label("Nothing on your wishlist is on sale or coming soon.",
                                       "Muted", wrap=True))
             return
-        items.sort(key=lambda g: -((g.get('price') or {}).get('cutPct') or 0))
-        n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
+        self.count.setText(self._counts(rows, d))
+        if self.size_ in self.TILES:
+            n = self.TILES[self.size_]
+            self.tiles = TileGrid([self._tile(hub, r) for r in rows[:n]],
+                                  self.ACROSS[self.size_])
+            self.body.addWidget(self.tiles)
+            if len(rows) > n:
+                self.body.addWidget(label(f"+{len(rows) - n} more on the Deals page", "Muted"))
+            return
+        n = self.ROWS.get(self.size_, 5)
+        for r in rows[:n]:
+            self.body.addWidget(self._row(hub, r))
+        tail = None
+        if len(rows) > n:
+            tail = label(f"+{len(rows) - n} more on the Deals page", "Muted")
 
-        def deal_row(g):
-            price = g.get('price') or {}
-            cur = label(price.get('currentStr') or '', None)
-            cur.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px; font-weight: 600;")
-            right = [cur] + ([_pill(f"-{price['cutPct']}%", 'accent')]
-                             if price.get('cutPct') else [])
-            return game_row(g, right, lambda: hub.go(hub.DEALS))
-        for g in items[:n]:
-            self.body.addWidget(deal_row(g))
-        self.add_more(items[n:], deal_row)
-        radar = d.get('radar') or {}
-        if radar.get('onSaleCount'):
-            self.body.addWidget(label(f"{radar['onSaleCount']} on sale · "
-                                      f"save ~{radar.get('totalSavings', 0):.0f} "
-                                      f"{d.get('currency') or ''}", "Muted"))
+        def counted(k):                                 # the line says what is left
+            tail.setText(f"+{len(rows) - n - k} more on the Deals page" if len(rows) - n - k
+                         else "All on the Deals page")
+        self.add_more(rows[n:], lambda r: self._row(hub, r), on_count=counted)
+        if tail is not None:
+            self.body.addWidget(tail)
 
 
 def game_row(g: dict, right: list, on_click, sub: str = '') -> ClickRow:
@@ -2600,67 +2790,6 @@ def open_url(url: str):
     QDesktopServices.openUrl(QUrl(url))
 
 
-class UpcomingWidget(DashWidget):
-    """Unreleased games on your wishlist, soonest first, with the cheapest
-    current price (keyshops included) — from the Game-db summary the Deals
-    page already holds."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'upcoming', "Upcoming", G['calendar'], 'aurora', 'upcoming'
-
-    def has_content(self, hub):
-        # Off without Game-db: the Deals widget already says how to connect it.
-        if not hub.config.get('gamedb_enabled', False):
-            return False
-        return not hub.dealspage._loaded or bool(gamedb.upcoming(hub.dealspage._data()))
-
-    def fill(self, hub):
-        self.clear()
-        d = hub.dealspage._data()
-        if not d:
-            if not self._error(hub.dealspage.error, hub.dealspage.retry):
-                self.body.addWidget(label("Loading releases…", "Muted"))
-                hub.dealspage.refresh()
-            return
-        items = gamedb.upcoming(d)
-        if not items:
-            self.body.addWidget(label("Nothing unreleased on your wishlist.", "Muted",
-                                      wrap=True))
-            return
-        n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
-
-        def upcoming_row(g):
-            text, preorder = gamedb.price_line(g)
-            when = label(gamedb.release_label(g), None)
-            when.setStyleSheet(f"color: {P['accent']}; font-size: {FS['xs']}px; "
-                               f"font-weight: 600;")
-            chips = gamedb.release_chips(g)
-            if any(t == "Out now" for t, _r in chips):
-                when.setVisible(False)                  # the chip says it
-            right = [_pill(t, role) for t, role in chips[:1 if self.size_ == 'small' else 2]]
-            right += [_pill("Pre-order", 'warning')] if preorder else []
-            base = hub.dealspage._base()
-            url = g.get('steamUrl') or (gamedb.detail_url(base, g['appid'])
-                                        if base and g.get('appid') else '')
-            row = game_row(g, [when] + right, lambda _=False, u=url: hub.dealspage._open(u),
-                           sub=text)
-            row.setToolTip(" · ".join(x for x in (g.get('releaseDateText'), text,
-                                                  *(t for t, _r in chips)) if x))
-            if gamedb.is_cancelled(g):
-                dim(row)
-            return row
-        for g in items[:n]:
-            self.body.addWidget(upcoming_row(g))
-        tail = None
-        if len(items) > n:
-            tail = label(f"+{len(items) - n} more on the Deals page", "Muted")
-
-        def counted(k):                                 # the line says what is left
-            tail.setText(f"+{len(items) - n - k} more on the Deals page" if len(items) - n - k
-                         else "All on the Deals page")
-        self.add_more(items[n:], upcoming_row, on_count=counted)
-        if tail is not None:
-            self.body.addWidget(tail)
-
-
 WEEK_SAME_MIN = 30      # a week within this many minutes of last week's is "about the same"
 
 
@@ -2795,7 +2924,7 @@ DASH_WIDGETS = {cls.KIND: cls for cls in (
     StageWidget, SaveWidget, ForYouWidget, FriendsWidget, PickWidget, SystemWidget, NewsWidget,
     InstalledWidget, SmartShelfWidget,
     DealsWidget,
-    UpcomingWidget, WeekWidget, *INSIGHT_WIDGETS, *STATS_WIDGETS, FavouritesWidget, CollectionsWidget,
+    WeekWidget, *INSIGHT_WIDGETS, *STATS_WIDGETS, FavouritesWidget, CollectionsWidget,
     UpdatesWidget)}
 
 
@@ -2926,6 +3055,7 @@ class Dashboard(QWidget):
         self.add_row_host = self.gallery                  # its old name (tests)
         self.gallery.add.connect(lambda k, z: self.add_widget(k, z))
         self.gallery.reveal.connect(self.reveal)
+        self.gallery.settings.connect(lambda: self.hub._open_settings('accounts', 'deals'))
         # Previews render only while the Widgets tab shows (w-158).
         self.panel.tab.connect(lambda k: self.gallery.cache.pause(k != 'widgets'))
         bar = self.layouts_bar
@@ -3002,7 +3132,7 @@ class Dashboard(QWidget):
             if self._skip() != self._skipped:
                 self.relayout(force=True)
         elif kinds is None or {'stage', 'friends', 'installed', 'smart', 'favourites',
-                               'collections', 'updates', 'upcoming'} & set(kinds):
+                               'collections', 'updates', 'deals'} & set(kinds):
             self.relayout(force=True)
         elif 'foryou' in kinds and self._skip() != self._skipped:
             self.relayout(force=True)            # the Strip came or went
@@ -3136,6 +3266,13 @@ class Dashboard(QWidget):
             except Exception:                      # a reason is a nicety: never break Home
                 reasons[k] = ''
         g.set_reasons(reasons)
+        needs = {}
+        for k, w in self.widgets.items():
+            try:
+                needs[k] = w.needs_note(self.hub)
+            except Exception:                      # a note is a nicety: never break Home
+                needs[k] = ''
+        g.set_needs(needs)
         g.set_selected(self.selected)
 
     # ---- adding (w-158) ----
@@ -3721,9 +3858,9 @@ class Dashboard(QWidget):
 # Siblings, imported last: they import this module too, and every use
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART  # noqa: E402
-from .deals import _pill, DealArt, dim  # noqa: E402
+from .deals import _pill, DealArt, dim, FlexArt  # noqa: E402
 from . import friends_ladder  # noqa: E402
-from .friends import (_ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text,  # noqa: E402
+from .friends import (_and, _ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text,  # noqa: E402
     playing_now, who_text)
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402

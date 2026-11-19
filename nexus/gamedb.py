@@ -1097,6 +1097,85 @@ def upcoming(summary: dict | None) -> list[dict]:
     return sorted((merged[k] for k in order), key=rank)
 
 
+_VAGUE_DATE = re.compile(r'\d{4}|\bQ[1-4]\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)',
+                         re.I)
+SOON_SCORE = 40          # a release counts as a discount this big, less half a point a day to go
+
+
+def wishlist_rows(summary: dict | None, now: datetime | None = None) -> list[dict]:
+    """The Wishlist card's one ranked list (w-163): the wishlist games on sale
+    and the unreleased ones (upcoming()), best first. A sale scores its
+    discount, a release SOON_SCORE less half a point per day to go, so a
+    release a few weeks out sits among the big discounts and one two months out
+    behind them; vague dates (a month, a quarter) and TBA come last, in
+    upcoming()'s order. A tie puts the sale first. Cancelled games are left
+    out; an unreleased game is a release even when its price says sale, and a
+    released one that is on sale is a sale. A released game not on sale reads
+    "Out now" for OUT_NOW_DAYS after its day, then leaves the list.
+
+    Each row: kind ('sale' or 'soon'), g, score, why ("-40% today", "Out in
+    12 days · pre-order"), pill (the tile's badge), price (the row's right
+    text), line (the tile's second line) and role (the why's colour)."""
+    now = now or datetime.now(timezone.utc)
+    coming = upcoming(summary)
+
+    def key(g):
+        return g.get('appid') or g.get('title')
+
+    def released(g):                      # a concrete release day that has passed
+        days = days_until(g.get('releaseDate'), now)
+        return days is not None and has_day(g) and days < 0
+
+    def on_sale(g):
+        return isinstance(g.get('price'), dict) and bool(g['price'].get('onSale'))
+    unreleased = {key(g) for g in coming if not released(g)}
+    rows = []
+    seen = set()
+    for i, g in enumerate(g for g in (summary or {}).get('wishlist') or []
+                          if isinstance(g, dict)):
+        if not on_sale(g) or key(g) in unreleased or key(g) in seen:
+            continue
+        seen.add(key(g))
+        price = g['price']
+        cut = price.get('cutPct')
+        text = price.get('currentStr') or ''
+        rows.append({'kind': 'sale', 'g': g, 'score': float(cut or 0), 'tier': 0, 'order': i,
+                     'why': f"-{cut}% today" if cut else "On sale",
+                     'pill': f"-{cut}%" if cut else "Sale", 'price': text, 'line': text,
+                     'role': 'accent'})
+    for i, g in enumerate(coming):
+        if is_cancelled(g):
+            continue
+        days = days_until(g.get('releaseDate'), now)
+        text, preorder = price_line(g)
+        tag = [t for t, _r in release_chips(g, now)
+               if t != "Out now" and not t.startswith("PC ")][:1]
+        tag = tag or (["Pre-order"] if preorder else [])
+        tier, score = 0, 0.0
+        if released(g):
+            # Out: a sale is a sale (above); otherwise "Out now" for OUT_NOW_DAYS.
+            if on_sale(g) or -days > OUT_NOW_DAYS:
+                continue
+            score, out, pill = SOON_SCORE, "Out now", "Out now"
+        elif days is not None and has_day(g):
+            label = release_label(g, now)
+            score = SOON_SCORE - max(days, 0) / 2
+            out, pill = f"Out {label}", label
+        else:
+            vague = (g.get('releaseDateText') or '').strip()
+            if _VAGUE_DATE.search(vague):                 # a month, a quarter, a year
+                tier, out, pill = 1, f"Out {vague}", vague
+            elif vague.lower().startswith('coming soon'):
+                tier, out, pill = 2, "Coming soon", "Coming soon"
+            else:
+                tier, out, pill = 2, "Release date TBA", "TBA"
+        rows.append({'kind': 'soon', 'g': g, 'score': score, 'tier': tier, 'order': 1000 + i,
+                     'why': out + (f" · {tag[0].lower()}" if tag else ""), 'pill': pill,
+                     'price': text.split(' · ')[0], 'line': text, 'role': 'warning'})
+    rows.sort(key=lambda r: (r['tier'], -r['score'], r['kind'] != 'sale', r['order']))
+    return rows
+
+
 # The v1 summary's additive upcoming fields (IGDB Phase C): an older server
 # sends none of them, and then no chip shows.
 STATUS_FIELDS = ('status', 'previousDate', 'pcDate')

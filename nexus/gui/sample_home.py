@@ -130,20 +130,27 @@ def news(today: date) -> list[dict]:
 
 
 def deals(today: date) -> dict:
-    """The Game-db summary the Deals page holds (no images)."""
+    """The Game-db summary the Deals page holds (no images): games on sale and
+    unreleased ones, so the Wishlist card's one ranked list is mixed."""
     def price(cur, cut):
         return {'onSale': True, 'cutPct': cut, 'currentStr': cur}
-    soon = today + timedelta(days=9)
+
+    def release(n):
+        d = today + timedelta(days=n)
+        return {'releaseDate': f"{d.isoformat()}T00:00:00Z",
+                'releaseDateText': d.strftime('%d %b %Y')}
     return {'currency': 'EUR',
-            'wishlist': [{'appid': 1, 'title': "Sea of Stars", 'price': price("12,49 €", 50)},
+            'wishlist': [{'appid': 1145360, 'title': "Sea of Stars", 'price': price("12,49 €", 50)},
                          {'appid': 2, 'title': "Dredge", 'price': price("9,99 €", 60)},
                          {'appid': 3, 'title': "Cocoon", 'price': price("14,99 €", 40)},
                          {'appid': 4, 'title': "Celeste", 'price': price("4,99 €", 75)},
                          {'appid': 5, 'title': "Hollow Knight: Silksong", 'comingSoon': True,
-                          'releaseDate': f"{soon.isoformat()}T00:00:00Z",
-                          'releaseDateText': soon.strftime('%d %b %Y')},
+                          **release(9), 'price': {'currentStr': "19,50 €", 'preorder': True,
+                                                  'best': {'priceStr': "19,50 €",
+                                                           'category': 'keyshop'}}},
                          {'appid': 6, 'title': "Slay the Spire 2", 'comingSoon': True,
-                          'releaseDateText': "March"}],
+                          'releaseDateText': "March", 'status': 'early_access'},
+                         {'appid': 7, 'title': "Subnautica 2", 'comingSoon': True, **release(34)}],
             'radar': {'onSaleCount': 4, 'totalSavings': 41}}
 
 

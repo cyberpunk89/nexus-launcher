@@ -4,7 +4,7 @@ import html
 import re
 from datetime import datetime
 
-from PyQt6.QtCore import pyqtSignal, QEvent, QPoint, QRectF, Qt, QTimer, QUrl
+from PyQt6.QtCore import pyqtSignal, QEvent, QPoint, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPainterPath,
     QPixmap)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
@@ -241,6 +241,36 @@ class DealArt(QWidget):
         for text, role in self.bottom_left:
             x += self._badge(pt, x, self.height() - pad, text, role, up=True) + SP['1']
         pt.end()
+
+
+class FlexArt(DealArt):
+    """A DealArt that takes the width it is given and keeps Steam's header
+    shape (460 x 215): a tile that follows its column."""
+
+    def __init__(self, radius: int):
+        super().__init__(10, 5, radius)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        pol = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+        self._settle = QTimer(self)
+        self._settle.setSingleShot(True)
+        self._settle.setInterval(80)
+        self._settle.timeout.connect(self.refresh_size)
+
+    def heightForWidth(self, w: int) -> int:
+        return int(w * 215 / 460)
+
+    def sizeHint(self) -> QSize:
+        return QSize(120, self.heightForWidth(120))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._settle.start()                 # decode once a resize settles
 
 
 class DealCard(QFrame):

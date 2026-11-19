@@ -89,7 +89,7 @@ from .dashboard import (
     dash_tables, SPEC, SPECS, WidgetSpec,
     last_unlock, PickWidget, pick_note, save_rows, SaveWidget,
     ShelfWidget, system_badge, system_status, SystemWidget,
-    SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
+    SysTile, UpdatesWidget, WeekWidget)  # noqa: F401
 from .layouts import clean_layouts, dash_preset, layout_for, MAX_LAYOUTS  # noqa: F401
 from .layouts_bar import LayoutsBar, LayoutsView, TimeField, TimeRuleBody  # noqa: F401
 from .customise_panel import CustomisePanel  # noqa: F401

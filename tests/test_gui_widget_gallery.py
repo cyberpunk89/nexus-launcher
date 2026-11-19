@@ -188,8 +188,8 @@ class Gallery(unittest.TestCase):
         g.sync(_items(hidden={'stage', 'save', 'heatmap', 'backlog'}))
         self.assertEqual(self.counts()['stage'], "1 of 3 on Home")      # For you now
         self.assertEqual(self.counts()['stats'], "3 of 5 on Home")
-        self.assertEqual(g.filter.item('all').text(), "All 20")
-        self.assertEqual(g.filter.item('on').text(), "On Home 16")
+        self.assertEqual(g.filter.item('all').text(), "All 19")
+        self.assertEqual(g.filter.item('on').text(), "On Home 15")
         self.assertEqual(g.filter.item('off').text(), "Not added 4")
         self.assertTrue(g.tile('week').tick.isVisibleTo(g.tile('week')))
         self.assertFalse(g.tile('heatmap').tick.isVisibleTo(g.tile('heatmap')))
@@ -214,12 +214,12 @@ class Gallery(unittest.TestCase):
         g.search.setText("year")
         self.assertEqual(vis(), {'heatmap'})                            # "Your year"
         g.search.setText("store")                                       # a group's name
-        self.assertEqual(vis(), {'deals', 'upcoming', 'news'})
+        self.assertEqual(vis(), {'deals', 'news'})
         g.search.setText("zzz")
         self.assertEqual(vis(), set())
         self.assertTrue(g.empty.isVisibleTo(g))
         g.search.setText("")
-        self.assertEqual(len(vis()), 20)
+        self.assertEqual(len(vis()), 19)
 
     def test_merged_note_shown(self):
         g = self.g
@@ -230,6 +230,31 @@ class Gallery(unittest.TestCase):
         self.assertFalse(g.tile('week').note.isVisibleTo(g.tile('week')))
         g.search.setText("game of the day")                             # the note is searched
         self.assertEqual({t.kind for t in g.tiles.values() if t.isVisibleTo(g)}, {'pick'})
+
+    def test_wishlist_merged_note_and_needs_game_db(self):
+        """w-163: the Wishlist tile says it took in Deals and Upcoming; without
+        Game-db it says what it needs, and pressing it opens Settings."""
+        g = self.g
+        g.sync(_items(hidden={'deals'}))
+        t = g.tile('deals')
+        self.assertEqual(t.spec.title, "Wishlist")
+        self.assertEqual(t.note.text(), "Deals and Upcoming, now one card")
+        opened, added = [], []
+        g.settings.connect(lambda: opened.append(1))
+        g.add.connect(lambda k, z: added.append(k))
+        g.set_needs({'deals': "Needs Game-db · Open Settings"})
+        self.assertEqual(t.note.text(), "Needs Game-db · Open Settings")
+        self.assertFalse(t.chips_host.isVisibleTo(t))
+        g.search.setText("game-db")                                      # it is searchable
+        self.assertEqual({x.kind for x in g.tiles.values() if x.isVisibleTo(g)}, {'deals'})
+        t.face.click()
+        self.assertEqual((opened, added), ([1], []))
+        g.search.setText("")
+        g.set_needs({})
+        self.assertEqual(t.note.text(), "Deals and Upcoming, now one card")
+        self.assertTrue(t.chips_host.isVisibleTo(t))
+        t.face.click()
+        self.assertEqual((opened, added), ([1], ['deals']))
 
     def test_tiles_survive_refresh(self):
         g = self.g

@@ -398,8 +398,7 @@ class DashboardModel(unittest.TestCase):
     def test_normalize_places_new_widgets_by_anchor(self):
         saved = self.items(('deals', 'wide'), ('jump', 'full'))
         ids = [i['id'] for i in nx.dash_normalize(saved)]
-        self.assertEqual(ids[:8], ['deals', 'upcoming', 'week', 'stage', 'save', 'foryou',
-                                   'friends', 'pick'])
+        self.assertEqual(ids[:7], ['deals', 'week', 'stage', 'save', 'foryou', 'friends', 'pick'])
         # A layout from before w-82 gains Friends playing now right after the Stage
         old = [i for i in nx.dash_kind_defaults() if i['id'] != 'friends']
         ids = [i['id'] for i in nx.dash_normalize(old)]
@@ -612,14 +611,13 @@ class DashboardModel(unittest.TestCase):
         ids = [i['id'] for i in d]
         week = d[ids.index('week')]
         self.assertEqual((week['size'], week['hidden'], week['style']), ('small', False, 'bars'))
-        self.assertEqual(ids.index('week'), ids.index('upcoming') + 1)
-        # A layout saved without it (or Play time) gets it after Upcoming.
-        saved = self.items(('stage', 'cinematic'), ('deals', 'wide'), ('upcoming', 'small'),
-                           ('news', 'small'))
+        self.assertEqual(ids.index('week'), ids.index('deals') + 1)
+        # A layout saved without it (or Play time) gets it after Wishlist.
+        saved = self.items(('stage', 'cinematic'), ('deals', 'wide'), ('news', 'small'))
         ids = [i['id'] for i in nx.dash_normalize(saved)
                if i['id'] not in ('foryou', 'friends', 'pick', 'save')]
-        self.assertEqual(ids[:5], ['stage', 'deals', 'upcoming', 'week', 'news'])
-        self.assertEqual(nx.DASH_PLACE_AFTER['week'], 'upcoming')
+        self.assertEqual(ids[:4], ['stage', 'deals', 'week', 'news'])
+        self.assertEqual(nx.DASH_PLACE_AFTER['week'], 'deals')
 
     def test_playtime_becomes_week_in_place(self):
         saved = self.items(('stage', 'cinematic'), ('system', 'wide'), ('playtime', 'full'),
@@ -2405,7 +2403,6 @@ class WidgetSpecTest(unittest.TestCase):
             ('installed', ('full',), 'full', False),
             ('smart', ('full',), 'full', False),
             ('deals', ('small', 'tall', 'wide', 'full'), 'wide', False),
-            ('upcoming', ('small', 'tall', 'wide', 'full'), 'small', False),
             ('week', ('small', 'wide'), 'small', False),
             ('favourites', ('full',), 'full', False),
             ('collections', ('full',), 'full', False),
@@ -2434,12 +2431,12 @@ class WidgetSpecTest(unittest.TestCase):
             'stage': {'art': "Game art", 'pinned': "Pinned art",
                       'gradient': "Accent gradient", 'surface': "Plain"}})
         self.assertEqual(t['PLACE_AFTER'], {
-            'upcoming': 'deals', 'pick': 'stage', 'collections': 'favourites',
-            'smart': 'installed', 'friends': 'stage', 'week': 'upcoming',
+            'pick': 'stage', 'collections': 'favourites',
+            'smart': 'installed', 'friends': 'stage', 'week': 'deals',
             'foryou': 'stage', 'save': 'stage'})
         from nexus.gui import dashboard
         self.assertEqual(dashboard.FORYOU_FEEDS,
-                         {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'})
+                         {'stage', 'friends', 'system', 'deals', 'updates', 'smart'})
         self.assertEqual(t['FED_BY']['system'], {'foryou'})
         self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'pick', 'heatmap'})
         self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'pick', 'heatmap', 'milestones',
@@ -2500,7 +2497,7 @@ class WidgetSpecTest(unittest.TestCase):
         self.assertEqual(dashboard.fed(['midnight']),
                          {'midnight', 'week', 'onthisday', 'pick', 'heatmap'})
         self.assertEqual(dashboard.fed({'sessions', 'friends'}),
-                         {'sessions', 'friends', 'week', 'foryou'})
+                         {'sessions', 'friends', 'week', 'foryou', 'deals'})
         self.assertEqual(dashboard.fed({'pick'}), {'pick'})
         self.assertEqual(dashboard.fed({'hour'}), {'hour'})
 

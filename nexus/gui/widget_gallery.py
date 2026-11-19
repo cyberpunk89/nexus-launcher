@@ -30,7 +30,7 @@ CHIP_LABELS = {'small': "Small", 'tall': "Tall", 'wide': "Wide", 'full': "Full",
                'cinematic': "Cinematic", 'banner': "Banner"}
 FILTERS = (('all', "All"), ('on', "On Home"), ('off', "Not added"))
 RECOMMEND_ORDER = ('friends', 'updates', 'week', 'news', 'onthisday', 'milestones', 'backlog',
-                   'spacemap', 'heatmap', 'deals', 'upcoming')
+                   'spacemap', 'heatmap', 'deals')
 RECOMMEND_MAX = 2
 WHY_NOTE = "Picked from what Nexus already knows: your play, friends, updates and news."
 
@@ -231,6 +231,7 @@ class GalleryTile(QFrame):
     """One widget in the gallery. `on_home` and `size` come from sync."""
     add = pyqtSignal(str, str)              # kind, size
     reveal = pyqtSignal(str)                # kind: show its card on Home
+    settings = pyqtSignal()                 # a tile that needs Game-db: open Settings (w-163)
 
     def __init__(self, kind: str, cache: PreviewCache, parent: QWidget | None = None):
         super().__init__(parent)
@@ -242,6 +243,7 @@ class GalleryTile(QFrame):
         self.size_ = self.spec.default
         self.options: dict | None = None
         self.why = ''
+        self.needs = ''                     # what it needs before it can show (w-163)
         self.dragging = False
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -308,9 +310,21 @@ class GalleryTile(QFrame):
     def set_why(self, why: str):
         """A recommended tile's reason (instead of the merged note)."""
         self.why = why or ''
-        text = self.why or self.spec.note
+        self._sync_note()
+
+    def set_needs(self, needs: str):
+        """What the card needs ("Needs Game-db · Open Settings"): shown instead of
+        the note or the reason, and a click opens Settings instead of adding."""
+        needs = needs or ''
+        if needs != self.needs:
+            self.needs = needs
+            self._sync_note()
+            self._apply()
+
+    def _sync_note(self):
+        text = self.needs or self.why or self.spec.note
         self.note.setText(text)
-        self.note.setProperty('why', bool(self.why))
+        self.note.setProperty('why', bool(self.why) and not self.needs)
         self.note.style().unpolish(self.note)
         self.note.style().polish(self.note)
         self.note.setVisible(bool(text))
@@ -330,7 +344,7 @@ class GalleryTile(QFrame):
         self.preview.set_key(key, self.box)
         self.shape.set_size(self.size_)
         self.tick.setVisible(self.on_home)
-        chips = bool(self.chip_btns) and not self.on_home
+        chips = bool(self.chip_btns) and not self.on_home and not self.needs
         f = QApplication.focusWidget()
         if not chips and f is not None and self.chips_host.isAncestorOf(f):
             self.face.setFocus(Qt.FocusReason.OtherFocusReason)   # added: stay on this tile
@@ -338,7 +352,8 @@ class GalleryTile(QFrame):
         self.setProperty('on', self.on_home)
         _repolish(self, self.face)
         self._elide(w)
-        self.face.setToolTip("On Home: show it there" if self.on_home else
+        self.face.setToolTip("Open Settings to connect it" if self.needs else
+                             "On Home: show it there" if self.on_home else
                              f"Add {self.spec.title} to Home")
         self.tick.move(w - self.tick.width() - SP['2'], SP['2'])
         self.updateGeometry()
@@ -363,11 +378,13 @@ class GalleryTile(QFrame):
         if not text:
             return True
         hay = " ".join((self.spec.title, dict(GROUPS)[self.spec.group], self.spec.note,
-                        self.why)).casefold()
+                        self.why, self.needs)).casefold()
         return all(word in hay for word in text.split())
 
     def _pressed(self):
-        if self.on_home:
+        if self.needs:
+            self.settings.emit()
+        elif self.on_home:
             self.reveal.emit(self.kind)
         else:
             self.add.emit(self.kind, self.size_)
@@ -428,6 +445,7 @@ class WidgetGallery(QWidget):
     `open()` when Customise opens, `stop()` when it closes."""
     add = pyqtSignal(str, str)              # kind, size (its saved place)
     reveal = pyqtSignal(str)                # kind on Home: show it
+    settings = pyqtSignal()                 # a tile that needs Game-db was pressed (w-163)
 
     def __init__(self, parent: QWidget | None = None, today=None):
         super().__init__(parent)
@@ -515,6 +533,7 @@ class WidgetGallery(QWidget):
         t = GalleryTile(kind, self.cache, parent)
         t.add.connect(self.add)
         t.reveal.connect(self.reveal)
+        t.settings.connect(self.settings)
         return t
 
     # ---- state ----
@@ -544,6 +563,14 @@ class WidgetGallery(QWidget):
             self._reasons = dict(reasons)
             self._sync_recommended()
             self._refilter()
+
+    def set_needs(self, needs: dict):
+        """{kind: what it needs} from the widgets; '' for a card with nothing missing."""
+        for k, t in self.tiles.items():
+            t.set_needs(needs.get(k, ''))
+        for k, t in self.rec_tiles.items():
+            t.set_needs(needs.get(k, ''))
+        self._refilter()
 
     def recommended_kinds(self) -> list[str]:
         return recommended({k: w for k, w in self._reasons.items()
