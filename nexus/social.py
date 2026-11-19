@@ -143,7 +143,8 @@ def _now_rung(people, owned, fresh, now) -> list[dict]:
         rows.sort(key=lambda x: (x[0], x[1]['name'].casefold()))
         g = owned.get(appid)
         said = next((p['playing'].get('name') for _t, p in rows if p['playing'].get('name')), None)
-        out.append({'appid': int(appid), 'title': _title(g, said or f"App {appid}"),
+        # Steam may leave out the game's name (privacy): "Mo is in a game", never an id
+        out.append({'appid': int(appid), 'title': _title(g, said or "a game"),
                     'slug': (g or {}).get('slug'), 'owned': g is not None,
                     'people': [p['id'] for _t, p in rows],
                     'minutes': max(0, int((now - rows[0][0]) // 60))})

@@ -292,7 +292,7 @@ class Grow(unittest.TestCase):
         hub = mock.Mock(config={'friends_enabled': True})
         w = D.FriendsWidget()
         self.addCleanup(w.deleteLater)
-        w.size_ = size
+        w.size_, w.options = size, {'lead': 'now'}
         for name, val in (('_state_of', lambda *a: 'live'), ('_entries', lambda *a, **k: entries),
                           ('_set_footer', lambda *a, **k: None)):
             p = mock.patch.object(w, name, val)

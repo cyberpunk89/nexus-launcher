@@ -14,7 +14,8 @@ VIBES = (('any', "Any"), ('short', "Quick session"), ('coop', "Co-op"),
 # prefix, tooltip). An option of a spec with a key here gets its button with
 # no edit-bar code; one without (Pick's vibe) is changed on the card itself.
 OPTION_BAR = {'style': ("Style", "Change how this shows"),
-              'bg': ("Background", "What's behind the Stage")}
+              'bg': ("Background", "What's behind the Stage"),
+              'lead': ("Shows", "What the card leads with")}
 
 
 def span(size: str) -> int:
@@ -68,7 +69,8 @@ SPECS = (
                options={'style': _STYLE['foryou']}, after='stage',
                feeds=('stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'),
                group='stage'),
-    WidgetSpec('friends', "Friends playing now", ('small', 'wide', 'full'), 'full',
+    WidgetSpec('friends', "Friends", ('small', 'wide', 'full'), 'full',
+               options={'lead': (('auto', "Best now"), ('now', "Only playing now"))},
                after='stage', grows=True, group='social'),
     WidgetSpec('pick', "Pick for me", ('small',), 'small',
                options={'vibe': VIBES, 'style': _STYLE['pick']}, after='stage',

@@ -260,13 +260,13 @@ class Gallery(unittest.TestCase):
 
     def test_titles_elide_to_the_tile(self):
         g = self.g
-        g.sync(_items(hidden={'friends'}))
-        t = g.tile('friends')
+        g.sync(_items(hidden={'spacemap'}))
+        t = g.tile('spacemap')
         t.set_state(False, 'small')
+        t._elide(100)                          # no title is long enough at the tile's width now
         self.assertTrue(t.title.text().endswith("\u2026"), t.title.text())
-        self.assertLessEqual(t.title.fontMetrics().horizontalAdvance(t.title.text()),
-                             t.width() - t.shape.width())
-        self.assertIn("Friends playing now", t.face.toolTip() + t.title.toolTip())
+        self.assertLessEqual(t.title.fontMetrics().horizontalAdvance(t.title.text()), 100)
+        self.assertIn("Where your space goes", t.face.toolTip() + t.title.toolTip())
 
     def test_tile_state_restyles_the_face(self):
         g = self.g

@@ -741,7 +741,7 @@ class DashWidget(QFrame):
         self.size_ = size
         self.editing = on
         self.editbar.setVisible(on and self.selected)
-        title = self.TITLES.get(size, self.TITLE)
+        title = self.title_for(size)
         self.edit_name.setText(title)
         if self.title_label is not None:
             self.title_label.setText(title)
@@ -753,6 +753,9 @@ class DashWidget(QFrame):
         self.setProperty('selected', on and self.selected)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def title_for(self, size: str) -> str:
+        return self.TITLES.get(size, self.TITLE)
 
     def mousePressEvent(self, ev):
         if self.editing:
@@ -2279,9 +2282,13 @@ class FriendsWidget(DashWidget):
     layout only while somebody plays (or Steam refused the key); Customise
     shows its other states: set up, looking, nobody in a game, all
     private. Presence is asked by the window (_sync_presence); this only
-    reads FRIENDS."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'friends', "Friends playing now", G['friends'], 'aurora', None
-    TITLES = {'small': "Friends"}
+    reads FRIENDS.
+
+    w-161: the option `lead` 'auto' (default) draws the digest's ladder
+    (friends_ladder: Now, Play together, Friends' picks, quiet); 'now' keeps
+    the card above: only games friends are in."""
+    KIND, TITLE, GLYPH, GRAD, LINK = 'friends', "Friends", G['friends'], 'aurora', None
+    PICK_ROWS = 3
     WIDE_ROWS = 4
     SMALL_ROWS = 2
     PRIVATE_TIP = ("Private: their game details aren't public on Steam. “Friends only” "
@@ -2295,6 +2302,19 @@ class FriendsWidget(DashWidget):
         self.cards: list[ClickRow] = []
         self._subs: dict[int, QLabel] = {}
         self.footer: QLabel | None = None
+        self.head: QLabel | None = None
+        self._clock: float | None = None      # the gallery's sample time (preview_seed)
+
+    @property
+    def ladder(self) -> bool:
+        return self.options.get('lead', 'auto') != 'now'
+
+    def title_for(self, size):
+        return "Friends playing now" if not self.ladder and size != 'small' else self.TITLE
+
+    def preview_seed(self, hub):
+        # The sample answer is stamped when the gallery opens: read it as of then.
+        self._clock = float((hub.friends or {}).get('updated') or 0) + 5 or None
 
     def why(self, hub):
         if not hub.config.get('friends_enabled'):
@@ -2309,6 +2329,8 @@ class FriendsWidget(DashWidget):
                            limit=MAX_CARDS if limit == 0 else limit)
 
     def has_content(self, hub):
+        if self.ladder:
+            return friends_ladder.has_content(self, hub)
         if not hub.config.get('friends_enabled') or not FRIENDS.steam_usable():
             return False
         if self.size_ == 'small':                # who's online: shown with any public friend
@@ -2340,6 +2362,9 @@ class FriendsWidget(DashWidget):
             self._filling = False
 
     def _fill(self, hub):
+        if self.ladder:
+            friends_ladder.fill(self, hub)
+            return
         state = self._state_of(hub)
         if self.size_ == 'small':
             self._fill_small(hub, state)
@@ -3697,6 +3722,7 @@ class Dashboard(QWidget):
 # below is inside a function, so the cycle resolves at call time.
 from .art import ART  # noqa: E402
 from .deals import _pill, DealArt, dim  # noqa: E402
+from . import friends_ladder  # noqa: E402
 from .friends import (_ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text,  # noqa: E402
     playing_now, who_text)
 from .details import ElideLabel  # noqa: E402

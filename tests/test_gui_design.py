@@ -2422,6 +2422,7 @@ class WidgetSpecTest(unittest.TestCase):
                       'bg': ('art', 'pinned', 'gradient', 'surface')},
             'week': {'style': ('bars', 'number')},
             'foryou': {'style': ('stage', 'strip')},
+            'friends': {'lead': ('auto', 'now')},
             'pick': {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
                      'style': ('chips', 'wheel', 'today')}})
         self.assertEqual(t['STYLE_LABELS'], {

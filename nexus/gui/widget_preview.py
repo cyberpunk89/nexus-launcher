@@ -155,6 +155,7 @@ class PreviewHub:
     go = _open_settings = _reload_friends = update_all = _tile_clicked = spin = _noop
     _show_menu = _reveal_game = open_report = _open_on_play = _open_job = _noop
     on_game_action = _moment_menu = moment_action = dash_update = _noop
+    _play_lead = _play_together = _noop
 
 
 @contextmanager

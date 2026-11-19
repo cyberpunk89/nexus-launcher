@@ -92,6 +92,10 @@ class Ladder(unittest.TestCase):
         self.assertEqual((d['now'][0]['slug'], d['now'][0]['owned'], d['now'][0]['title']),
                          (None, False, 'Thirty'))
 
+    def test_now_without_a_game_name_says_a_game_not_an_id(self):
+        ans = answer(friend(A, playing=playing(1086940, name=None)))
+        self.assertEqual(digest(ans)['now'][0]['title'], 'a game')
+
     def test_hidden_or_duplicate_library_game_counts_as_not_owned_in_now(self):
         ans = answer(friend(A, playing=playing(10)))
         d = digest(ans, [game(10, hidden=True)])

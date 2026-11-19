@@ -780,6 +780,9 @@ class _FriendsWindow(unittest.TestCase):
         w = self.win = nx.MainWindow()
         w.isActiveWindow = lambda: self.active
         w.prefs.dashboard = nx.dash_kind_defaults()          # Friends at full size
+        for it in w.prefs.dashboard:                         # the old card: games friends are in
+            if it['id'] == 'friends':
+                it['lead'] = 'now'
         w.prefs.library_state = {}
         w.config['friends_enabled'] = True
         w.resize(1400, 900)
