@@ -4,6 +4,7 @@ belong in nexus/platform/, Linux-only behaviour behind nexus.features. Plain
 text scans, no imports, so it runs the same on either OS."""
 
 import ast
+import builtins
 import re
 import unittest
 from pathlib import Path
@@ -53,6 +54,57 @@ class Portability(unittest.TestCase):
                         and 'encoding' not in {k.arg for k in node.keywords}:
                     problems.append(f"{path.relative_to(NEXUS.parent)}:{node.lineno}")
         self.assertEqual(problems, [], "\nadd encoding='utf-8':\n" + "\n".join(problems))
+
+    def test_annotations_only_name_what_is_already_bound(self):
+        # Python 3.14 evaluates annotations lazily, but CI's 3.11 and the
+        # Windows build's 3.12 evaluate a def's annotations when the def runs:
+        # a name imported further down the module (or the class's own name in
+        # its body) is a NameError there and breaks every import of the GUI.
+        # Quote it ('Popover') instead. Found by the Windows VM on 2026-11-19.
+        problems = []
+        for path in sorted(NEXUS.rglob('*.py')):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            if any(isinstance(n, ast.ImportFrom) and n.module == '__future__'
+                   and any(a.name == 'annotations' for a in n.names) for n in tree.body):
+                continue
+            bound: dict[str, int] = {}
+
+            def bind(name, line):
+                bound.setdefault(name, line)
+            for n in tree.body:
+                for x in ast.walk(n) if isinstance(n, (ast.If, ast.Try)) else [n]:
+                    if isinstance(x, (ast.Import, ast.ImportFrom)):
+                        for a in x.names:
+                            bind((a.asname or a.name).split('.')[0], n.lineno)
+                    elif isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        bind(x.name, n.lineno)
+                    elif isinstance(x, (ast.Assign, ast.AnnAssign)):
+                        targets = x.targets if isinstance(x, ast.Assign) else [x.target]
+                        for t in targets:
+                            for y in ast.walk(t):
+                                if isinstance(y, ast.Name):
+                                    bind(y.id, n.lineno)
+            funcs = []
+            for n in tree.body:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcs.append(n)
+                elif isinstance(n, ast.ClassDef):
+                    funcs += [m for m in n.body
+                              if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            for f in funcs:
+                a = f.args
+                anns = [f.returns, a.vararg and a.vararg.annotation, a.kwarg and a.kwarg.annotation]
+                anns += [x.annotation for x in a.args + a.kwonlyargs + a.posonlyargs]
+                for ann in anns:
+                    if ann is None or isinstance(ann, ast.Constant):
+                        continue
+                    for nm in {x.id for x in ast.walk(ann) if isinstance(x, ast.Name)}:
+                        if hasattr(builtins, nm):
+                            continue
+                        line = bound.get(nm)
+                        if line is None or line >= f.lineno:
+                            problems.append(f"{path.relative_to(NEXUS.parent)}:{f.lineno} {nm}")
+        self.assertEqual(problems, [], "\nquote these annotations:\n" + "\n".join(problems))
 
 
 if __name__ == '__main__':

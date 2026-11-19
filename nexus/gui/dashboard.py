@@ -3526,7 +3526,7 @@ class Dashboard(QWidget):
                 return
 
     @property
-    def more_menu(self) -> Popover:
+    def more_menu(self) -> 'Popover':
         if self._more is None:
             self._more = Popover(getattr(self.hub, 'desk', None) or self, 260)
         return self._more
