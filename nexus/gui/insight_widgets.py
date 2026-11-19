@@ -283,8 +283,8 @@ class InsightWidget(CardTools, DashWidget):
     """A card that reads the insights payload and rebuilds only when what it
     shows changed (so a pad keeps its place across the hourly refresh)."""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._hub = None
         self._sig = None
 
@@ -318,6 +318,15 @@ class OnThisDayWidget(InsightWidget):
     """One year ago (or two, three...) around today's date: the game, how
     long you played and when, and Play again. Wide lists the next ones."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'onthisday', "On this day", G['history'], 'dusk', None
+
+    def why(self, hub):
+        shown = self.shown(hub)
+        for r in (self.data(hub) or {}).get('on_this_day') or ():
+            if isinstance(r, dict) and r.get('slug') in shown:
+                n = int(r.get('years_ago') or 1)
+                name = shown[r['slug']].get('display_name') or r.get('name') or r['slug']
+                return f"{name}, {n} year{'s' if n != 1 else ''} ago today"
+        return ''
 
     def _entries(self, hub):
         return memories(self.data(hub), self.shown(hub))
@@ -692,8 +701,12 @@ class HeatmapWidget(InsightWidget):
     the best one, the busiest weekday. Open goes to Play history."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'heatmap', "Your year", G['calendar'], 'tide', 'history'
 
-    def __init__(self):
-        super().__init__()
+    def why(self, hub):
+        best = ((self.data(hub) or {}).get('streak') or {}).get('best') or 0
+        return f"Your best streak: {best} days" if best >= 3 else ''
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.grid: HeatGrid | None = None
 
     def signature(self, hub):
@@ -763,8 +776,8 @@ class MilestonesWidget(InsightWidget):
     game's page, the Library (games finished) or Play history (this year)."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'milestones', "Next milestones", G['trophy'], 'aurora', None
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.rows: list[ClickRow] = []
 
     def _items(self, hub) -> list[dict]:
@@ -775,6 +788,11 @@ class MilestonesWidget(InsightWidget):
 
     def has_content(self, hub):
         return bool(self._items(hub))
+
+    def why(self, hub):
+        near = [m for m in self._items(hub) if (m.get('have') or 0) >= 0.9 * m['goal']]
+        n = len(near)
+        return f"{n} milestone{'s' if n != 1 else ''} almost reached" if n else ''
 
     def signature(self, hub):
         return repr(self._items(hub))

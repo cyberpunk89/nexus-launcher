@@ -958,6 +958,33 @@ def build_stylesheet(scale: float = 1.0) -> str:
         border: 1px solid $accent_35; border-radius: ${r_card}px; }
     #DashEditBar { background: $accent_09; border-radius: ${r_control}px; }
     #DashLayouts { background: transparent; border: none; }
+    /* The Customise gallery (w-158). */
+    QLineEdit#GallerySearch { background: $surface_1; border: 1px solid $border;
+                              border-radius: ${r_control}px; padding: 0 ${sp_2}px; }
+    QLineEdit#GallerySearch:focus { border: 1px solid $accent; background: $surface_2; }
+    QLabel#GalleryKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
+    QLabel#GalleryCount { color: $muted; font-size: ${fs_2xs}px; }
+    #GalleryTile { background: transparent; border: none; }
+    QPushButton#TileFace { background: $surface_1; border: 1px solid $border;
+                           border-radius: ${r_control}px; text-align: left; padding: 0; }
+    QPushButton#TileFace:hover { border-color: $overlay; }
+    QPushButton#TileFace:focus { border-color: $accent; }
+    #GalleryTile[on="true"] QPushButton#TileFace { border-color: $accent_35; }
+    #GalleryTile[selected="true"] QPushButton#TileFace { background: $accent_09;
+                                                        border: 1px solid $accent; }
+    #GalleryTile[dim="true"] QPushButton#TileFace { background: $surface; border-style: dashed; }
+    QLabel#TileTitle { color: $text; font-size: ${fs_xs}px; font-weight: 600; }
+    QLabel#TileNote { color: $muted; font-size: ${fs_2xs}px; }
+    QLabel#TileNote[why="true"] { color: $subtext; }
+    QLabel#TileTick { background: $accent; color: $on_accent; font-family: "$icon";
+                      font-size: ${fs_xs_plus}px; }
+    QPushButton#SizeChip { background: $surface_2; border: 1px solid $border;
+                           border-radius: ${r_control}px; padding: 0; }
+    QPushButton#SizeChip:hover { border-color: $overlay; }
+    QPushButton#SizeChip:focus { border-color: $accent; background: $accent_16; }
+    QLabel#SizeChipText { color: $subtext; font-size: ${fs_2xs}px; }
+    #DropSlot { background: transparent; border: none; }
+    QLabel#DropTitle { color: $accent; font-size: ${fs_sm}px; font-weight: 600; }
     #CustomiseDock { background: $surface; border: none;
                                      border-left: 1px solid $border; }
     #CustomiseBody, QScrollArea#CustomiseScroll { background: transparent; }

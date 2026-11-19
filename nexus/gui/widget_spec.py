@@ -17,6 +17,16 @@ OPTION_BAR = {'style': ("Style", "Change how this shows"),
               'bg': ("Background", "What's behind the Stage")}
 
 
+def span(size: str) -> int:
+    """Columns a size covers in a three-column Home (full-width sizes: 3)."""
+    return {'small': 1, 'tall': 1, 'wide': 2}.get(size, 3)
+
+
+# The Customise gallery's groups (w-158), in the order it lists them.
+GROUPS = (('stage', "Stage"), ('play', "Play"), ('social', "Social"), ('library', "Library"),
+          ('stats', "Stats"), ('store', "Store"))
+
+
 @dataclass(frozen=True)
 class WidgetSpec:
     kind: str
@@ -35,6 +45,8 @@ class WidgetSpec:
     # Packed grid (w-155): given more height than it needs (a short column), the
     # card shows more rows instead of empty space.
     grows: bool = False
+    group: str = 'library'            # the Customise gallery's group (GROUPS)
+    note: str = ''                    # what a merged widget took in, shown on its gallery tile
 
 
 _STYLE = {
@@ -50,43 +62,49 @@ _BG = (('art', "Game art"), ('pinned', "Pinned art"), ('gradient', "Accent gradi
 # Default order packs evenly in 3 columns.
 SPECS = (
     WidgetSpec('stage', "Stage", ('cinematic', 'wide', 'banner'), 'cinematic',
-               options={'style': _STYLE['stage'], 'bg': _BG}),
-    WidgetSpec('save', "Your save", ('small',), 'small', True, after='stage'),
+               options={'style': _STYLE['stage'], 'bg': _BG}, group='stage'),
+    WidgetSpec('save', "Your save", ('small',), 'small', True, after='stage', group='stage'),
     WidgetSpec('foryou', "For you now", ('full',), 'full',
                options={'style': _STYLE['foryou']}, after='stage',
-               feeds=('stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart')),
+               feeds=('stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'),
+               group='stage'),
     WidgetSpec('friends', "Friends playing now", ('small', 'wide', 'full'), 'full',
-               after='stage', grows=True),
+               after='stage', grows=True, group='social'),
     WidgetSpec('pick', "Pick for me", ('small',), 'small',
                options={'vibe': VIBES, 'style': _STYLE['pick']}, after='stage',
-               feeds=('midnight', 'insights')),
-    WidgetSpec('system', "System", ('small', 'wide'), 'wide'),
-    WidgetSpec('news', "News", ('small', 'tall', 'wide', 'full'), 'small', grows=True),
-    WidgetSpec('installed', "Recently installed", ('full',), 'full'),
-    WidgetSpec('smart', "Smart shelf", ('full',), 'full', after='installed'),
+               feeds=('midnight', 'insights'), group='play',
+               note="Now has Today's pick (was Game of the day)"),
+    WidgetSpec('system', "System", ('small', 'wide'), 'wide', group='library'),
+    WidgetSpec('news', "News", ('small', 'tall', 'wide', 'full'), 'small', grows=True,
+               group='store'),
+    WidgetSpec('installed', "Recently installed", ('full',), 'full', group='library'),
+    WidgetSpec('smart', "Smart shelf", ('full',), 'full', after='installed', group='library',
+               note="Owned, not installed is a rule now"),
     WidgetSpec('deals', "Wishlist deals", ('small', 'tall', 'wide', 'full'), 'wide',
-               grows=True),
+               grows=True, group='store'),
     WidgetSpec('upcoming', "Upcoming", ('small', 'tall', 'wide', 'full'), 'small', after='deals',
-               grows=True),
+               grows=True, group='store'),
     WidgetSpec('week', "Your week", ('small', 'wide'), 'small',
                options={'style': _STYLE['week']}, after='upcoming',
-               feeds=('midnight', 'sessions')),
-    WidgetSpec('favourites', "Favourites", ('full',), 'full'),
-    WidgetSpec('collections', "Collections", ('full',), 'full', after='favourites'),
-    WidgetSpec('updates', "Updates ready", ('full',), 'full'),
+               feeds=('midnight', 'sessions'), group='stats'),
+    WidgetSpec('favourites', "Favourites", ('full',), 'full', group='library'),
+    WidgetSpec('collections', "Collections", ('full',), 'full', after='favourites',
+               group='library'),
+    WidgetSpec('updates', "Updates ready", ('full',), 'full', group='library'),
     # The insight widgets (w-139, w-140): read the insights payload; last, hidden,
     # so a saved layout is unchanged and they wait in Add widgets.
     WidgetSpec('onthisday', "On this day", ('small', 'wide'), 'small', True,
-               feeds=('midnight', 'insights')),
+               feeds=('midnight', 'insights'), group='play'),
     WidgetSpec('heatmap', "Your year", ('wide', 'full'), 'full', True,
-               feeds=('midnight', 'insights')),
+               feeds=('midnight', 'insights'), group='stats',
+               note="Takes the best Library fact"),
     WidgetSpec('milestones', "Next milestones", ('small', 'wide'), 'small', True,
-               feeds=('insights',), grows=True),
+               feeds=('insights',), grows=True, group='stats'),
     # The Stats widgets (w-141): the same, with the library parts of the payload.
     WidgetSpec('backlog', "Backlog health", ('small', 'wide'), 'small', True,
-               feeds=('insights', 'library')),
+               feeds=('insights', 'library'), group='stats'),
     WidgetSpec('spacemap', "Where your space goes", ('wide', 'full'), 'wide', True,
-               feeds=('insights', 'library'), grows=True),
+               feeds=('insights', 'library'), grows=True, group='stats'),
 )
 SPEC = {s.kind: s for s in SPECS}
 

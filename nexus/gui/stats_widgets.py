@@ -199,6 +199,10 @@ class BacklogWidget(InsightWidget):
     def has_content(self, hub):
         return self._b(hub) is not None
 
+    def why(self, hub):
+        n = int((self._b(hub) or {}).get('never') or 0)
+        return f"{n} game{'s' if n != 1 else ''} never played" if n else ''
+
     def signature(self, hub):
         return (repr(self._b(hub)), repr(self._shortest(hub)),
                 repr(payload_fact(self.data(hub), 'library', self.shown(hub))))
@@ -512,8 +516,8 @@ class SpaceWidget(InsightWidget):
     disk size can be missing, on Windows for one)."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'spacemap', "Where your space goes", G['storage'], 'tide', None
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.map: SpaceMap | None = None
         self.action_btn: QPushButton | None = None
 
@@ -534,6 +538,10 @@ class SpaceWidget(InsightWidget):
 
     def has_content(self, hub):
         return bool(self._items(hub))
+
+    def why(self, hub):
+        idle = self._idle(hub) if self._items(hub) else 0
+        return f"{fmt_bytes(idle)} idle for over a year" if idle else ''
 
     def _idle(self, hub) -> int:
         b = (self.data(hub) or {}).get('backlog')

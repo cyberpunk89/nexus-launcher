@@ -28,6 +28,17 @@ if nx is not None:
     from nexus.gui.shelfedit import ShelfForm
 
 
+def p_can_undo(d):
+    return d.panel.btn_undo.isEnabled()
+
+
+def focus_and_reveal_like(w):
+    """What a pad's move does: focus, and scroll it into view."""
+    from nexus.gui.input import focus_and_reveal
+    focus_and_reveal(w)
+    QApplication.processEvents()
+
+
 def _more(win, kind):
     """Select the card and open its More menu (w-159): its radios and buttons by text."""
     d = win.dashboard
@@ -2151,8 +2162,7 @@ class Window(unittest.TestCase):
         d._edit('stage', 'hide')
         self.assertTrue(item()['hidden'])
         self.assertTrue(stage.isHidden())
-        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
-        self.assertTrue(any("Stage" in t for t in chips))
+        self.assertFalse(d.gallery.tile('stage').on_home)           # the gallery offers it (w-158)
         d.set_editing(False)
         w.go(w.HOME)
         f = w.default_focus()
@@ -2574,8 +2584,7 @@ class Window(unittest.TestCase):
         # Customise lists Your save under Add widgets when hidden, and Pick for me shows
         d._edit('save', 'hide')
         d.set_editing(True)
-        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
-        self.assertIn("＋  Your save", chips)
+        self.assertFalse(d.gallery.tile('save').on_home)            # the gallery offers it (w-158)
         self.assertTrue(d.widgets['pick'].isVisible())
         d.set_editing(False)
 
@@ -3241,6 +3250,14 @@ class Window(unittest.TestCase):
                 w.setup.services[1].fields[0].setText('bad')
                 QApplication.processEvents()
                 w.go(w.HOME)
+            # w-158: Customise's gallery renders every preview offscreen
+            w.dashboard.set_editing(True)
+            QApplication.processEvents()
+            w.dashboard.gallery.cache.flush()
+            QApplication.processEvents()
+            w.dashboard.gallery.tile('heatmap').face.click()
+            w.dashboard.set_editing(False)
+            QApplication.processEvents()
             w.jobs.jobs.clear()
             w.close()
             w.deleteLater()
@@ -7653,8 +7670,7 @@ class HomeLayouts(unittest.TestCase):
         self.assertTrue(bar.manage.isHidden())
         self.assertTrue(d.panel.isAncestorOf(d.add_row_host))        # Add widgets: Widgets tab
         self.assertFalse(bar.isAncestorOf(d.add_row_host))
-        chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
-        self.assertIn("＋  System", chips)                           # hidden in Cinematic
+        self.assertFalse(d.gallery.tile('system').on_home)          # hidden in Cinematic (w-158)
         d.set_editing(False)
         self.assertFalse(bar.isVisible())
         self.assertTrue(d.panel.isHidden())
@@ -8415,6 +8431,281 @@ class HomeCustomise(unittest.TestCase):
             nx.apply_appearance(w.prefs.appearance)
             nx.build_stylesheet()
         d.set_editing(False)
+
+    # ---- the gallery (w-158) ----
+    def _gallery(self, w=None):
+        w, d = self._home() if w is None else (w, w.dashboard)
+        w.resize(1440, 900)
+        d.set_editing(True)
+        self._flush()
+        w._flush_dashboard()                       # nothing pending moves the cards later
+        d.relayout(force=True)
+        self._flush()
+        return w, d, d.gallery
+
+    def test_gallery_add_is_one_undo_step(self):
+        w, d, g = self._gallery()
+        self.assertTrue(self._item('heatmap')['hidden'])
+        t = g.tile('heatmap')
+        self.assertFalse(t.on_home)
+        before = self._shown(d)
+        t.face.setFocus()
+        t.face.click()
+        self._flush()
+        self.assertFalse(self._item('heatmap')['hidden'])
+        self.assertEqual(self._item('heatmap')['size'], 'full')      # its own size
+        self.assertTrue(t.on_home)
+        self.assertTrue(t.tick.isVisibleTo(t))
+        self.assertEqual(d.selected, 'heatmap')                       # its card is selected
+        self.assertTrue(t.property('selected'))
+        self.assertTrue(d.widgets['heatmap'].isVisible())
+        self.assertEqual(len(d.history._stack), 1)                    # one Undo step
+        d.undo()
+        self.assertEqual(self._shown(d), before)
+        self.assertFalse(p_can_undo(d))
+        d.set_editing(False)
+
+    def test_chip_adds_at_that_size(self):
+        w, d, g = self._gallery()
+        t = g.tile('heatmap')
+        t.chip_btns['wide'].click()
+        self._flush()
+        self.assertEqual(self._item('heatmap')['size'], 'wide')
+        self.assertFalse(self._item('heatmap')['hidden'])
+        self.assertFalse(t.chips_host.isVisibleTo(t))                 # on Home now: no chips
+        self.assertEqual(t.shape.size_, 'wide')
+        d.set_editing(False)
+
+    def test_on_home_tile_selects_and_reveals(self):
+        w, d, g = self._gallery()
+        t = g.tile('stage')
+        self.assertTrue(t.on_home)
+        before = self._shown(d)
+        t.face.click()
+        self._flush()
+        self.assertEqual(d.selected, 'stage')
+        self.assertTrue(t.property('selected'))
+        self.assertTrue(d.widgets['stage'].editbar.isVisible())
+        self.assertEqual(self._shown(d), before)                      # not an edit
+        self.assertFalse(d.panel.btn_undo.isEnabled())
+        d.select('pick')                                              # a card picked on Home
+        self.assertTrue(g.tile('pick').property('selected'))
+        self.assertFalse(t.property('selected'))
+        d.set_editing(False)
+
+    def test_payload_arrival_refreshes_row(self):
+        w, d = self._home()
+        d.feed.data = None
+        d.feed._once = None
+        asked = []
+        with patch_gui('cli_json', lambda args, cb, *a, **k: asked.append((args, cb))):
+            d.set_editing(True)
+            self._flush()
+            g = d.gallery
+            self.assertNotIn('onthisday', g.recommended_kinds())
+            self.assertEqual([a for a, _cb in asked if a[0] == '--insights'], [['--insights', '--json']])
+            from nexus.gui.home_feed import today as _today
+            day = _today()
+            cb = next(cb for a, cb in asked if a[0] == '--insights')
+            cb({'v': 1, 'today': day.isoformat(), 'on_this_day': [
+                {'slug': 'alpha', 'name': 'Alpha', 'years_ago': 2, 'date': '2024-01-01',
+                 'minutes': 90.0}]}, '')
+            w._flush_dashboard()
+            self._flush()
+            self.assertIn('onthisday', g.recommended_kinds())
+            self.assertEqual(g.rec_tiles['onthisday'].note.text(), "Alpha, 2 years ago today")
+            d.set_editing(False)
+            d.set_editing(True)                                       # once: no second ask
+            self.assertEqual(len([a for a, _cb in asked if a[0] == '--insights']), 1)
+        d.set_editing(False)
+
+    def _drag(self, d, ev_type, kind='heatmap', size='full', at=None):
+        from PyQt6.QtCore import QMimeData, QPointF
+        from PyQt6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
+        from nexus.gui.widget_gallery import MIME
+        md = QMimeData()
+        md.setData(MIME, f"{kind}:{size}".encode())
+        acts = Qt.DropAction.CopyAction
+        btn, mods = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+        if ev_type == 'leave':
+            ev = QDragLeaveEvent()
+        elif ev_type == 'drop':
+            ev = QDropEvent(QPointF(at), acts, md, btn, mods)
+        else:
+            cls = QDragEnterEvent if ev_type == 'enter' else QDragMoveEvent
+            ev = cls(at, acts, md, btn, mods)
+        QApplication.sendEvent(d, ev)
+        self._flush()
+        return ev
+
+    def _point_on(self, d, cid, lower=False):
+        """A point in the Dashboard over card `cid`'s top (or bottom) half."""
+        p = next(x for x in d.placed if x.id == cid)
+        gr = d.grid.geometry()
+        cols = d._cols
+        colw = (gr.width() - (cols - 1) * d.grid.horizontalSpacing()) / cols
+        x = gr.x() + p.col * (colw + d.grid.horizontalSpacing()) + 10
+        y = gr.y() + p.y + (p.h * 3 // 4 if lower else p.h // 4)
+        return QPoint(int(x), int(y))
+
+    def test_drag_shows_slot_where_flow_places_it(self):
+        w, d, g = self._gallery()
+        ids = [x.id for x in d.placed]
+        target = ids[2]
+        ev = self._drag(d, 'enter', at=self._point_on(d, target))
+        self.assertTrue(ev.isAccepted())
+        at = self._point_on(d, target)              # from the placement the move sees
+        self._drag(d, 'move', at=at)
+        placed = [x.id for x in d.placed]
+        self.assertIn('_drop', placed)
+        self.assertTrue(d.drop_slot.isVisible())
+        self.assertIn("Your year", d.drop_slot.title.text())
+        order = [i for i in placed if i in ('_drop', target)]
+        self.assertEqual(order, ['_drop', target], (d._drop, at, d.placed))   # the slot goes before it
+        slot = next(x for x in d.placed if x.id == '_drop')
+        self._drag(d, 'drop', at=at)
+        card = next(x for x in d.placed if x.id == 'heatmap')
+        self.assertEqual((card.col, card.span, card.y), (slot.col, slot.span, slot.y))
+        d.set_editing(False)
+
+    def test_drop_inserts_before_target_and_undoes(self):
+        w, d, g = self._gallery()
+        before = self._shown(d)
+        target = [x.id for x in d.placed][1]
+        at = self._point_on(d, target)
+        self._drag(d, 'enter', kind='week', size='wide', at=at)
+        self._drag(d, 'move', kind='week', size='wide', at=at)
+        self._drag(d, 'drop', kind='week', size='wide', at=at)
+        ids = [i['id'] for i in d.items if not i.get('hidden')]
+        self.assertEqual(ids.index('week') + 1, ids.index(target))
+        self.assertEqual(self._item('week')['size'], 'wide')
+        self.assertNotIn('_drop', [x.id for x in d.placed])
+        self.assertTrue(d.drop_slot.isHidden())
+        self.assertEqual(d.selected, 'week')
+        d.undo()
+        self.assertEqual(self._shown(d), before)
+        d.set_editing(False)
+
+    def test_leave_clears_slot(self):
+        w, d, g = self._gallery()
+        at = self._point_on(d, [x.id for x in d.placed][1])
+        self._drag(d, 'enter', at=at)
+        self._drag(d, 'move', at=at)
+        self.assertIn('_drop', [x.id for x in d.placed])
+        self._drag(d, 'leave')
+        self.assertNotIn('_drop', [x.id for x in d.placed])
+        self.assertTrue(d.drop_slot.isHidden())
+        # not customising: Home takes no drops
+        d.set_editing(False)
+        ev = self._drag(d, 'enter', at=at)
+        self.assertFalse(ev.isAccepted())
+
+    def test_drop_target_holds_at_one_point(self):
+        w, d, g = self._gallery()
+        points = [self._point_on(d, x.id, lower) for x in d.placed if x.id != 'stage'
+                  for lower in (False, True)]
+        for at in points:
+            self._drag(d, 'enter', at=at)
+            self._drag(d, 'move', at=at)
+            first = d._drop
+            n = []
+            orig = d._relayout
+            with mock.patch.object(d, '_relayout', lambda: (n.append(1), orig())):
+                for _ in range(3):
+                    self._drag(d, 'move', at=at)
+                    self.assertEqual(d._drop, first, at)
+            self.assertEqual(n, [], at)                               # no extra layout passes
+            self._drag(d, 'leave')
+        d.set_editing(False)
+
+    def test_chip_add_keeps_focus_on_the_face(self):
+        w, d, g = self._gallery()
+        w.activateWindow()
+        t = g.tile('heatmap')
+        t.chip_btns['wide'].setFocus()
+        self._flush()
+        QTest.keyClick(t.chip_btns['wide'], Qt.Key.Key_Space)
+        self._flush()
+        self.assertTrue(t.on_home)
+        self.assertIs(QApplication.focusWidget(), t.face)
+        d.set_editing(False)
+
+    def test_previews_pause_on_the_layouts_tab(self):
+        w, d, g = self._gallery()
+        g.cache.invalidate()
+        g.open()
+        self.assertGreater(g.cache.pending(), 0)
+        d.panel.tabs.item('layouts').click()
+        n = g.cache.pending()
+        self._flush()
+        self.assertEqual(g.cache.pending(), n)                        # nothing rendered meanwhile
+        d.panel.tabs.item('widgets').click()
+        self._flush()
+        self.assertLess(g.cache.pending(), n)
+        d.set_editing(False)
+
+    def test_tile_mime_and_pixmap(self):
+        from nexus.gui.widget_gallery import MIME, parse_mime
+        w, d, g = self._gallery()
+        t = g.tile('heatmap')
+        md, pm = t.drag_data()
+        self.assertEqual(bytes(md.data(MIME)).decode(), 'heatmap:full')
+        self.assertEqual(parse_mime('heatmap:full'), ('heatmap', 'full'))
+        self.assertIsNone(parse_mime('heatmap:small'))                # not one of its sizes
+        self.assertFalse(pm.isNull())
+        self.assertGreater(pm.height() / pm.devicePixelRatio(), t.box.height())   # + the strip
+        d.set_editing(False)
+
+    def test_pad_walks_tiles_and_chips(self):
+        w, d, g = self._gallery()
+        w.activateWindow()
+        sp = w.spatial
+        g.search.setFocus()
+        nxt = sp.move(g.search, Qt.Key.Key_Down)
+        self.assertTrue(g.filter.isAncestorOf(nxt), nxt)
+        seen = set()
+        cur = nxt
+        for _ in range(40):
+            cur = sp.move(cur, Qt.Key.Key_Down)
+            if cur is None:
+                break
+            seen.add(type(cur).__name__)
+            focus_and_reveal_like(cur)
+        self.assertIn('TileFace', seen)
+        self.assertIn('SizeChip', seen)
+        d.set_editing(False)
+
+    def test_focus_kept_after_add(self):
+        w, d, g = self._gallery()
+        w.activateWindow()
+        t = g.tile('heatmap')
+        t.face.setFocus()
+        self._flush()
+        QTest.keyClick(t.face, Qt.Key.Key_Space)
+        self._flush()
+        self.assertTrue(t.on_home)
+        self.assertIs(QApplication.focusWidget(), t.face)
+        d.set_editing(False)
+
+    def test_filter_hiding_focused_tile_moves_focus(self):
+        w, d, g = self._gallery()
+        w.activateWindow()
+        t = g.tile('heatmap')
+        t.face.setFocus()
+        self._flush()
+        g.set_filter('on')                                            # heatmap is not on Home
+        self._flush()
+        self.assertFalse(t.isVisibleTo(g))
+        self.assertIs(QApplication.focusWidget(), g.filter.item('on'))
+        g.set_filter('all')
+        g.search.setText("week")
+        g.tile('week').face.setFocus()
+        g.search.setText("zzz")
+        self._flush()
+        self.assertTrue(g.filter.isAncestorOf(QApplication.focusWidget()))
+        g.search.setText("")
+        d.set_editing(False)
+
 
     def test_panel_folds_to_rail_and_back(self):
         w, d = self._home()

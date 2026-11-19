@@ -6,7 +6,7 @@ import unittest
 
 import tests.sandbox  # noqa: F401  (before anything from nexus)
 from nexus.gui import dashboard as D
-from nexus.gui.grid_flow import Card, flow, move_target
+from nexus.gui.grid_flow import Card, drop_before, flow, move_target, Placed
 
 GAP, TOL = 12, 32
 
@@ -102,6 +102,69 @@ class DashMoveByColumn(unittest.TestCase):
         placed = flow([c(k['id']) for k in vis], 3, GAP, TOL)
         out = D.dash_move(its, 'd', 'up', 3, skip=(), placed=placed)
         self.assertEqual([i['id'] for i in out], ['d', 'a', 'x', 'b', 'c'])
+
+
+class DashAdd(unittest.TestCase):
+    """w-158: the gallery adds a widget: unhidden, at a size its spec allows,
+    in its saved place, before a card, or at the end."""
+
+    def its(self):
+        return [{'id': 'stage', 'size': 'cinematic'},
+                {'id': 'week', 'size': 'small', 'hidden': True, 'style': 'number'},
+                {'id': 'news', 'size': 'small'}, {'id': 'deals', 'size': 'wide'}]
+
+    def test_add_keeps_place_by_default(self):
+        out = D.dash_add(self.its(), 'week', 'wide')
+        self.assertEqual([i['id'] for i in out], ['stage', 'week', 'news', 'deals'])
+        week = out[1]
+        self.assertFalse(week['hidden'])
+        self.assertEqual(week['size'], 'wide')
+        self.assertEqual(week['style'], 'number')                  # other options kept
+        self.assertTrue(self.its()[1]['hidden'])                   # the input is not changed
+
+    def test_add_before_id_and_at_end(self):
+        out = D.dash_add(self.its(), 'week', 'small', before='stage')
+        self.assertEqual([i['id'] for i in out], ['week', 'stage', 'news', 'deals'])
+        out = D.dash_add(self.its(), 'week', 'small', before=D.ADD_END)
+        self.assertEqual([i['id'] for i in out], ['stage', 'news', 'deals', 'week'])
+        out = D.dash_add(self.its(), 'week', 'small', before='gone')   # unknown: keep the place
+        self.assertEqual([i['id'] for i in out], ['stage', 'week', 'news', 'deals'])
+
+    def test_bad_size_falls_back(self):
+        out = D.dash_add(self.its(), 'week', 'full')
+        self.assertEqual(out[1]['size'], 'small')                  # Your week has no Full
+        out = D.dash_add(self.its(), 'spacemap', 'small')          # not in the list yet
+        self.assertEqual(out[-1], {**out[-1], 'id': 'spacemap', 'size': 'wide', 'hidden': False})
+
+
+class DropBefore(unittest.TestCase):
+    """w-158: where a dragged widget lands: the card it goes before."""
+    COLW, GAP = 100, 10
+
+    def placed(self):
+        # a b c / d e (f under c, taller), three 100 px columns, 10 px gaps
+        return [Placed('a', 0, 1, 0, 100), Placed('b', 1, 1, 0, 100), Placed('c', 2, 1, 0, 100),
+                Placed('d', 0, 1, 110, 100), Placed('e', 1, 1, 110, 100),
+                Placed('f', 2, 1, 110, 200)]
+
+    def at(self, x, y, skip=()):
+        return drop_before(self.placed(), 3, self.COLW, self.GAP, x, y, skip)
+
+    def test_column_and_half(self):
+        self.assertEqual(self.at(50, 10), 'a')            # top half of a: before a
+        self.assertEqual(self.at(50, 60), 'd')            # bottom half of a: before d
+        self.assertEqual(self.at(160, 120), 'e')
+        self.assertEqual(self.at(250, 200), 'f')          # f's middle is at 210
+        self.assertEqual(self.at(999, 5), 'c')            # past the right edge: the last column
+
+    def test_skips_slot_and_self(self):
+        self.assertEqual(self.at(50, 10, skip=('a',)), 'd')
+        p = self.placed() + [Placed('_drop', 1, 1, 220, 50)]
+        self.assertIsNone(drop_before(p, 3, self.COLW, self.GAP, 150, 230))
+
+    def test_below_everything_is_end(self):
+        self.assertIsNone(self.at(50, 500))
+        self.assertIsNone(drop_before([], 3, self.COLW, self.GAP, 10, 10))
 
 
 if __name__ == '__main__':

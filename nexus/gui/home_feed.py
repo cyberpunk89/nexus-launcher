@@ -37,6 +37,7 @@ class HomeFeed(QObject):
         self._day = today()
         self._filling = False           # an ask is inside Dashboard.refresh
         self._force = False
+        self._once: datetime | None = None   # ask_once's last ask
         self._hourly = QTimer(self)
         self._hourly.setInterval(HOUR_MS)
         self._hourly.timeout.connect(self._on_hour)
@@ -108,6 +109,17 @@ class HomeFeed(QObject):
             cli_json(INSIGHTS_ARGS, self._arrived, 30000, ttl=INSIGHTS_TTL)
         finally:
             self._filling = False
+
+    def ask_once(self):
+        """Customise opened (w-158): its Recommended row reads the payload,
+        so ask for it when none is here, once per INSIGHTS_TTL."""
+        if self.data is not None or self._filling:
+            return
+        t = now()
+        if self._once is not None and (t - self._once).total_seconds() < INSIGHTS_TTL:
+            return
+        self._once = t
+        cli_json(INSIGHTS_ARGS, self._arrived, 30000, ttl=INSIGHTS_TTL)
 
     def _arrived(self, data, err=''):
         if data is None or data == self.data:

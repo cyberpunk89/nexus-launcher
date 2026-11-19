@@ -662,8 +662,8 @@ class ForYouWidget(DashWidget):
     KIND, TITLE, GLYPH, GRAD = 'foryou', "For you now", G['sparkles'], 'dusk'
     HEAD = False
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.layout().setContentsMargins(SP['4'], SP['2_5'], SP['3'], SP['2_5'])
         self.setMinimumHeight(0)
         self.model: ForYouModel | None = None
@@ -705,6 +705,12 @@ class ForYouWidget(DashWidget):
         self.hub = hub
         self.model = ForYouModel(hub, self)
         self.model.changed.connect(self._changed)
+
+    def preview_seed(self, hub):
+        """The gallery's preview (w-158): the Strip with the sample moments."""
+        from .widget_preview import _Moments
+        self.model = _Moments(hub.sample['moments'])
+        self.dash = hub.dashboard
 
     def attach(self, dash, stage):
         """Put the pill at the end of the Stage's Play row and the list over

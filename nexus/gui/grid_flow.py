@@ -260,6 +260,24 @@ def move_target(placed, wid: str, direction: str) -> str | None:
     return best[1] if best else None
 
 
+def drop_before(placed, cols: int, colw: float, gap: int, x: float, y: float,
+                skip=('_drop',)) -> str | None:
+    """Where a card dragged to (x, y) goes (w-158): the id of the card to put
+    it before, from the last placement. The column comes from x (`colw` px
+    columns, `gap` between them); the card is the first one covering that
+    column whose middle is below y. The drop slot and the dragged card itself
+    (`skip`, plus '_drop' always) never count. None: at the end."""
+    if not placed:
+        return None
+    cols = max(1, int(cols))
+    col = min(cols - 1, max(0, int(x // (colw + gap)))) if colw + gap > 0 else 0
+    skip = set(skip) | {'_drop'}
+    below = sorted((p for p in placed if p.id not in skip
+                    and p.col <= col < p.col + p.span and y < p.y + p.h / 2),
+                   key=lambda p: p.y)
+    return below[0].id if below else None
+
+
 def empty_share(placed, cols: int, gap_v: int) -> float:
     """The part of the grid's box (top to the lowest card) that no card
     covers, 0-1. Each card counts with the gap under it, so gutters are not

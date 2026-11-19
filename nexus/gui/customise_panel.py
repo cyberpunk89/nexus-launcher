@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QPushButton, QSc
 
 from .layouts_bar import LayoutsBar
 from .theme import G, scaled, SP
-from .widgets import FlowLayout, icon_button, label, plain_label, SegmentedControl
+from .widgets import icon_button, label, plain_label, SegmentedControl
 
 DOCK_W = 328                     # the panel, scaled
 RAIL_W = 56                      # folded, scaled
@@ -51,6 +51,7 @@ class CustomisePanel(QFrame):
 
     # ---- the full panel ----
     def _build_full(self) -> QWidget:
+        from .widget_gallery import GALLERY_SIDE, WidgetGallery
         page = QWidget(self.pages)
         col = QVBoxLayout(page)
         col.setContentsMargins(0, 0, 0, 0)
@@ -89,13 +90,15 @@ class CustomisePanel(QFrame):
         col.addWidget(line)
         # bodies, each in its own scroll area
         self.stack = QStackedWidget(page)
-        self.widgets_tab = self._body(label_text="Add widgets")
+        self.widgets_tab = self._body()
         self.layouts_tab = self._body()
         self.layouts_bar = LayoutsBar(self.layouts_tab.parentWidget())
         self.layouts_tab.addWidget(self.layouts_bar)
-        self.add_host = QWidget(self.widgets_tab.parentWidget())
-        self.add_row = FlowLayout(self.add_host, margin=0, spacing=SP['1_5'])
-        self.widgets_tab.addWidget(self.add_host)
+        # The gallery (w-158): every widget with a live preview.
+        self.gallery = WidgetGallery(self.widgets_tab.parentWidget())
+        m = self.widgets_tab.contentsMargins()           # the gallery's width is a constant
+        self.widgets_tab.setContentsMargins(GALLERY_SIDE, m.top(), GALLERY_SIDE, m.bottom())
+        self.widgets_tab.addWidget(self.gallery)
         self.widgets_tab.addStretch()
         self.layouts_tab.addStretch()
         col.addWidget(self.stack, 1)

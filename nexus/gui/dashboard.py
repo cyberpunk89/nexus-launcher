@@ -4,7 +4,7 @@ import html
 import random
 import time
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
@@ -22,7 +22,7 @@ from .layouts import (dash_preset, HomeHistory, HomeSnap, layout_for, MAX_LAYOUT
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import _pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, vibe_pools
 from .moments import DISK_FULL
-from .grid_flow import move_target
+from .grid_flow import drop_before, move_target
 from .home_feed import HomeFeed, today  # noqa: F401
 from .pick_wheel import PickWheel, SEGMENTS
 from .widget_spec import dash_tables, OPTION_BAR, SPEC, SPECS, WidgetSpec  # noqa: F401
@@ -497,6 +497,36 @@ def dash_move(items, wid: str, direction: str, cols: int, skip=(), placed=None) 
     return items
 
 
+ADD_KEEP, ADD_END = None, '\x00end'     # dash_add's `before`: its saved place, or last
+
+
+def dash_add(items, kind: str, size: str, before=ADD_KEEP) -> list[dict]:
+    """The Customise gallery adds `kind` (w-158): shown, at `size` when its
+    spec allows it (else the size it had, else its default), its other
+    options kept. `before` an id on the list puts it there, ADD_END last;
+    ADD_KEEP (or an id not on the list) leaves it where it was saved. A kind
+    missing from the list joins it."""
+    items = [dict(i) for i in items]
+    pos = next((n for n, i in enumerate(items) if i['id'] == kind), None)
+    if pos is None:
+        it = next((dict(i) for i in dash_kind_defaults() if i['id'] == kind), None)
+        if it is None:
+            return items
+        items.append(it)
+        pos = len(items) - 1
+    it = items[pos]
+    sizes = DASH_SIZES.get(kind, ('small',))
+    it['size'] = size if size in sizes else it.get('size') if it.get('size') in sizes \
+        else DASH_DEFAULT_SIZE.get(kind, sizes[0])
+    it['hidden'] = False
+    if before == ADD_END:
+        items.append(items.pop(pos))
+    elif before is not None and before != kind and any(i['id'] == before for i in items):
+        me = items.pop(pos)
+        items.insert(next(n for n, i in enumerate(items) if i['id'] == before), me)
+    return items
+
+
 # --------------------------------------------------------------------------
 # Dashboard — the Stage and glanceable widgets on Home, laid out by the user
 # --------------------------------------------------------------------------
@@ -570,8 +600,8 @@ class DashWidget(QFrame):
     edit = pyqtSignal(str, str)           # (kind, action) from the edit bar
     pressed = pyqtSignal(str)             # clicked in Customise: this card is the selected one (w-159)
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setObjectName("DashCard" if self.FRAMED else "DashShelf")
         self.size_ = 'small'
         self.options: dict = {}           # its DASH_OPTIONS, set with the size by refresh
@@ -676,6 +706,16 @@ class DashWidget(QFrame):
 
     def fill(self, hub):
         pass
+
+    def why(self, hub) -> str:
+        """Why the Customise gallery recommends this widget (w-158), from
+        data already in hand (never an ask): '' when there is no reason."""
+        return ''
+
+    def preview_seed(self, hub):
+        """The Customise gallery's preview (w-158): before fill, put in what
+        fill would otherwise ask the CLI for, from `hub.sample`. Most widgets
+        read only the hub and need nothing."""
 
     def clear(self):
         clear_layout(self.body)
@@ -995,8 +1035,8 @@ class StageWidget(DashWidget):
     FOCUS_DWELL, HOVER_DWELL = 140, 350
     RECENT = 8
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.art = StageArt()
         self.body.addWidget(self.art)
         self.row: 'ShelfRow | None' = None
@@ -1360,8 +1400,8 @@ class PickWidget(DashWidget):
     KIND, TITLE, GLYPH, GRAD, LINK = 'pick', "Pick for me", G['dice'], 'dawn', None
     spun = pyqtSignal(str)                # the vibe to spin
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._hub = None
         self.chips = QWidget()
         self.chips.setObjectName("PickVibes")
@@ -1577,8 +1617,8 @@ class SaveWidget(DashWidget):
     KIND, TITLE, GLYPH, GRAD, LINK = 'save', "Your save", G['save'], 'tide', None
     ASK_AGAIN = 300                          # s: history and last unlocks asked again
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._filling = False
         self._hist: dict | None = None
         self._asked = None                   # monotonic; None: never
@@ -1621,6 +1661,9 @@ class SaveWidget(DashWidget):
             self._draw(hub, g, appid)
         finally:
             self._filling = False
+
+    def preview_seed(self, hub):
+        self._hist, self._asked = hub.sample['history'], time.monotonic()
 
     def _got_history(self, hub, data):
         if data is None and self._hist is not None:
@@ -1702,6 +1745,10 @@ class UpdatesWidget(ShelfWidget):
 
     def games(self, hub):
         return [g for g in _visible_games(hub) if g.get('update_pending')]
+
+    def why(self, hub):
+        n = len(self.games(hub))
+        return f"{n} game{'s' if n != 1 else ''} with an update ready" if n else ''
 
     def fill(self, hub):
         super().fill(hub)
@@ -1812,6 +1859,15 @@ class SystemWidget(DashWidget):
 
 class NewsWidget(DashWidget):
     KIND, TITLE, GLYPH, GRAD, LINK = 'news', "News", G['news'], 'aurora', 'news'
+
+    def why(self, hub):
+        page = getattr(hub, 'newspage', None)
+        items = (getattr(page, 'data', None) or {}).get('items') or []
+        by_app = getattr(page, 'games_by_appid', None)
+        mine = {a for a, g in (by_app if isinstance(by_app, dict) else {}).items()
+                if not g.get('hidden') and not g.get('dup_of')}
+        n = sum(1 for it in items if it.get('kind') == 'steam' and it.get('appid') in mine)
+        return f"{n} stor{'ies' if n != 1 else 'y'} about your games" if n else ''
 
     def fill(self, hub):
         self.clear()
@@ -2027,14 +2083,20 @@ class FriendsWidget(DashWidget):
     PRIVATE_TIP = ("Private: their game details aren't public on Steam. “Friends only” "
                    "counts as private for apps.")
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._sig = None
         self._filling = False
         self.state = ''
         self.cards: list[ClickRow] = []
         self._subs: dict[int, QLabel] = {}
         self.footer: QLabel | None = None
+
+    def why(self, hub):
+        if not hub.config.get('friends_enabled'):
+            return ''
+        n = sum(len(e['people']) for e in self._entries(hub, None))
+        return f"{n} friend{'s' if n != 1 else ''} playing now" if n else ''
 
     @staticmethod
     def _entries(hub, limit: int | None = 0):
@@ -2373,6 +2435,13 @@ class UpcomingWidget(DashWidget):
 WEEK_SAME_MIN = 30      # a week within this many minutes of last week's is "about the same"
 
 
+def _iso_day(text, fallback: date) -> date:
+    try:
+        return date.fromisoformat(text)
+    except (TypeError, ValueError):
+        return fallback + timedelta(days=99)     # never inside a week back
+
+
 def week_compare(this_min, last_to_date) -> str:
     """Your week against last week up to the same weekday (w-167): "" when
     neither has play; never a judgement, only the difference."""
@@ -2403,8 +2472,8 @@ class WeekWidget(DashWidget):
     (Open). From sessions.jsonl via nexus-cli --history."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'week', "Your week", G['clock'], 'dusk', 'history'
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._hist: dict | None = None
         self._asked = None                   # monotonic; None: never
         self._filling = False
@@ -2433,6 +2502,20 @@ class WeekWidget(DashWidget):
             self._build(style)
         finally:
             self._filling = False
+
+    def preview_seed(self, hub):
+        self._hist, self._asked = hub.sample['history'], time.monotonic()
+
+    def why(self, hub):
+        week = (((self._hist or {}).get('periods') or {}).get('week') or {})
+        mins = week.get('minutes')
+        if mins is None:                     # not asked yet: the insights payload's days
+            data = getattr(getattr(getattr(hub, 'dashboard', None), 'feed', None), 'data', None)
+            days = (data or {}).get('days') if isinstance(data, dict) else None
+            t = today()
+            mins = sum(float(v or 0) for d, v in (days or {}).items()
+                       if 0 <= (t - _iso_day(d, t)).days < 7) if days else 0
+        return f"You played {fmt_hours(mins)} this week" if mins and mins >= 30 else ''
 
     def _arrived(self, hub, data, err=''):
         if data is None:
@@ -2475,6 +2558,7 @@ class WeekWidget(DashWidget):
 
 
 from .foryou import ForYouWidget  # noqa: E402  (it builds on DashWidget)
+from .widget_gallery import DropSlot, MIME as GALLERY_MIME, parse_mime  # noqa: E402
 from .insight_widgets import INSIGHT_WIDGETS  # noqa: E402  (so does this)
 from .stats_widgets import STATS_WIDGETS  # noqa: E402
 
@@ -2598,8 +2682,23 @@ class Dashboard(QWidget):
         self.panel = CustomisePanel(self)
         self.panel.hide()
         self.layouts_bar = self.panel.layouts_bar
-        self.add_row_host = self.panel.add_host          # tests and _fill_add_row
-        self.add_row = self.panel.add_row
+        self.gallery = self.panel.gallery                 # the Widgets tab (w-158)
+        # Dragging a gallery tile onto Home (w-158): one dashed slot card, built
+        # once, laid out by the grid where the flow would put the widget.
+        self.setAcceptDrops(True)
+        self.drop_slot = DropSlot(self)
+        self.drop_slot.hide()
+        self._drop: tuple | None = None           # (kind, size, before id or None)
+        self._drop_base = None                    # Home's placement without the slot
+        self._scroll_dir = 0
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(30)
+        self._scroll_timer.timeout.connect(self._autoscroll)
+        self.add_row_host = self.gallery                  # its old name (tests)
+        self.gallery.add.connect(lambda k, z: self.add_widget(k, z))
+        self.gallery.reveal.connect(self.reveal)
+        # Previews render only while the Widgets tab shows (w-158).
+        self.panel.tab.connect(lambda k: self.gallery.cache.pause(k != 'widgets'))
         bar = self.layouts_bar
         bar.preset.connect(self.pick_preset)
         bar.switch.connect(self.switch_layout)
@@ -2681,6 +2780,8 @@ class Dashboard(QWidget):
         elif fed(['insights']) & set(kinds) and self._skip() != self._skipped:
             self.relayout(force=True)            # an insight widget came or went (w-139)
         self.foryou.sync_pill()
+        if self.editing and (kinds is None or 'insights' in kinds):
+            self._sync_gallery()                 # Recommended reads the payload (w-158)
 
     # ---- layout ----
     # Columns come from the width Home's scroll area offers, never from our
@@ -2768,11 +2869,19 @@ class Dashboard(QWidget):
                                         else dash_shelf_label(self.hub, it['shelf']))
             cards.append((k, self.widgets[k], min(DASH_SPAN.get(it['size'], 1), cols),
                           self.widgets[k].grows, 0, it['size'] == 'tall', k == 'stage'))
+        if self._drop is not None and self.editing:
+            kind, size, before = self._drop
+            cards = [c for c in cards if c[0] != kind]
+            at = next((n for n, c in enumerate(cards) if c[0] == before), len(cards))
+            cards.insert(at, ('_drop', self.drop_slot, min(DASH_SPAN.get(size, 1), cols), False, 0,
+                              size == 'tall', False))
         # dash_grid walks the list, so cards are in reading order for grid_flow.
         self.grid.set_cards(cols, cards)
+        dragged = self._drop[0] if self._drop is not None and self.editing else None
         for k, w in self.widgets.items():
-            w.setVisible(k in on)
-        self._fill_add_row()
+            w.setVisible(k in on and k != dragged)
+        self.drop_slot.setVisible(dragged is not None)
+        self._sync_gallery()
         self.foryou.sync_pill(cols)
 
     @property
@@ -2781,23 +2890,147 @@ class Dashboard(QWidget):
         grid's top)."""
         return self.grid.placed
 
-    def _fill_add_row(self):
-        while self.add_row.count():
-            it = self.add_row.takeAt(0)
-            if it.widget():
-                it.widget().hide()             # gone now, not at the next event loop
-                it.widget().deleteLater()
-        hidden = [i for i in self.items if i['hidden']]
+    def _sync_gallery(self):
+        """The gallery follows Home while customising: ticks, sizes, counts,
+        the selected card and what to recommend (hidden widgets that have a
+        reason in data already in hand)."""
         if not self.editing:
             return
-        if not hidden:
-            self.add_row.addWidget(label("Every widget is on the dashboard. Hide one with its"
-                                         " eye button to remove it.", "Muted"))
-        for it in hidden:
-            b = QPushButton(f"＋  {DASH_WIDGETS[it['id']].TITLE}")
-            b.setObjectName("Chip")
-            b.clicked.connect(lambda _=False, k=it['id']: self._edit(k, 'show'))
-            self.add_row.addWidget(b)
+        g = self.gallery
+        g.sync(self.items)
+        hidden = {i['id'] for i in self.items if i.get('hidden')} | \
+            (set(self.widgets) - {i['id'] for i in self.items})
+        reasons = {}
+        for k in hidden:
+            try:
+                reasons[k] = self.widgets[k].why(self.hub)
+            except Exception:                      # a reason is a nicety: never break Home
+                reasons[k] = ''
+        g.set_reasons(reasons)
+        g.set_selected(self.selected)
+
+    # ---- adding (w-158) ----
+    def add_widget(self, kind: str, size: str, before=ADD_KEEP):
+        """The gallery adds `kind` at `size` (its saved place, or `before` a
+        card, or ADD_END): one Undo step. The new card is selected and Home
+        scrolls to it; the focus stays where it was (the tile, now ticked)."""
+        if kind not in self.widgets:
+            return
+        with self._undoable():
+            self.hub.prefs.dashboard = dash_add(self.items, kind, size, before)
+            self.refresh([kind])
+            self.relayout(force=True)
+            self.hub.prefs.save()
+        self.select(kind)
+        self._scroll_to(kind)
+
+    # ---- dropping a gallery tile on Home (w-158) ----
+    @staticmethod
+    def _drag_widget(ev):
+        md = ev.mimeData()
+        if md is None or not md.hasFormat(GALLERY_MIME):
+            return None
+        return parse_mime(bytes(md.data(GALLERY_MIME)).decode('utf-8', 'replace'))
+
+    def dragEnterEvent(self, ev):
+        got = self._drag_widget(ev) if self.editing else None
+        if got is None:
+            ev.ignore()
+            return
+        ev.acceptProposedAction()
+        self.drop_slot.set_widget(*got)
+
+    def _drop_target(self, kind: str, pos) -> str | None:
+        """The card a drop at `pos` (our coordinates) goes before, from the
+        last placement; the slot and the dragged widget never count."""
+        gr = self.grid.geometry()
+        cols = max(1, self.grid._cols)                # the columns `placed` was laid out on
+        gap = self.grid.horizontalSpacing()
+        colw = (gr.width() - (cols - 1) * gap) / cols
+        # From Home as it was before the slot came in: the slot's own room
+        # would move the target under a resting pointer (and back, forever).
+        if self._drop_base is None:
+            self._drop_base = [p for p in self.placed if p.id != '_drop']
+        return drop_before(self._drop_base, cols, colw, gap, pos.x() - gr.x(), pos.y() - gr.y(),
+                           skip=(kind, '_drop'))
+
+    def dragMoveEvent(self, ev):
+        got = self._drag_widget(ev) if self.editing else None
+        if got is None:
+            ev.ignore()
+            return
+        ev.acceptProposedAction()
+        kind, size = got
+        pos = ev.position().toPoint()
+        before = self._drop_target(kind, pos)
+        if self._drop != (kind, size, before):            # lay out only when the target moves
+            self._drop = (kind, size, before)
+            self.drop_slot.set_widget(kind, size)
+            self.relayout(force=True)
+        self._edge_scroll(pos)
+
+    def dragLeaveEvent(self, ev):
+        self._clear_drop()
+        ev.accept()
+
+    def dropEvent(self, ev):
+        got = self._drag_widget(ev) if self.editing else None
+        if got is None:
+            self._clear_drop()
+            ev.ignore()
+            return
+        kind, size = got
+        before = self._drop[2] if self._drop is not None and self._drop[:2] == got \
+            else self._drop_target(kind, ev.position().toPoint())
+        ev.acceptProposedAction()
+        self._drop = self._drop_base = None
+        self._scroll_timer.stop()
+        self.drop_slot.hide()
+        self.add_widget(kind, size, ADD_END if before is None else before)
+
+    def _clear_drop(self):
+        self._scroll_timer.stop()
+        self._drop_base = None
+        if self._drop is not None:
+            self._drop = None
+            self.relayout(force=True)
+        self.drop_slot.hide()
+
+    def _edge_scroll(self, pos):
+        """Near the top or bottom of Home's view, scroll it while dragging."""
+        view = self._view
+        if view is None or not hasattr(view, 'viewport'):
+            return
+        y = self.mapTo(view.viewport(), pos).y() if view.viewport().isAncestorOf(self) else -1
+        edge = scaled(48)
+        h = view.viewport().height()
+        self._scroll_dir = -1 if 0 <= y < edge else 1 if h - edge < y <= h else 0
+        if self._scroll_dir and not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+        elif not self._scroll_dir:
+            self._scroll_timer.stop()
+
+    def _autoscroll(self):
+        view = self._view
+        if not self._scroll_dir or view is None or self._drop is None:
+            self._scroll_timer.stop()
+            return
+        bar = view.verticalScrollBar()
+        bar.setValue(bar.value() + self._scroll_dir * scaled(18))
+
+    def reveal(self, kind: str):
+        """An on-Home tile: select its card and scroll Home to it."""
+        self.select(kind)
+        self._scroll_to(kind)
+
+    def _scroll_to(self, kind: str):
+        w = self.widgets.get(kind)
+        view = self._view
+        if w is None or view is None or not w.isVisibleTo(self):
+            return
+        if hasattr(view, 'ensureWidgetVisible') and view.widget() is not None \
+                and view.widget().isAncestorOf(w):
+            view.ensureWidgetVisible(w, 0, SP['6'])
 
     # ---- editing ----
     def set_editing(self, on: bool):
@@ -2815,6 +3048,7 @@ class Dashboard(QWidget):
         if on:
             self.history.clear()
             self.panel.open()
+            self.feed.ask_once()                  # Recommended reads the payload (w-158)
             self.panel.set_can_undo(False)
             self._sync_layouts()
             self.layouts_bar.set_density(self.density)
@@ -2825,7 +3059,12 @@ class Dashboard(QWidget):
         self._settle()
         if self._laid_editing != on:              # the view's resize may have laid out already
             self.relayout(force=True)
-        if not on:
+        if on:
+            self._sync_gallery()
+            self.gallery.cache.pause(False)       # the panel opens on Widgets
+            self.gallery.open()                   # previews: missing or stale ones, lazily
+        else:
+            self.gallery.stop()
             self.hub.prefs.save()
 
     def _settle(self):

@@ -2381,6 +2381,27 @@ class WidgetSpecTest(unittest.TestCase):
         self.assertEqual(t['FED_BY']['x'], {'probe'})
         self.assertNotIn('x', dashboard.FORYOU_FEEDS)
 
+    def test_every_spec_has_a_known_group(self):
+        """w-158: the gallery groups widgets as the board does."""
+        from nexus.gui.widget_spec import GROUPS, SPECS
+        self.assertEqual([k for k, _t in GROUPS],
+                         ['stage', 'play', 'social', 'library', 'stats', 'store'])
+        for s in SPECS:
+            self.assertIn(s.group, dict(GROUPS), s.kind)
+        by = {s.kind: s.group for s in SPECS}
+        self.assertEqual(by['friends'], 'social')
+        self.assertEqual(by['pick'], 'play')
+        self.assertEqual(by['heatmap'], 'stats')
+        self.assertEqual(by['deals'], 'store')
+        self.assertEqual(by['save'], 'stage')
+
+    def test_merged_kinds_carry_a_note(self):
+        from nexus.gui.widget_spec import SPEC
+        self.assertEqual(SPEC['pick'].note, "Now has Today's pick (was Game of the day)")
+        self.assertEqual(SPEC['heatmap'].note, "Takes the best Library fact")
+        self.assertEqual(SPEC['smart'].note, "Owned, not installed is a rule now")
+        self.assertEqual(SPEC['week'].note, '')
+
     def test_fed_by_routes_events(self):
         """A spec's feeds are events or kinds in one namespace: a refresh of
         one wakes every widget that lists it (w-138)."""
