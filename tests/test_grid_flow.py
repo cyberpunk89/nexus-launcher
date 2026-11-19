@@ -140,6 +140,39 @@ class EvenBottoms(unittest.TestCase):
                          [(0, 0), (2, 0), (0, 112), (1, 112)])
 
 
+class AboveAWide(unittest.TestCase):
+    """A wide card starts under the tallest column it covers; the shorter
+    column above it closes on that line instead of leaving a hole."""
+
+    def test_short_card_grows_down_to_the_wide_card(self):
+        got = by_id(flow([c('week', h=228), c('backlog', span=2, h=361),
+                          c('space', span=2, h=300)], 3, GAP, TOL))
+        self.assertEqual((got['space'].col, got['space'].y), (0, 373))
+        self.assertEqual(got['week'].h, 361)
+        self.assertEqual(got['backlog'].h, 361)
+
+    def test_grows_card_goes_first(self):
+        got = by_id(flow([c('a', h=100, grows=True), c('b', h=50), c('t', h=400),
+                          c('x', h=50), c('w', span=2, h=80)], 3, GAP, TOL))
+        # col 0: a (grows) then x; col 1: b; col 2: t. w lands under the taller of its columns
+        w = got['w']
+        for k in range(w.col, w.col + w.span):
+            above = [p for p in got.values() if p.id != 'w' and p.col <= k < p.col + p.span
+                     and p.y < w.y]
+            self.assertEqual(max(p.y + p.h for p in above), w.y - GAP, k)
+
+    def test_never_grows_a_card_under_another_wide_card(self):
+        # col 0 ends with a 2-wide card that also covers col 1: nothing in col 0 can grow alone
+        got = by_id(flow([c('t', h=400), c('w1', span=2, h=50), c('z', h=30),
+                          c('w2', span=2, h=60)], 3, GAP, TOL))
+        ids = sorted(got)
+        for i in ids:
+            for j in ids:
+                a, b = got[i], got[j]
+                if i < j and not (a.col + a.span <= b.col or b.col + b.span <= a.col):
+                    self.assertFalse(a.y < b.y + b.h and b.y < a.y + a.h, (i, j))
+
+
 class StatsPreset(unittest.TestCase):
     """The one layout whose measured heights the exploration recorded
     (Exploration - Home grid fill, step 7): 3 columns at 1440 px, compact."""
@@ -160,10 +193,16 @@ class StatsPreset(unittest.TestCase):
     def test_under_four_percent_empty(self):
         self.assertLess(G.empty_share(flow(self.CARDS, 3, GAP, TOL), 3, GAP), 0.04)
 
-    def test_empty_share_counts_the_hole(self):
-        # the 72 px hole under daily, in a box of 3 x (938 + gap)
-        share = G.empty_share(flow(self.CARDS, 3, GAP, TOL), 3, GAP)
-        self.assertAlmostEqual(share, 72 / (3 * (938 + GAP)), places=4)
+    def test_hole_above_the_space_map_is_closed(self):
+        # the exploration's simulation left 72 px under daily, above the 2-wide
+        # Space map; daily now grows down to it (2026-11-19)
+        got = by_id(flow(self.CARDS, 3, GAP, TOL))
+        self.assertEqual(got['daily'].h, 140 + 72)
+        self.assertEqual(G.empty_share(list(got.values()), 3, GAP), 0)
+
+    def test_empty_share_counts_a_hole(self):
+        placed = [Placed('a', 0, 1, 0, 100), Placed('b', 1, 1, 0, 40)]
+        self.assertAlmostEqual(G.empty_share(placed, 2, GAP), 60 / (2 * (100 + GAP)), places=4)
 
 
 class BesideAWide(unittest.TestCase):

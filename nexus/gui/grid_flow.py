@@ -84,6 +84,14 @@ def flow(cards, cols: int, gap_v: int, tol: int) -> list[Placed]:
                 low = min(rest)[0]
                 col = next(s for t, s in sorted(rest, key=lambda r: r[1]) if t <= low + tol)
         y = starts[col]
+        if span > 1:
+            # a wide card starts under the tallest column it covers: close the
+            # shorter ones on the line above it rather than leave a hole there
+            stacks = _stacks(out, run, cols)
+            for k in range(col, col + span):
+                if tops[k] < y and stacks[k] and out[stacks[k][-1]][2] == 1:
+                    _close(out, run, k, y - gap_v)
+                    tops[k] = y
         out.append([card.id, col, span, y, h, card.grows, card.anchor])
         run.append(len(out) - 1)
         for k in range(col, col + span):
