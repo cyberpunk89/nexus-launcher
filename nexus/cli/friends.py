@@ -252,31 +252,43 @@ def summaries(key: str, ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def owned_games(key: str, steamid: str) -> tuple[str, dict[str, int], int | None]:
-    """('games' | 'empty', {appid: minutes}, game_count). 'empty' is Steam's
-    `{"response": {}}`: game details not public to this key."""
+def owned_games(key: str, steamid: str) -> tuple[str, dict[str, int], int | None,
+                                                  dict[str, int]]:
+    """('games' | 'empty', {appid: minutes}, game_count, {appid: minutes in the
+    last two weeks}). 'empty' is Steam's `{"response": {}}`: game details not
+    public to this key. The two-week play (`playtime_2weeks`, w-160) comes
+    from the same answer; games without any are left out."""
     _st, data = _get('IPlayerService/GetOwnedGames/v1',
                      {'steamid': steamid, 'include_played_free_games': 1}, key)
     resp = data.get('response') if isinstance(data, dict) else None
     if not isinstance(resp, dict):
         raise FriendsError('offline', "Steam sent an answer Nexus couldn't read.", 200)
     if 'game_count' not in resp and not resp.get('games'):
-        return 'empty', {}, None
-    games = {}
+        return 'empty', {}, None, {}
+    games: dict[str, int] = {}
+    recent: dict[str, int] = {}
     for g in resp.get('games') or []:
         try:
-            games[str(int(g['appid']))] = int(g.get('playtime_forever') or 0)
+            appid = str(int(g['appid']))
+            games[appid] = int(g.get('playtime_forever') or 0)
         except (KeyError, TypeError, ValueError):
             continue
+        try:
+            two = int(g.get('playtime_2weeks') or 0)
+        except (TypeError, ValueError):
+            two = 0
+        if two > 0:
+            recent[appid] = two
     count = resp.get('game_count')
-    return 'games', games, count if isinstance(count, int) else len(games)
+    return 'games', games, count if isinstance(count, int) else len(games), recent
 
 
 # ── refresh ───────────────────────────────────────────────────────────────
 
 def _record(sid: str) -> dict:
     return {'steamid': sid, 'name': None, 'avatar': None, 'visible': None,
-            'private_reason': None, 'playing': None, 'owned': {}, 'owned_at': 0,
+            'private_reason': None, 'playing': None, 'owned': {}, 'recent': {},
+            'owned_at': 0,
             'fetched_at': {'summary': 0, 'owned': 0}, 'evidence': {}}
 
 
@@ -371,7 +383,7 @@ def refresh(state: dict, key: str, me: str, force: bool = False,
             rec = state['friends'][sid]
             ev = rec.setdefault('evidence', {})
             try:
-                answer, games, count = owned_games(key, sid)
+                answer, games, count, recent = owned_games(key, sid)
             except FriendsError as e:
                 if e.kind == 'rate-limited':
                     raise
@@ -389,6 +401,7 @@ def refresh(state: dict, key: str, me: str, force: bool = False,
             ev.update({'owned_answer': answer, 'game_count': count})
             t = int(now())
             rec['owned'] = games
+            rec['recent'] = recent
             rec['owned_at'] = t
             rec.setdefault('fetched_at', {})['owned'] = t
             if answer == 'empty' and rec.get('private_reason') is None:
@@ -486,7 +499,7 @@ def _gamedb_rows(part: dict) -> list[dict]:
                 owned_store[key] = max(owned_store.get(key, 0), m)
         rows.append({'id': f['id'], 'source': 'gamedb', 'steamid': f.get('steamid'),
                      'name': f.get('name'), 'avatar': f.get('avatar'), 'visible': True,
-                     'private_reason': None, 'owned': owned, 'owned_store': owned_store,
+                     'private_reason': None, 'owned': owned, 'recent': {}, 'owned_store': owned_store,
                      'evidence': {}, 'playing': None,
                      'owned_at': f['owned_at'] if isinstance(f.get('owned_at'), str) else updated,
                      'fetched_at': {'summary': None, 'owned': updated}})
@@ -504,8 +517,9 @@ def answer(state: dict, cfg: dict, who: dict, error: dict | None,
     rows = []
     for rec in state['friends'].values():
         r = {k: rec.get(k) for k in ('steamid', 'name', 'avatar', 'visible',
-                                     'private_reason', 'owned', 'evidence')}
+                                     'private_reason', 'owned', 'recent', 'evidence')}
         r['owned'] = r['owned'] or {}
+        r['recent'] = r['recent'] if isinstance(r['recent'], dict) else {}
         r['playing'] = rec.get('playing') if fresh else None
         r['owned_at'] = _iso(rec.get('owned_at'))
         fa = rec.get('fetched_at') or {}

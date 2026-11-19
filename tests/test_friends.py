@@ -79,7 +79,10 @@ class FakeSteam(BaseHTTPRequestHandler):
             got = w['owned'].get(q['steamid'])
             body = {'response': {}} if got is None else {'response': {
                 'game_count': len(got),
-                'games': [{'appid': a, 'playtime_forever': m} for a, m in got.items()]}}
+                'games': [{'appid': a, 'playtime_forever': m,
+                           **({'playtime_2weeks': w['recent'][q['steamid']][a]}
+                              if a in w.get('recent', {}).get(q['steamid'], {}) else {})}
+                          for a, m in got.items()]}}
         else:
             self.send_response(404)
             self.end_headers()
@@ -99,7 +102,8 @@ def world():
                         B: player(B, 'Ben'),
                         C: player(C, 'Cy', cvs=1),           # private profile
                         D: player(D, 'Dee')},                # game details friends-only
-            'owned': {A: {10: 120, 20: 5}, B: {10: 600, 30: 0}}}
+            'owned': {A: {10: 120, 20: 5}, B: {10: 600, 30: 0}},
+            'recent': {A: {10: 45}, B: {10: 0, 30: 0}}}     # 0 and absent both mean none
 
 
 class _FakeSteamCase(unittest.TestCase):
@@ -162,6 +166,10 @@ class Friends(_FakeSteamCase):
                          (False, 'game-details'))
         self.assertEqual(rows[B]['avatar'], 'https://avatars.example/Ben.jpg')
         self.assertEqual(data['by_app'], {'10': [B, A], '20': [A], '30': [B]})
+        # Two-week play rides along from the same answer (w-160); zero is left out
+        self.assertEqual(rows[A]['recent'], {'10': 45})
+        self.assertEqual(rows[B]['recent'], {})
+        self.assertEqual(rows[D]['recent'], {})
         # The raw evidence for the three Steam facts
         self.assertEqual(data['evidence']['friendlist_status'], 200)
         self.assertEqual(data['evidence']['my_communityvisibilitystate'], 1)
@@ -355,6 +363,62 @@ class Friends(_FakeSteamCase):
 
 
 FIXTURE = REPO / 'tests' / 'fixtures' / 'gamedb_friends.json'
+
+
+class FriendsRecent(_FakeSteamCase):
+    """w-160: `recent` (playtime_2weeks) kept from the GetOwnedGames answer."""
+
+    def test_owned_games_returns_two_week_play(self):
+        self.srv.world['recent'] = {A: {10: 45, 20: 'x'}}
+        answer, games, count, recent = F.owned_games(KEY, A)
+        self.assertEqual((answer, games, count), ('games', {'10': 120, '20': 5}, 2))
+        self.assertEqual(recent, {'10': 45})          # junk and zero are dropped
+        self.assertEqual(F.owned_games(KEY, D), ('empty', {}, None, {}))
+
+    def test_old_cache_without_recent_loads_and_fills_on_the_next_fetch(self):
+        F.friends()
+        st = json.loads(F.cache_path().read_text())
+        for r in st['friends'].values():
+            r.pop('recent', None)
+        F.cache_path().write_text(json.dumps(st))
+        self.srv.calls.clear()
+        data = F.friends()                                   # fresh: no call
+        self.assertEqual(self.names(), [])
+        self.assertTrue(all(r['recent'] == {} for r in data['friends']))
+        self.age(owned=F.OWNED_TTL + 1)
+        data = F.friends()
+        rows = {r['steamid']: r for r in data['friends']}
+        self.assertEqual(rows[A]['recent'], {'10': 45})
+
+    def test_private_friend_has_empty_recent(self):
+        data = F.friends()
+        rows = {r['steamid']: r for r in data['friends']}
+        self.assertFalse(rows[D]['visible'])
+        self.assertEqual(rows[D]['recent'], {})
+
+    def test_429_keeps_the_last_good_recent(self):
+        F.friends()
+        self.srv.status['GetOwnedGames'] = 429
+        self.age(owned=F.OWNED_TTL + 1)
+        data = F.friends()
+        rows = {r['steamid']: r for r in data['friends']}
+        self.assertEqual(rows[A]['recent'], {'10': 45})
+        self.assertEqual(data['error']['kind'], 'rate-limited')
+
+    def test_cli_json_shows_recent(self):
+        with tempfile.TemporaryDirectory() as home:
+            cfg = Path(tests.sandbox.config_dir(home))
+            cfg.mkdir(parents=True)
+            (cfg / 'config.toml').write_text(
+                f'[friends]\nenabled = true\nsteamid = "{ME}"\n')
+            env = {**os.environ, **tests.sandbox.home_env(home), F.BASE_ENV: self.base,
+                   F.KEY_ENV: KEY}
+            r = subprocess.run([sys.executable, str(REPO / 'bin' / 'nexus-cli'), '--friends',
+                                '--refresh', '--json'], env=env, text=True,
+                               capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            rows = {f['steamid']: f for f in json.loads(r.stdout)['friends']}
+            self.assertEqual(rows[A]['recent'], {'10': 45})
 
 
 class GamedbMerge(_FakeSteamCase):
