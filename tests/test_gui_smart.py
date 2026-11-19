@@ -257,7 +257,7 @@ class SmartShelves(unittest.TestCase):
         dash._edit('smart', 'shelf')
         it = next(i for i in w.prefs.dashboard if i['id'] == 'smart')
         self.assertEqual(it['shelf'], 'short')
-        self.assertEqual(dash.widgets['smart'].btn_shelf.text(), "Shelf: Short games")
+        self.assertEqual(dash.widgets['smart'].shelf_label, "Short games")
         dash.set_editing(False)
 
     def test_home_widget_owned_not_installed(self):

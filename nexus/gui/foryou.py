@@ -686,7 +686,7 @@ class ForYouWidget(DashWidget):
         set_glyph_icon(self.btn_kinds, G['chevron_down'], 14)
         self.btn_kinds.toggled.connect(self._toggle_kinds)
         bar = self.editbar.layout()
-        bar.insertWidget(bar.indexOf(self.btn_style) + 1, self.btn_kinds)
+        bar.insertWidget(bar.indexOf(self.btn_size) + 1, self.btn_kinds)
 
     def set_density(self, d: dict):
         pass                                     # its own slim margins, any density

@@ -234,6 +234,19 @@ class BesideAWide(unittest.TestCase):
         self.assertEqual(got['a'].h, 100)
         self.assertEqual(got['stage'].h, 686)
 
+    def test_a_card_within_tol_is_stretched_to_the_run_line(self):
+        """Measured on Home (1440, Customise, w-159): System ends 6 px past the Stage
+        (within tol) so it stays beside; the two 88 px cards go under the Stage and end the
+        run at 747. Every placement leaves 82 px under System or stretches it; evening
+        stretches it. The Stage itself is not stretched."""
+        cards = [self.stage(639), c('save', h=132), c('pick', h=137), c('week', h=133),
+                 c('system', h=183), c('upcoming', h=88, grows=True), c('news', h=88, grows=True)]
+        got = by_id(flow(cards, 3, 20, TOL))                        # Home's 20 px gap
+        self.assertEqual(got['stage'].h, 639)
+        self.assertEqual((got['system'].col, got['system'].y), (2, 462))
+        self.assertEqual(got['system'].y + got['system'].h, 747)
+        self.assertEqual((got['upcoming'].y, got['news'].y), (659, 659))
+
     def test_a_card_that_fits_stays_beside(self):
         cards = [self.stage(400), c('a', h=190), c('b', h=190)]
         got = by_id(flow(cards, 3, GAP, TOL))

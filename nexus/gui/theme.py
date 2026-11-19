@@ -954,6 +954,8 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #DashCard { background: $surface; border: 1px solid $border_card; border-radius: ${r_card}px; }
     #DashCard[editing="true"], #DashShelf[editing="true"] {
         border: 1px dashed $accent_35; border-radius: ${r_card}px; }
+    #DashCard[selected="true"], #DashShelf[selected="true"] {
+        border: 1px solid $accent_35; border-radius: ${r_card}px; }
     #DashEditBar { background: $accent_09; border-radius: ${r_control}px; }
     #DashLayouts { background: transparent; border: none; }
     #CustomiseDock { background: $surface; border: none;

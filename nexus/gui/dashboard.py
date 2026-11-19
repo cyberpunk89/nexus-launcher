@@ -11,7 +11,7 @@ from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
     QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QProgressBar, QPushButton, QSizePolicy, QStyle, QToolButton, QVBoxLayout, QWidget)
+    QLabel, QProgressBar, QPushButton, QRadioButton, QSizePolicy, QStyle, QToolButton, QVBoxLayout, QWidget)
 
 from nexus import gamedb, smart, storeinfo
 from nexus.features import has
@@ -554,6 +554,10 @@ class GlyphBadge(QWidget):
         pt.end()
 
 
+SIZE_LABELS = {'small': "Small", 'tall': "Tall", 'wide': "Wide", 'full': "Full width",
+               'cinematic': "Cinematic", 'banner': "Banner"}
+
+
 class DashWidget(QFrame):
     """One dashboard card. Subclasses set the class attributes and fill
     `self.body` in fill(hub); `hub` is the main window (games, jobs, pages).
@@ -564,6 +568,7 @@ class DashWidget(QFrame):
     HEAD = True                           # a framed card's badge and title row
     go = pyqtSignal(str)                  # open a page
     edit = pyqtSignal(str, str)           # (kind, action) from the edit bar
+    pressed = pyqtSignal(str)             # clicked in Customise: this card is the selected one (w-159)
 
     def __init__(self):
         super().__init__()
@@ -571,6 +576,9 @@ class DashWidget(QFrame):
         self.size_ = 'small'
         self.options: dict = {}           # its DASH_OPTIONS, set with the size by refresh
         self.more = None                  # a growing card's GrowHost (w-155)
+        self.selected = False             # Customise: the card whose bar shows (w-159)
+        self.editing = False
+        self.shelf_label: str | None = None
         lay = QVBoxLayout(self)
         pad = SP['4'] if self.FRAMED else 0
         lay.setContentsMargins(pad, pad - 2 if pad else 0, pad, pad)
@@ -616,54 +624,41 @@ class DashWidget(QFrame):
             b = icon_button(glyph, tip, 28, "Ghost", round_=True)
             b.clicked.connect(lambda _=False, a=act: self.edit.emit(self.KIND, a))
             bl.addWidget(b)
-        self.btn_size = QPushButton()
+        self.btn_size = QPushButton()             # cycles the sizes its spec allows
         self.btn_size.setObjectName("Ghost")
         self.btn_size.setToolTip("Change size")
         self.btn_size.clicked.connect(lambda: self.edit.emit(self.KIND, 'size'))
         bl.addWidget(self.btn_size)
-        self.btn_shelf = QPushButton()            # the smart widget: which shelf it shows
-        self.btn_shelf.setObjectName("Ghost")
-        self.btn_shelf.setToolTip("Change which smart shelf this shows")
-        self.btn_shelf.clicked.connect(lambda: self.edit.emit(self.KIND, 'shelf'))
-        self.btn_shelf.setVisible(False)
-        bl.addWidget(self.btn_shelf)
-        for key, (_prefix, tip) in OPTION_BAR.items():    # Style, Background… (w-137)
-            btn = QPushButton()
-            btn.setObjectName("Ghost")
-            btn.setToolTip(tip)
-            btn.clicked.connect(lambda _=False, k=key: self.edit.emit(self.KIND, k))
-            btn.setVisible(False)
-            bl.addWidget(btn)
-            setattr(self, f'btn_{key}', btn)          # btn_style, btn_bg
-        hide = icon_button(G['eye_off'], "Hide this widget", 28, "Ghost", round_=True)
-        hide.clicked.connect(lambda: self.edit.emit(self.KIND, 'hide'))
-        bl.addWidget(hide)
+        # More opens the Style, Size and Hide menu (a popover, Dashboard.more_menu).
+        self.btn_more = QPushButton("More")
+        self.btn_more.setObjectName("Ghost")
+        self.btn_more.setToolTip("Style, size and hide")
+        set_glyph_icon(self.btn_more, G['chevron_down'], 14)
+        self.btn_more.clicked.connect(lambda: self.edit.emit(self.KIND, 'more'))
+        bl.addWidget(self.btn_more)
         return bar
 
     def set_editing(self, on: bool, size: str, shelf: str | None = None):
         self.size_ = size
-        self.editbar.setVisible(on)
+        self.editing = on
+        self.editbar.setVisible(on and self.selected)
         title = self.TITLES.get(size, self.TITLE)
         self.edit_name.setText(title)
         if self.title_label is not None:
             self.title_label.setText(title)
+        self.shelf_label = shelf
         sizes = DASH_SIZES.get(self.KIND, ('small',))
         self.btn_size.setVisible(len(sizes) > 1)
-        self.btn_shelf.setVisible(shelf is not None)
-        if shelf is not None:
-            self.btn_shelf.setText(f"Shelf: {shelf}")
-        for key, (prefix, _tip) in OPTION_BAR.items():
-            btn, pairs = getattr(self, f'btn_{key}'), SPEC[self.KIND].options.get(key)
-            btn.setVisible(pairs is not None)
-            if pairs is not None:
-                labels = dict(pairs)
-                cur = self.options.get(key) or pairs[0][0]
-                btn.setText(f"{prefix}: {labels.get(cur, cur)}")
-        self.btn_size.setText({'small': "Small", 'tall': "Tall", 'wide': "Wide", 'full': "Full width",
-                               'cinematic': "Cinematic", 'banner': "Banner"}[size])
+        self.btn_size.setText(SIZE_LABELS[size])
         self.setProperty('editing', on)
+        self.setProperty('selected', on and self.selected)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def mousePressEvent(self, ev):
+        if self.editing:
+            self.pressed.emit(self.KIND)
+        super().mousePressEvent(ev)
 
     def set_density(self, d: dict):
         """Home's density (DASH_DENSITY): a card's padding."""
@@ -1496,8 +1491,9 @@ class PickWidget(DashWidget):
         it = next((i for i in items if i.get('id') == self.KIND), None)
         if it is None or it.get('vibe') == vibe:
             return
-        it['vibe'] = vibe
-        hub.prefs.dashboard = items
+        with hub.dashboard._undoable():       # Customise's Undo covers it (w-159)
+            it['vibe'] = vibe
+            hub.prefs.dashboard = items
         hub.prefs.save()
         hub.dashboard.refresh([self.KIND])
 
@@ -2542,6 +2538,8 @@ class Dashboard(QWidget):
         self.hub = hub
         self.feed = HomeFeed(self)                # midnight, hour, insights (w-138)
         self.editing = False
+        self.selected: str | None = None          # Customise: the card whose bar shows (w-159)
+        self._more: Popover | None = None
         self.widgets: dict[str, DashWidget] = {}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -2588,6 +2586,7 @@ class Dashboard(QWidget):
             w.hide()
             w.go.connect(hub.go)
             w.edit.connect(self._edit)
+            w.pressed.connect(self.select)
             self.widgets[kind] = w
         for w in self.widgets.values():
             w.bind(hub)
@@ -2610,6 +2609,7 @@ class Dashboard(QWidget):
         bar.delete.connect(self._delete)
         bar.edit_rule.connect(self._edit_rule)
         bar.density.connect(self._pick_density)
+        QApplication.instance().focusChanged.connect(self._focus_changed)
         self.panel.undo.connect(self.undo)
         self.panel.reset.connect(self._reset)
         self.panel.done.connect(self._done)
@@ -2763,6 +2763,7 @@ class Dashboard(QWidget):
         for k, r, c, span, rows in placed:
             it = next(i for i in self.items if i['id'] == k)
             self.widgets[k].options = _dash_options(k, it)
+            self.widgets[k].selected = self.editing and k == self.selected
             self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
                                         else dash_shelf_label(self.hub, it['shelf']))
             cards.append((k, self.widgets[k], min(DASH_SPAN.get(it['size'], 1), cols),
@@ -2809,6 +2810,8 @@ class Dashboard(QWidget):
         elif f is None or f is self.btn_edit or self.isAncestorOf(f):
             f = self.btn_edit                  # it is about to hide: focus goes to the panel
         self.editing = on
+        self.selected = None
+        self.more_menu.close_popover(restore=False)
         if on:
             self.history.clear()
             self.panel.open()
@@ -2877,9 +2880,81 @@ class Dashboard(QWidget):
             else PRESET_LABELS.get(getattr(pr, 'preset', None), "Your Home")
         self.panel.set_sub(f"{where} · {DENSITY_LABELS[self.density]}")
 
+    # ---- the on-card bar (w-159) ----
+    def select(self, kind: str | None):
+        """Customise: this card's bar shows, no other. Not an edit (no Undo)."""
+        if not self.editing or kind == self.selected or (kind is not None and kind not in self.widgets):
+            return
+        self.selected = kind
+        if self.more_menu.isVisible():
+            self.more_menu.close_popover(restore=False)
+        self.relayout(force=True)
+
+    def _focus_changed(self, _old, new):
+        """Pad and keyboard: focus landing inside a card selects it (the menu's own widgets don't)."""
+        if not self.editing or new is None or self._more is not None and self._more.isAncestorOf(new):
+            return
+        for k, w in self.widgets.items():
+            if w.isVisible() and w.isAncestorOf(new):
+                self.select(k)
+                return
+
+    @property
+    def more_menu(self) -> Popover:
+        if self._more is None:
+            self._more = Popover(getattr(self.hub, 'desk', None) or self, 260)
+        return self._more
+
+    def _open_more(self, kind: str):
+        """The More menu of a card: Style and Background radios, Size radios,
+        its smart shelf, Hide. Every pick is one `_edit` (so one Undo step)."""
+        w = self.widgets[kind]
+        it = next(i for i in self.items if i['id'] == kind)
+        pop = self.more_menu
+        clear_layout(pop.body)
+        card = pop.card
+        for g in card.findChildren(QButtonGroup):
+            g.deleteLater()
+
+        def radios(head, action, pairs, cur):
+            pop.body.addWidget(label(head, "SectionKicker"))
+            group = QButtonGroup(card)                     # one choice each, not one for the card
+            for value, text in pairs:
+                r = QRadioButton(text, card)
+                group.addButton(r)
+                r.setChecked(value == cur)
+                r.toggled.connect(lambda on, a=f"{action}={value}": on and self._edit(kind, a))
+                pop.body.addWidget(r)
+        for key, (prefix, _tip) in OPTION_BAR.items():
+            pairs = SPEC[kind].options.get(key)
+            if pairs is not None:
+                radios({'style': "STYLE", 'bg': "BACKGROUND"}.get(key, prefix.upper()), key, pairs,
+                       it.get(key) if it.get(key) in dict(pairs) else pairs[0][0])
+        sizes = DASH_SIZES.get(kind, ('small',))
+        if len(sizes) > 1:
+            radios("SIZE", 'size', [(z, SIZE_LABELS[z]) for z in sizes], it['size'])
+        if w.shelf_label is not None:
+            b = QPushButton(f"Shelf: {w.shelf_label}", card)
+            b.setObjectName("Ghost")
+            b.setToolTip("Change which smart shelf this shows")
+            b.clicked.connect(lambda _=False: (self._edit(kind, 'shelf'), self._open_more(kind)))
+            pop.body.addWidget(b)
+        hide = QPushButton("Hide this widget", card)
+        hide.setObjectName("Ghost")
+        set_glyph_icon(hide, G['eye_off'], 14)
+        hide.clicked.connect(lambda _=False: (pop.close_popover(restore=False), self._edit(kind, 'hide')))
+        pop.body.addWidget(hide)
+        pop.open_at(w.btn_more)
+
     def _edit(self, kind, action):
+        if action == 'more':
+            self._open_more(kind)
+            return
         with self._undoable():
             self._edit_now(kind, action)
+        if action == 'hide' and self.selected == kind:
+            self.selected = None
+            self.relayout(force=True)
 
     def _edit_now(self, kind, action):
         items = self.items
@@ -2888,9 +2963,10 @@ class Dashboard(QWidget):
         else:
             new = [dict(i) for i in items]
             it = next(i for i in new if i['id'] == kind)
+            action, _, value = action.partition('=')          # 'style=number': that value, not the next
             if action == 'size':
                 sizes = DASH_SIZES[kind]
-                it['size'] = sizes[(sizes.index(it['size']) + 1) % len(sizes)]
+                it['size'] = value if value in sizes else sizes[(sizes.index(it['size']) + 1) % len(sizes)]
             elif action == 'shelf':
                 rules = [r for r in smart.WIDGET_RULES if r != 'linux' or has('proton')] + \
                     [smart.USER + s['id'] for s in self.hub.prefs.user_shelves()]   # w-51
@@ -2900,7 +2976,7 @@ class Dashboard(QWidget):
             elif action in OPTION_BAR:
                 vals = DASH_OPTIONS[kind][action]
                 cur = it.get(action) if it.get(action) in vals else vals[0]
-                nxt = vals[(vals.index(cur) + 1) % len(vals)]
+                nxt = value if value in vals else vals[(vals.index(cur) + 1) % len(vals)]
                 if action == 'bg':
                     slug = self.stage.art.game.get('slug')
                     if nxt == 'pinned' and not slug:      # nothing shown to pin: skip it
@@ -3184,6 +3260,7 @@ from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
 from .customise_panel import CustomisePanel  # noqa: E402
+from .popover import Popover  # noqa: E402
 from .layouts_bar import LayoutsView, time_rule_body  # noqa: E402
 from .jobs import cli_cache_forget, cli_json  # noqa: E402
 from .library import featured_games, ShelfRow  # noqa: E402

@@ -485,7 +485,7 @@ class UserShelves(unittest.TestCase):
             dash._edit('smart', 'shelf')
         it = next(i for i in w.prefs.dashboard if i['id'] == 'smart')
         self.assertEqual(it['shelf'], f"user:{s['id']}")
-        self.assertEqual(dash.widgets['smart'].btn_shelf.text(), "Shelf: Steamy")
+        self.assertEqual(dash.widgets['smart'].shelf_label, "Steamy")
         self.assertEqual(sorted(g['slug'] for g in dash.widgets['smart'].games(w)),
                          ['play0', 'play1', 'play2'])
         dash.set_editing(False)

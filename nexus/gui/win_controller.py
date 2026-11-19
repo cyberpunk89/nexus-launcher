@@ -712,7 +712,7 @@ class ControllerMixin:
         if self._open_sheet() is not None:
             self.hints.show_hints([('a', 'Select'), ('b', 'Close')])
             return
-        if self._filter_open():
+        if self._filter_open() or self._card_menu_open():
             self.hints.show_hints([('a', 'Select'), ('b', 'Close'), ('View', 'Close')])
             return
         if not self._theatre and self.desk_search.isVisible():

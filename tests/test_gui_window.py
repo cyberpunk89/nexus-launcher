@@ -4,6 +4,7 @@ runs, nothing is fetched and the user's prefs are never written."""
 
 import json
 import os
+import sys
 import time
 import unittest
 from datetime import datetime, timedelta
@@ -22,9 +23,18 @@ if nx is not None:
     from nexus.gui.theme import scaled, SP, STAGE_BTN_H
     from PyQt6.QtGui import QFont, QFontMetrics, QShortcut
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QWidget
+    from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QRadioButton, QWidget
     from nexus import features, winfocus
     from nexus.gui.shelfedit import ShelfForm
+
+
+def _more(win, kind):
+    """Select the card and open its More menu (w-159): its radios and buttons by text."""
+    d = win.dashboard
+    d.select(kind)
+    d.widgets[kind].btn_more.click()
+    return {b.text(): b for b in d.more_menu.card.findChildren((QRadioButton, QPushButton))
+            if not b.isHidden()}
 
 
 def fake_games():
@@ -1982,6 +1992,8 @@ class Window(unittest.TestCase):
         d.relayout(force=True)
         self.assertFalse(d.editing)
         d.set_editing(True)
+        self.assertFalse(d.widgets['system'].editbar.isVisibleTo(d))   # only the selected card's bar
+        d.select('system')
         self.assertTrue(d.widgets['system'].editbar.isVisibleTo(d))
         before = [i['id'] for i in self.win.prefs.dashboard]
         d._edit('news', 'left')
@@ -2155,9 +2167,9 @@ class Window(unittest.TestCase):
         return next(i for i in self.win.prefs.dashboard if i['id'] == 'stage')
 
     def test_stage_style_and_background_buttons(self):
-        """The edit bar reads Cinematic | Style: Row on art | Background:
-        Game art; Style cycles Row on art / Clean, Background Game art ->
-        Pinned art (the shown game) -> Accent gradient -> Plain."""
+        """The edit bar reads Cinematic | More; More lists Style (Row on art /
+        Clean), Background (Game art, Pinned art = the shown game, Accent
+        gradient, Plain) and Size as radios (w-159)."""
         w, stage = self._stage()
         d, art, row = w.dashboard, stage.art, stage.row
         tiles = [id(t) for t in row.tiles]
@@ -2166,33 +2178,29 @@ class Window(unittest.TestCase):
         bar = stage.editbar.layout()
         order = [bar.itemAt(i).widget() for i in range(bar.count())
                  if bar.itemAt(i).widget() is not None]
-        self.assertLess(order.index(stage.btn_size), order.index(stage.btn_style))
-        self.assertLess(order.index(stage.btn_style), order.index(stage.btn_bg))
-        self.assertEqual(stage.btn_style.text(), "Style: Row on art")
-        self.assertEqual(stage.btn_bg.text(), "Background: Game art")
-        self.assertEqual(stage.btn_bg.toolTip(), "What's behind the Stage")
-        news = d.widgets['news']
-        self.assertFalse(news.btn_bg.isVisibleTo(news))
+        self.assertLess(order.index(stage.btn_size), order.index(stage.btn_more))
+        m = _more(self.win, 'stage')
+        self.assertTrue(m["Row on art"].isChecked())
+        self.assertTrue(m["Game art"].isChecked())
+        self.assertNotIn("Background", [b.text() for b in d.widgets['news'].editbar.findChildren(QPushButton)])
         # Clean: the row is a shelf under the art, with the page's fades.
-        stage.btn_style.click()
+        m["Clean"].click()
         self.assertEqual(self._stage_item()['style'], 'clean')
-        self.assertEqual(stage.btn_style.text(), "Style: Clean")
         self.assertIs(row.parentWidget(), stage)
         self.assertTrue(all(f.role == 'bg' and f.grad is None for f in row.fades.values()))
         self.assertEqual(art.maximumHeight(), max(nx.stage_height('cinematic', vh, 'clean'),
                                                   art.layout().minimumSize().height()))
         self.assertEqual([id(t) for t in row.tiles], tiles)         # never rebuilt
-        stage.btn_style.click()
+        m["Row on art"].click()
         self.assertEqual(self._stage_item()['style'], 'row')
         self.assertIs(row.parentWidget(), art)
         # Background: Pinned art pins the game shown.
         shown = art.game['slug']
-        stage.btn_bg.click()
+        m["Pinned art"].click()
         self.assertEqual((self._stage_item()['bg'], self._stage_item()['pin']), ('pinned', shown))
-        self.assertEqual(stage.btn_bg.text(), "Background: Pinned art")
         self.assertEqual(art.property('bgmode'), 'art')
         self.assertIn("PINNED", art.kicker.text())
-        stage.btn_bg.click()
+        m["Accent gradient"].click()
         self.assertEqual(self._stage_item()['bg'], 'gradient')
         self.assertNotIn('pin', self._stage_item())
         self.assertEqual(art.property('bgmode'), 'gradient')
@@ -2203,29 +2211,33 @@ class Window(unittest.TestCase):
                          {'left': ('dusk', 0), 'right': ('dusk', 1)})
         self.assertEqual(art.maximumHeight(), max(nx.stage_height('cinematic', vh),
                                                   art.layout().minimumSize().height()))
-        stage.btn_bg.click()
+        m["Plain"].click()
         self.assertEqual(self._stage_item()['bg'], 'surface')
-        self.assertEqual(stage.btn_bg.text(), "Background: Plain")
         self.assertEqual(art.property('bgmode'), 'surface')
         self.assertTrue(all(f.role == 'surface' for f in row.fades.values()))
-        stage.btn_bg.click()
+        m["Game art"].click()
         self.assertEqual(self._stage_item()['bg'], 'art')
         self.assertEqual(art.property('bgmode'), 'art')
         self.assertTrue(all(f.role == 'scrim' for f in row.fades.values()))
         self.assertEqual([id(t) for t in row.tiles], tiles)
         d.set_editing(False)
 
-    def test_edit_bar_option_buttons_come_from_the_spec(self):
-        """w-137: a button for every OPTION_BAR key on every widget, shown
-        only for the specs that list that option (Pick's vibe has none)."""
+    def test_more_menu_options_come_from_the_spec(self):
+        """w-137, w-159: a radio group for every OPTION_BAR key on every widget,
+        only for the specs that list that option (Pick's vibe has none: it is
+        the chips on the card)."""
         from nexus.gui.widget_spec import OPTION_BAR, SPEC
         w, _stage = self._stage()
-        w.dashboard.set_editing(True)
-        for kind, dw in w.dashboard.widgets.items():
+        d = w.dashboard
+        d.set_editing(True)
+        for kind in d.widgets:
+            m = _more(self.win, kind)
             for key in OPTION_BAR:
-                self.assertEqual(getattr(dw, f'btn_{key}').isVisibleTo(dw), key in SPEC[kind].options,
-                                 (kind, key))
-        self.assertFalse(hasattr(w.dashboard.widgets['pick'], 'btn_vibe'))
+                labels = [t for _v, t in SPEC[kind].options.get(key, ())]
+                self.assertEqual([t for t in labels if t in m], labels, (kind, key))
+            self.assertIn("Hide this widget", m)
+            d.more_menu.close_popover()
+        self.assertFalse(hasattr(d.widgets['pick'], 'btn_vibe'))
 
     def test_stage_background_skips_pinned_without_a_game(self):
         w, stage = self._stage()
@@ -2572,12 +2584,11 @@ class Window(unittest.TestCase):
         d = w.dashboard
         week = d.widgets['week']
         d.set_editing(True)
-        self.assertTrue(week.btn_style.isVisibleTo(week))
-        self.assertEqual(week.btn_style.text(), "Style: Bars")
-        week.btn_style.click()
+        m = _more(self.win, 'week')
+        self.assertTrue(m["Bars"].isChecked())
+        m["Number only"].click()
         self.assertEqual(next(i for i in d.items if i['id'] == 'week')['style'], 'number')
         self.assertEqual(week.options['style'], 'number')
-        self.assertEqual(week.btn_style.text(), "Style: Number only")
         d.set_editing(False)
 
     def test_density_is_home_only(self):
@@ -6553,16 +6564,16 @@ class ForYou(unittest.TestCase):
         self.assertTrue(fy.isVisibleTo(d))                       # findable in Customise
         notes = [lab.text() for lab in fy.findChildren(QLabel) if lab.objectName() == "FynNote"]
         self.assertIn("Shown on the Stage, beside Play", notes)
-        self.assertEqual(fy.btn_style.text(), "Style: On stage")
-        self.assertTrue(fy.btn_style.isVisibleTo(fy))
-        self.assertFalse(d.widgets['news'].btn_style.isVisibleTo(d.widgets['news']))
-        fy.btn_style.click()
+        m = _more(self.win, 'foryou')
+        self.assertTrue(m["On stage"].isChecked())
+        self.assertNotIn("Strip", _more(self.win, 'news'))
+        m = _more(self.win, 'foryou')
+        m["Strip"].click()
         self.assertEqual(next(i for i in w.prefs.dashboard if i['id'] == 'foryou')['style'],
                          'strip')
-        self.assertEqual(fy.btn_style.text(), "Style: Strip")
         self.assertTrue([i for i in fy.findChildren(nx.StripItem) if not i.isHidden()])
-        fy.btn_style.click()
-        self.assertEqual(fy.btn_style.text(), "Style: On stage")
+        m["On stage"].click()
+        self.assertEqual(next(i for i in w.prefs.dashboard if i['id'] == 'foryou')['style'], 'stage')
         fy.btn_kinds.setChecked(True)
         chips = {b.text(): b for b in fy.findChildren(QPushButton) if b.objectName() == "Chip"}
         self.assertEqual(list(chips), ["Downloads", "Friends playing", "Deals", "Updates",
@@ -6823,6 +6834,11 @@ class HomeGrid(unittest.TestCase):
         w.resize(1300 + nx.scaled(328), 900)             # Home's 1300 px, beside the panel
         w.dashboard.set_editing(True)
         w.dashboard.refresh()
+        # The window's 250 ms debounced dashboard refresh (dash_update) is pending after
+        # setUp: on a slow machine it fires in the middle of a test and adds relayouts
+        # (flow passes) to whatever it counts. Run it now, on our terms.
+        w._dash_timer.stop()
+        w._flush_dashboard()
         for _ in range(6):
             QApplication.processEvents()
         return w, w.dashboard
@@ -6892,6 +6908,105 @@ class HomeGrid(unittest.TestCase):
             QApplication.processEvents()
         self.assertEqual((dash._cols, dash.cols_width()),
                          (3, dash.avail_width() + nx.scaled(56)))
+
+    # ---- the on-card bar and its More menu (w-159) ----
+    def _bars(self, dash):
+        return [k for k, w in dash.widgets.items() if w.editbar.isVisibleTo(dash)]
+
+    def test_selecting_a_card_shows_only_its_bar(self):
+        w, dash = self._home(('news', 'small'), ('save', 'small'), ('pick', 'small'))
+        self.assertEqual(self._bars(dash), [])                       # Customise alone: no bars
+        dash.select('news')
+        for _ in range(3):
+            QApplication.processEvents()
+        self.assertEqual(self._bars(dash), ['news'])
+        bar = dash.widgets['news']
+        self.assertTrue(bar.btn_more.isVisibleTo(bar))
+        self.assertFalse(dash.more_menu.isVisible())                 # options open on More, not on select
+        dash.select('pick')
+        self.assertEqual(self._bars(dash), ['pick'])
+        dash.set_editing(False)
+        self.assertEqual(self._bars(dash), [])
+        self.assertIsNone(dash.selected)
+
+    def test_focus_in_a_card_selects_it(self):
+        w, dash = self._home(('news', 'small'), ('save', 'small'), ('pick', 'small'))
+        dash.widgets['pick'].btn.setFocus(Qt.FocusReason.TabFocusReason)
+        for _ in range(3):
+            QApplication.processEvents()
+        if QApplication.focusWidget() is not dash.widgets['pick'].btn:
+            self.skipTest("offscreen gave no focus")
+        self.assertEqual(dash.selected, 'pick')
+
+    def test_more_menu_style_size_hide_and_undo(self):
+        w, dash = self._home(('stage', 'cinematic'), ('week', 'small'), ('pick', 'small'))
+        dash.select('week')
+        week = dash.widgets['week']
+        week.btn_more.click()
+        menu = dash.more_menu
+        self.assertTrue(menu.isVisible())
+        self.assertIs(w.nav_scope(), menu.card)                      # arrows stay inside it
+        radios = {r.text(): r for r in menu.card.findChildren(QRadioButton)}
+        self.assertEqual(sorted(radios), ["Bars", "Number only", "Small", "Wide"])
+        self.assertTrue(radios["Bars"].isChecked())
+        self.assertTrue(any(b.text() == "Hide this widget" for b in menu.card.findChildren(QPushButton)))
+        radios["Number only"].click()
+        item = next(i for i in dash.items if i['id'] == 'week')
+        self.assertEqual(item['style'], 'number')
+        self.assertTrue(dash.panel.btn_undo.isEnabled())
+        dash.undo()
+        self.assertNotEqual(next(i for i in dash.items if i['id'] == 'week').get('style'), 'number')
+        hide = next(b for b in menu.card.findChildren(QPushButton) if b.text() == "Hide this widget")
+        hide.click()
+        self.assertTrue(next(i for i in dash.items if i['id'] == 'week')['hidden'])
+        self.assertFalse(menu.isVisible())
+        dash.undo()
+        self.assertFalse(next(i for i in dash.items if i['id'] == 'week')['hidden'])
+
+    def test_more_menu_size_radios_follow_the_spec(self):
+        w, dash = self._home(('stage', 'cinematic'), ('week', 'small'))
+        dash.select('stage')
+        dash.widgets['stage'].btn_more.click()
+        radios = {r.text(): r for r in dash.more_menu.card.findChildren(QRadioButton)}
+        for t in ("Cinematic", "Wide", "Banner", "Row on art", "Clean"):
+            self.assertIn(t, radios)
+        radios["Banner"].click()
+        self.assertEqual(next(i for i in dash.items if i['id'] == 'stage')['size'], 'banner')
+        dash.undo()
+        self.assertEqual(next(i for i in dash.items if i['id'] == 'stage')['size'], 'cinematic')
+
+    def test_more_menu_focus_inside_and_escape_closes(self):
+        w, dash = self._home(('news', 'small'), ('pick', 'small'))
+        dash.select('pick')
+        more = dash.widgets['pick'].btn_more
+        more.setFocus()
+        more.click()
+        menu = dash.more_menu
+        f = QApplication.focusWidget()
+        if f is None:
+            self.skipTest("offscreen gave no focus")
+        self.assertTrue(menu.card.isAncestorOf(f))
+        QTest.keyClick(f, Qt.Key.Key_Escape)
+        self.assertFalse(menu.isVisible())
+        self.assertIs(w.nav_scope(), w)
+        self.assertIs(QApplication.focusWidget(), more)
+
+    def test_pick_vibe_chip_is_undoable_and_stays_on_the_card(self):
+        w, dash = self._home(('news', 'small'), ('pick', 'small'))
+        pick = dash.widgets['pick']
+        dash.select('pick')
+        self.assertFalse(dash.widgets['pick'].editbar.isAncestorOf(pick.chips))
+        pick._choose('coop')
+        self.assertTrue(dash.panel.btn_undo.isEnabled())
+
+    def test_bar_keeps_three_columns_at_1440(self):
+        w, dash = self._home(('stage', 'cinematic'), ('news', 'small'), ('save', 'small'), ('pick', 'small'))
+        w.resize(1440, 900)
+        for k in ('stage', 'news', 'pick'):
+            dash.select(k)
+            for _ in range(4):
+                QApplication.processEvents()
+            self.assertEqual(dash._cols, 3, k)
 
     def test_docked_home_never_scrolls_sideways(self):
         """w-157: with the panel (or the rail) docked, the grid never needs
@@ -7038,13 +7153,21 @@ class HomeGrid(unittest.TestCase):
         cards meanwhile, and how often once it had settled."""
         from nexus.gui import widgets as WG
         w, dash = self._home(('system', 'wide'), ('news', 'small'), ('deals', 'wide'))
+        dash.select('system')                  # its bar makes the run taller than News's rows
         news = dash.widgets['news']
         dash.hub.newspage.data = {'items': [
             {'title': f"Story {i}", 'source': "Src", 'url': f"https://x/{i}", 'ts': 0}
             for i in range(12)]}
         calls = []
         real = WG.flow
-        with mock.patch.object(WG, 'flow', lambda *a, **k: (calls.append(1), real(*a, **k))[1]), \
+
+        def spy(*a, **k):
+            # Only this Home's grid: a window an earlier test left behind relayouts on
+            # its own timers, in the same process, and would count here (a flake).
+            if sys._getframe(1).f_locals.get('self') is dash.grid:
+                calls.append(1)
+            return real(*a, **k)
+        with mock.patch.object(WG, 'flow', spy), \
                 mock.patch.object(type(news), 'grows', property(lambda self: grows)):
             dash.refresh(['news'])
             for _ in range(8):
@@ -7138,7 +7261,12 @@ class HomeGrid(unittest.TestCase):
         beside = [p for p in dash.placed if p.id != 'stage' and p.col == 2 and p.y < st.y + st.h]
         self.assertTrue(beside)
         last = max(beside, key=lambda p: p.y)
-        self.assertAlmostEqual(last.y + last.h, st.y + st.h, delta=2)
+        # The column reaches the Stage's bottom. With these cards it may go past it: System
+        # (183 px) ends 6 px past the Stage, within tol, so it stays beside; Upcoming and News
+        # (88 px each) then sit under the Stage and end the run 108 px lower, and evening
+        # stretches System to that line (no placement avoids it, see test_grid_flow
+        # BesideAWide.test_a_card_within_tol_is_stretched_to_the_run_line).
+        self.assertGreaterEqual(last.y + last.h, st.y + st.h - 2)
         nat = dash.widgets['stage'].layout().totalHeightForWidth(dash.widgets['stage'].width())
         self.assertLessEqual(st.h, nat + 2)                   # the Stage itself is not stretched
 
