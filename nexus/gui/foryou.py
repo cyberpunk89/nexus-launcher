@@ -127,10 +127,11 @@ class ForYouModel(QObject):
         """The moments, then (while quiet) the notice with Show now (w-107)."""
         prefs = self.hub.prefs
         now = datetime.now()
+        from .dashboard import system_covers
         ms = home_moments(moments_inputs(self.hub), now,
                           snoozes=prefs.snoozes, quiet_until=prefs.quiet_until,
                           kinds_off=prefs.kinds_off, stage_key=stage_key(self.hub),
-                          linux=has('proton'))
+                          linux=has('proton'), skip=system_covers(self.hub))
         q = quiet_moment(prefs.quiet_until, now)
         return ms + [q] if q is not None else ms
 

@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from unittest import mock
 
@@ -5808,21 +5809,159 @@ class Window(unittest.TestCase):
         self.win._on_library({'games': fake_games(), 'disk': disk, 'disks': [disk]}, '')
         self.assertAlmostEqual(self.win.icons[self.win.SYSTEM].usage, 0.9)
 
-    @linux_features
-    def test_system_widget_tiles(self):
+    def _system(self, size='wide', checks='ok', disks=None, jobs=(), ge=None, crash=None):
+        """The System card at `size`, after the window knows these facts."""
         w = self.win
-        w.prefs.dashboard = nx.dash_kind_defaults()
+        w.prefs.dashboard = [dict(i, size=size) if i['id'] == 'system' else i
+                             for i in nx.dash_kind_defaults()]
         w.dashboard.relayout(force=True)
+        w.health.checks = ([{'status': 'pass', 'title': f'c{i}'} for i in range(6)]
+                           if checks == 'ok' else checks)
+        w._disks = disks if disks is not None else [
+            {'path': '/home', 'used': 588, 'total': 1000, 'free': 412 * 10 ** 9}]
+        w.protonpage.info = ge if ge is not None else {
+            'default': 'GE-Proton10-25', 'families': {'ge': {'update': False}}}
+        w._native_crash = crash
+        w.jobs.jobs[:] = list(jobs)
+        self.addCleanup(w.jobs.jobs.clear)
         w.dashboard.refresh(['system'])
-        sysw = w.dashboard.widgets['system']
+        QApplication.processEvents()
+        return w.dashboard.widgets['system']
+
+    @linux_features
+    def test_system_is_one_quiet_line_when_all_is_fine(self):
+        """w-165: nothing needs you -> one line, no title row, no tiles; the line
+        is the one focus stop and opens System."""
+        w = self.win
+        sysw = self._system('small')
+        self.assertEqual(sysw.tiles, [])
+        self.assertEqual(sysw.line.main, "All good \u00b7 412.0 GB free")
+        self.assertEqual(sysw.line.more, "")                  # Small: just the one line
+        self.assertFalse(sysw.title_label.isVisibleTo(sysw))
+        self.assertIs(sysw.first_stop, sysw.quiet_row)
+        self.assertTrue(sysw.quiet_row.focusPolicy() & Qt.FocusPolicy.StrongFocus)
+        sysw.quiet_row.clicked.emit()
+        self.assertEqual(w.current(), w.SYSTEM)
+        wide = self._system('wide')
+        self.assertEqual(wide.line.main, "All good \u00b7 412.0 GB free")
+        self.assertEqual(wide.line.more, "GE-Proton10-25 \u00b7 6 checks passed")
+        self.assertLess(wide.sizeHint().height(), 80)               # a line, not ~170 px of tiles
+
+    @linux_features
+    def test_system_quiet_line_checking_and_notes(self):
+        sysw = self._system('small', checks=[])
+        self.assertEqual(sysw.line.main, "Checking your setup\u2026")
+        self.assertEqual(sysw.tiles, [])
+        sysw = self._system('small', checks=[{'status': 'pass', 'title': 'a'},
+                                             {'status': 'warn', 'title': 'b'}])
+        self.assertEqual(sysw.line.main, "All good \u00b7 1 note \u00b7 412.0 GB free")
+        self.assertEqual(sysw.line.color, nx.P['warning'])
+        self.assertEqual(sysw.tiles, [])
+
+    @linux_features
+    def test_system_tiles_come_back_with_the_one_thing_on_top(self):
+        w = self.win
+        sysw = self._system('small', checks=[{'status': 'fail', 'title': 'Vulkan driver missing',
+                                              'fix': 'Install vulkan-radeon'}])
         self.assertEqual([t.key for t in sysw.tiles], ['activity', 'storage', 'health', 'proton'])
-        before = len(sysw.tiles[0].children())
-        tile = sysw.tiles[0]
-        w.dashboard.refresh(['system'])                     # unchanged: not rebuilt
-        self.assertIs(sysw.tiles[0], tile)
-        next(t for t in sysw.tiles if t.key == 'health').clicked.emit()
+        self.assertTrue(sysw.title_label.isVisibleTo(sysw))
+        self.assertEqual(sysw.action.text(), "Open Health")
+        self.assertLess(sysw.action.mapTo(sysw, QPoint(0, 0)).y(),
+                        sysw.tiles[0].mapTo(sysw, QPoint(0, 0)).y())      # above the tiles
+        self.assertIs(sysw.first_stop, sysw.action)
+        self.assertEqual(sysw.open_btn.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        # no coloured side border: the colour is on the text and icon (rule, w-165)
+        for x in [sysw] + sysw.findChildren(QWidget):
+            self.assertNotIn('border-left', x.styleSheet())
+        sysw.action.click()
         self.assertEqual((w.current(), w.system.section()), (w.SYSTEM, 'health'))
-        self.assertTrue(before)
+        # the same at Wide, and the tiles stay when it is a running job
+        wide = self._system('wide', jobs=[SimpleNamespace(
+            title="Installing Hades II", state='running', step="Copying", progress=(42, 100),
+            active=True, kind='install', name="Hades II", detail='', ended=None, argv=['x'],
+            log=[], slug='hades', proc=None)])
+        self.assertEqual((wide.action.text(), len(wide.tiles)), ("Show", 4))
+        shown = []
+        with mock.patch.object(w, '_open_job', shown.append):
+            wide.action.click()
+        self.assertEqual(len(shown), 1)
+
+    @linux_features
+    def test_system_retry_runs_the_failed_job_again(self):
+        w = self.win
+        bad = SimpleNamespace(title="Installing Blue Prince", state='failed', active=False,
+                              step="Failed \u2014 Unpacking stopped: not enough space",
+                              progress=None, kind='install', name="Blue Prince",
+                              detail="Unpacking stopped: not enough space",
+                              ended=time.monotonic() - 30, argv=['nexus', '--install', 'bp'],
+                              log=[], slug='bp', proc=None)
+        sysw = self._system('wide', jobs=[bad])
+        self.assertEqual(sysw.action.text(), "Retry")
+        texts = [l.text() for l in sysw.findChildren(QLabel)]
+        self.assertIn("Install failed: Blue Prince", texts)
+        self.assertIn("Unpacking stopped: not enough space", texts)
+        again = []
+        with mock.patch.object(w, '_resubmit', lambda j, argv: again.append((j, argv))):
+            sysw.action.click()
+        self.assertEqual(again, [(bad, ['nexus', '--install', 'bp'])])
+
+    @linux_features
+    def test_system_proton_update_and_crash_buttons(self):
+        w = self.win
+        ge = {'default': 'GE-Proton10-25',
+              'families': {'ge': {'update': True, 'latest': 'GE-Proton10-26'}}}
+        sysw = self._system('small', ge=ge)
+        self.assertEqual(sysw.action.text(), "Install GE-Proton10-26")
+        with mock.patch.object(w.protonpage, '_install') as inst:
+            sysw.action.click()
+        inst.assert_called_once_with('latest')
+        sysw = self._system('small', crash={'id': 'abc', 'kind': 'native-crash'})
+        self.assertEqual(sysw.action.text(), "Report")
+        with mock.patch.object(w, 'open_report') as rep:
+            sysw.action.click()
+        rep.assert_called_once_with('abc')
+        sysw = self._system('small', disks=[{'path': '/mnt/games', 'used': 96, 'total': 100,
+                                             'free': 4 * 10 ** 9}])
+        self.assertEqual(sysw.action.text(), "Review")
+        sysw.action.click()
+        self.assertEqual(w.current(), w.SYSTEM)
+
+    @linux_features
+    def test_for_you_now_skips_what_system_says(self):
+        """Say it once: while the System card shows the failing check, For you
+        now leaves it out; with the card hidden it is back."""
+        from nexus.gui.foryou import ForYouModel
+        w = self.win
+        self._system('wide', checks=[{'status': 'fail', 'title': 'Vulkan', 'id': 'vk'}])
+        model = ForYouModel(w)
+        self.assertEqual([m['id'] for m in model.compute() if m['kind'] == 'broken'], [])
+        for i in w.prefs.dashboard:
+            if i['id'] == 'system':
+                i['hidden'] = True
+        self.assertEqual(len([m for m in model.compute() if m['kind'] == 'broken']), 1)
+
+    def test_system_state_changes_keep_the_grid_in_step(self):
+        """w-165: the card grows from a line to tiles; the packed grid relayouts
+        and its geometry equals what it placed."""
+        w = self.win
+        w._dash_timer.stop()
+        w.go(w.HOME)
+        sysw = self._system('wide')
+        w._flush_dashboard()
+        for state in ('ok', [{'status': 'fail', 'title': 'Vulkan'}], 'ok'):
+            sysw = self._system('wide', checks=state)
+            w._dash_timer.stop()
+            w._flush_dashboard()
+            for _ in range(4):
+                QApplication.processEvents()
+            dash = w.dashboard
+            dash.layout().activate()
+            top = dash.grid.geometry().y()
+            for p in dash.placed:
+                g = dash.widgets[p.id].geometry()
+                self.assertAlmostEqual(g.y() - top, p.y, delta=1, msg=p)
+                self.assertAlmostEqual(g.height(), p.h, delta=1, msg=p)
+        self.assertEqual(sysw.tiles, [])
 
     def test_upcoming_widget(self):
         w = self.win
@@ -6847,6 +6986,9 @@ class HomeGrid(unittest.TestCase):
                  for k, _sizes, s, _h in nx.DASH_KINDS]
         items.sort(key=lambda i: order.index(i['id']) if i['id'] in order else 99)
         w.prefs.dashboard = items
+        # These layouts are about a System card with its tiles (~183 px); all
+        # fine would make it one line (w-165), so something needs you here.
+        w.health.checks = [{'status': 'fail', 'title': 'Something is off'}]
         w.go(w.HOME)
         w.resize(1300 + nx.scaled(328), 900)             # Home's 1300 px, beside the panel
         w.dashboard.set_editing(True)

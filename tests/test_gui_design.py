@@ -684,6 +684,95 @@ class DashboardModel(unittest.TestCase):
         self.assertEqual((att['key'], att['action']), ('proton', 'install-ge'))
 
     @linux_features
+    def test_system_quiet_line(self):
+        """w-165: nothing needs you -> one quiet line, no attention."""
+        GB = 10 ** 9
+        home = [{'path': '/home', 'used': 588 * GB, 'total': 1000 * GB, 'free': 412 * GB}]
+        ok = [{'status': 'pass', 'title': f'c{i}'} for i in range(6)]
+        ge = {'default': 'GE-Proton10-25', 'families': {'ge': {'update': False}}}
+        st = nx.system_status([], home, ok, ge)
+        self.assertIsNone(st['attention'])
+        self.assertEqual(st['line'], {'text': "All good \u00b7 412.0 GB free", 'role': 'success',
+                                      'glyph': 'check',
+                                      'extra': "GE-Proton10-25 \u00b7 6 checks passed"})
+        # while the checks load
+        st = nx.system_status([], home, [], {})
+        self.assertEqual((st['line']['text'], st['line']['role'], st['line']['extra']),
+                         ("Checking your setup\u2026", 'muted', ''))
+        # warnings only: still one line, in the warning colour, counted as notes
+        warn = ok + [{'status': 'warn', 'title': 'Meh'}]
+        st = nx.system_status([], home, warn, ge)
+        self.assertIsNone(st['attention'])
+        self.assertEqual((st['line']['text'], st['line']['role'], st['line']['glyph']),
+                         ("All good \u00b7 1 note \u00b7 412.0 GB free", 'warning', 'warn'))
+        self.assertTrue(st['line']['extra'].endswith("6 checks passed"))
+        fuller = [{'path': '/home', 'used': 850 * GB, 'total': 1000 * GB, 'free': 150 * GB}]
+        st = nx.system_status([], fuller, warn, ge)             # disk over 80 % is a note too
+        self.assertIn("2 notes", st['line']['text'])
+        # something needs you: no line, the tiles and the one thing come back
+        full = [{'path': '/g', 'used': 95, 'total': 100, 'free': 5}]
+        st = nx.system_status([], full, ok, ge)
+        self.assertIsNone(st['line'])
+        self.assertEqual(len(st['tiles']), 4)
+
+    @linux_features
+    def test_system_actions_and_priority(self):
+        """w-165: the one thing in today's order, each with its one action
+        and what For you now must then leave out (say it once)."""
+        full = [{'path': '/mnt/games', 'used': 96, 'total': 100, 'free': 4}]
+        fail = [{'status': 'fail', 'title': 'Vulkan driver missing', 'fix': 'Install it'}]
+        ge = {'default': 'GE-Proton10-25',
+              'families': {'ge': {'update': True, 'latest': 'GE-Proton10-26'}}}
+        run = {'title': 'Installing Hades II', 'state': 'running', 'step': 'Copying',
+               'progress': 42, 'active': True}
+        bad = {'title': 'Installing Blue Prince', 'name': 'Blue Prince', 'kind': 'install',
+               'state': 'failed', 'step': 'Failed \u2014 Unpacking stopped: not enough space',
+               'detail': 'Unpacking stopped: not enough space', 'progress': None,
+               'active': False, 'retry': True, 'age': 60}
+        native = {'id': 'x1', 'kind': 'native-crash'}
+        got = [(a['key'], a['label'], a['covers']) for a in (
+            nx.system_status([run, bad], full, fail, ge, native)['attention'],
+            nx.system_status([run, bad], full, fail, ge)['attention'],
+            nx.system_status([bad], full, fail, ge)['attention'],
+            nx.system_status([], full, fail, ge)['attention'],
+            nx.system_status([], [], fail, ge)['attention'],
+            nx.system_status([], [], [], ge)['attention'])]
+        self.assertEqual(got, [('report', "Report", ()), ('activity', "Show", ('running',)),
+                               ('activity', "Retry", ()), ('storage', "Review", ('disk',)),
+                               ('health', "Open Health", ('health',)),
+                               ('proton', "Install GE-Proton10-26", ('proton',))])
+        att = nx.system_status([bad], [], [], {})['attention']
+        self.assertEqual((att['text'], att['sub'], att['action'], att['role']),
+                         ("Install failed: Blue Prince", "Unpacking stopped: not enough space",
+                          'retry', 'danger'))
+        # a failure already retried, or a day old, or a launch, is not "the one thing"
+        for change in ({'retry': False}, {'age': 25 * 3600}):
+            self.assertIsNone(nx.system_status([dict(bad, **change)], [], [{'status': 'pass'}],
+                                               {})['attention'])
+        self.assertEqual(nx.system_status([bad], [], [], {})['tiles'][0]['value'], "1 failed")
+
+    def test_home_moments_skip_what_system_shows(self):
+        """w-165: For you now leaves out the kind System is showing."""
+        from datetime import datetime
+        from nexus.gui import moments
+        inputs = {'jobs': [{'title': 'Hades II', 'state': 'running', 'kind': 'install',
+                            'slug': 'hades', 'active': True, 'progress': 42, 'step': 'Copying'}],
+                  'checks': [{'status': 'fail', 'title': 'Vulkan', 'id': 'vk'}],
+                  'disks': [{'path': '/g', 'used': 96, 'total': 100, 'free': 4}],
+                  'proton': {'update': True, 'latest': 'GE-Proton10-26'}}
+        now = datetime(2026, 11, 19, 12)
+        kinds = lambda **kw: sorted(m['id'].split(':')[0] + '/' + str(m['sub'])
+                                    for m in moments.home_moments(inputs, now, **kw))
+        everything = kinds()
+        self.assertEqual(len(everything), 4)
+        self.assertEqual(kinds(skip=('running',)), [k for k in everything
+                                                    if not k.startswith('running')])
+        self.assertNotIn('broken/health', kinds(skip=('health',)))
+        self.assertNotIn('broken/disk', kinds(skip=('disk',)))
+        self.assertNotIn('update/proton', kinds(skip=('proton',)))
+        self.assertEqual(kinds(skip=('health', 'disk', 'proton', 'running')), [])
+
+    @linux_features
     def test_native_crash_attention(self):
         """A native crash from last time beats everything else on the Home
         System widget; any other kind of crash file makes no row (w-77)."""

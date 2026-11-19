@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
-from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
+from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics, QLinearGradient, QPainter,
     QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QProgressBar, QPushButton, QRadioButton, QSizePolicy, QStyle, QToolButton, QVBoxLayout, QWidget)
@@ -325,17 +325,31 @@ def system_badge(active: int, problems: int, fails: int) -> tuple[str, str]:
     return '', 'accent'
 
 
+FAIL_SHOWN_HOURS = 24      # a failed job is "the one thing" for this long (w-165)
+
+
+def _notes(n: int) -> str:
+    return f"{n} note{'s' if n != 1 else ''}"
+
+
 def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict] | None,
                   proton: dict | None, crash: dict | None = None) -> dict:
-    """The Home System widget's four tiles and the one thing (if any) that
-    needs attention, from plain data. `jobs` are {title, state, step,
-    progress (pct|None), active}; `disks` as from --library; `checks` from
-    --doctor; `proton` the Proton page's info ({} while loading, None if the
-    check never ran); `crash` a --report-pending row. Only a native crash
-    (Nexus itself went down last time) makes a row, and it comes first."""
+    """The Home System widget from plain data (w-165): `line`, the one quiet
+    line, while nothing needs you; else `attention`, the one thing with its one
+    action, above the four `tiles`. `jobs` are {title, state, step, progress
+    (pct|None), active} and, for a failed one, {name, kind, detail, age (s),
+    retry (nothing newer ran the same command)}; `disks` as from --library;
+    `checks` from --doctor; `proton` the Proton page's info ({} while loading,
+    None if the check never ran); `crash` a --report-pending row. One thing at
+    a time, in this order: a native crash (Nexus itself went down last time),
+    a running job, a failed job, a disk over 90 %, a failing check, a Proton
+    update. Warnings (a warn check, a disk over 80 %) stay in the line, as
+    notes. `covers` is what For you now must then leave out (say it once)."""
     tiles, attention = [], None
     running = [j for j in jobs if j.get('active')]
     failed = [j for j in jobs if j.get('state') == 'failed']
+    again = [j for j in failed if j.get('retry') and j.get('age') is not None
+             and j['age'] <= FAIL_SHOWN_HOURS * 3600]
     if running:
         tiles.append(('activity', 'activity', f"{len(running)} running",
                       running[0].get('title') or '', 'accent'))
@@ -383,29 +397,76 @@ def system_status(jobs: list[dict], disks: list[dict] | None, checks: list[dict]
                      'text': ("Nexus stopped answering" if crash.get('freeze') else
                               "Nexus closed unexpectedly") + (f" ({n} times)" if n > 1 else ""),
                      'sub': "Report it: you see every line before anything is sent",
-                     'crash': crash['id']}
+                     'crash': crash['id'], 'label': "Report", 'covers': ()}
     elif running:
         j = running[0]
         pct = j.get('progress')
         attention = {'key': 'activity', 'glyph': 'spinner', 'role': 'accent',
                      'text': j.get('title') or '',
                      'sub': " · ".join(x for x in (f"{pct}%" if pct is not None else '',
-                                                   j.get('step') or '') if x)}
+                                                   j.get('step') or '') if x),
+                     'label': "Show", 'covers': ('running',), 'job': j.get('job')}
+    elif again:
+        j = again[-1]
+        what = j.get('name') or j.get('title') or ''
+        why = j.get('detail') or str(j.get('step') or '').removeprefix("Failed \u2014 ")
+        attention = {'key': 'activity', 'glyph': 'fail', 'role': 'danger',
+                     'text': f"Install failed: {what}" if j.get('kind') == 'install'
+                     else f"{j.get('title') or what} failed",
+                     'sub': why, 'action': 'retry', 'label': "Retry", 'covers': (),
+                     'job': j.get('job')}
     elif fullest and fullest['used'] / fullest['total'] > 0.9:
         attention = {'key': 'storage', 'glyph': 'storage', 'role': 'danger',
-                     'text': f"{tiles[1][3].split(' · ')[0]} is almost full",
-                     'sub': f"{fmt_size(fullest['free'])} left — see what can go"}
+                     'text': f"The '{tiles[1][3].split(' · ')[0]}' drive is almost full",
+                     'sub': f"{fmt_size(fullest['free'])} left — see what can go",
+                     'label': "Review", 'covers': ('disk',)}
     elif bad and bad[0]['status'] == 'fail':
         attention = {'key': 'health', 'glyph': 'fail', 'role': 'danger',
-                     'text': bad[0].get('title') or '', 'sub': bad[0].get('fix') or ''}
+                     'text': bad[0].get('title') or '', 'sub': bad[0].get('fix') or '',
+                     'label': "Open Health", 'covers': ('health',)}
     elif ge.get('update'):
         attention = {'key': 'proton', 'glyph': 'download', 'role': 'warning',
                      'text': f"{ge.get('latest')} is out",
                      'sub': "Installs next to your current builds", 'action': 'install-ge',
-                     'latest': ge.get('latest')}
+                     'latest': ge.get('latest'), 'label': f"Install {ge.get('latest')}",
+                     'covers': ('proton',)}
+    line = None
+    if attention is None:
+        free = f" · {fmt_size(fullest['free'])} free" if fullest else ''
+        if not checks:
+            line = {'text': "Checking your setup…", 'role': 'muted', 'glyph': 'activity',
+                    'extra': ''}
+        else:
+            notes = len(bad) + (1 if fullest and fullest['used'] / fullest['total'] > DISK_FULL
+                                else 0)
+            deft = proton.get('default') if has('proton') and proton else None
+            line = {'text': "All good" + (f" · {_notes(notes)}" if notes else '') + free,
+                    'role': 'warning' if notes else 'success',
+                    'glyph': 'warn' if notes else 'check',
+                    'extra': " · ".join(x for x in (deft, f"{len(checks) - len(bad)} checks "
+                                                           "passed") if x)}
     return {'tiles': [dict(zip(('key', 'glyph', 'value', 'caption', 'role'), t))
                       for t in tiles],
-            'attention': attention}
+            'attention': attention, 'line': line}
+
+
+def system_state(hub) -> dict:
+    """system_status() from what the window holds now (no refresh, no ask)."""
+    proton = getattr(getattr(hub, 'protonpage', None), 'info', None)
+    return system_status(job_facts(hub.jobs.jobs), hub._disks,
+                         getattr(hub.health, 'checks', []), proton,
+                         getattr(hub, '_native_crash', None))
+
+
+def system_covers(hub) -> tuple:
+    """What the System card says on Home right now, for For you now to leave
+    out (say it once, w-165): () when the card is hidden or all is fine."""
+    item = next((i for i in getattr(hub.prefs, 'dashboard', None) or ()
+                 if i.get('id') == 'system'), None)
+    if item is None or item.get('hidden'):
+        return ()
+    att = system_state(hub)['attention']
+    return tuple(att['covers']) if att else ()
 
 
 def dash_cols(width: int) -> int:
@@ -617,8 +678,9 @@ class DashWidget(QFrame):
         self.editbar.setVisible(False)
         lay.addWidget(self.editbar)
         self.title_label: QLabel | None = None
+        self.head_lay: QHBoxLayout | None = None
         if self.FRAMED and self.HEAD:
-            head = QHBoxLayout()
+            head = self.head_lay = QHBoxLayout()
             head.setSpacing(SP['2'])
             head.addWidget(GlyphBadge(self.GLYPH, self.GRAD))
             t = self.title_label = label(self.TITLE, "DashTitle")
@@ -636,6 +698,13 @@ class DashWidget(QFrame):
         lay.addLayout(self.body)
         if self.FRAMED:
             lay.addStretch()
+
+    def show_head(self, on: bool):
+        """The badge, title and Open of a framed card (a quiet card has none)."""
+        for i in range(self.head_lay.count() if self.head_lay is not None else 0):
+            w = self.head_lay.itemAt(i).widget()
+            if w is not None:
+                w.setVisible(on)
 
     def _edit_bar(self):
         bar = QFrame()
@@ -1764,15 +1833,29 @@ class UpdatesWidget(ShelfWidget):
             self.row.head.layout().addWidget(b)
 
 
+RETRY_KINDS = ('install', 'install-proton', 'task', 'tool')
+
+
 def job_facts(jobs) -> list[dict]:
-    """JobManager jobs as the plain dicts system_status() reads."""
+    """JobManager jobs as the plain dicts system_status() reads. A failed job
+    is `retry`able when it is a kind Retry can run again and nothing newer ran
+    the same command (it was retried, or fixed another way)."""
     out = []
-    for j in jobs:
+    now = time.monotonic()
+    jobs = list(jobs)
+    for i, j in enumerate(jobs):
         prog = getattr(j, 'progress', None)
         pct = (int(100 * min(prog[0], prog[1]) / prog[1])
                if j.state == 'running' and prog and prog[1] else None)
+        ended = getattr(j, 'ended', None)
+        argv = list(getattr(j, 'argv', None) or ())
+        retry = (j.state == 'failed' and getattr(j, 'kind', None) in RETRY_KINDS
+                 and '--update-fetch' not in argv
+                 and not any(list(getattr(k, 'argv', None) or ()) == argv for k in jobs[i + 1:]))
         out.append({'title': j.title, 'state': j.state, 'step': j.step, 'progress': pct,
-                    'active': j.active, 'job': j})
+                    'active': j.active, 'job': j, 'kind': getattr(j, 'kind', None),
+                    'name': getattr(j, 'name', None), 'detail': getattr(j, 'detail', ''),
+                    'age': now - ended if ended is not None else None, 'retry': retry})
     return out
 
 
@@ -1805,30 +1888,107 @@ class SysTile(ClickRow):
         self.setToolTip(f"{t['value']} — {t['caption']}")
 
 
+class QuietLine(QLabel):
+    """System's one line: the main text in `color`, then a muted extra after
+    it; the whole ends in … when the card is narrow (the extra goes first)."""
+
+    def __init__(self, main: str = '', more: str = '', color: str | None = None):
+        super().__init__()
+        self.main, self.more, self.color = main, more, color or P['text']
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(10)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def _fonts(self):
+        a, b = QFont(self.font()), QFont(self.font())
+        a.setPixelSize(FS['sm'])
+        b.setPixelSize(FS['xs'])
+        return a, b
+
+    def sizeHint(self):
+        a, b = self._fonts()
+        return QSize(QFontMetrics(a).horizontalAdvance(self.main), QFontMetrics(a).height())
+
+    def minimumSizeHint(self):
+        return QSize(10, self.sizeHint().height())
+
+    def paintEvent(self, ev):
+        a, b = self._fonts()
+        fa, fb = QFontMetrics(a), QFontMetrics(b)
+        pt = QPainter(self)
+        flags = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        w = self.width()
+        pt.setFont(a)
+        pt.setPen(QColor(self.color))
+        shown = fa.elidedText(self.main, Qt.TextElideMode.ElideRight, w)
+        pt.drawText(self.rect(), flags, shown)
+        left = w - fa.horizontalAdvance(self.main)
+        if self.more and left > 0:
+            pt.setFont(b)
+            pt.setPen(QColor(P['muted']))
+            x = fa.horizontalAdvance(self.main)
+            pt.drawText(self.rect().adjusted(x, 0, 0, 0), flags,
+                        fb.elidedText(" " + self.more, Qt.TextElideMode.ElideRight, left))
+        pt.end()
+
+
 class SystemWidget(DashWidget):
-    """Jobs, disk space, health and Proton at a glance — four tiles, each
-    opening its part of the System page (Proton: the Proton page). Wide adds
-    the one thing that needs you, if anything does."""
+    """Setup at a glance (w-165). While nothing needs you: one quiet line
+    ("All good · 412 GB free"; Wide adds the Proton build and checks passed),
+    in the warning colour when there are only notes. When something does: a
+    row for the one thing and its one action, above the four tiles (jobs,
+    disk space, health, Proton), each opening its part of the System page
+    (Proton: the Proton page)."""
     KIND, TITLE, GLYPH, GRAD, LINK = 'system', "System", G['system'], 'tide', 'system'
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.tiles: list = []
+        self.quiet_row = self.action = self.line = None
+        self.first_stop = None
+        self._quiet = False
+        self._pad = SP['4']
+
     def status(self, hub) -> dict:
-        proton = getattr(getattr(hub, 'protonpage', None), 'info', None)
-        return system_status(job_facts(hub.jobs.jobs), hub._disks,
-                             getattr(hub.health, 'checks', []), proton,
-                             getattr(hub, '_native_crash', None))
+        return system_state(hub)
+
+    def set_density(self, d: dict):
+        self._pad = d['card_pad']
+        self._margins()
+
+    def _margins(self):
+        pad = self._pad
+        if self._quiet:                  # one line: a slimmer card (w-165)
+            self.layout().setContentsMargins(pad, min(pad, SP['3']), pad, min(pad, SP['3']))
+        else:
+            self.layout().setContentsMargins(pad, pad - 2, pad, pad)
+
+    def _set_quiet(self, on: bool):
+        self._quiet = on
+        self.show_head(not on)
+        self._margins()
 
     def fill(self, hub):
         st = self.status(hub)
-        sig = (self.size_, repr([(t['value'], t['caption'], t['role']) for t in st['tiles']]),
+        sig = (self.size_, repr(st['line']),
+               repr([(t['value'], t['caption'], t['role']) for t in st['tiles']]),
                repr({k: v for k, v in (st['attention'] or {}).items() if k != 'job'}))
         if sig == getattr(self, '_sig', None):
             return                  # unchanged: keep the widgets (and pad focus) as they are
         self._sig = sig
         self.clear()
+        self.tiles, self.quiet_row, self.action, self.line = [], None, None, None
+        if st['attention'] is None:
+            self._set_quiet(True)
+            self.open_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.first_stop = self.quiet_row = self._quiet_row(st['line'], hub)
+            self.body.addWidget(self.quiet_row)
+            return
+        self._set_quiet(False)
+        att = st['attention']
         grid = QGridLayout()
         grid.setSpacing(SP['2'])
         cols = 4 if self.size_ == 'wide' else 2
-        self.tiles = []
         for i, t in enumerate(st['tiles']):
             tile = SysTile(t)
             tile.clicked.connect(lambda k=t['key']: hub.go(k))
@@ -1836,25 +1996,69 @@ class SystemWidget(DashWidget):
             grid.addWidget(tile, i // cols, i % cols)
         for c in range(cols):
             grid.setColumnStretch(c, 1)
+        self.body.addWidget(self._one_thing(att, hub))
         self.body.addLayout(grid)
-        att = st['attention']
-        if att and self.size_ == 'wide':
-            if att['key'] == 'activity':
-                job = next((j['job'] for j in job_facts(hub.jobs.jobs) if j['active']), None)
-                go = (lambda _=False, j=job: hub._open_job(j)) if job else None
-            elif att['key'] == 'report':
-                go = lambda _=False, c=att['crash']: hub.open_report(c)
-            else:
-                go = lambda _=False, k=att['key']: hub.go(k)
-            line = QHBoxLayout()
-            line.addWidget(self.row(G[att['glyph']], att['text'], att['sub'], P[att['role']],
-                                    go), 1)
-            if att.get('action') == 'install-ge':
-                b = QPushButton(f"Install {att['latest']}")
-                b.setObjectName("Primary")
-                b.clicked.connect(lambda: hub.protonpage._install('latest'))
-                line.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
-            self.body.addLayout(line)
+        # The action is the first stop; the head's Open only repeats the tiles.
+        self.open_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.first_stop = self.action
+
+    def _quiet_row(self, line: dict, hub) -> ClickRow:
+        row = ClickRow()
+        row.clicked.connect(lambda: hub.go('system'))
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(SP['1'], SP['1'], SP['1'], SP['1'])
+        lay.setSpacing(SP['2_5'])
+        role = line['role']
+        ic = icon_label(G[line['glyph']], 16, P['muted'] if role == 'muted' else P[role])
+        ic.setFixedWidth(20)
+        lay.addWidget(ic, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.line = QuietLine(line['text'], line['extra'] if self.size_ == 'wide' else '',
+                              P['warning'] if role == 'warning' else P['text'])
+        self.line.setStyleSheet(f"color: {self.line.color};")
+        lay.addWidget(self.line, 1)
+        link = label("System", None)
+        link.setStyleSheet(f"color: {P['subtext']}; font-size: {FS['xs']}px;")
+        link.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lay.addWidget(link, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.setToolTip(" \u00b7 ".join(x for x in (line['text'], line['extra']) if x))
+        return row
+
+    def _one_thing(self, att: dict, hub) -> QWidget:
+        """The icon, what it is, why, and the one action (colour is on the
+        icon: no side bar, cards keep one border)."""
+        key, job = att['key'], att.get('job')
+        if key == 'report':
+            go = lambda: hub.open_report(att['crash'])
+        elif att.get('action') == 'retry':
+            go = lambda: hub._resubmit(job, job.argv)
+        elif att.get('action') == 'install-ge':
+            go = lambda: hub.protonpage._install('latest')
+        elif key == 'activity':
+            go = (lambda: hub._open_job(job)) if job else (lambda: hub.go('activity'))
+        else:
+            go = lambda: hub.go(key)
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(SP['1'], 0, SP['1'], 0)
+        lay.setSpacing(SP['2_5'])
+        ic = icon_label(G[att['glyph']], 18, P[att['role']])
+        ic.setFixedWidth(22)
+        lay.addWidget(ic, 0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        t = ElideLabel(att['text'])
+        t.setStyleSheet(f"color: {P['text']}; font-size: {FS['sm']}px;")
+        col.addWidget(t)
+        if att.get('sub'):
+            col.addWidget(ElideLabel(att['sub'], "StatLabel"))
+        lay.addLayout(col, 1)
+        self.action = QPushButton(att['label'])
+        self.action.setObjectName("Primary")
+        self.action.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action.clicked.connect(lambda _=False: go())
+        lay.addWidget(self.action, 0, Qt.AlignmentFlag.AlignVCenter)
+        w.setToolTip(f"{att['text']}\n{att.get('sub') or ''}".strip())
+        return w
 
 
 class NewsWidget(DashWidget):

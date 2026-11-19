@@ -383,11 +383,14 @@ def _summary(sub: str, items: list[dict]) -> dict:
 
 
 def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
-                 kinds_off=(), stage_key=None, linux=True, limit=TOTAL_MAX) -> list[dict]:
+                 kinds_off=(), stage_key=None, linux=True, limit=TOTAL_MAX,
+                 skip=()) -> list[dict]:
     """For you now, highest first (see the module docstring). `inputs` holds
     plain data: jobs, ready_at, downloads, disks, checks, games, friends_now,
     deals (the wishlist), alert_settings, repacks, repack_updates, store_ids,
-    proton (the GE family), counts, facts. Missing keys count as empty."""
+    proton (the GE family), counts, facts. Missing keys count as empty.
+    `skip` is what the System card already says (w-165: 'running' jobs,
+    'disk', 'health', 'proton'): said once, so not here too."""
     inputs = inputs if isinstance(inputs, dict) else {}
     now = _local(now)
     now_ts = now.timestamp()
@@ -398,8 +401,12 @@ def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
              + _idle(inputs, games, now))
     off = set(kinds_off or ())
     quiet = _quiet(quiet_until, now)
+    said = set(skip or ())
 
     def shown(m):
+        if (m['sub'] in said or ('running' in said and m['kind'] == 'running'
+                                 and m['action']['id'] == 'open_job')):
+            return False
         # Something broken always shows: kinds_off can't hide it (w-89).
         return not ((m['kind'] != 'broken' and (m['kind'] in off or m['sub'] in off))
                     or (quiet and m['kind'] != 'broken')
