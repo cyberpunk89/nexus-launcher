@@ -6338,6 +6338,24 @@ def fyn_inputs(games, n=7):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class SayItOnceHome(unittest.TestCase):
+    """w-162: widgets_say reads only the widgets that are shown on Home."""
+
+    def test_widgets_say_follows_what_is_shown(self):
+        from types import SimpleNamespace
+        from nexus.gui.dashboard import widgets_say
+        items = nx.dash_kind_defaults()
+        hub = SimpleNamespace(prefs=SimpleNamespace(dashboard=items))
+        with mock.patch('nexus.gui.dashboard.system_covers', lambda h: ('disk',)):
+            say = widgets_say(hub)
+            self.assertEqual((say['skip'], say['skip_kinds'], say['default_off'], say['one']),
+                             (('disk',), ('friends',), ('idle',), ('update',)))
+            for it in items:
+                it['hidden'] = it['id'] in ('friends', 'updates', 'stage')
+            say = widgets_say(hub)
+            self.assertEqual((say['skip_kinds'], say['default_off'], say['one']), ((), (), ()))
+
+
 class ForYou(unittest.TestCase):
     """For you now on Home (w-89): the pill on the Stage, its list, the
     Strip, Customise, and the pad path. Moments come from the real ranking
@@ -6354,6 +6372,12 @@ class ForYou(unittest.TestCase):
         if stage:
             next(i for i in w.prefs.dashboard if i['id'] == 'stage').update(stage)
         w.prefs.snoozes, w.prefs.quiet_until, w.prefs.kinds_off = {}, None, []
+        # These tests are about the moments, not the say-it-once rule (w-162):
+        # Friends and Updates ready off Home, idle switched on.
+        for it in w.prefs.dashboard:
+            if it['id'] in ('friends', 'updates'):
+                it['hidden'] = True
+        w.prefs.kinds_on = ['idle']
         self._inputs = inputs if inputs is not None else fyn_inputs(w._games, n)
         p = mock.patch('nexus.gui.foryou.moments_inputs', lambda hub: {
             'games': [dict(g, update_pending=False) for g in hub._games], **self._inputs})

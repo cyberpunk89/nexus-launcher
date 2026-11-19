@@ -8,7 +8,7 @@ from datetime import datetime
 from nexus import categories, net, paths as NX, smart
 from nexus.icons import COLLECTION_ICONS
 
-from .moments import (clean_kinds_off, is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key,
+from .moments import (clean_kinds_off, clean_kinds_on, is_snoozed, quiet_until_next, SNOOZE_MAX, snooze_key,
     snooze_until)
 from .common import (ATTRACT_MINUTES, MAX_COLLECTION_NAME, MAX_NOTE, MAX_TITLE, RIBBON_MOTIONS,
     THEATRE_LAYOUTS, THEATRE_STARTS, VOLUME_STEPS)
@@ -133,6 +133,7 @@ class LibraryPrefs:
         self.snoozes = _snoozes(opts.get('snoozes'), now)
         self.quiet_until = _quiet_until(opts.get('quiet_until'), now)
         self.kinds_off = clean_kinds_off(opts.get('kinds_off'))[:MAX_KINDS_OFF]
+        self.kinds_on = clean_kinds_on(opts.get('kinds_on'))[:MAX_KINDS_OFF]
         # Customise → Density (w-90): Home's spacing.
         dens = opts.get('density')
         self.density = dens if isinstance(dens, str) and dens in DASH_DENSITY else 'comfortable'
@@ -295,7 +296,8 @@ class LibraryPrefs:
                                   'items': self.dashboard, 'snoozes': self.snoozes,
                                   'quiet_until': self.quiet_until.isoformat()
                                   if self.quiet_until else None,
-                                  'kinds_off': self.kinds_off, 'density': self.density,
+                                  'kinds_off': self.kinds_off, 'kinds_on': self.kinds_on,
+                                  'density': self.density,
                                   'layouts': self.layouts, 'active': self.active,
                                   'base': self.base, 'v1_taken': self.v1_taken,
                                   'preset': self.preset},

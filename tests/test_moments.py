@@ -404,6 +404,54 @@ class Dismiss(unittest.TestCase):
         self.assertEqual(M.snoozed_count(None, NOW), 0)
 
 
+class SayItOnce(unittest.TestCase):
+    """w-162: what a widget on Home already shows, For you now leaves out."""
+
+    def inputs(self):
+        return {'friends_now': [friend_entry('x', 'X')],
+                'games': [game('a', update_pending=True), game('b', update_pending=True),
+                          game('c', update_pending=True)]}
+
+    def test_friends_skipped_when_the_widget_shows(self):
+        kinds = lambda **kw: {m['kind'] for m in rank(self.inputs(), **kw)}
+        self.assertIn('friends', kinds())
+        self.assertNotIn('friends', kinds(skip_kinds=('friends',)))
+        self.assertIn('update', kinds(skip_kinds=('friends',)))
+
+    def _idle(self):
+        g = game('i', last_played=iso(days=20), playtime_minutes=600)
+        return {'games': [g], 'facts': {'i': {'achievements': [3, 10]}}}
+
+    def test_idle_off_by_default_unless_the_user_turned_it_on(self):
+        inputs = self._idle()
+        inputs['counts'] = {}
+        with mock.patch.object(M.smart, 'progress', return_value=0.5):
+            kinds = lambda **kw: {m['kind'] for m in rank(inputs, **kw)}
+            self.assertIn('idle', kinds())
+            self.assertNotIn('idle', kinds(default_off=('idle',)))
+            self.assertIn('idle', kinds(default_off=('idle',), kinds_on=('idle',)))
+            # an explicit off beats an explicit on and the default alike
+            self.assertNotIn('idle', kinds(default_off=('idle',), kinds_on=('idle',),
+                                           kinds_off=('idle',)))
+            self.assertIn('idle', kinds(kinds_off=('store',)))
+
+    def test_clean_kinds_on(self):
+        self.assertEqual(M.clean_kinds_on(['idle', 'broken', 'x', 'idle', 3]), ['idle'])
+        self.assertEqual(M.clean_kinds_on(None), [])
+
+    def test_updates_fold_into_one_summary(self):
+        out = [m for m in rank(self.inputs(), one=('update',)) if m['kind'] == 'update']
+        self.assertEqual(len(out), 1)
+        self.assertEqual((out[0]['count'], out[0]['title']), (3, "3 updates ready"))
+        self.assertEqual(len([m for m in rank(self.inputs()) if m['kind'] == 'update']), 3)
+
+    def test_one_update_stays_a_game_moment_and_proton_is_kept(self):
+        inputs = {'games': [game('a', update_pending=True)],
+                  'proton': {'update': True, 'latest': 'GE-Proton10-26'}}
+        out = rank(inputs, one=('update',))
+        self.assertEqual(sorted(str(m['sub']) for m in out), ['None', 'proton'])
+
+
 class Adapter(unittest.TestCase):
     """moments_inputs(hub): the only place that reads the window."""
 

@@ -487,6 +487,27 @@ def system_covers(hub) -> tuple:
     return tuple(att['covers']) if att else ()
 
 
+# What a widget on Home already says (w-162, the "say it once" rule), read
+# only while it is shown: kinds For you now leaves out, kinds that are off by
+# default (the user's Kinds… on/off beats it), kinds folded into one line.
+# The System card is dynamic (system_covers, w-165).
+WIDGET_SAYS = {'friends': {'skip_kinds': ('friends',)},
+               'stage': {'default_off': ('idle',)},
+               'updates': {'one': ('update',)}}
+
+
+def widgets_say(hub) -> dict:
+    """The For you now filters from the widgets on Home right now."""
+    items = getattr(hub.prefs, 'dashboard', None) or ()
+    shown = {i.get('id') for i in items if not i.get('hidden')}
+    out = {'skip': tuple(system_covers(hub)), 'skip_kinds': (), 'default_off': (), 'one': ()}
+    for wid, say in WIDGET_SAYS.items():
+        if wid in shown:
+            for k, v in say.items():
+                out[k] += v
+    return out
+
+
 def dash_cols(width: int) -> int:
     # Three at most: cards stay readable and the default layout packs evenly.
     return 3 if width >= 1100 else 2 if width >= 700 else 1

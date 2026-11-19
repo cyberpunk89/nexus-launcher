@@ -54,7 +54,8 @@ LABELS = {'open_job': "View", 'launch': "Launch", 'open_deals': "View", 'update'
 SUMMARY = {'atl': "{n} wishlist games at their all-time low",
            'sale': "{n} wishlist deals",
            'fitgirl': "{n} wishlist games on FitGirl",
-           'repack_updates': "{n} newer repacks"}
+           'repack_updates': "{n} newer repacks",
+           'updates': "{n} updates ready"}
 
 
 # ── time helpers ─────────────────────────────────────────────────────────
@@ -121,6 +122,11 @@ def clean_kinds_off(raw) -> list[str]:
     if not isinstance(raw, list):
         return []
     return list(dict.fromkeys(k for k in raw if isinstance(k, str) and k in KINDS_OFF_OK))
+
+
+def clean_kinds_on(raw) -> list[str]:
+    """Kinds the user switched on that are off by default (w-162), made safe."""
+    return clean_kinds_off(raw)
 
 
 def snoozed_count(snoozes, now: datetime) -> int:
@@ -384,13 +390,17 @@ def _summary(sub: str, items: list[dict]) -> dict:
 
 def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
                  kinds_off=(), stage_key=None, linux=True, limit=TOTAL_MAX,
-                 skip=()) -> list[dict]:
+                 skip=(), skip_kinds=(), default_off=(), kinds_on=(),
+                 one=()) -> list[dict]:
     """For you now, highest first (see the module docstring). `inputs` holds
     plain data: jobs, ready_at, downloads, disks, checks, games, friends_now,
     deals (the wishlist), alert_settings, repacks, repack_updates, store_ids,
     proton (the GE family), counts, facts. Missing keys count as empty.
     `skip` is what the System card already says (w-165: 'running' jobs,
-    'disk', 'health', 'proton'): said once, so not here too."""
+    'disk', 'health', 'proton'): said once, so not here too. w-162: the same
+    for whole `skip_kinds` (a widget that shows them), `default_off` kinds that
+    are off until the user's `kinds_on` says otherwise (kinds_off still wins
+    over both), and `one` kinds folded into a single summary."""
     inputs = inputs if isinstance(inputs, dict) else {}
     now = _local(now)
     now_ts = now.timestamp()
@@ -399,12 +409,13 @@ def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
              + _friends(inputs, now_ts) + _store(inputs, now_ts)
              + _updates(inputs, games, now_ts, linux) + _achievements(inputs, games)
              + _idle(inputs, games, now))
-    off = set(kinds_off or ())
+    off = set(kinds_off or ()) | (set(default_off or ()) - set(kinds_on or ()))
+    said_kinds = set(skip_kinds or ())
     quiet = _quiet(quiet_until, now)
     said = set(skip or ())
 
     def shown(m):
-        if (m['sub'] in said or ('running' in said and m['kind'] == 'running'
+        if (m['sub'] in said or m['kind'] in said_kinds or ('running' in said and m['kind'] == 'running'
                                  and m['action']['id'] == 'open_job')):
             return False
         # Something broken always shows: kinds_off can't hide it (w-89).
@@ -419,6 +430,15 @@ def home_moments(inputs: dict, now: datetime, *, snoozes=None, quiet_until=None,
                 continue                               # a higher kind has this game
             seen.add(m['key'])
         kept.append(m)
+    for kind in one:
+        # Several of one kind become one line (not the Proton build: no game).
+        group = [m for m in kept if m['kind'] == kind and m['sub'] != 'proton'
+                 and kind == 'update']
+        if len(group) > 1:
+            kept = [m for m in kept if m not in group]
+            summary = _summary('updates', group)
+            if shown(summary):
+                kept.append(summary)
     for sub in GROUPED:
         group = [m for m in kept if m['sub'] == sub]
         if len(group) > alerts.GROUP:

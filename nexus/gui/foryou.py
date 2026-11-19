@@ -127,11 +127,14 @@ class ForYouModel(QObject):
         """The moments, then (while quiet) the notice with Show now (w-107)."""
         prefs = self.hub.prefs
         now = datetime.now()
-        from .dashboard import system_covers
+        from .dashboard import widgets_say
+        say = widgets_say(self.hub)
         ms = home_moments(moments_inputs(self.hub), now,
                           snoozes=prefs.snoozes, quiet_until=prefs.quiet_until,
                           kinds_off=prefs.kinds_off, stage_key=stage_key(self.hub),
-                          linux=has('proton'), skip=system_covers(self.hub))
+                          linux=has('proton'), skip=say['skip'], skip_kinds=say['skip_kinds'],
+                          default_off=say['default_off'], kinds_on=getattr(prefs, 'kinds_on', ()),
+                          one=say['one'])
         q = quiet_moment(prefs.quiet_until, now)
         return ms + [q] if q is not None else ms
 
@@ -177,8 +180,11 @@ class ForYouModel(QObject):
 
     def set_kind(self, kind: str, shown: bool):
         off = [k for k in self.hub.prefs.kinds_off if k != kind] + ([] if shown else [kind])
-        if off != self.hub.prefs.kinds_off:
+        was = list(getattr(self.hub.prefs, 'kinds_on', ()))
+        on = [k for k in was if k != kind] + ([kind] if shown else [])
+        if off != self.hub.prefs.kinds_off or on != was:
             self.hub.prefs.kinds_off = off
+            self.hub.prefs.kinds_on = on
             self.hub.prefs.save()
             self.refresh()
 
@@ -1062,7 +1068,9 @@ class ForYouWidget(DashWidget):
     def _kinds_row(self) -> QWidget:
         host = QWidget()
         flow = FlowLayout(host, margin=0, spacing=SP['1_5'])
-        off = set(self.hub.prefs.kinds_off)
+        from .dashboard import widgets_say
+        off = set(self.hub.prefs.kinds_off) | (
+            set(widgets_say(self.hub)['default_off']) - set(getattr(self.hub.prefs, 'kinds_on', ())))
         for key, text in KIND_CHIPS:
             b = QPushButton(text)
             b.setObjectName("Chip")
