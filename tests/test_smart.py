@@ -90,6 +90,14 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.match('smart:linux', games, linux=False), [])
         self.assertNotIn('smart:linux', smart.rule_keys(linux=False))
 
+    def test_owned_not_installed_rule(self):
+        games = [game('a', 60, 1), game('b', 30, installed=False),
+                 game('c', 600, installed=False), game('d', installed=False, installing={'done': 1})]
+        self.assertEqual(self.match('smart:owned', games), ['d', 'c', 'b'])   # downloading, then most played
+        self.assertEqual(smart.label('smart:owned'), "Owned, not installed")
+        self.assertIn('owned', smart.WIDGET_RULES)
+        self.assertEqual(self.match('smart:owned', [game('a')]), [])
+
     def test_genre(self):
         games = [game('a'), game('b')]
         facts = {'a': fact(genres=('RPG', 'Action')), 'b': fact(genres=('Action',))}

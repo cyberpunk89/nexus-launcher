@@ -27,8 +27,9 @@ class StyleOption(unittest.TestCase):
     def test_style_reaches_tables_and_edit_bar(self):
         self.assertEqual(nx.DASH_OPTIONS['pick'],
                          {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
-                          'style': ('chips', 'wheel')})
-        self.assertEqual(D.DASH_STYLE_LABELS['pick'], {'chips': "Chips", 'wheel': "Wheel"})
+                          'style': ('chips', 'wheel', 'today')})
+        self.assertEqual(D.DASH_STYLE_LABELS['pick'],
+                         {'chips': "Chips", 'wheel': "Wheel", 'today': "Today's pick"})
         self.assertIn('style', D.OPTION_BAR)
 
     def test_saved_layouts_stay_valid(self):

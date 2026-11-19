@@ -260,6 +260,25 @@ class SmartShelves(unittest.TestCase):
         self.assertEqual(dash.widgets['smart'].btn_shelf.text(), "Shelf: Short games")
         dash.set_editing(False)
 
+    def test_home_widget_owned_not_installed(self):
+        """w-166: In your library is the Smart shelf rule Owned, not installed:
+        the pool is every game you have, not only the installed ones."""
+        w = self.win
+        dash = w.dashboard
+        w.prefs.hidden = {'ownh'}
+        self.load(games() + [{'slug': 'own0', 'display_name': 'Owned 0', 'source': 'steam',
+                              'appid': 7, 'installed': False, 'playtime_minutes': 10},
+                             {'slug': 'own1', 'display_name': 'Owned 1', 'source': 'steam',
+                              'appid': 8, 'installed': False, 'playtime_minutes': 500},
+                             {'slug': 'ownh', 'display_name': 'Hid', 'source': 'steam', 'appid': 9,
+                              'installed': False}])
+        it = next(i for i in w.prefs.dashboard if i['id'] == 'smart')
+        it['shelf'] = 'owned'
+        self.assertEqual(dash.widgets['smart'].key(w), 'smart:owned')
+        self.assertEqual([g['slug'] for g in dash.widgets['smart'].games(w)], ['own1', 'own0'])
+        self.assertTrue(dash.widgets['smart'].has_content(w))
+        self.assertEqual(nx.dash_normalize([{'id': 'smart', 'shelf': 'owned'}])[0]['shelf'], 'owned')
+
     def test_dashboard_layout_keeps_the_shelf(self):
         items = nx.dash_normalize([{'id': 'installed', 'size': 'full'},
                                    {'id': 'smart', 'size': 'full', 'shelf': 'coop'}])

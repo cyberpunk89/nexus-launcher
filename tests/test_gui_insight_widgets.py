@@ -20,7 +20,7 @@ from tests.patching import set_gui
 if nx is not None:
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication, QPushButton
+    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
     from nexus.gui import dashboard as D
     from nexus.gui import insight_widgets as W
     from nexus.gui import daycard as DC
@@ -79,7 +79,7 @@ def texts(w):
 
 
 def buttons(w):
-    return [b.text() for b in w.findChildren(QPushButton) if not w.editbar.isAncestorOf(b) and not b.isHidden()]
+    return [b.text() for b in w.findChildren(QPushButton) if not w.editbar.isAncestorOf(b) and b.isVisibleTo(w)]
 
 
 class Pure(unittest.TestCase):
@@ -290,8 +290,13 @@ class OnThisDay(WidgetCase):
         self.assertIs(next(b2 for b2 in w.findChildren(QPushButton) if b2.text() == "Play again"), b)
 
 
+# Game of the day is Pick for me's style 'today' (w-164).
 class Daily(WidgetCase):
-    CLS = D.DASH_WIDGETS['daily'] if nx is not None else None
+    CLS = D.DASH_WIDGETS['pick'] if nx is not None else None
+
+    def make(self, data, **kw):
+        kw.setdefault('style', 'today')
+        return super().make(data, **kw)
 
     def test_fills_with_the_pick_and_its_reason(self):
         w = self.make(payload())
@@ -300,6 +305,25 @@ class Daily(WidgetCase):
         self.assertIn("Released 5 years ago today", t)
         self.assertTrue(w.has_content(self.hub))
         self.assertIn("Another day", buttons(w))
+        self.assertNotIn("Spin", buttons(w))                       # the spinner is not shown
+        self.assertTrue(w.chips.isHidden())
+
+    def test_other_styles_show_the_spinner_not_the_pick(self):
+        w = self.make(payload(), style='chips')
+        self.assertNotIn("Another day", buttons(w))
+        self.assertNotIn("Released 5 years ago today", texts(w))
+        self.assertIn("Spin", buttons(w))
+
+    def test_switching_style_swaps_the_face(self):
+        w = self.make(payload(), style='chips')
+        w.options = {'style': 'today'}
+        w.fill(self.hub)
+        self.assertIn("Another day", buttons(w))
+        self.assertNotIn("Spin", buttons(w))
+        w.options = {'style': 'chips'}
+        w.fill(self.hub)
+        self.assertNotIn("Another day", buttons(w))
+        self.assertIn("Spin", buttons(w))
 
     def test_play_button(self):
         w = self.make(payload())
@@ -339,6 +363,26 @@ class Daily(WidgetCase):
 
 class Heatmap(WidgetCase):
     CLS = D.DASH_WIDGETS['heatmap'] if nx is not None else None
+
+    MOST = [{'kind': 'most_played', 'slug': 'disco', 'name': 'Disco Elysium', 'n': 97.0}]
+
+    def test_footer_has_the_most_played_game_from_library_facts(self):
+        """Library facts is gone (w-166): its most played fact lives here."""
+        w = self.make(payload(facts=self.MOST), size='full')
+        t = texts(w)
+        self.assertIn("Most played", t)
+        self.assertIn("Disco Elysium", t)
+        self.assertIn("97 h with it so far", t)
+        row = next(r for r in w.findChildren(type(w.link_block([], lambda: None)))
+                   if any("Disco" in lab.text() for lab in r.findChildren(QLabel)))
+        row.clicked.emit()
+        self.assertEqual(self.hub.opened, [('page', 'disco')])
+
+    def test_no_footer_without_the_fact_or_for_a_hidden_game(self):
+        for facts in ([], 'x', [dict(self.MOST[0], slug='hid', name='Hidden One')]):
+            w = self.make(payload(facts=facts), size='full')
+            self.assertNotIn("Most played", texts(w))
+            self.assertNotIn("Hidden One", texts(w))
 
     def test_stats_come_from_the_payload(self):
         w = self.make(payload(), size='full')
@@ -762,7 +806,6 @@ class TheatreCards(unittest.TestCase):
 class InTheRegistry(unittest.TestCase):
     def test_specs_and_tables(self):
         for kind, sizes, default in (('onthisday', ('small', 'wide'), 'small'),
-                                     ('daily', ('small',), 'small'),
                                      ('heatmap', ('wide', 'full'), 'full'),
                                      ('milestones', ('small', 'wide'), 'small')):
             self.assertEqual(D.DASH_SIZES[kind], sizes)
@@ -776,16 +819,18 @@ class InTheRegistry(unittest.TestCase):
     def test_old_layouts_keep_their_shape(self):
         out = nx.dash_normalize([{'id': 'stage'}, {'id': 'week', 'size': 'wide'}])
         ids = [i['id'] for i in out]
-        for kind in ('onthisday', 'daily', 'heatmap', 'milestones', 'backlog', 'spacemap', 'facts'):
+        for kind in ('onthisday', 'heatmap', 'milestones', 'backlog', 'spacemap'):
             self.assertTrue(next(i for i in out if i['id'] == kind)['hidden'])
-        self.assertEqual(ids[-7:], ['onthisday', 'daily', 'heatmap', 'milestones',
-                                    'backlog', 'spacemap', 'facts'])   # last, hidden
+        self.assertEqual(ids[-5:], ['onthisday', 'heatmap', 'milestones',
+                                    'backlog', 'spacemap'])   # last, hidden
         self.assertEqual(D.DASH_VERSION, 2)
 
     def test_cinematic_preset_is_unchanged(self):
         shown = [i['id'] for i in nx.dash_default() if not i['hidden']]
         for kind in ('onthisday', 'daily', 'heatmap', 'milestones', 'backlog', 'spacemap', 'facts'):
             self.assertNotIn(kind, shown)
+        self.assertNotIn('facts', D.DASH_SIZES)
+        self.assertNotIn('daily', D.DASH_SIZES)
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
@@ -859,8 +904,10 @@ class OnHome(unittest.TestCase):
                               'disks': []}, '')
         items = nx.dash_kind_defaults()
         for it in items:
-            if it['id'] in ('onthisday', 'daily', 'heatmap', 'milestones'):
+            if it['id'] in ('onthisday', 'pick', 'heatmap', 'milestones'):
                 it['hidden'] = False
+            if it['id'] == 'pick':
+                it['style'] = 'today'                  # Game of the day (w-164)
         self.win.prefs.dashboard = items
         self.win.dashboard.refresh()
         QApplication.processEvents()
@@ -880,7 +927,7 @@ class OnHome(unittest.TestCase):
         self.win.dash_update('insights')
         self.win._flush_dashboard()
         QApplication.processEvents()
-        self.assertFalse({'onthisday', 'daily', 'heatmap', 'milestones'} & d._skip())
+        self.assertFalse({'onthisday', 'pick', 'heatmap', 'milestones'} & d._skip())
         self.assertEqual(d._skipped & {'onthisday', 'milestones'}, set())
         self.assertTrue(d.widgets['onthisday'].isVisible())
         d.feed.data = payload(on_this_day=[], milestones=[])
@@ -893,14 +940,18 @@ class OnHome(unittest.TestCase):
     def test_midnight_refreshes_the_daily_pick(self):
         d = self.win.dashboard
         d.feed.data = payload()
-        with mock.patch.object(d.widgets['daily'], 'fill') as fill:
+        with mock.patch.object(d.widgets['pick'], 'fill') as fill:
             self.win.dash_update('midnight')
             self.win._flush_dashboard()
         self.assertTrue(fill.called)
 
     def test_the_insights_are_asked_for_when_a_widget_shows(self):
         d = self.win.dashboard
-        self.assertTrue({'onthisday', 'daily', 'heatmap', 'milestones'} <= d.insights_consumers())
+        self.assertTrue({'onthisday', 'pick', 'heatmap', 'milestones'} <= d.insights_consumers())
+        for it in d.items:                       # Pick in another style does not ask
+            if it['id'] == 'pick':
+                it['style'] = 'chips'
+        self.assertNotIn('pick', d.insights_consumers())
 
 
 if __name__ == '__main__':

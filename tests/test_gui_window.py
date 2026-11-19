@@ -6885,11 +6885,11 @@ class HomeGrid(unittest.TestCase):
         self.assertEqual(dash._cols, 3)
 
     # ---- the four layouts the exploration measured (w-154) ----
-    STATS_MIX = [('heatmap', 'full'), ('news', 'tall'), ('daily', 'small'), ('backlog', 'wide'),
-                 ('spacemap', 'wide'), ('milestones', 'small'), ('facts', 'small'),
+    STATS_MIX = [('heatmap', 'full'), ('news', 'tall'), ('onthisday', 'small'),
+                 ('backlog', 'wide'), ('spacemap', 'wide'), ('milestones', 'small'),
                  ('pick', 'small'), ('week', 'small'), ('system', None)]
-    CINEMATIC_PLUS = ['save', 'system', 'news', 'deals', 'upcoming', 'heatmap', 'daily',
-                      'backlog', 'milestones', 'facts', 'spacemap']
+    CINEMATIC_PLUS = ['save', 'system', 'news', 'deals', 'upcoming', 'heatmap',
+                      'onthisday', 'backlog', 'milestones', 'spacemap']
 
     def _layouts(self):
         """name -> (items, density), as the exploration's four layouts."""
@@ -7403,12 +7403,11 @@ class HomeLayouts(unittest.TestCase):
         self._flush()
         pr = w.prefs
         shown = [(i['id'], i['size']) for i in pr.dashboard if not i['hidden']]
-        self.assertEqual(shown, [('heatmap', 'full'), ('onthisday', 'small'), ('daily', 'small'),
-                                 ('backlog', 'small'), ('spacemap', 'wide'),
-                                 ('milestones', 'small'), ('facts', 'small'), ('pick', 'small'),
-                                 ('friends', 'small')])
+        self.assertEqual(shown, [('heatmap', 'full'), ('onthisday', 'small'), ('pick', 'small'),
+                                 ('milestones', 'small'), ('backlog', 'wide'),
+                                 ('friends', 'small'), ('spacemap', 'full')])
         self.assertTrue(self._item('stage')['hidden'])
-        self.assertEqual(self._item('pick')['style'], 'wheel')
+        self.assertEqual(self._item('pick')['style'], 'today')
         self.assertEqual((pr.density, d.density), ('compact', 'compact'))
         self.assertEqual([lt['name'] for lt in pr.layouts], ["Before Stats"])
         d.set_editing(False)

@@ -1,5 +1,5 @@
 """Home's widgets that read the insights payload (w-138): On this day and
-Game of the day (w-139), Your year and Next milestones (w-140). Each one is
+Game of the day (w-139; Pick for me's style 'today' since w-164), Your year and Next milestones (w-140). Each one is
 a WidgetSpec in widget_spec.py plus one DashWidget here. The payload is
 HomeFeed's (`hub.dashboard.feed.data`), asked for by the feeds in the spec.
 
@@ -20,7 +20,7 @@ from .art import anim_ms
 from .common import alive
 from .dashboard import ClickRow, DashWidget
 from .daycard import card_text, CardHost
-from .fmt import fmt_duration, fmt_hours
+from .fmt import fmt_bytes, fmt_duration, fmt_hours
 from .gameinfo import can_quick_play, is_installed
 from .system import _add, _columns
 from .theme import FONTS, FS, G, P, R, scaled, SP
@@ -168,18 +168,54 @@ def milestone_text(m: dict) -> tuple[str, str, str]:
     return name, f"{have:g} of {goal:g} h", f"{left:.0f} h to go" if left >= 1 else "Almost there"
 
 
+# ---- the facts that outlived Library facts (w-166) ----
+FACT_HEADS = {'library': "Your library", 'top_genre': "Top genre", 'most_played': "Most played",
+              'oldest': "Oldest game", 'shortest_unplayed': "Shortest unplayed",
+              'biggest': "Biggest install", 'top_studio': "Top studio"}
+
+
+def _games(n: int) -> str:
+    return f"{n:,} game{'s' if n != 1 else ''}"
+
+
+def fact_text(f: dict) -> tuple[str, str, str]:
+    """(heading, the big line, the muted line) for one payload fact."""
+    kind, name, n = f.get('kind'), f.get('name') or "", f.get('n') or 0
+    head = FACT_HEADS.get(kind, "A fact")
+    if kind == 'library':
+        hours = float(f.get('hours') or 0)
+        line = f"About {hours:,.0f} h played in all" if hours >= 1 else "Nothing played yet, and that is fine"
+        return head, _games(int(n)), line
+    if kind == 'top_genre':
+        return head, name, f"{_games(int(n))} in your library"
+    if kind == 'most_played':
+        return head, name, f"{n:g} h with it so far"
+    if kind == 'oldest':
+        return head, name, f"Released in {int(n)}"
+    if kind == 'shortest_unplayed':
+        return head, name, f"About {n:g} h to finish, and still waiting for you"
+    if kind == 'biggest':
+        return head, name, f"{fmt_bytes(n)} on your disk"
+    if kind == 'top_studio':
+        return head, name, f"{_games(int(n))} from them"
+    return head, name, ""
+
+
+def payload_fact(data, kind: str, shown: dict) -> dict | None:
+    """The payload's fact of this kind (insights `facts`), when its game, if
+    it has one, is among the games Home shows; else None."""
+    rows = (data or {}).get('facts')
+    for f in rows if isinstance(rows, list) else ():
+        if isinstance(f, dict) and f.get('kind') == kind and f.get('kind') in FACT_HEADS \
+                and (f.get('slug') is None or f['slug'] in shown):
+            return f
+    return None
+
+
 # ---- shared card plumbing ----
-class InsightWidget(DashWidget):
-    """A card that reads the insights payload and rebuilds only when what it
-    shows changed (so a pad keeps its place across the hourly refresh)."""
-
-    def __init__(self):
-        super().__init__()
-        self._hub = None
-        self._sig = None
-
-    def bind(self, hub):
-        self._hub = hub
+class CardTools:
+    """What the cards that read the payload share: the payload, the games
+    Home shows, a clickable block, Play (also Pick for me's Today face)."""
 
     @staticmethod
     def data(hub) -> dict | None:
@@ -193,28 +229,25 @@ class InsightWidget(DashWidget):
         return {g['slug']: g for g in getattr(hub, '_games', ())
                 if g.get('slug') and not g.get('hidden') and not g.get('dup_of')}
 
-    def signature(self, hub):
-        raise NotImplementedError
+    def fact_block(self, hub, f: dict):
+        """A payload fact as heading, name and a muted line; its game's page
+        opens on click."""
+        head, big, line = fact_text(f)
+        g = self.shown(hub).get(f.get('slug') or '')
+        name = (g.get('display_name') or big) if g is not None else big
+        lines = [label(head, "StatLabel"), plain_label(name, "DashTitle", wrap=True)]
+        if line:
+            lines.append(label(line, "Muted", wrap=True))
+        if g is None:
+            box = QWidget()
+            col = QVBoxLayout(box)
+            col.setContentsMargins(SP['1'], SP['1'], SP['1'], SP['1'])
+            col.setSpacing(SP['0_5'])
+            for lab in lines:
+                col.addWidget(lab)
+            return box
+        return self.link_block(lines, lambda g=g: self.open_page(hub, g))
 
-    def build(self, hub):
-        raise NotImplementedError
-
-    def fill(self, hub):
-        sig = (self.size_, self.signature(hub))
-        if sig == self._sig and self.body.count():
-            return
-        self._sig = sig
-        f = QApplication.focusWidget()
-        had_focus = f is not None and self.isAncestorOf(f)
-        self.clear()
-        self.build(hub)
-        if had_focus:                       # a rebuilt row must not drop a pad's place
-            b = next((b for b in self.findChildren(QPushButton)
-                      if b.objectName() == 'Primary' and b.isVisibleTo(self)), None)
-            if b is not None:
-                b.setFocus(Qt.FocusReason.OtherFocusReason)
-
-    # shared bits
     def link_block(self, lines: list, on_click) -> ClickRow:
         """Labels stacked in one focusable, clickable row."""
         row = ClickRow()
@@ -244,6 +277,40 @@ class InsightWidget(DashWidget):
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _=False, g=g: self.play(hub, g))
         return b
+
+
+class InsightWidget(CardTools, DashWidget):
+    """A card that reads the insights payload and rebuilds only when what it
+    shows changed (so a pad keeps its place across the hourly refresh)."""
+
+    def __init__(self):
+        super().__init__()
+        self._hub = None
+        self._sig = None
+
+    def bind(self, hub):
+        self._hub = hub
+
+    def signature(self, hub):
+        raise NotImplementedError
+
+    def build(self, hub):
+        raise NotImplementedError
+
+    def fill(self, hub):
+        sig = (self.size_, self.signature(hub))
+        if sig == self._sig and self.body.count():
+            return
+        self._sig = sig
+        f = QApplication.focusWidget()
+        had_focus = f is not None and self.isAncestorOf(f)
+        self.clear()
+        self.build(hub)
+        if had_focus:                       # a rebuilt row must not drop a pad's place
+            b = next((b for b in self.findChildren(QPushButton)
+                      if b.objectName() == 'Primary' and b.isVisibleTo(self)), None)
+            if b is not None:
+                b.setFocus(Qt.FocusReason.OtherFocusReason)
 
 
 # ---- On this day (w-139) ----
@@ -293,12 +360,19 @@ class OnThisDayWidget(InsightWidget):
         return f"{fmt_duration(e['minutes'])} on {_date_text(d)}"
 
 
-# ---- Game of the day (w-139) ----
-class DailyWidget(InsightWidget):
+# ---- Game of the day (w-139), now Pick for me's style 'today' (w-164) ----
+class TodayBlock(CardTools, QWidget):
     """One installed game, the same all day and a new one at midnight, with
     why. "Another day" brings the next pick, once a day (library.json's
-    `daily_rerolled`, the date it was used)."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'daily', "Game of the day", G['sparkles'], 'dawn', None
+    `daily_rerolled`, the date it was used). Lives inside Pick for me's card
+    (PickWidget, style 'today'); rebuilds only when what it shows changed."""
+
+    def __init__(self):
+        super().__init__()
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(SP['1_5'])
+        self._sig = None
 
     def _state(self, hub):
         """(entry shown, can still re-roll, game) for today."""
@@ -318,11 +392,26 @@ class DailyWidget(InsightWidget):
         return (entry and (entry['slug'], entry['reason'], entry['years']), can,
                 g is not None and can_quick_play(g))
 
+    def render_for(self, hub):
+        sig = self.signature(hub)
+        if sig == self._sig and self.lay.count():
+            return
+        self._sig = sig
+        f = QApplication.focusWidget()
+        had_focus = f is not None and self.isAncestorOf(f)
+        clear_layout(self.lay)
+        self.build(hub)
+        if had_focus:                       # a rebuilt row must not drop a pad's place
+            b = next((b for b in self.findChildren(QPushButton)
+                      if b.objectName() == 'Primary' and b.isVisibleTo(self)), None)
+            if b is not None:
+                b.setFocus(Qt.FocusReason.OtherFocusReason)
+
     def build(self, hub):
         entry, can, g = self._state(hub)
         if entry is None or g is None:
             return
-        self.body.addWidget(self.link_block(
+        self.lay.addWidget(self.link_block(
             [plain_label(g.get('display_name') or g['slug'], "DashTitle", wrap=True),
              label(reason_text(entry), "Muted", wrap=True)],
             lambda: self.open_page(hub, g)))
@@ -337,7 +426,7 @@ class DailyWidget(InsightWidget):
             again.clicked.connect(lambda: self._again(hub))
             row.addWidget(again)
         row.addStretch()
-        self.body.addLayout(row)
+        self.lay.addLayout(row)
 
     def _again(self, hub):
         """Use today's re-roll: remember the date, then draw the next pick.
@@ -349,7 +438,7 @@ class DailyWidget(InsightWidget):
         play = next((b for b in self.findChildren(QPushButton) if b.objectName() == 'Primary' and not b.isHidden()), None)
         if play is not None:
             play.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.fill(hub)
+        self.render_for(hub)
 
 
 # ---- Your year (w-140) ----
@@ -612,7 +701,8 @@ class HeatmapWidget(InsightWidget):
         if d is None:
             return None
         return (d.get('today'), repr(d.get('days')), repr(d.get('day_games')),
-                d.get('avg_minutes'), repr(d.get('streak')), d.get('busiest_day'), d.get('year_minutes'))
+                d.get('avg_minutes'), repr(d.get('streak')), d.get('busiest_day'), d.get('year_minutes'),
+                repr(payload_fact(d, 'most_played', self.shown(hub))))
 
     def clear(self):
         self.grid = None
@@ -646,6 +736,9 @@ class HeatmapWidget(InsightWidget):
             stats.addLayout(col)
         stats.addStretch()
         self.body.addLayout(stats)
+        fact = payload_fact(d, 'most_played', self.shown(hub))   # Library facts' best fact (w-166)
+        if fact is not None:
+            self.body.addWidget(self.fact_block(hub, fact))
 
 
     def _enter(self, day: date):
@@ -741,4 +834,4 @@ class MilestonesWidget(InsightWidget):
             hub.go('history' if m.get('kind') == 'year' else 'library')
 
 
-INSIGHT_WIDGETS = (OnThisDayWidget, DailyWidget, HeatmapWidget, MilestonesWidget)
+INSIGHT_WIDGETS = (OnThisDayWidget, HeatmapWidget, MilestonesWidget)

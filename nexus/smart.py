@@ -39,11 +39,14 @@ RULES = (
     ('coop', "Co-op", "The store lists co-op", True),
     ('early', "Early access", "Still in early access", True),
     ('linux', "Runs great on Linux", "ProtonDB rates it Platinum", False),
+    # w-166: Home's "In your library" shelf. Last, so it never takes a Library shelf's place.
+    ('owned', "Owned, not installed", "Games you own in a store and have not installed", False),
 )
 TITLES = {k: t for k, t, _tip, _f in RULES}
 TIPS = {k: tip for k, _t, tip, _f in RULES}
 # The Home widget picks one of these (not the genres: they change).
-WIDGET_RULES = ('unfinished', 'continue', 'almost', 'never', 'short', 'coop', 'early', 'linux')
+WIDGET_RULES = ('unfinished', 'continue', 'almost', 'never', 'short', 'coop', 'early', 'linux',
+                'owned')
 WIDGET_DEFAULT = 'unfinished'
 
 
@@ -132,6 +135,8 @@ def _match(rule: str, g: dict, fact: dict | None, now: datetime, linux: bool) ->
         return (fact or {}).get('status') == 'early_access'
     if rule == 'linux':
         return linux and str(g.get('protondb') or '').lower() == 'platinum'
+    if rule == 'owned':
+        return g.get('installed', True) is False
     return False
 
 
@@ -143,6 +148,8 @@ def _order(rule: str, items: list[dict], facts: dict) -> list[dict]:
         items.sort(key=lambda g: progress(g, facts.get(g['slug'])) or 0, reverse=True)
     elif rule == 'never':
         items.sort(key=lambda g: g.get('added_at') or '', reverse=True)
+    elif rule == 'owned':               # downloading first, then the most played
+        items.sort(key=lambda g: (not g.get('installing'), -(g.get('playtime_minutes') or 0)))
     elif rule == 'short':
         items.sort(key=lambda g: main_hours(facts.get(g['slug'])) or 0)
     else:

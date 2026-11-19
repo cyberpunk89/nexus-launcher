@@ -83,7 +83,7 @@ from .dashboard import (
     DASH_MERGED, DASH_MERGED_SHOWN, dash_move,
     dash_normalize, DASH_OPTIONS, DASH_VERSION, dash_grid, DASH_ROWS, dash_pack, DASH_PLACE_AFTER, DASH_SIZES, DASH_SPAN, DASH_WIDGETS,
     Dashboard, DashWidget, DealsWidget, DUP_ORDER, FavouritesWidget, game_row, GlyphBadge,
-    DASH_STYLE_LABELS, InstalledWidget, job_facts, mark_duplicates, NewsWidget, OwnedWidget,
+    DASH_STYLE_LABELS, InstalledWidget, job_facts, mark_duplicates, NewsWidget,
     stage_height, stage_pin,
     StageArt, StageWidget,
     dash_tables, SPEC, SPECS, WidgetSpec,

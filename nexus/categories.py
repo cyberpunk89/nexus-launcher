@@ -58,7 +58,7 @@ PIN_MAX = 6                  # pinned categories (tabs in the Library)
 # genres from the collection icons.
 RULE_GLYPH = {'continue': 'history', 'unfinished': 'timer', 'almost': 'medal',
               'never': 'sparkles', 'short': 'clock', 'coop': 'friends', 'early': 'wrench',
-              'linux': 'proton'}
+              'linux': 'proton', 'owned': 'download'}
 GENRE_GLYPH = {'Action': 'zap', 'Adventure': 'map', 'RPG': 'swords', 'Strategy': 'brain',
                'Shooter': 'crosshair', 'Simulation': 'castle', 'Racing': 'car',
                'Sports': 'trophy', 'Puzzle': 'puzzle', 'Platformer': 'gamepad-2',

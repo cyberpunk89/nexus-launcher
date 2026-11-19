@@ -758,8 +758,7 @@ class DashboardModel(unittest.TestCase):
         want = [i for i in nx.dash_normalize(saved) if i['id'] != 'stage']
         self.assertEqual(rest, [i['id'] for i in want])
         self.assertEqual(rest.index('system') > rest.index('friends'), True)
-        owned = next(i for i in out if i['id'] == 'owned')
-        self.assertTrue(owned['hidden'])
+        self.assertNotIn('owned', ids)                               # w-166: a rule now
         smart = next(i for i in out if i['id'] == 'smart')
         self.assertEqual(smart['shelf'], 'unfinished')
         # w-87: Play time (full) is Your week (small) in its place; Achievements left.
@@ -814,10 +813,117 @@ class DashboardModel(unittest.TestCase):
         self.assertNotIn('pick', nx.DASH_MERGED_SHOWN)
         self.assertEqual(nx.dash_normalize(None), nx.dash_default())
 
+    # ---- Pick absorbs Game of the day (w-164) ----
+    def test_daily_becomes_pick_today_in_place(self):
+        saved = self.items(('stage', 'cinematic'), ('system', 'wide'), ('daily', 'small'),
+                           ('news', 'small'))
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertNotIn('daily', ids)
+        rest = [i for i in ids if i not in ('save', 'foryou', 'friends', 'week')]
+        self.assertEqual(rest[:4], ['stage', 'system', 'pick', 'news'])
+        pick = out[ids.index('pick')]
+        self.assertEqual((pick['size'], pick['hidden'], pick['style'], pick['vibe']),
+                         ('small', False, 'today', 'any'))
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        self.assertEqual(nx.DASH_MERGED['daily'], 'pick')
+        self.assertNotIn('daily', nx.DASH_WIDGETS)
+
+    def test_a_hidden_daily_leaves_pick_hidden_with_style_today(self):
+        saved = self.items(('stage', 'cinematic'), ('daily', 'small'))
+        saved[1]['hidden'] = True
+        pick = next(i for i in nx.dash_normalize(saved) if i['id'] == 'pick')
+        self.assertEqual((pick['hidden'], pick['style']), (True, 'today'))
+
+    def test_daily_and_pick_together_keep_the_pick_and_its_place(self):
+        saved = self.items(('stage', 'cinematic'), ('pick', 'small'), ('news', 'small'),
+                           ('daily', 'small'))
+        saved[1].update(vibe='coop', style='wheel', hidden=False)
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertEqual(ids.count('pick'), 1)
+        pick = out[ids.index('pick')]
+        self.assertEqual((pick['vibe'], pick['style']), ('coop', 'wheel'))   # the user's Pick wins
+        # a shown Game of the day with a hidden Pick: Pick comes back, as today's
+        saved[1]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        pick = next(i for i in out if i['id'] == 'pick')
+        self.assertEqual((pick['hidden'], pick['style']), (False, 'today'))
+        self.assertEqual(nx.dash_normalize(out), out)
+
+    def test_a_saved_layout_with_daily_loads_through_clean_layouts(self):
+        from nexus.gui.layouts import clean_layouts
+        raw = [{'name': 'Evening', 'items': self.items(('stage', 'cinematic'), ('daily', 'small'))}]
+        got = clean_layouts(raw)
+        self.assertIn(('pick', 'today'), [(i['id'], i.get('style')) for i in got[0]['items']])
+        self.assertNotIn('daily', [i['id'] for i in got[0]['items']])
+        self.assertEqual(clean_layouts(got), got)
+
+    # ---- Retire In your library and Library facts (w-166) ----
+    def test_facts_is_dropped_in_place_without_holes(self):
+        saved = self.items(('stage', 'cinematic'), ('facts', 'small'), ('news', 'small'),
+                           ('installed', 'full'))
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertNotIn('facts', ids)
+        rest = [i for i in ids if i not in ('save', 'foryou', 'friends', 'pick', 'week')]
+        self.assertEqual(rest[:3], ['stage', 'news', 'installed'])   # neighbours keep their order
+        self.assertEqual(nx.dash_normalize(out), out)                # idempotent
+        self.assertNotIn('facts', nx.DASH_SIZES)
+        self.assertNotIn('facts', nx.DASH_WIDGETS)
+
+    def test_a_hidden_owned_is_dropped_and_leaves_smart_alone(self):
+        saved = self.items(('stage', 'cinematic'), ('smart', 'full'), ('owned', 'full'),
+                           ('news', 'small'))
+        saved[1]['shelf'] = 'coop'
+        saved[2]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertNotIn('owned', ids)
+        smart = next(i for i in out if i['id'] == 'smart')
+        self.assertEqual((smart['shelf'], smart['hidden']), ('coop', False))
+        self.assertEqual(nx.dash_normalize(out), out)
+
+    def test_a_shown_owned_with_a_shown_smart_leaves_smart_as_it_is(self):
+        saved = self.items(('smart', 'full'), ('owned', 'full'), ('news', 'small'))
+        saved[0]['shelf'] = 'never'
+        out = nx.dash_normalize(saved)
+        smart = next(i for i in out if i['id'] == 'smart')
+        self.assertEqual(smart['shelf'], 'never')
+        self.assertEqual([i['id'] for i in out].count('smart'), 1)
+
+    def test_a_shown_owned_takes_a_hidden_smarts_place_as_the_owned_rule(self):
+        saved = self.items(('stage', 'cinematic'), ('installed', 'full'), ('smart', 'full'),
+                           ('news', 'small'), ('owned', 'full'), ('updates', 'full'))
+        saved[2]['hidden'] = True
+        out = nx.dash_normalize(saved)
+        ids = [i['id'] for i in out]
+        self.assertNotIn('owned', ids)
+        rest = [i for i in ids if i not in ('save', 'foryou', 'friends', 'pick', 'week')]
+        self.assertEqual(rest[:5], ['stage', 'installed', 'news', 'smart', 'updates'])  # owned's slot
+        smart = out[ids.index('smart')]
+        self.assertEqual((smart['hidden'], smart['shelf'], smart['size']), (False, 'owned', 'full'))
+        self.assertEqual(nx.dash_normalize(out), out)
+        # no Smart shelf saved at all (an old layout): the same
+        out = nx.dash_normalize(self.items(('stage', 'cinematic'), ('owned', 'full'),
+                                           ('news', 'small')))
+        smart = next(i for i in out if i['id'] == 'smart')
+        self.assertEqual((smart['hidden'], smart['shelf']), (False, 'owned'))
+
+    def test_a_saved_layout_with_the_retired_kinds_loads_through_clean_layouts(self):
+        from nexus.gui.layouts import clean_layouts
+        raw = [{'name': 'Old', 'items': self.items(('stage', 'cinematic'), ('facts', 'small'),
+                                                   ('owned', 'full'), ('daily', 'small'))}]
+        got = clean_layouts(raw)
+        ids = [i['id'] for i in got[0]['items']]
+        for gone in ('facts', 'owned', 'daily'):
+            self.assertNotIn(gone, ids)
+        self.assertEqual(clean_layouts(got), got)
+
     def test_pick_vibe_is_checked(self):
         self.assertEqual(nx.DASH_OPTIONS['pick'],
                          {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
-                          'style': ('chips', 'wheel')})
+                          'style': ('chips', 'wheel', 'today')})
         for bad in ('chill', ['coop'], {'a': 1}, None, 3):
             out = nx.dash_normalize([{'id': 'pick', 'size': 'wide', 'vibe': bad}])
             pick = next(i for i in out if i['id'] == 'pick')
@@ -1762,12 +1868,11 @@ class HomeLayouts(unittest.TestCase):
         self.assertEqual(self.L.PRESET_DENSITY['shelves'], 'compact')
         t = self.L.dash_preset('stats')
         self.assertEqual(self.shown(t), [
-            ('heatmap', 'full'), ('onthisday', 'small'), ('daily', 'small'), ('backlog', 'small'),
-            ('spacemap', 'wide'), ('milestones', 'small'), ('facts', 'small'), ('pick', 'small'),
-            ('friends', 'small')])
+            ('heatmap', 'full'), ('onthisday', 'small'), ('pick', 'small'), ('milestones', 'small'),
+            ('backlog', 'wide'), ('friends', 'small'), ('spacemap', 'full')])
         stage = next(i for i in t if i['id'] == 'stage')
         self.assertEqual((stage['hidden'], stage['size']), (True, 'cinematic'))
-        self.assertEqual(next(i for i in t if i['id'] == 'pick')['style'], 'wheel')
+        self.assertEqual(next(i for i in t if i['id'] == 'pick')['style'], 'today')
         self.assertEqual(self.L.PRESET_DENSITY['stats'], 'compact')
 
     # ---- layouts and rules ----
@@ -2155,14 +2260,11 @@ class WidgetSpecTest(unittest.TestCase):
             ('favourites', ('full',), 'full', False),
             ('collections', ('full',), 'full', False),
             ('updates', ('full',), 'full', False),
-            ('owned', ('full',), 'full', True),
             ('onthisday', ('small', 'wide'), 'small', True),
-            ('daily', ('small',), 'small', True),
             ('heatmap', ('wide', 'full'), 'full', True),
             ('milestones', ('small', 'wide'), 'small', True),
             ('backlog', ('small', 'wide'), 'small', True),
-            ('spacemap', ('wide', 'full'), 'wide', True),
-            ('facts', ('small',), 'small', True)])
+            ('spacemap', ('wide', 'full'), 'wide', True)])
         self.assertEqual(t['SIZES'], {k: s for k, s, _d, _h in t['KINDS']})
         self.assertEqual(t['DEFAULT_SIZE'], {k: d for k, _s, d, _h in t['KINDS']})
         self.assertEqual(t['OPTIONS'], {
@@ -2171,9 +2273,9 @@ class WidgetSpecTest(unittest.TestCase):
             'week': {'style': ('bars', 'number')},
             'foryou': {'style': ('stage', 'strip')},
             'pick': {'vibe': ('any', 'short', 'coop', 'unfinished', 'almost', 'never'),
-                     'style': ('chips', 'wheel')}})
+                     'style': ('chips', 'wheel', 'today')}})
         self.assertEqual(t['STYLE_LABELS'], {
-            'pick': {'chips': "Chips", 'wheel': "Wheel"},
+            'pick': {'chips': "Chips", 'wheel': "Wheel", 'today': "Today's pick"},
             'foryou': {'stage': "On stage", 'strip': "Strip"},
             'stage': {'row': "Row on art", 'clean': "Clean"},
             'week': {'bars': "Bars", 'number': "Number only"}})
@@ -2188,10 +2290,10 @@ class WidgetSpecTest(unittest.TestCase):
         self.assertEqual(dashboard.FORYOU_FEEDS,
                          {'stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart'})
         self.assertEqual(t['FED_BY']['system'], {'foryou'})
-        self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'daily', 'heatmap', 'facts'})
-        self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'daily', 'heatmap', 'milestones',
-                                                   'backlog', 'spacemap', 'facts'})
-        self.assertEqual(t['FED_BY']['library'], {'backlog', 'spacemap', 'facts'})
+        self.assertEqual(t['FED_BY']['midnight'], {'week', 'onthisday', 'pick', 'heatmap'})
+        self.assertEqual(t['FED_BY']['insights'], {'onthisday', 'pick', 'heatmap', 'milestones',
+                                                   'backlog', 'spacemap'})
+        self.assertEqual(t['FED_BY']['library'], {'backlog', 'spacemap'})
         self.assertEqual(t['FED_BY']['sessions'], {'week'})
         self.assertEqual(nx.DASH_KINDS, t['KINDS'])
         self.assertEqual(nx.DASH_OPTIONS, t['OPTIONS'])
@@ -2224,7 +2326,7 @@ class WidgetSpecTest(unittest.TestCase):
         from nexus.gui import dashboard
         self.assertEqual(dashboard.fed({'system'}), {'system', 'foryou'})
         self.assertEqual(dashboard.fed(['midnight']),
-                         {'midnight', 'week', 'onthisday', 'daily', 'heatmap', 'facts'})
+                         {'midnight', 'week', 'onthisday', 'pick', 'heatmap'})
         self.assertEqual(dashboard.fed({'sessions', 'friends'}),
                          {'sessions', 'friends', 'week', 'foryou'})
         self.assertEqual(dashboard.fed({'pick'}), {'pick'})

@@ -40,7 +40,11 @@ DASH_DEFAULT_SIZE = _T['DEFAULT_SIZE']
 # Widgets folded into another: a saved layout's first one becomes the new
 # widget in its place (so it doesn't jump to the end).
 DASH_MERGED = {'activity': 'system', 'storage': 'system', 'health': 'system',
-               'proton': 'system', 'jump': 'stage', 'playtime': 'week', 'surprise': 'pick'}
+               'proton': 'system', 'jump': 'stage', 'playtime': 'week', 'surprise': 'pick',
+               'daily': 'pick'}
+# `owned` (In your library) became the Smart shelf rule 'owned' and `facts`
+# (Library facts) was dropped (w-166): dash_normalize handles both
+# (_fold_owned; unknown ids are dropped), so neither has an entry above.
 # Merged widgets that are shown even when the old one was hidden: the Stage
 # takes the hero's place, which was always there (w-85).
 DASH_MERGED_SHOWN = {'stage'}
@@ -199,6 +203,52 @@ def last_unlock(data) -> dict | None:
     return max(got, key=lambda a: a['time']) if got else None
 
 
+def _fold_owned(items: list[dict]) -> list[dict]:
+    """In your library became the Smart shelf rule 'owned' (w-166). A saved
+    `owned` goes. When it was shown and the layout has no shown Smart shelf,
+    the Smart shelf takes its place showing that rule; with a shown Smart
+    shelf already, that one stays as it is (a widget cannot show two rules).
+    Idempotent."""
+    if not any(it.get('id') == 'owned' for it in items):
+        return items
+    shown = any(it.get('id') == 'owned' and not it.get('hidden') for it in items)
+    take = shown and not any(it.get('id') == 'smart' and not it.get('hidden') for it in items)
+    out, placed = [], False
+    for it in items:
+        if it.get('id') == 'owned':
+            if take and not placed:
+                placed = True
+                out.append({'id': 'smart', 'size': 'full', 'hidden': False, 'shelf': 'owned'})
+        elif not (take and it.get('id') == 'smart'):
+            out.append(it)
+    return out
+
+
+def _fold_daily(items: list[dict]) -> list[dict]:
+    """Game of the day became Pick for me's style 'today' (w-164). The first
+    `daily` becomes `pick` where it stood (size small, hidden when every
+    Game of the day was, style 'today'). A layout that already has a Pick keeps
+    it as it is, and its place: the saved Game of the day only goes, except that
+    a shown one turns a hidden Pick on, as today's pick. Idempotent."""
+    dailies = [it for it in items if it.get('id') == 'daily']
+    if not dailies:
+        return items
+    shown = any(not d.get('hidden') for d in dailies)
+    has_pick = any(it.get('id') == 'pick' for it in items)
+    out, placed = [], False
+    for it in items:
+        if it.get('id') == 'daily':
+            if not has_pick and not placed:
+                out.append({'id': 'pick', 'size': 'small', 'hidden': not shown, 'style': 'today'})
+                placed = True
+        elif it.get('id') == 'pick' and shown and it.get('hidden') and not placed:
+            placed = True
+            out.append({**it, 'hidden': False, 'style': 'today'})
+        else:
+            out.append(it)
+    return out
+
+
 DASH_VERSION = 2   # 2: the Stage moved to the top (w-86); renames to new kinds are not gated
 
 
@@ -211,6 +261,7 @@ def dash_normalize(items, version: int = DASH_VERSION) -> list[dict]:
     items = [it for it in (items if isinstance(items, list) else []) if isinstance(it, dict)]
     if not items:
         return dash_default()                 # nothing saved: the Cinematic preset
+    items = _fold_owned(_fold_daily(items))
     legacy: dict[str, list[dict]] = {}
     for it in items:
         if it.get('id') in DASH_MERGED:
@@ -1274,7 +1325,11 @@ class SmartShelfWidget(ShelfWidget):
         if smart.is_user(key):
             return smart.user_games(_user_shelf(hub, key), _visible_games(hub), facts,
                                     friends=FRIENDS.public_ids())[:24]
-        return smart.games_for(key, _visible_games(hub), facts, linux=has('proton'))[:24]
+        if key == 'smart:owned':              # the games you do not have installed (w-166)
+            pool = [g for g in hub._games if not g.get('hidden') and not g.get('dup_of')]
+        else:
+            pool = _visible_games(hub)
+        return smart.games_for(key, pool, facts, linux=has('proton'))[:24]
 
     def fill(self, hub):
         view = hub.homeview
@@ -1316,7 +1371,9 @@ class PickWidget(DashWidget):
         self.group.setExclusive(True)
         self.body.addWidget(self.chips)
         self.body.addSpacing(SP['1'])
-        row = QHBoxLayout()
+        self.spinner = QWidget()          # Spin and its note (not in style Today's pick)
+        row = QHBoxLayout(self.spinner)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SP['3'])
         self.btn = QPushButton("Spin")
         self.btn.setObjectName("Primary")
@@ -1326,7 +1383,11 @@ class PickWidget(DashWidget):
         row.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignVCenter)
         self.note = plain_label("", "Muted", wrap=True)
         row.addWidget(self.note, 1, Qt.AlignmentFlag.AlignVCenter)
-        self.body.addLayout(row)
+        self.body.addWidget(self.spinner)
+        from .insight_widgets import TodayBlock     # (it builds on DashWidget: late import)
+        self.today = TodayBlock()         # style 'today': Game of the day (w-164)
+        self.today.setVisible(False)
+        self.body.addWidget(self.today)
         self.vibe = 'any'
         self.pools: dict[str, list[dict]] = {}
         self._sig = None                  # the chips drawn (the vibes that have games)
@@ -1345,12 +1406,23 @@ class PickWidget(DashWidget):
         return vibe_pools(_visible_games(hub), get() if get else {}, linux=has('proton'))
 
     def has_content(self, hub):
+        if self.options.get('style') == 'today':
+            return self.today.has_content(hub)
         return bool(_pickable(_visible_games(hub)))     # cheap: asked on every layout
 
     def chip(self, vibe: str) -> QPushButton | None:
         return next((b for b in self.group.buttons() if b.property('vibe') == vibe), None)
 
     def fill(self, hub):
+        today = self.options.get('style') == 'today'
+        self.today.setVisible(today)
+        self.spinner.setVisible(not today)
+        if today:
+            self.chips.setVisible(False)
+            if self.wheel is not None:
+                self.wheel.setVisible(False)
+            self.today.render_for(hub)
+            return
         self.pools = pools = self.pools_of(hub)
         vibe = self.options.get('vibe', 'any')
         self.vibe = vibe if vibe in pools else 'any'
@@ -1380,10 +1452,10 @@ class PickWidget(DashWidget):
                 self.group.addButton(c)
                 self.flow.addWidget(c)
                 c.show()
-            self.chips.setVisible(len(pools) > 1)
             back = self.chip(had) if had is not None else None
             if back is not None:
                 back.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.chips.setVisible(len(pools) > 1)
         for b in self.group.buttons():
             b.setChecked(b.property('vibe') == self.vibe)
         stage = getattr(getattr(hub, 'dashboard', None), 'stage', None)
@@ -1630,17 +1702,6 @@ class UpdatesWidget(ShelfWidget):
 
     def games(self, hub):
         return [g for g in _visible_games(hub) if g.get('update_pending')]
-
-
-class OwnedWidget(ShelfWidget):
-    """Games you own on Steam / Epic / GOG but haven't installed: the ones
-    downloading first, then the ones you've played most."""
-    KIND, TITLE, LINK_CHIP = 'owned', "In your library", ('owned', 'most')
-
-    def games(self, hub):
-        owned = [g for g in hub._games if not g.get('hidden') and not is_installed(g)]
-        owned.sort(key=lambda g: (not g.get('installing'), -(g.get('playtime_minutes') or 0)))
-        return owned[:24]
 
 
 def job_facts(jobs) -> list[dict]:
@@ -2356,7 +2417,7 @@ DASH_WIDGETS = {cls.KIND: cls for cls in (
     InstalledWidget, SmartShelfWidget,
     DealsWidget,
     UpcomingWidget, WeekWidget, *INSIGHT_WIDGETS, *STATS_WIDGETS, FavouritesWidget, CollectionsWidget,
-    UpdatesWidget, OwnedWidget)}
+    UpdatesWidget)}
 
 
 class StatsAsk(QFrame):
@@ -2492,7 +2553,10 @@ class Dashboard(QWidget):
 
     def insights_consumers(self) -> set:
         """The shown widgets that read the insights payload."""
-        return FED_BY.get('insights', set()) & {i['id'] for i in self.items if not i['hidden']}
+        # Pick for me reads the payload only in style 'today' (w-164).
+        shown = {i['id'] for i in self.items if not i['hidden']
+                 and (i['id'] != 'pick' or i.get('style') == 'today')}
+        return FED_BY.get('insights', set()) & shown
 
     @property
     def stage(self) -> StageWidget:
@@ -2540,7 +2604,7 @@ class Dashboard(QWidget):
             if self._skip() != self._skipped:
                 self.relayout(force=True)
         elif kinds is None or {'stage', 'friends', 'installed', 'smart', 'favourites',
-                               'collections', 'updates', 'upcoming', 'owned'} & set(kinds):
+                               'collections', 'updates', 'upcoming'} & set(kinds):
             self.relayout(force=True)
         elif 'foryou' in kinds and self._skip() != self._skipped:
             self.relayout(force=True)            # the Strip came or went

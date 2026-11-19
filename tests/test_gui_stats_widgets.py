@@ -144,12 +144,6 @@ class Pure(unittest.TestCase):
         self.assertIn("90.0 GB", S.fact_text({'kind': 'biggest', 'name': 'X', 'n': 90 * GB})[2])
         self.assertIn("3 games", S.fact_text({'kind': 'top_studio', 'name': 'S', 'n': 3})[2])
 
-    def test_fact_of_the_day_is_the_date_modulo_n(self):
-        self.assertEqual(S.fact_index(date(2026, 11, 16), 6), date(2026, 11, 16).toordinal() % 6)
-        self.assertEqual(S.fact_index(date(2026, 11, 16), 0), 0)
-        a, b = S.fact_index(date(2026, 11, 16), 5), S.fact_index(date(2026, 11, 17), 5)
-        self.assertEqual((a + 1) % 5, b)
-
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
 class WidgetCase(unittest.TestCase):
@@ -350,76 +344,48 @@ def _move(widget, pos):
                        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
 
 
-class Facts(WidgetCase):
-    KIND = 'facts'
+class FactLines(WidgetCase):
+    """Library facts is gone (w-166): its best fact moves into Backlog health
+    at Wide (the shortest unplayed game) and into Your year (most played)."""
+    KIND = 'backlog'
 
-    def expected(self, n=3):
-        return S.fact_index(TODAY, n)
+    def test_wide_backlog_shows_the_shortest_unplayed_game(self):
+        w = self.make(payload(), size='wide')
+        t = texts(w)
+        self.assertIn("Shortest unplayed", t)
+        self.assertIn("Gris", t)
+        self.assertTrue(any("4 h" in x for x in t))
 
-    def test_shows_the_fact_of_the_day_with_its_place(self):
-        w = self.make(payload())          # the hidden game's fact is not shown: 3 of 4 remain
-        i = self.expected(3)
-        self.assertIn(f"{i + 1} of 3", texts(w))
-        head, big, line = S.fact_text(w._items(self.hub)[i])
-        self.assertIn(head, texts(w))
-        self.assertIn(big, texts(w))
-
-    def test_next_fact_cycles_and_keeps_the_button(self):
-        w = self.make(payload())
-        self.hosted(w, 360, 300)
-        btn = next(b for b in w.findChildren(QPushButton) if b.text() == "Next fact")
-        seen = []
-        for _ in range(4):
-            seen.append(next(t for t in texts(w) if " of 3" in t))
-            btn.click()
-        self.assertEqual(seen[0], seen[3])
-        self.assertEqual(len(set(seen)), 3)
-        self.assertIs(next(b for b in w.findChildren(QPushButton) if b.text() == "Next fact"), btn)
-
-    def test_next_fact_keeps_focus(self):
-        w = self.make(payload())
-        host = self.hosted(w, 360, 300)
-        btn = next(b for b in w.findChildren(QPushButton) if b.text() == "Next fact")
-        btn.setFocus()
-        self.assertNotEqual(btn.focusPolicy(), Qt.FocusPolicy.NoFocus)
-        btn.click()
-        self.assertTrue(btn.hasFocus())
-
-    def test_a_game_fact_links_to_its_page(self):
-        data = payload(facts=[{'kind': 'shortest_unplayed', 'slug': 'gris', 'name': 'Gris', 'n': 4.0}])
-        w = self.make(data)
-        self.assertIn("Gris", texts(w))
+    def test_it_links_to_the_game_page(self):
+        w = self.make(payload(), size='wide')
         row = next(r for r in w.findChildren(type(w.link_block([], lambda: None))))
         row.clicked.emit()
         self.assertEqual(self.hub.opened, [('page', 'gris')])
 
-    def test_a_hidden_games_fact_is_dropped(self):
-        w = self.make(payload())
-        self.assertEqual(len(w._items(self.hub)), 3)
-        self.assertNotIn("Hidden One", " ".join(texts(w)))
+    def test_small_backlog_has_no_fact(self):
+        w = self.make(payload(), size='small')
+        self.assertNotIn("Shortest unplayed", texts(w))
 
-    def test_leaves_the_layout_without_facts(self):
-        for data in (None, payload(facts=[]), payload(facts='x'),
-                     payload(facts=[{'kind': 'biggest', 'slug': 'hid', 'name': 'x', 'n': 1}])):
-            w = self.make(data)
-            self.assertFalse(w.has_content(self.hub), data)
+    def test_no_fact_when_the_game_is_hidden_or_the_payload_has_none(self):
+        hid = [{'kind': 'shortest_unplayed', 'slug': 'hid', 'name': 'Hidden One', 'n': 1.0}]
+        for data in (payload(facts=hid), payload(facts=[]), payload(facts='x'),
+                     payload(facts=[{'kind': 'top_genre', 'name': 'RPG', 'n': 3}])):
+            w = self.make(data, size='wide')
+            self.assertNotIn("Shortest unplayed", texts(w))
+            self.assertNotIn("Hidden One", texts(w))
+            self.assertTrue(w.has_content(self.hub))
 
-    def test_a_rebuild_keeps_the_place_in_the_list(self):
-        w = self.make(payload())
-        next(b for b in w.findChildren(QPushButton) if b.text() == "Next fact").click()
-        shown = [t for t in texts(w) if " of 3" in t]
-        self.hub.dashboard.feed.data = payload(today='2026-11-16', backlog={})
-        w._sig = None
+    def test_a_new_payload_fact_rebuilds(self):
+        w = self.make(payload(), size='wide')
+        other = [{'kind': 'shortest_unplayed', 'slug': 'tunic', 'name': 'Tunic', 'n': 2.0}]
+        self.hub.dashboard.feed.data = payload(facts=other)
         w.fill(self.hub)
-        self.assertEqual([t for t in texts(w) if " of 3" in t], shown)
+        self.assertIn("Tunic", texts(w))
+        self.assertNotIn("Gris", texts(w))
 
-    def test_renders_in_two_themes(self):
-        self.addCleanup(nx.apply_appearance, nx.APPEARANCE_DEFAULT)
-        for name in ('forest', 'dawn'):
-            nx.apply_appearance({'theme': name})
-            w = self.make(payload())
-            self.hosted(w, 360, 300)
-            self.assertFalse(w.grab().isNull())
+    def test_the_retired_widget_is_gone(self):
+        self.assertNotIn('facts', D.DASH_WIDGETS)
+        self.assertFalse(hasattr(S, 'FactsWidget'))
 
 
 if __name__ == '__main__':

@@ -206,7 +206,8 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
   **Upcoming** (unreleased wishlist games, soonest first, with the cheapest current price —
   keyshops included — and a Pre-order tag), Favourites, Collections (a row per collection),
   Updates ready, and hidden by default
-  Play time, Achievements (recent unlocks, games closest to 100%) and In your library.
+  Play time and Achievements (recent unlocks, games closest to 100%). Owned games you haven't
+  installed are a Smart shelf rule, *Owned, not installed*.
   **Customise** lets you move (←↑↓→), resize
   (small/wide/full) and hide widgets, change the Stage's style (Row on art or Clean) and
   background (Game art, Pinned art, Accent gradient or Plain; ⋮ → Pin to Stage keeps one
@@ -233,7 +234,7 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
     greyed art with a download mark; **Install** opens Steam's install dialog (or Heroic's
     "install it?" prompt) and Nexus follows the download (*Installing 42%* on the tile and the
     game page) and says when it's ready. Home, featured games and Storage stay about installed
-    games; there's an optional *In your library* dashboard row. Off in Settings if you don't
+    games; a Smart shelf with the *Owned, not installed* rule lists them on Home. Off in Settings if you don't
     want them.
   - A tile is just the game's art — no badges. The title fades in on hover with a **⋮** button
     (⋮ and right-click open the same menu); a green dot marks the game being played.

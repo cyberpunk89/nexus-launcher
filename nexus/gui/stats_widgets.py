@@ -1,5 +1,6 @@
-"""Home's Stats widgets (w-141): Backlog health, Where your space goes (a
-treemap) and Library facts. Each one is a WidgetSpec in widget_spec.py plus
+"""Home's Stats widgets (w-141): Backlog health and Where your space goes (a
+treemap). Library facts was retired (w-166): its best facts live in Backlog
+health at Wide and in Your year (insight_widgets.fact_text). Each one is a WidgetSpec in widget_spec.py plus
 one InsightWidget here. The CLI did the work: the payload's `backlog`,
 `space`, `space_more` and `facts` (nexus/insights.py), already without the
 games you hid; the GUI never computes the backlog from its own game list.
@@ -20,7 +21,7 @@ from .art import anim_ms
 from .common import alive
 from .daycard import _color, CardHost, CardText
 from .fmt import fmt_bytes
-from .insight_widgets import _day, InsightWidget
+from .insight_widgets import _day, FACT_HEADS, fact_text, InsightWidget, payload_fact  # noqa: F401
 from .theme import contrast, FONTS, FS, G, P, scaled, SP
 from .widgets import clear_layout, label, plain_label
 
@@ -37,11 +38,6 @@ BUCKETS = (('month', 'accent', "Played this month"),
 BUCKET = {k: (tok, words) for k, tok, words in BUCKETS}
 BACKLOG_PARTS = (('done', 'accent', "done"), ('playing', 'success', "playing"),
                  ('started', 'warning', "started"), ('never', 'overlay', "never played"))
-FACT_HEADS = {'library': "Your library", 'top_genre': "Top genre", 'most_played': "Most played",
-              'oldest': "Oldest game", 'shortest_unplayed': "Shortest unplayed",
-              'biggest': "Biggest install", 'top_studio': "Top studio"}
-
-
 # ---- pure helpers (no Qt state) ----
 def idle_bucket(days) -> str:
     """The legend bucket for a game last played `days` ago (None: never)."""
@@ -126,38 +122,6 @@ def backlog_lines(b: dict) -> dict:
             'idle': f"{fmt_bytes(idle)} is held by games idle for a year" if idle > 0 else ""}
 
 
-def _games(n: int) -> str:
-    return f"{n:,} game{'s' if n != 1 else ''}"
-
-
-def fact_text(f: dict) -> tuple[str, str, str]:
-    """(heading, the big line, the muted line) for one payload fact."""
-    kind, name, n = f.get('kind'), f.get('name') or "", f.get('n') or 0
-    head = FACT_HEADS.get(kind, "A fact")
-    if kind == 'library':
-        hours = float(f.get('hours') or 0)
-        line = f"About {hours:,.0f} h played in all" if hours >= 1 else "Nothing played yet, and that is fine"
-        return head, _games(int(n)), line
-    if kind == 'top_genre':
-        return head, name, f"{_games(int(n))} in your library"
-    if kind == 'most_played':
-        return head, name, f"{n:g} h with it so far"
-    if kind == 'oldest':
-        return head, name, f"Released in {int(n)}"
-    if kind == 'shortest_unplayed':
-        return head, name, f"About {n:g} h to finish, and still waiting for you"
-    if kind == 'biggest':
-        return head, name, f"{fmt_bytes(n)} on your disk"
-    if kind == 'top_studio':
-        return head, name, f"{_games(int(n))} from them"
-    return head, name, ""
-
-
-def fact_index(today: date, n: int) -> int:
-    """Which fact is the fact of the day: the same all day, the next at midnight."""
-    return today.toordinal() % n if n > 0 else 0
-
-
 # ---- small painted bits ----
 class Dot(QWidget):
     """A small rounded square of a theme colour (the legend's key)."""
@@ -238,7 +202,8 @@ class BacklogWidget(InsightWidget):
         return self._b(hub) is not None
 
     def signature(self, hub):
-        return repr(self._b(hub))
+        return (repr(self._b(hub)),
+                repr(payload_fact(self.data(hub), 'shortest_unplayed', self.shown(hub))))
 
     def build(self, hub):
         b = self._b(hub)
@@ -276,6 +241,11 @@ class BacklogWidget(InsightWidget):
             self.body.addWidget(label(lines['pace'], None, wrap=True))
         if lines['idle']:
             self.body.addWidget(label(lines['idle'], "Muted", wrap=True))
+        if self.size_ == 'wide':             # Library facts' best fact (w-166)
+            fact = payload_fact(self.data(hub), 'shortest_unplayed', self.shown(hub))
+            if fact is not None:
+                self.body.addSpacing(SP['1'])
+                self.body.addWidget(self.fact_block(hub, fact))
 
 
 # ---- Where your space goes ----
@@ -590,83 +560,4 @@ class SpaceWidget(InsightWidget):
             btn.setFocus(Qt.FocusReason.TabFocusReason)
 
 
-# ---- Library facts ----
-class FactsWidget(InsightWidget):
-    """One fact about your library, the same all day (a new one at midnight);
-    "Next fact" steps through the rest (not saved)."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'facts', "Library facts", G['info'], 'dawn', None
-
-    def __init__(self):
-        super().__init__()
-        self._shift = 0
-        self.slot: QVBoxLayout | None = None
-
-    def _items(self, hub) -> list[dict]:
-        rows = (self.data(hub) or {}).get('facts')
-        shown = self.shown(hub)
-        return [f for f in (rows if isinstance(rows, list) else []) if isinstance(f, dict)
-                and f.get('kind') in FACT_HEADS and (f.get('slug') is None or f['slug'] in shown)]
-
-    def _today(self, hub) -> date:
-        return _day((self.data(hub) or {}).get('today')) or date.today()
-
-    def has_content(self, hub):
-        return bool(self._items(hub))
-
-    def signature(self, hub):
-        return (self._today(hub).isoformat(), repr(self._items(hub)))
-
-    def index(self, hub) -> int:
-        items = self._items(hub)
-        return (fact_index(self._today(hub), len(items)) + self._shift) % len(items) if items else 0
-
-    def clear(self):
-        self.slot = None
-        super().clear()
-
-    def build(self, hub):
-        if not self._items(hub):
-            return
-        self.slot = QVBoxLayout()
-        self.slot.setSpacing(SP['1_5'])
-        self.body.addLayout(self.slot)
-        self._paint_fact(hub)
-        row = QHBoxLayout()
-        nxt = QPushButton("Next fact")
-        nxt.setObjectName("Ghost")
-        nxt.setCursor(Qt.CursorShape.PointingHandCursor)
-        nxt.clicked.connect(lambda: self._next(hub))
-        row.addWidget(nxt)
-        row.addStretch()
-        self.body.addLayout(row)
-
-    def _paint_fact(self, hub):
-        """The fact itself, in the slot above the button (which keeps focus)."""
-        items = self._items(hub)
-        if self.slot is None or not items:
-            return
-        clear_layout(self.slot)
-        i = self.index(hub)
-        f = items[i]
-        head, big, line = fact_text(f)
-        top = QHBoxLayout()
-        top.addWidget(label(head, "StatLabel"))
-        top.addStretch()
-        top.addWidget(label(f"{i + 1} of {len(items)}", "Muted"))
-        self.slot.addLayout(top)
-        g = self.shown(hub).get(f.get('slug') or '')
-        shown_name = (g.get('display_name') or big) if g is not None else big
-        title = plain_label(shown_name, "DashTitle", wrap=True)
-        if g is not None:
-            self.slot.addWidget(self.link_block([title], lambda g=g: self.open_page(hub, g)))
-        else:
-            self.slot.addWidget(title)
-        if line:
-            self.slot.addWidget(label(line, "Muted", wrap=True))
-
-    def _next(self, hub):
-        self._shift += 1
-        self._paint_fact(hub)
-
-
-STATS_WIDGETS = (BacklogWidget, SpaceWidget, FactsWidget)
+STATS_WIDGETS = (BacklogWidget, SpaceWidget)
