@@ -173,6 +173,21 @@ class Backlog(unittest.TestCase):
                  game('never', size=9000), game('gone', 60, 500, size=3000, installed=False)]
         self.assertEqual(build(games=games)['backlog']['idle_year_bytes'], 5000)
 
+    def test_shortest_unplayed_installed(self):
+        games = [game('b', 0), game('a', 0), game('c', 0), game('d', 0), game('played', 60, 5),
+                 game('gone', 0, installed=False), game('nofact', 0)]
+        facts = {'b': fact(5), 'a': fact(5), 'c': fact(2), 'd': fact(30), 'played': fact(1),
+                 'gone': fact(1)}
+        sh = build(games=games, facts=facts)['backlog']['shortest']
+        self.assertEqual([(r['slug'], r['main_hours']) for r in sh], [('c', 2.0), ('a', 5.0), ('b', 5.0)])
+        self.assertEqual(sh[0]['name'], 'C')
+        self.assertEqual(build(games=[game('x')], facts={})['backlog']['shortest'], [])
+        games = [game('z1', 0, dup_of='a'), game('z2', 0, hidden=True), game('z3', 0, dup_of='a'),
+                 game('z4', 0, dup_of='a'), game('ok', 0)]
+        facts = {k: fact(1) for k in ('z1', 'z2', 'z3', 'z4')} | {'ok': fact(9)}
+        self.assertEqual([r['slug'] for r in build(games=games, facts=facts)['backlog']['shortest']],
+                         ['ok'])                      # copies never crowd the row out
+
 
 class Space(unittest.TestCase):
     def test_top_12_by_bytes(self):
@@ -584,7 +599,7 @@ class Empty(unittest.TestCase):
         self.assertEqual((out['year_minutes'], out['on_this_day'], out['space']), (0, [], []))
         self.assertEqual(out['backlog'], {'done': 0, 'playing': 0, 'started': 0, 'never': 0,
                                           'main_hours_left': 0, 'pace_hours_week': 0,
-                                          'idle_year_bytes': 0})
+                                          'idle_year_bytes': 0, 'shortest': []})
         json.dumps(out)
 
 

@@ -114,6 +114,7 @@ def _backlog(games, facts, week_minutes: float, today: date) -> dict:
     done = playing = started = never = 0
     left = 0.0
     idle = 0
+    short = []
     for g in games:
         fact = facts.get(g['slug'])
         p = smart.progress(g, fact)
@@ -133,10 +134,17 @@ def _backlog(games, facts, week_minutes: float, today: date) -> dict:
             left += max(0.0, main - smart._hours(g))
         if g.get('installed', True) is not False and days is not None and days > 365:
             idle += int(g.get('disk_bytes') or 0)
+        if not played and main and g.get('installed', True) is not False \
+                and not g.get('hidden') and not g.get('dup_of'):
+            short.append((main, g['slug'], g))
+    short.sort(key=lambda t: (t[0], t[1]))
     return {'done': done, 'playing': playing, 'started': started, 'never': never,
             'main_hours_left': round(left, 1),
             'pace_hours_week': round(week_minutes / 60 / (PACE_DAYS / 7), 1),
-            'idle_year_bytes': idle}
+            'idle_year_bytes': idle,
+            # Never played, installed, length known: where "Start the shortest" points (w-167).
+            'shortest': [{'slug': s, 'name': _name(g), 'main_hours': round(m, 1)}
+                         for m, s, g in short[:3]]}
 
 
 def _space(games, today: date) -> tuple[list[dict], dict]:

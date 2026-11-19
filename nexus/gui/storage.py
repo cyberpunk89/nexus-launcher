@@ -2,6 +2,7 @@
 
 import html
 import re
+from datetime import date, datetime
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QItemSelectionModel, QPointF, QRectF, Qt, QUrl
@@ -203,6 +204,8 @@ class StoragePage(QWidget):
         thead.addWidget(self.btn_uninstall)
         lay.addLayout(thead)
         lay.addWidget(self._build_uninstall_bar())
+        self._idle = False
+        self._sort = self.SORTS['size']
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Game", "Source", "Size", "Played",
                                               "Last played", "Added"])
@@ -217,6 +220,7 @@ class StoragePage(QWidget):
         self.table.setShowGrid(False)
         self.table.setMinimumHeight(320)
         hh = self.table.horizontalHeader()
+        hh.sectionClicked.connect(self._end_idle)
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for i in range(1, 6):
             hh.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
@@ -227,6 +231,57 @@ class StoragePage(QWidget):
         self._selection_changed()
 
     # ---- drives + table ----
+    SORTS = {'size': (2, Qt.SortOrder.DescendingOrder),
+             'idle': (4, Qt.SortOrder.AscendingOrder)}
+    IDLE_DAYS = 365          # insights.py counts the same games in "idle over a year"
+
+    def _played_key(self, g: dict) -> str:
+        """The "Last played" cell's sort key. In the idle order (Review on
+        Home) the games Home's idle-bytes number counts (installed, played,
+        idle over a year) come first, longest idle first, then the never
+        played, then the rest."""
+        lp = g.get('last_played') or ''
+        if not self._idle:
+            return lp
+        if not lp:
+            return '1'
+        try:
+            days = (date.today() - datetime.fromisoformat(lp).date()).days
+        except ValueError:
+            days = 0
+        counted = g.get('installed', True) is not False and days > self.IDLE_DAYS
+        return ('0' if counted else '2') + lp
+
+    def _rekey(self):
+        by_slug = {g['slug']: g for g in self.games}
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 4)
+            g = by_slug.get(self.table.item(r, 0).data(Qt.ItemDataRole.UserRole))
+            if it is not None and g is not None:
+                it.key = self._played_key(g)
+
+    def sort_by(self, key: str):
+        """Sort the games table by 'size' (the default) or 'idle' (Home's
+        Where your space goes, Review). The idle order is one-shot: it holds
+        across library reloads until a header is clicked or the page is left
+        (w-167)."""
+        self._idle = key == 'idle'
+        self._sort = self.SORTS['idle' if self._idle else 'size']
+        self._rekey()
+        self.table.sortItems(*self._sort)
+
+    def _end_idle(self, *_):
+        if self._idle:
+            hh = self.table.horizontalHeader()
+            self._idle, self._sort = False, self.SORTS['size']
+            self._rekey()
+            self.table.sortItems(hh.sortIndicatorSection(), hh.sortIndicatorOrder())
+
+    def hideEvent(self, ev):
+        if not ev.spontaneous():
+            self._idle, self._sort = False, self.SORTS['size']
+        super().hideEvent(ev)
+
     def set_library(self, games, disks):
         self.games = games
         self.disks = disks if isinstance(disks, list) else ([disks] if disks else [])
@@ -250,7 +305,7 @@ class StoragePage(QWidget):
                 (SOURCE_LABEL.get(g.get('source', 'nexus'), ''), g.get('source', '')),
                 (fmt_size(g.get('disk_bytes')) or '—', g.get('disk_bytes') or 0),
                 (fmt_hours(g.get('playtime_minutes')) or '—', g.get('playtime_minutes') or 0),
-                (fmt_relative(g.get('last_played')) or 'never', g.get('last_played') or ''),
+                (fmt_relative(g.get('last_played')) or 'never', self._played_key(g)),
                 (fmt_relative(g.get('added_at')) or '—', g.get('added_at') or ''),
             ]
             for c, (text, key) in enumerate(cells):
@@ -259,7 +314,7 @@ class StoragePage(QWidget):
                     it.setData(Qt.ItemDataRole.UserRole, g['slug'])
                 self.table.setItem(r, c, it)
         self.table.setSortingEnabled(True)
-        self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        self.table.sortItems(*self._sort)
         for r in range(self.table.rowCount()):
             if self.table.item(r, 0).data(Qt.ItemDataRole.UserRole) in keep:
                 self.table.selectionModel().select(

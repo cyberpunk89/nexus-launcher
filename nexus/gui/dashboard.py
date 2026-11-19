@@ -3,7 +3,7 @@
 import html
 import random
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal, QEvent, QRectF, Qt, QTimer, QUrl
@@ -776,9 +776,10 @@ class ShelfWidget(DashWidget):
                 ts.remove(t)
         self.clear()
         self._tiles = []
+        self.row = None
         games = self.games(hub)
         if games:
-            row = view.make_shelf(self.TITLE, games, self.KIND_TILE, self.LINK_CHIP)
+            row = self.row = view.make_shelf(self.TITLE, games, self.KIND_TILE, self.LINK_CHIP)
             self._tiles = row.tiles
             self.body.addWidget(row)
 
@@ -1703,6 +1704,19 @@ class UpdatesWidget(ShelfWidget):
     def games(self, hub):
         return [g for g in _visible_games(hub) if g.get('update_pending')]
 
+    def fill(self, hub):
+        super().fill(hub)
+        # One button for every repack update the CLI can install (w-167); Steam
+        # updates and repacks found only online have no installer to run here.
+        todo = [g for g in self.games(hub) if g.get('repack_update')]
+        free = hub.update_split(todo)[0] if todo else []     # not busy, not playing: what Update all does
+        if free and self.row is not None:
+            b = QPushButton(f"Update all ({len(free)})")
+            b.setObjectName("Ghost")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, hub=hub, todo=todo: hub.update_all(todo))
+            self.row.head.layout().addWidget(b)
+
 
 def job_facts(jobs) -> list[dict]:
     """JobManager jobs as the plain dicts system_status() reads."""
@@ -1812,11 +1826,16 @@ class NewsWidget(DashWidget):
                 hub.newspage.refresh()            # once; cached by the CLI
             return
         n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
+        by_app = getattr(hub.newspage, 'games_by_appid', None)
+        by_app = by_app if isinstance(by_app, dict) else {}
+        mine = {a for a, g in by_app.items() if not g.get('hidden') and not g.get('dup_of')}
+        items = your_games_first(items, mine, n, today())      # w-167
+        ready = {a for a in mine if by_app[a].get('update_pending')}
         for it in items[:n]:
-            self.body.addWidget(self._story_row(it, hub))
-        self.add_more(items[n:], lambda it: self._story_row(it, hub))
+            self.body.addWidget(self._story_row(it, hub, ready))
+        self.add_more(items[n:], lambda it: self._story_row(it, hub, ready))
 
-    def _story_row(self, it, hub):
+    def _story_row(self, it, hub, ready=frozenset()):
         """Thumbnail, headline, source · time; opens the story in the News
         page's reader."""
         w = ClickRow()
@@ -1836,9 +1855,24 @@ class NewsWidget(DashWidget):
         sub = label(" · ".join(x for x in (it.get('source'), fmt_relative(it.get('date')))
                                if x), None)
         sub.setStyleSheet(f"color: {P[role]}; font-size: {FS['2xs']}px;")
-        col.addWidget(sub)
+        extra = [t, sub]
+        if it.get('kind') == 'steam' and it.get('appid') in ready:
+            line = QHBoxLayout()                 # "· Update ready", in the warning colour
+            line.setSpacing(0)
+            line.addWidget(sub)
+            tag = label(" \u00b7 ", None)
+            tag.setStyleSheet(f"color: {P[role]}; font-size: {FS['2xs']}px;")
+            note = label("Update ready", None)
+            note.setStyleSheet(f"color: {P['warning']}; font-size: {FS['2xs']}px;")
+            for x in (tag, note):
+                line.addWidget(x)
+                extra.append(x)
+            line.addStretch()
+            col.addLayout(line)
+        else:
+            col.addWidget(sub)
         lay.addLayout(col, 1)
-        for x in (t, sub):
+        for x in extra:
             x.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         return w
 
@@ -2337,6 +2371,32 @@ class UpcomingWidget(DashWidget):
             self.body.addWidget(tail)
 
 
+WEEK_SAME_MIN = 30      # a week within this many minutes of last week's is "about the same"
+
+
+def week_compare(this_min, last_to_date) -> str:
+    """Your week against last week up to the same weekday (w-167): "" when
+    neither has play; never a judgement, only the difference."""
+    this_min, last_to_date = float(this_min or 0), float(last_to_date or 0)
+    if this_min <= 0 and last_to_date <= 0:
+        return ""
+    diff = this_min - last_to_date
+    if abs(diff) < WEEK_SAME_MIN:
+        return "About the same as last week"
+    return (f"+{fmt_hours(diff)} on last week" if diff > 0
+            else f"{fmt_hours(-diff)} less than last week")
+
+
+def _week_compare_scope(today_iso) -> str:
+    try:
+        wd = date.fromisoformat(today_iso).weekday()
+    except (TypeError, ValueError):
+        return "Compared with the same days last week"
+    names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    return (f"Compared with {names[0]} last week, up to this time of day" if wd == 0
+            else f"Compared with {names[0]} to {names[wd]} last week, up to this time of day")
+
+
 class WeekWidget(DashWidget):
     """Your week (w-87): this week's play time, how many games and Monday to
     Sunday as bars, today bright; wide adds the week's three most played.
@@ -2366,7 +2426,7 @@ class WeekWidget(DashWidget):
             per = (self._hist or {}).get('periods') or {}
             style = self.options.get('style', 'bars')
             sig = (self.size_, style, repr(per.get('week')), per.get('today'),
-                   bool((self._hist or {}).get('since')))
+                   bool((self._hist or {}).get('since')), repr(per.get('last_week')))
             if sig == self._sig and self.body.count():
                 return                  # nothing changed: keep the rows (and pad focus)
             self._sig = sig
@@ -2401,6 +2461,13 @@ class WeekWidget(DashWidget):
         n = len(games)
         _add(left, label(f"{n} game{'s' if n != 1 else ''} this week" if n
                          else "Nothing played yet this week", "Muted", wrap=True))
+        last = per.get('last_week')
+        if isinstance(last, dict):
+            cmp_ = week_compare(week.get('minutes'), last.get('to_date'))
+            if cmp_:
+                lab = label(cmp_, "Muted", wrap=True)
+                lab.setAccessibleDescription(_week_compare_scope(per.get('today')))
+                _add(left, lab)
         if style == 'bars':
             _add(left, _day_bars(week, per.get('today') or '', 84, month=False))
         if wide and games:
@@ -3024,7 +3091,7 @@ from .input import focus_and_reveal  # noqa: E402
 from .layouts_bar import LayoutsBar, LayoutsView, time_rule_body  # noqa: E402
 from .jobs import cli_cache_forget, cli_json  # noqa: E402
 from .library import featured_games, ShelfRow  # noqa: E402
-from .newspage import news_style, NewsArt  # noqa: E402
+from .newspage import news_style, NewsArt, your_games_first  # noqa: E402
 from .system import _add, _bar_rows, _columns, _day_bars, play_rows  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
 from .widgets import (clear_layout, FlowLayout, GrowHost, icon_button, icon_label, label, MasonryLayout,

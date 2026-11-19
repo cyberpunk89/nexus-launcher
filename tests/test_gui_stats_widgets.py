@@ -38,7 +38,10 @@ def games():
 def payload(**kw):
     p = {'v': 1, 'today': TODAY.isoformat(),
          'backlog': {'done': 14, 'playing': 6, 'started': 17, 'never': 13, 'main_hours_left': 310.0,
-                     'pace_hours_week': 22.0, 'idle_year_bytes': 212 * GB},
+                     'pace_hours_week': 22.0, 'idle_year_bytes': 212 * GB,
+                     'shortest': [{'slug': 'hid', 'name': 'Hidden One', 'main_hours': 1.0},
+                                  {'slug': 'gris', 'name': 'Gris', 'main_hours': 4.0},
+                                  {'slug': 'tunic', 'name': 'Tunic', 'main_hours': 9.5}]},
          'space': [{'slug': 'disco', 'bytes': 60 * GB, 'idle_days': 5},
                    {'slug': 'tunic', 'bytes': 40 * GB, 'idle_days': 100},
                    {'slug': 'hades', 'bytes': 30 * GB, 'idle_days': 500},
@@ -57,7 +60,8 @@ class FakeHub:
     def __init__(self, data):
         self._games = games()
         self.dashboard = SimpleNamespace(feed=SimpleNamespace(data=data))
-        self.opened, self.pages = [], []
+        self.opened, self.pages, self.sorted = [], [], []
+        self.storage = SimpleNamespace(sort_by=self.sorted.append)
         self._tile_clicked = lambda g, mods: self.opened.append(('page', g['slug']))
         self.go = self.pages.append
 
@@ -118,12 +122,11 @@ class Pure(unittest.TestCase):
                          [(14, "done"), (6, "playing"), (17, "started"), (13, "never played")])
         self.assertEqual(ln['left'], ("310 h", "of main stories left"))
         self.assertEqual(ln['pace'], "About 14 weeks at your pace")
-        self.assertEqual(ln['idle'], "212.0 GB is held by games idle for a year")
+        self.assertNotIn('idle', ln)                 # the idle bytes live on Where your space goes
 
     def test_backlog_without_pace_or_idle_or_hours(self):
         ln = S.backlog_lines({'done': 1, 'main_hours_left': 5, 'pace_hours_week': 0})
         self.assertEqual(ln['pace'], "Your pace shows here once you play a little")
-        self.assertEqual(ln['idle'], "")
         ln = S.backlog_lines({'done': 1, 'main_hours_left': 0, 'pace_hours_week': 4})
         self.assertIsNone(ln['left'])
         self.assertEqual(ln['pace'], "")
@@ -177,8 +180,45 @@ class Backlog(WidgetCase):
         for x in ("14", "done", "6", "playing", "17", "started", "13", "never played", "310 h",
                   "of main stories left", "About 14 weeks at your pace"):
             self.assertIn(x, t)
-        self.assertTrue(any("212.0 GB is held by games idle for a year" in x for x in t))
         self.assertEqual(w.bar.accessibleName(), "14 done, 6 playing, 17 started, 13 never played")
+
+    def test_start_the_shortest_row(self):
+        for size in ('small', 'wide'):
+            w = self.make(payload(), size=size)
+            t = texts(w)
+            self.assertIn("Start the shortest", t)
+            self.assertIn("Gris", t)                    # the hidden game is skipped
+            self.assertNotIn("Hidden One", t)
+            self.assertIn("4 h main story \u00b7 not started yet", t)
+            btn = next(b for b in w.findChildren(QPushButton) if b.objectName() == "Primary")
+            self.assertIn(btn.text(), ("Play", "Open page"))
+        # The row opens the game page; the button plays or opens it.
+        row = next(r for r in w.findChildren(type(w.link_block([], lambda: None))))
+        row.clicked.emit()
+        self.assertEqual(self.hub.opened, [('page', 'gris')])
+        with mock.patch.object(type(w), 'play') as play:
+            btn.click()
+        play.assert_called_once()
+
+    def test_no_row_without_a_shown_shortest_game(self):
+        for b in (dict(payload()['backlog'], shortest=[]),
+                  dict(payload()['backlog'], shortest=[{'slug': 'hid', 'name': 'H', 'main_hours': 1}]),
+                  {k: v for k, v in payload()['backlog'].items() if k != 'shortest'}):
+            w = self.make(payload(backlog=b), size='wide')
+            self.assertNotIn("Start the shortest", texts(w))
+            self.assertTrue(w.has_content(self.hub))
+
+    def test_idle_line_moved_out(self):
+        w = self.make(payload(), size='wide')
+        self.assertFalse(any("idle for a year" in x for x in texts(w)))
+
+    def test_a_new_shortest_game_rebuilds(self):
+        w = self.make(payload(), size='small')
+        b = dict(payload()['backlog'], shortest=[{'slug': 'tunic', 'name': 'Tunic', 'main_hours': 2.0}])
+        self.hub.dashboard.feed.data = payload(backlog=b)
+        w.fill(self.hub)
+        self.assertIn("Tunic", texts(w))
+        self.assertNotIn("Gris", texts(w))
 
     def test_bar_segments_are_proportional_and_gapped(self):
         w = self.make(payload())
@@ -223,6 +263,7 @@ class Space(WidgetCase):
     def _map(self, data=None, **kw):
         w = self.make(data or payload(), size='wide')
         self.host = self.hosted(w)
+        w.map.clearFocus()          # with no header Open the map is the first thing to take focus
         return w, w.map
 
     def test_blocks_fill_the_map_and_drop_hidden_games(self):
@@ -246,10 +287,26 @@ class Space(WidgetCase):
     def test_header_total_and_open_link(self):
         w, m = self._map()
         self.assertTrue(any("in your installed games" in x for x in texts(w)))
+        self.assertFalse([b for b in w.findChildren(QPushButton) if b.text() == "Open"])
+        self.assertIsNone(S.SpaceWidget.LINK)
+
+    def test_review_opens_storage_sorted_by_idle(self):
+        w, m = self._map()
+        self.assertIn("212.0 GB idle over a year", texts(w))
         got = []
         w.go.connect(got.append)
-        next(b for b in w.findChildren(QPushButton) if b.text() == "Open").click()
+        next(b for b in w.findChildren(QPushButton) if b.text() == "Review").click()
+        self.assertEqual(self.hub.sorted, ['idle'])
         self.assertEqual(got, ['storage'])
+
+    def test_no_idle_offers_open_storage(self):
+        b = dict(payload()['backlog'], idle_year_bytes=0)
+        w, m = self._map(payload(backlog=b))
+        self.assertFalse([x for x in w.findChildren(QPushButton) if x.text() == "Review"])
+        got = []
+        w.go.connect(got.append)
+        next(x for x in w.findChildren(QPushButton) if x.text() == "Open Storage").click()
+        self.assertEqual((got, self.hub.sorted), (['storage'], []))
 
     def test_arrows_move_to_the_nearest_block_by_centre(self):
         w, m = self._map()
@@ -281,10 +338,10 @@ class Space(WidgetCase):
             QTest.keyClick(m, Qt.Key.Key_Return)
             self.assertEqual(self.hub.opened, [('page', 'disco')])
 
-    def test_escape_goes_back_to_open(self):
+    def test_escape_goes_back_to_the_action(self):
         w, m = self._map()
         focused = []
-        w.open_btn.setFocus = lambda reason=None: focused.append(reason)
+        w.action_btn.setFocus = lambda reason=None: focused.append(reason)
         m.leave_requested.emit()
         self.assertEqual(len(focused), 1)
 
@@ -345,43 +402,35 @@ def _move(widget, pos):
 
 
 class FactLines(WidgetCase):
-    """Library facts is gone (w-166): its best fact moves into Backlog health
-    at Wide (the shortest unplayed game) and into Your year (most played)."""
+    """Library facts is gone (w-166): its best facts moved into Backlog health
+    at Wide (the library, since w-167 the shortest game is Start the shortest)
+    and into Your year (most played)."""
     KIND = 'backlog'
 
-    def test_wide_backlog_shows_the_shortest_unplayed_game(self):
+    def test_wide_backlog_shows_the_library_fact(self):
         w = self.make(payload(), size='wide')
         t = texts(w)
-        self.assertIn("Shortest unplayed", t)
-        self.assertIn("Gris", t)
-        self.assertTrue(any("4 h" in x for x in t))
-
-    def test_it_links_to_the_game_page(self):
-        w = self.make(payload(), size='wide')
-        row = next(r for r in w.findChildren(type(w.link_block([], lambda: None))))
-        row.clicked.emit()
-        self.assertEqual(self.hub.opened, [('page', 'gris')])
+        self.assertIn("Your library", t)
+        self.assertIn("44 games", t)
+        self.assertNotIn("Shortest unplayed", t)         # said once: Start the shortest
 
     def test_small_backlog_has_no_fact(self):
         w = self.make(payload(), size='small')
-        self.assertNotIn("Shortest unplayed", texts(w))
+        self.assertNotIn("Your library", texts(w))
 
-    def test_no_fact_when_the_game_is_hidden_or_the_payload_has_none(self):
-        hid = [{'kind': 'shortest_unplayed', 'slug': 'hid', 'name': 'Hidden One', 'n': 1.0}]
-        for data in (payload(facts=hid), payload(facts=[]), payload(facts='x'),
-                     payload(facts=[{'kind': 'top_genre', 'name': 'RPG', 'n': 3}])):
+    def test_no_fact_when_the_payload_has_none(self):
+        for data in (payload(facts=[]), payload(facts='x')):
             w = self.make(data, size='wide')
-            self.assertNotIn("Shortest unplayed", texts(w))
-            self.assertNotIn("Hidden One", texts(w))
+            self.assertNotIn("Your library", texts(w))
             self.assertTrue(w.has_content(self.hub))
 
     def test_a_new_payload_fact_rebuilds(self):
         w = self.make(payload(), size='wide')
-        other = [{'kind': 'shortest_unplayed', 'slug': 'tunic', 'name': 'Tunic', 'n': 2.0}]
-        self.hub.dashboard.feed.data = payload(facts=other)
+        self.hub.dashboard.feed.data = payload(
+            facts=[{'kind': 'library', 'slug': None, 'name': None, 'n': 45, 'hours': 900.0}])
         w.fill(self.hub)
-        self.assertIn("Tunic", texts(w))
-        self.assertNotIn("Gris", texts(w))
+        self.assertIn("45 games", texts(w))
+        self.assertNotIn("44 games", texts(w))
 
     def test_the_retired_widget_is_gone(self):
         self.assertNotIn('facts', D.DASH_WIDGETS)

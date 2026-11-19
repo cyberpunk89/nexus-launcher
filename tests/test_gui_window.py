@@ -7141,6 +7141,136 @@ class HomeGrid(unittest.TestCase):
                     self.assertTrue(any(f in seen for f in fs), f"{name}: {k} not reached")
 
 
+class UpdateAll(unittest.TestCase):
+    """Updates ready's "Update all (N)" (w-167): the repack updates queue one
+    after another; busy and playing games are skipped; 2+ asks first."""
+    setUpClass = Window.__dict__['setUpClass']
+    tearDownClass = Window.__dict__['tearDownClass']
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+
+    def games(self):
+        return [{'slug': 'a', 'display_name': 'A', 'repack_update': '/r/a', 'update_pending': True,
+                 'installed': True, 'launcher': '/x/a'},
+                {'slug': 'b', 'display_name': 'B', 'repack_update': '/r/b', 'update_pending': True,
+                 'installed': True, 'launcher': '/x/b'},
+                {'slug': 'c', 'display_name': 'C', 'repack_update': '/r/c', 'update_pending': True,
+                 'installed': True, 'launcher': '/x/c', 'playing': True},
+                {'slug': 'd', 'display_name': 'D', 'repack_update': '/r/d', 'update_pending': True,
+                 'installed': True, 'launcher': '/x/d'},
+                {'slug': 's', 'display_name': 'S', 'source': 'steam', 'update_pending': True,
+                 'installed': True, 'launcher': '/x/s', 'appid': 5}]
+
+    def widget(self, games):
+        from nexus.gui import dashboard as D
+        w = self.win
+        w._games = games
+        wd = D.UpdatesWidget()
+        self.addCleanup(wd.deleteLater)
+        wd.fill(w)
+        return wd
+
+    def buttons(self, wd):
+        return [b.text() for b in wd.findChildren(QPushButton) if b.text().startswith("Update all")]
+
+    def test_button_counts_repack_updates_only(self):
+        self.assertEqual(self.buttons(self.widget(self.games())), ["Update all (3)"])   # c plays
+        with mock.patch.object(self.win.jobs, 'busy', lambda slug: slug in ('a', 'b', 'd')):
+            self.assertEqual(self.buttons(self.widget(self.games())), [])           # none left: no button
+        steam_only = [g for g in self.games() if g['slug'] == 's']
+        self.assertEqual(self.buttons(self.widget(steam_only)), [])
+        self.assertEqual(self.buttons(self.widget([])), [])
+
+    def test_update_all_queues_in_order_skipping_busy_and_playing(self):
+        w = self.win
+        w._games = self.games()
+        started, asked = [], []
+        with mock.patch.object(w, '_start_install',
+                               lambda argv, name, slug, *a, **k: started.append((argv[-4:], slug))), \
+                mock.patch.object(w.jobs, 'busy', lambda slug: slug == 'd'), \
+                mock.patch.object(w, 'toast', lambda *a, **k: asked.append(('toast', a[0]))), \
+                mock.patch.object(w, 'confirm',
+                                  lambda title, text, yes, on_yes, danger=True:
+                                  asked.append((title, text, yes, danger, on_yes))):
+            w.update_all([g for g in w._games if g.get('repack_update')])
+            self.assertEqual(started, [])                        # 2 left (a, b): asks first
+            title, text, yes, danger, on_yes = asked[-1]
+            self.assertEqual((title, yes, danger), ("Update 2 games?", "Update all", False))
+            self.assertIn("one after another", text)
+            on_yes()
+        self.assertEqual([s for _a, s in started], ['a', 'b'])
+
+    def test_one_game_does_not_ask(self):
+        w = self.win
+        w._games = self.games()
+        started, asked = [], []
+        with mock.patch.object(w, '_start_install',
+                               lambda argv, name, slug, *a, **k: started.append(slug)), \
+                mock.patch.object(w, 'confirm', lambda *a, **k: asked.append(a)):
+            w.update_all([w._games[0]])
+        self.assertEqual((started, asked), (['a'], []))
+
+    def test_nothing_to_do_says_so(self):
+        w = self.win
+        w._games = self.games()
+        toasts = []
+        with mock.patch.object(w, '_start_install', lambda *a, **k: self.fail("installed")), \
+                mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a[0])):
+            w.update_all([w._games[2]])                          # the one that plays
+        self.assertTrue(toasts)
+
+    def test_the_button_asks_through_the_window(self):
+        wd = self.widget(self.games())
+        got = []
+        with mock.patch.object(self.win, 'update_all', got.append):
+            next(b for b in wd.findChildren(QPushButton) if b.text().startswith("Update all")).click()
+        self.assertEqual([g['slug'] for g in got[0]], ['a', 'b', 'c', 'd'])
+
+    def test_go_rechecks_after_the_confirm(self):
+        w = self.win
+        w._games = self.games()
+        started, asked = [], []
+        busy = set()
+        with mock.patch.object(w, '_start_install',
+                               lambda argv, name, slug, *a, **k: started.append(slug)), \
+                mock.patch.object(w.jobs, 'busy', lambda slug: slug in busy), \
+                mock.patch.object(w, 'toast', lambda *a, **k: asked.append(a[0])), \
+                mock.patch.object(w, 'confirm', lambda t, x, y, on_yes, danger=True: asked.append(on_yes)):
+            w.update_all([w._games[0], w._games[1], w._games[3]])
+            on_yes = asked.pop()
+            busy.add('b')                                    # b started something meanwhile
+            w._games[3]['playing'] = True                    # d was launched
+            on_yes()
+        self.assertEqual(started, ['a'])
+        self.assertTrue(any("busy or running" in str(x) for x in asked))
+
+    def test_toast_words_follow_what_happened(self):
+        w = self.win
+        w._games = self.games()
+        w._games[0].pop('repack_update')                     # a's update went away
+        toasts = []
+        with mock.patch.object(w, '_start_install', lambda *a, **k: self.fail("installed")), \
+                mock.patch.object(w, 'toast', lambda *a, **k: toasts.append(a[0])):
+            w.update_all([w._games[0]])
+            w.update_all([w._games[2]])                      # c plays
+        self.assertEqual(len(toasts), 2)
+        self.assertIn("already up to date", toasts[0])
+        self.assertIn("busy or running", toasts[1])
+
+    def test_state_changes_refill_updates_once(self):
+        w = self.win
+        w._games = self.games()
+        poked = []
+        w._updates_ready = None
+        with mock.patch.object(w, '_poke_home', lambda *e: poked.append(e)):
+            w._mark_states()
+            w._mark_states()                                 # same count: no second poke
+            self.assertEqual(poked, [('updates',)])
+            with mock.patch.object(w.jobs, 'busy', lambda slug: slug == 'a'):
+                w._mark_states()
+        self.assertEqual(poked, [('updates',), ('updates',)])
+
+
 class HomeAsk(unittest.TestCase):
     """The install count ask on Home (w-102): from the 3rd start, while
     [stats] count is unset; answered once, never again."""

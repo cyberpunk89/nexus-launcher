@@ -265,6 +265,11 @@ class PlayMixin:
             # playing: "42 min", "Started at 21:02 · 141.7 h played").
             g['session_start'] = self._session_start.get(g['slug']) if g['playing'] else None
             g['session_base'] = self._session_base.get(g['slug'])
+        # Updates ready's "Update all (N)" counts the games free to update now.
+        ready = len(self.update_split([g for g in self._games if g.get('repack_update')])[0])
+        if ready != getattr(self, '_updates_ready', None):
+            self._updates_ready = ready
+            self._poke_home('updates')
 
     def resume_game(self, g: dict):
         """Resume: back to a running game. Its window (the one the hand-off

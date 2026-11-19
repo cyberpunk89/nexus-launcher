@@ -1100,6 +1100,42 @@ class Storage(unittest.TestCase):
         page.request.connect(lambda *a: self.fail(f"ran a job without asking: {a}"))
         return page
 
+    def idle_page(self):
+        page = self.page()
+        games = [dict(g) for g in self.GAMES]
+        games[0]['last_played'] = '2026-11-01T10:00:00'          # a: recent
+        games[1]['last_played'] = '2020-01-01T10:00:00'          # b: idle over a year
+        games[3]['last_played'] = '2021-05-01T10:00:00'          # s: idle over a year
+        games[4]['installed'] = False
+        games[4]['last_played'] = '2019-01-01T10:00:00'          # h: not installed, not counted
+        page.set_library(games, [])
+        self.idle_games = games
+        order = lambda: [page.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+                         for r in range(page.table.rowCount())]
+        return page, order
+
+    def test_sort_by_idle_lists_the_counted_games_first(self):
+        page, order = self.idle_page()
+        self.assertEqual(order()[0], 'a')                     # the default: biggest first
+        page.sort_by('idle')       # idle over a year, longest first; never played; the rest
+        self.assertEqual(order()[:2], ['b', 's'])
+        self.assertEqual(order()[2], 'run')                   # never played comes after them
+        self.assertEqual(order()[-1], 'a')
+        page.set_library([dict(g) for g in self.idle_games], [])   # a reload keeps it for now
+        self.assertEqual(order()[:2], ['b', 's'])
+
+    def test_the_idle_sort_is_one_shot(self):
+        page, order = self.idle_page()
+        page.sort_by('idle')
+        page.table.horizontalHeader().sectionClicked.emit(3)  # a header click ends it
+        page.set_library([dict(g) for g in self.idle_games], [])
+        self.assertEqual(order()[0], 'a')                     # size order again
+        page.sort_by('idle')
+        page.hide()
+        page.show()                                           # leaving the page ends it too
+        page.set_library([dict(g) for g in self.idle_games], [])
+        self.assertEqual(order()[0], 'a')
+
     def select(self, page, *slugs):
         from PyQt6.QtCore import QItemSelectionModel
         page.table.clearSelection()

@@ -163,6 +163,53 @@ class ActionsMixin:
     def game(self, slug) -> dict | None:
         return next((g for g in self._games if g['slug'] == slug), None)
 
+    def update_split(self, games):
+        """(games to update now, how many are busy or running, how many have no
+        repack update any more). The one filter behind Updates ready's button
+        count and Update all (w-167)."""
+        todo, busy, gone = [], 0, 0
+        for g in games:
+            live = self.game(g['slug']) or g
+            if not live.get('repack_update'):
+                gone += 1
+            elif live.get('playing') or live.get('launching') or self.jobs.busy(g['slug']):
+                busy += 1
+            else:
+                todo.append(live)
+        return todo, busy, gone
+
+    @staticmethod
+    def _update_left_words(busy: int, gone: int) -> str:
+        parts = []
+        if busy:
+            parts.append(f"{busy} game{'s' if busy != 1 else ''} busy or running")
+        if gone:
+            parts.append(f"{gone} already up to date")
+        return " and ".join(parts)
+
+    def update_all(self, games):
+        """Updates ready's "Update all" (w-167): install each repack update, one
+        after another (jobs run one at a time). A busy or playing game is left
+        out, never started, also if it became so while the question was open;
+        two or more ask first."""
+        todo, busy, gone = self.update_split(games)
+        if not todo:
+            self.toast(f"Nothing to update: {self._update_left_words(busy, gone)}."
+                       if busy or gone else "Nothing to update.", 'warn', None, 4000)
+            return
+
+        def go(todo=todo):
+            now, busy, gone = self.update_split(todo)    # things move while a question is open
+            for g in now:
+                self.on_game_action('install-update', g)
+            if busy or gone:
+                self.toast(f"Left out: {self._update_left_words(busy, gone)}.", 'info', None, 4000)
+        if len(todo) >= 2:
+            self.confirm(f"Update {len(todo)} games?", "They install one after another.",
+                         "Update all", go, danger=False)
+        else:
+            go()
+
     def on_game_action(self, action, game):
         slug, name = game['slug'], game.get('display_name', game['slug'])
         src = game.get('source', 'nexus')

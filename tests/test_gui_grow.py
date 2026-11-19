@@ -139,6 +139,67 @@ class Grow(unittest.TestCase):
             self.assertLess(rows[0].y() - top, 8)
             self.assertLess(rows[-1].geometry().bottom() - top, self.natural(w))
 
+    # ---- News: your games first (w-167) ----
+    TODAY = None
+
+    def story(self, i, appid=None, days=1, kind=None):
+        from datetime import date, timedelta
+        d = date(2026, 11, 19) - timedelta(days=days)
+        return {'title': f"Story {i}", 'source': "Src", 'url': f"https://x/{i}", 'ts': 0,
+                'kind': kind or ('steam' if appid else 'feed'), 'appid': appid,
+                'date': f"{d.isoformat()}T10:00:00"}
+
+    def test_news_your_games_first(self):
+        from datetime import date
+        from nexus.gui import newspage as N
+        items = [self.story(0, days=0), self.story(1, appid=7, days=2), self.story(2, appid=7, days=3),
+                 self.story(3, appid=8, days=4), self.story(4, appid=9, days=5),   # 9: not shown
+                 self.story(5, appid=8, days=20),                                  # too old
+                 self.story(6, days=6), self.story(7, appid=7, days=1, kind='proton')]
+        out = N.your_games_first(items, {7, 8}, 4, date(2026, 11, 19))
+        self.assertEqual([i['title'] for i in out[:2]], ["Story 1", "Story 3"])   # one per game, newest
+        self.assertEqual(len(out), len(items))                                   # nothing dropped
+        self.assertEqual([i['title'] for i in out[2:]],
+                         ["Story 0", "Story 2", "Story 4", "Story 5", "Story 6", "Story 7"])
+        # At most half the rows (rounded up): n=3 allows 2, n=2 allows 1.
+        many = [self.story(k, appid=k, days=1) for k in range(1, 6)]
+        self.assertEqual(sum(1 for i in N.your_games_first(many, set(range(1, 6)), 3, date(2026, 11, 19))[:3]
+                             if i['appid']), 3)       # 2 first, then the rest keep their order
+        self.assertEqual([i['title'] for i in N.your_games_first(many, set(range(1, 6)), 2,
+                                                                date(2026, 11, 19))[:2]],
+                         ["Story 1", "Story 2"])
+        self.assertEqual(N.your_games_first([], {1}, 3, date(2026, 11, 19)), [])
+        self.assertEqual(N.your_games_first(items, set(), 4, date(2026, 11, 19)), items)
+
+    def news_hub(self, items, games):
+        hub = mock.Mock(config={'news': True})
+        hub.newspage = SimpleNamespace(
+            data={'items': items}, games_by_appid={g['appid']: g for g in games},
+            error=None, refresh=lambda *a, **k: None, _image_for=lambda *a: (None, None))
+        return hub
+
+    def test_news_widget_orders_and_marks_update_ready(self):
+        from datetime import date
+        items = [self.story(0, days=0), self.story(1, days=1), self.story(2, days=1),
+                 self.story(3, appid=7, days=5)]
+        games = [{'appid': 7, 'slug': 'g', 'update_pending': True},
+                 {'appid': 8, 'slug': 'h', 'hidden': True}]
+        w = D.NewsWidget()
+        self.addCleanup(w.deleteLater)
+        w.size_ = 'small'
+        with mock.patch.object(D, 'today', lambda: date(2026, 11, 19)):
+            w.fill(self.news_hub(items, games))
+        titles = [lab.text() for lab in w.findChildren(QLabel)
+                  if lab.text().startswith("Story")]
+        self.assertEqual(titles[0], "Story 3")                        # your game leads
+        self.assertTrue(any(lab.text() == "Update ready" for lab in w.findChildren(QLabel)))
+        self.assertEqual(sum(lab.text() == "Update ready" for lab in w.findChildren(QLabel)), 1)
+
+    def test_news_without_games_or_dates_keeps_the_order(self):
+        w = self.news()
+        titles = [lab.text() for lab in w.findChildren(QLabel) if lab.text().startswith("Story")]
+        self.assertEqual(titles[:3], ["Story 0", "Story 1", "Story 2"])
+
     # ---- Wishlist deals ----
     def deals(self, n=10, size='small'):
         wish = [{'title': f"Deal {i}", 'headerImage': None,

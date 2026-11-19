@@ -1,5 +1,6 @@
 """The News page."""
 
+from datetime import datetime
 
 from PyQt6.QtCore import pyqtSignal, QPoint, QRectF, Qt, QTimer, QUrl
 from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics,
@@ -27,6 +28,32 @@ def news_group(item: dict) -> str:
     kind = item.get('kind')
     return 'Your games' if kind == 'steam' else 'Proton' if kind == 'proton' else \
         item.get('source') or 'Other'
+
+
+YOUR_GAMES_DAYS = 14        # Home's News leads with stories this recent about your games
+
+
+def your_games_first(items: list, mine, n: int, today) -> list:
+    """Home's News order (w-167): the newest story about each game you have
+    (kind 'steam', appid in `mine`, within YOUR_GAMES_DAYS of `today`), one per
+    game and at most half of the `n` rows, then every other story as it came.
+    Nothing is dropped."""
+    picked: dict = {}
+    for it in items:
+        appid = it.get('appid')
+        if it.get('kind') != 'steam' or appid not in mine:
+            continue
+        try:
+            when = datetime.fromisoformat(it.get('date') or '')
+        except (TypeError, ValueError):
+            continue
+        if 0 <= (today - when.date()).days <= YOUR_GAMES_DAYS \
+                and (appid not in picked or when > picked[appid][0]):
+            picked[appid] = (when, it)
+    lead = [it for _w, it in sorted(picked.values(), key=lambda t: t[0], reverse=True)]
+    lead = lead[:max(0, (n + 1) // 2)]
+    ids = {id(it) for it in lead}
+    return lead + [it for it in items if id(it) not in ids]
 
 
 def news_image(item: dict, games_by_appid: dict) -> tuple[str | None, str | None]:

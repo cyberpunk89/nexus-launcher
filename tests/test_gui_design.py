@@ -1446,6 +1446,35 @@ class DashboardFill(unittest.TestCase):
         self.assertEqual(set(wide.findChildren(QLabel)), before)
         self.assertEqual(self.asked, ['--history'] * 3)              # one ask per widget
 
+    def test_week_compare_text(self):
+        wc = self.D.week_compare
+        self.assertEqual(wc(0, 0), "")
+        self.assertEqual(wc(100, 110), "About the same as last week")
+        self.assertEqual(wc(100, 70), "+30 min on last week")
+        self.assertEqual(wc(240, 150), "+1.5 h on last week")
+        self.assertEqual(wc(60, 180), "2.0 h less than last week")
+        self.assertEqual(wc(0, 90), "1.5 h less than last week")
+        self.assertEqual(wc(90, 0), "+1.5 h on last week")
+        self.assertEqual(wc(60, 105), "45 min less than last week")
+
+    def test_week_compares_with_last_week(self):
+        hist = {**self.HIST, 'periods': {**self.HIST['periods'],
+                                         'last_week': {'minutes': 300, 'to_date': 30}}}
+        self.ANSWERS = dict(self.ANSWERS, **{'--history': hist})
+        w = self.filled(self.D.WeekWidget, 'small')
+        self.assertIn("+1.0 h on last week", self.texts(w))
+        self.assertIn("Monday to Wednesday last week",
+                      " ".join(x.accessibleDescription() for x in w.findChildren(QLabel)))
+        # An old payload without last_week shows no compare line.
+        self.ANSWERS = dict(self.ANSWERS, **{'--history': self.HIST})
+        w = self.filled(self.D.WeekWidget, 'small')
+        self.assertFalse([t for t in self.texts(w) if 'last week' in t])
+        # A changed last_week rebuilds.
+        w.fill(self.hub)
+        w._hist = hist
+        w.fill(self.hub)
+        self.assertIn("+1.0 h on last week", self.texts(w))
+
     def test_week_without_sessions(self):
         self.ANSWERS = dict(self.ANSWERS, **{'--history': {}})
         w = self.filled(self.D.WeekWidget, 'small')

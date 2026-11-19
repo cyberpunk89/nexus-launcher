@@ -166,7 +166,8 @@ def best_streak(days) -> int:
     return best
 
 
-def periods(sessions: list[dict] | None = None, today: date | None = None) -> dict:
+def periods(sessions: list[dict] | None = None, today: date | None = None,
+            now: datetime | None = None) -> dict:
     """This week (Monday on) and this month, by day and by game: what Home's
     Your week and Play history's month chart show; and the current streak
     (Theatre's Your week)."""
@@ -178,8 +179,19 @@ def periods(sessions: list[dict] | None = None, today: date | None = None) -> di
     monday = today - timedelta(days=today.weekday())
     first = today.replace(day=1)
     nxt = (first + timedelta(days=32)).replace(day=1)
+    last_monday = monday - timedelta(days=7)
+    last = _period(sessions, last_monday, 7, names)
+    if now is None:
+        now = datetime.now() if today == date.today() else datetime.combine(today, datetime.max.time())
+    start, upto = datetime.combine(last_monday, datetime.min.time()), now - timedelta(days=7)
+    # Last week up to this weekday and time of day (today is partial); nothing
+    # fair to say when the history starts after last week's Monday.
+    fair = any(s['_start'] < start for s in sessions)
+    to_date = round(sum(s['minutes'] for s in sessions if start <= s['_start'] <= upto), 1)
     return {'today': today.isoformat(),
             'week': _period(sessions, monday, 7, names),
+            # Last week whole, and Monday to the same weekday (w-167: Your week compares like with like).
+            'last_week': {'minutes': last['minutes'], 'to_date': to_date} if fair else None,
             'month': _period(sessions, first, (nxt - first).days, names),
             'current_streak': current_streak(sessions, today)}
 

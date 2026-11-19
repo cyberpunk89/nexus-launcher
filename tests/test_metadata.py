@@ -150,6 +150,23 @@ class History(unittest.TestCase):
         self.assertEqual(history.current_streak([], date(2026, 10, 24)), 0)
         self.assertEqual(history.periods(days, date(2026, 10, 25))['current_streak'], 3)
 
+    def test_periods_last_week(self):
+        def sess(day, mins, hour=20, month=10):
+            s = datetime(2026, month, day, hour, 0)
+            return {'slug': 'a', 'name': 'A', 'start': s.isoformat(), '_start': s,
+                    'minutes': float(mins)}
+        sessions = [sess(5, 5), sess(19, 60, 9), sess(21, 30, 9), sess(21, 120, 20), sess(23, 40),
+                    sess(28, 10)]
+        now = datetime(2026, 10, 28, 12, 0)                        # Wednesday noon
+        lw = history.periods(sessions, date(2026, 10, 28), now)['last_week']
+        self.assertEqual(lw['minutes'], 250)                       # Mon 19 .. Sun 25
+        self.assertEqual(lw['to_date'], 90)        # up to last Wednesday noon: 60 + 30, not the evening's 120
+        early = history.periods(sessions, date(2026, 10, 26), datetime(2026, 10, 26, 8, 0))
+        self.assertEqual(early['last_week']['to_date'], 0)         # Monday 8:00 vs last Monday 8:00
+        # History that starts after last Monday has nothing fair to compare with.
+        self.assertIsNone(history.periods(sessions[1:], date(2026, 10, 28), now)['last_week'])
+        self.assertIsNone(history.periods([], date(2026, 10, 28), now)['last_week'])
+
     def test_periods(self):
         def sess(day, mins, slug, month=10):
             s = datetime(2026, month, day, 20, 0)

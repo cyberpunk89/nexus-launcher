@@ -338,7 +338,9 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
   folder found (still downloading, already installed, new release) with **Install all**.
   A new release of a game you installed (its MD5 list differs from the one recorded at
   install — FitGirl repacks carry no version) shows under **Updates ready** with **Install
-  update**, which installs over the old one; saves and settings stay.
+  update**, which installs over the old one; saves and settings stay. **Update all (N)** on the
+  shelf queues every downloaded update one after another (it asks first for two or more and
+  skips a game that's running or busy).
 
 **Keyboard and controller.** Arrow keys move focus spatially everywhere (to the nearest
 control in that direction), shown by one soft ring around the focused control (it hides as

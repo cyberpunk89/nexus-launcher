@@ -104,7 +104,7 @@ def squarify(values, rect) -> list:
 
 def backlog_lines(b: dict) -> dict:
     """The words of Backlog health: `counts` [(n, word, colour token)], `left`
-    ("310 h", "of main stories left") or None, `pace` and `idle` (or "")."""
+    ("310 h", "of main stories left") or None and `pace` (or "")."""
     counts = [(int(b.get(k) or 0), word, tok) for k, tok, word in BACKLOG_PARTS]
     left = float(b.get('main_hours_left') or 0)
     pace = float(b.get('pace_hours_week') or 0)
@@ -115,11 +115,9 @@ def backlog_lines(b: dict) -> dict:
     else:
         weeks = max(1, round(left / pace))
         pace_text = f"About {weeks} week{'s' if weeks != 1 else ''} at your pace"
-    idle = int(b.get('idle_year_bytes') or 0)
     return {'counts': counts,
             'left': (f"{left:,.0f} h", "of main stories left") if left > 0 else None,
-            'pace': pace_text,
-            'idle': f"{fmt_bytes(idle)} is held by games idle for a year" if idle > 0 else ""}
+            'pace': pace_text}
 
 
 # ---- small painted bits ----
@@ -202,8 +200,19 @@ class BacklogWidget(InsightWidget):
         return self._b(hub) is not None
 
     def signature(self, hub):
-        return (repr(self._b(hub)),
-                repr(payload_fact(self.data(hub), 'shortest_unplayed', self.shown(hub))))
+        return (repr(self._b(hub)), repr(self._shortest(hub)),
+                repr(payload_fact(self.data(hub), 'library', self.shown(hub))))
+
+    def _shortest(self, hub) -> dict | None:
+        """The first of the payload's shortest unplayed games that Home shows
+        (w-167); None when there is none."""
+        shown = self.shown(hub)
+        rows = (self._b(hub) or {}).get('shortest')
+        for r in rows if isinstance(rows, list) else ():
+            if isinstance(r, dict) and r.get('slug') in shown and (r.get('main_hours') or 0) > 0:
+                return {'g': shown[r['slug']], 'hours': float(r['main_hours']),
+                        'name': r.get('name') or r['slug']}
+        return None
 
     def build(self, hub):
         b = self._b(hub)
@@ -239,10 +248,19 @@ class BacklogWidget(InsightWidget):
             self.body.addLayout(row)
         if lines['pace']:
             self.body.addWidget(label(lines['pace'], None, wrap=True))
-        if lines['idle']:
-            self.body.addWidget(label(lines['idle'], "Muted", wrap=True))
-        if self.size_ == 'wide':             # Library facts' best fact (w-166)
-            fact = payload_fact(self.data(hub), 'shortest_unplayed', self.shown(hub))
+        short = self._shortest(hub)
+        if short is not None:                # the next action: the shortest game not started (w-167)
+            g = short['g']
+            self.body.addSpacing(SP['1'])
+            self.body.addWidget(self.link_block(
+                [label("Start the shortest", "StatLabel"),
+                 plain_label(g.get('display_name') or short['name'], "RowTitle", wrap=True),
+                 label(f"{short['hours']:g} h main story \u00b7 not started yet", "Muted", wrap=True)],
+                lambda g=g: self.open_page(hub, g)))
+            self.body.addWidget(self.play_button(hub, g, "Play", "Open page"), 0,
+                                Qt.AlignmentFlag.AlignLeft)
+        if self.size_ == 'wide':             # Library facts' best fact (w-166); the shortest game is the row above
+            fact = payload_fact(self.data(hub), 'library', self.shown(hub))
             if fact is not None:
                 self.body.addSpacing(SP['1'])
                 self.body.addWidget(self.fact_block(hub, fact))
@@ -492,11 +510,12 @@ class SpaceWidget(InsightWidget):
     """Where your space goes: the installed games as a treemap, the biggest
     first, idle ones marked by colour. Leaves the layout without sizes (the
     disk size can be missing, on Windows for one)."""
-    KIND, TITLE, GLYPH, GRAD, LINK = 'spacemap', "Where your space goes", G['storage'], 'tide', 'storage'
+    KIND, TITLE, GLYPH, GRAD, LINK = 'spacemap', "Where your space goes", G['storage'], 'tide', None
 
     def __init__(self):
         super().__init__()
         self.map: SpaceMap | None = None
+        self.action_btn: QPushButton | None = None
 
     def _items(self, hub) -> list[dict]:
         rows = (self.data(hub) or {}).get('space')
@@ -516,11 +535,15 @@ class SpaceWidget(InsightWidget):
     def has_content(self, hub):
         return bool(self._items(hub))
 
+    def _idle(self, hub) -> int:
+        b = (self.data(hub) or {}).get('backlog')
+        return int(b.get('idle_year_bytes') or 0) if isinstance(b, dict) else 0
+
     def signature(self, hub):
-        return (repr(self._items(hub)), repr(self._more(hub)))
+        return (repr(self._items(hub)), repr(self._more(hub)), self._idle(hub))
 
     def clear(self):
-        self.map = None
+        self.map = self.action_btn = None
         super().clear()
 
     def build(self, hub):
@@ -548,6 +571,25 @@ class SpaceWidget(InsightWidget):
                 legend.addLayout(cell)
         legend.addStretch()
         self.body.addLayout(legend)
+        # The one action: Review the idle games on Storage, or just open it (w-167).
+        foot = QHBoxLayout()
+        foot.setSpacing(SP['2'])
+        idle = self._idle(hub)
+        if idle > 0:
+            foot.addWidget(label(f"{fmt_bytes(idle)} idle over a year", "Muted"))
+        foot.addStretch()
+        btn = self.action_btn = QPushButton("Review" if idle > 0 else "Open Storage")
+        btn.setObjectName("Ghost")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(lambda _=False, hub=hub, idle=idle > 0: self._review(hub, idle))
+        foot.addWidget(btn)
+        self.body.addLayout(foot)
+
+    def _review(self, hub, idle: bool):
+        storage = getattr(hub, 'storage', None)
+        if idle and storage is not None:
+            storage.sort_by('idle')
+        self.go.emit('storage')
 
     def _open(self, hub, slug: str):
         g = self.shown(hub).get(slug)
@@ -555,7 +597,7 @@ class SpaceWidget(InsightWidget):
             self.open_page(hub, g)
 
     def _leave_map(self):
-        btn = getattr(self, 'open_btn', None)
+        btn = self.action_btn
         if btn is not None and alive(btn):
             btn.setFocus(Qt.FocusReason.TabFocusReason)
 
