@@ -59,10 +59,13 @@ once. Games you own but haven't installed are there too, with an Install button.
 - **Home** opens on the *Stage*: the game you're on (or one you pin) over its art, a
   gradient or a plain card, in a Cinematic, Wide or Banner style. *For you now* sits beside
   Play with what to do next, like a finished download or a friend in a game you own. Below
-  it are widgets you can move, resize or hide: Your week, Pick for me (choose a vibe, Spin,
-  and the pick lands on the Stage), Friends (who's online), Your save (the Stage's game in
-  numbers), News, Upcoming releases and more. Start from a preset or save your own layouts,
-  and let Nexus switch between them by time of day. The big charts live in Play history.
+  it, widgets pack into columns with no gaps: Your week (compared with last week), Pick for
+  me (a vibe and Spin, or one pick a day), Friends (who's playing now, what you can play
+  together, their picks), Wishlist (sales and releases in one list, each saying why), Your
+  year, Backlog health, News (your games first) and more; System stays one quiet line until
+  something needs you. Customise opens as a panel beside Home: a gallery of live previews to
+  add from (or drag onto Home), Undo, and presets or your own layouts that can switch by time
+  of day. The big charts live in Play history.
 
 ### Install and manage games
 

@@ -1,4 +1,42 @@
 {
+  "0.5.6": [
+    {
+      "kind": "new",
+      "icon": "grid",
+      "title": "Home without gaps",
+      "text": "Widgets pack into columns with no empty space, cards that can show more use the room, and System stays quiet until something needs you."
+    },
+    {
+      "kind": "new",
+      "icon": "customise",
+      "title": "Customise beside Home",
+      "text": "A panel docked beside Home with live previews of every widget. Add one, drag it into place, and undo any change."
+    },
+    {
+      "kind": "new",
+      "icon": "friends",
+      "title": "Friends: what to play now",
+      "text": "See who is in a game right now, what you can all play together, or the games your friends have put hours into."
+    },
+    {
+      "kind": "new",
+      "icon": "deals",
+      "title": "One Wishlist card",
+      "text": "Sales and upcoming releases in one list, each saying why: 40% off today, out in 12 days, pre-order."
+    },
+    {
+      "kind": "improved",
+      "icon": "history",
+      "title": "Play history fills in missed days",
+      "text": "Days Nexus missed come from Steam's game log (Linux) and from play-time totals, marked Estimated. It all stays on your computer."
+    },
+    {
+      "kind": "improved",
+      "icon": "info",
+      "title": "Game pages at a glance",
+      "text": "A game's Overview shows tiles for players, critics, how long to beat, the studio and PC features. Big libraries load faster too."
+    }
+  ],
   "0.5.5": [
     {
       "kind": "new",
