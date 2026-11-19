@@ -301,9 +301,11 @@ class SpaceMap(CardHost, QWidget):
         self.hovered: int | None = None     # index into blocks()
         self.keyboard = False
         self.setMinimumHeight(scaled(SPACE_HEIGHT))
-        self.setMaximumHeight(scaled(SPACE_HEIGHT))
+        self.setMaximumHeight(scaled(SPACE_HEIGHT * 3))
         self.setMinimumWidth(scaled(160))
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Its hint stays SPACE_HEIGHT, so the card's natural height does not
+        # change; a card given more height (w-155) makes the map taller.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     def sizeHint(self):
         return QSize(scaled(480), scaled(SPACE_HEIGHT))
@@ -562,7 +564,8 @@ class SpaceWidget(InsightWidget):
         self.map.set_data(items, more)
         self.map.activated.connect(lambda slug: self._open(hub, slug))
         self.map.leave_requested.connect(self._leave_map)
-        self.body.addWidget(self.map)
+        self.body.addWidget(self.map, 1)
+        self.layout().setStretchFactor(self.body, 1)    # taller when the card is (w-155)
         legend = QHBoxLayout()
         legend.setSpacing(SP['4'])
         present = {idle_bucket(i['idle_days']) for i in items}

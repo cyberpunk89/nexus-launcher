@@ -863,6 +863,160 @@ class FlowJustify(unittest.TestCase):
 
 
 @unittest.skipIf(nx is None, "PyQt6 not available")
+class Masonry(unittest.TestCase):
+    """MasonryLayout (w-154): Home's Packed grid. grid_flow decides where
+    each card goes; the layout measures cards for their width and sets
+    their geometry."""
+    H, V = 12, 14
+
+    def setUp(self):
+        from PyQt6.QtWidgets import QLabel
+        self.QLabel = QLabel
+        self.host = QWidget()
+        self.addCleanup(self.host.deleteLater)
+        self.lay = nx.MasonryLayout(self.host)
+        self.lay.set_spacing(self.H, self.V)
+
+    def label(self, words, **kw):
+        lab = (kw.get('cls') or self.QLabel)(" ".join(["word"] * words), self.host)
+        lab.setWordWrap(True)
+        return lab
+
+    def cards(self, cols, sizes, spans=None):
+        spans = spans or [1] * len(sizes)
+        labs = [self.label(n) for n in sizes]
+        self.lay.set_cards(cols, [(f"c{i}", w, spans[i], False, 0) for i, w in enumerate(labs)])
+        return labs
+
+    def test_geometry_matches_flow(self):
+        from nexus.gui import grid_flow
+        labs = self.cards(3, [30, 8, 15, 22, 4, 40], [1, 1, 1, 2, 1, 1])
+        W = 700
+        self.lay.setGeometry(QRect(0, 0, W, 2000))
+        colw = (W - 2 * self.H) / 3
+        want = []
+        for i, lab in enumerate(labs):
+            span = [1, 1, 1, 2, 1, 1][i]
+            cw = round(span * colw + (span - 1) * self.H)
+            want.append(grid_flow.Card(f"c{i}", span, lab.heightForWidth(cw), False, 0))
+        placed = grid_flow.flow(want, 3, self.V, nx.SP['8'])
+        for lab, p in zip(labs, placed):
+            g = lab.geometry()
+            self.assertAlmostEqual(g.x(), p.col * (colw + self.H), delta=1)
+            self.assertEqual((g.y(), g.height()), (p.y, p.h), p)
+            self.assertAlmostEqual(g.width(), p.span * colw + (p.span - 1) * self.H, delta=1)
+        self.assertEqual(self.lay.placed, placed)
+        self.assertEqual(self.lay.heightForWidth(W), max(p.y + p.h for p in placed))
+
+    def test_hfw_memo_measures_once(self):
+        calls = []
+
+        class Counting(self.QLabel):
+            def heightForWidth(this, w):
+                calls.append(w)
+                return super().heightForWidth(w)
+        labs = [self.label(12, cls=Counting) for _ in range(4)]
+        self.lay.set_cards(2, [(f"c{i}", w, 1, False, 0) for i, w in enumerate(labs)])
+        self.lay.heightForWidth(600)
+        n = len(calls)
+        self.assertGreaterEqual(n, 4)
+        self.lay.heightForWidth(600)
+        self.lay.setGeometry(QRect(0, 0, 600, 900))
+        self.assertEqual(len(calls), n)                  # same width: memo
+        self.lay.heightForWidth(500)
+        self.assertGreater(len(calls), n)                # another width: measured
+        n = len(calls)
+        before = self.lay.heightForWidth(500)
+        labs[0].setText(" ".join(["word"] * 80))
+        labs[0].updateGeometry()                         # the layout is invalidated
+        self.assertGreater(self.lay.heightForWidth(500), before)     # the memo forgot
+
+    def test_tall_is_two_smalls_unless_nearly_empty(self):
+        def run(words, tall):
+            smalls = [self.label(10) for _ in range(3)]
+            card = self.label(words)
+            self.lay.set_cards(3, [(f"s{i}", w, 1, False, 0) for i, w in enumerate(smalls)]
+                               + [("t", card, 1, False, 0, tall)])
+            self.lay.setGeometry(QRect(0, 0, 700, 3000))
+            by = {p.id: p for p in self.lay.placed}
+            return by["t"].h, smalls[0].heightForWidth(round((700 - 2 * self.H) / 3))
+        h, small = run(40, True)                                  # content as big as a small: a floor
+        self.assertGreaterEqual(h, 2 * small + self.V)
+        flat, small = run(1, False)
+        h, _ = run(1, True)                                       # less than a small: kept as is
+        self.assertEqual(h, flat)
+
+    def test_cols_come_from_set_cards_not_width(self):
+        self.cards(2, [5, 5, 5, 5])
+        self.lay.setGeometry(QRect(0, 0, 3000, 900))     # wide enough for many
+        self.assertEqual({p.col for p in self.lay.placed}, {0, 1})
+        self.cards(1, [5, 5])
+        self.lay.setGeometry(QRect(0, 0, 3000, 900))
+        self.assertEqual({p.col for p in self.lay.placed}, {0})
+
+    def test_grown_card_gets_the_evened_height(self):
+        tall = QWidget(self.host)
+        tall.setFixedHeight(400)
+        short = self.label(3)
+        self.lay.set_cards(2, [("t", tall, 1, False, 0), ("s", short, 1, False, 0)])
+        self.lay.setGeometry(QRect(0, 0, 600, 900))
+        self.assertEqual(short.height(), 400)
+        self.assertEqual(short.geometry().top(), 0)
+        for i in range(self.lay.count()):
+            self.assertFalse(self.lay.itemAt(i).alignment())     # alignment would cap it
+
+    def test_placed_follows_set_geometry_not_hfw_probes(self):
+        self.cards(2, [20, 20, 20, 20])
+        self.lay.setGeometry(QRect(0, 0, 700, 900))
+        want = self.lay.placed
+        self.lay.heightForWidth(300)
+        self.assertEqual(self.lay.placed, want)
+
+    def test_hidden_item_takes_no_slot(self):
+        labs = self.cards(1, [5, 5, 5])
+        self.lay.setGeometry(QRect(0, 0, 400, 900))
+        y2 = labs[2].geometry().y()
+        labs[1].hide()
+        self.lay.invalidate()
+        self.lay.setGeometry(QRect(0, 0, 400, 900))
+        self.assertEqual(labs[2].geometry().y(), labs[0].geometry().bottom() + 1 + self.V)
+        self.assertLess(labs[2].geometry().y(), y2)
+        self.assertEqual(len(self.lay.placed), 2)
+
+    def test_default_ids_stay_unique(self):
+        a, b, c = (self.label(2) for _ in range(3))
+        self.lay.addWidget(a)
+        self.lay.addWidget(b)
+        self.lay.takeAt(0)
+        self.lay.addWidget(c)
+        self.lay.setGeometry(QRect(0, 0, 300, 500))
+        ids = [p.id for p in self.lay.placed]
+        self.assertEqual(len(set(ids)), 2, ids)
+
+    def test_measures_after_polish(self):
+        ref = self.label(30)
+        ref.setStyleSheet("font-size: 34px")
+        ref.ensurePolished()
+        want = ref.heightForWidth(300)
+        lab = self.label(30)
+        lab.setStyleSheet("font-size: 34px")                 # applied at polish
+        self.lay.set_cards(1, [("a", lab, 1, False, 0)])
+        self.assertEqual(self.lay.heightForWidth(300), want)
+
+    def test_min_width_like_grid(self):
+        a, b, wide = QWidget(self.host), QWidget(self.host), QWidget(self.host)
+        a.setMinimumWidth(100)
+        b.setMinimumWidth(80)
+        wide.setMinimumWidth(300)
+        self.lay.set_cards(2, [("a", a, 1, False, 0), ("b", b, 1, False, 0),
+                               ("w", wide, 2, False, 0)])
+        col = max(100, 80, (300 - self.H) / 2)
+        self.assertEqual(self.lay.minimumSize().width(), round(2 * col + self.H))
+        self.assertEqual(self.lay.sizeHint().width(), self.lay.minimumSize().width())
+        self.assertTrue(self.lay.hasHeightForWidth())
+
+
+@unittest.skipIf(nx is None, "PyQt6 not available")
 class GridGap(unittest.TestCase):
     """The Library grid spreads spare width only up to MAX_GAP spacings; the
     rest centres the columns (few big tiles in a narrow window)."""

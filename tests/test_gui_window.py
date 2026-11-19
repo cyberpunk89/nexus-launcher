@@ -2538,11 +2538,12 @@ class Window(unittest.TestCase):
         self.assertEqual(stage.art.game['slug'], 'alpha')
         self.assertIn("Alpha · 24 sessions", texts())
         self.assertIn("2.0 h", texts())
-        # Beside a Wide Stage: as tall as the art, at the top of the row
-        self.assertIn('save', d._beside)
-        self.assertEqual(sv.maximumHeight(), stage.art.minimumHeight())
-        idx = d.grid.indexOf(sv)
-        self.assertEqual(d.grid.itemAt(idx).alignment(), Qt.AlignmentFlag.AlignTop)
+        # Beside a Wide Stage: top of the row, in the third column (w-154; the
+        # evening to the Stage's bottom is HomeGrid's)
+        d.layout().activate()
+        self.assertEqual(sv.geometry().top(), stage.geometry().top())
+        self.assertGreaterEqual(sv.geometry().left(), stage.geometry().right())
+        self.assertFalse(d.grid.itemAt(0).alignment())
         stage._follow(w.game('steam-1'))                             # the row moved the stage
         self.assertIn("Beta · 1 session", texts())
         self.assertTrue(any(t.startswith("Last unlock: Cash Flow · 3 days ago")
@@ -2557,8 +2558,7 @@ class Window(unittest.TestCase):
         # Banner: the full-width Stage has nothing beside it
         d._edit('stage', 'size')
         self.assertEqual(self._stage_item()['size'], 'banner')
-        self.assertNotIn('save', d._beside)
-        self.assertGreater(sv.maximumHeight(), 10000)
+        self.assertEqual({p.id: p.span for p in d.placed}['stage'], 3)
         # Customise lists Your save under Add widgets when hidden, and Pick for me shows
         d._edit('save', 'hide')
         d.set_editing(True)
@@ -6770,6 +6770,26 @@ class HomeColumns(unittest.TestCase):
         finally:
             w.set_appearance(before, save=False)
 
+    def test_packed_grid_settles_at_both_breakpoints(self):
+        """w-154: the Packed grid's height follows the columns, and so does
+        the scroll bar: sweeping across each breakpoint still changes the
+        columns at most once per crossing."""
+        w, dash = self._home()
+        seen = self._count(dash)
+        for sweep in ((1101, 1099, 1102, 1098), (701, 699, 702, 698)):
+            self._resize_to(dash, sweep[0] + 200)
+            for target in sweep:
+                before = dict(seen)
+                self._resize_to(dash, target)
+                for _ in range(3):
+                    QApplication.processEvents()
+                self.assertLessEqual(seen['changes'] - before['changes'], 1, (target, seen))
+                self.assertLessEqual(seen['calls'] - before['calls'], 3, (target, seen))
+                cols = dash._cols
+                QApplication.processEvents()
+                self.assertEqual(dash._cols, cols, target)           # settled
+        self.assertLess(seen['calls'], self.CAP)
+
     def test_columns_follow_the_window_as_before(self):
         """Normal widths still give 1, 2 and 3 columns."""
         w, dash = self._home()
@@ -6805,24 +6825,172 @@ class HomeGrid(unittest.TestCase):
             QApplication.processEvents()
         return w, w.dashboard
 
-    def test_tall_widget_spans_two_rows(self):
+    def _geo(self, dash, k):
+        """A widget's box in grid coordinates (px from the grid's top)."""
+        g, top = dash.widgets[k].geometry(), dash.grid.geometry().y()
+        return g.x(), g.y() - top, g.width(), g.height()
+
+    def test_tall_news_is_one_column(self):
         w, dash = self._home(('news', 'tall'), ('save', 'small'), ('pick', 'small'),
                              ('week', 'small'))
         self.assertEqual(dash._cols, 3)
-        idx = dash.grid.indexOf(dash.widgets['news'])
-        self.assertGreaterEqual(idx, 0)
-        r, c, rowspan, colspan = dash.grid.getItemPosition(idx)
-        self.assertEqual(rowspan, 2)
-        self.assertEqual(colspan, 1)
+        news = {p.id: p for p in dash.placed}['news']
+        self.assertEqual(news.span, 1)                  # no second row to cover (w-154)
+        self.assertLess(dash.widgets['news'].width(), dash.width() // 2)
 
-    def test_small_card_keeps_its_own_height_beside_a_wide(self):
+    def test_small_card_beside_a_wide_ends_on_the_run_line(self):
         w, dash = self._home(('system', 'wide'), ('news', 'small'), ('deals', 'wide'))
+        for k in ('system', 'news', 'deals'):
+            self.assertTrue(dash.widgets[k].isVisible(), k)
+        for it in (dash.grid.itemAt(i) for i in range(dash.grid.count())):
+            self.assertFalse(it.alignment())            # alignment would stop it growing
+        bottoms = {k: (lambda g: g[1] + g[3])(self._geo(dash, k))
+                   for k in ('system', 'news', 'deals')}
+        self.assertLess(bottoms['system'], bottoms['deals'])           # deals sits under it
+        self.assertAlmostEqual(bottoms['news'], bottoms['deals'], delta=1)   # the run's line
         news = dash.widgets['news']
-        self.assertTrue(news.isVisible())
-        self.assertTrue(dash.grid.itemAtPosition(0, 2) is not None)
-        item = dash.grid.itemAt(dash.grid.indexOf(news))
-        self.assertTrue(item.alignment() & Qt.AlignmentFlag.AlignTop)
         self.assertGreaterEqual(news.height(), news.layout().totalHeightForWidth(news.width()))
+
+    def test_geometry_equals_placed(self):
+        w, dash = self._home(('system', 'wide'), ('news', 'tall'), ('save', 'small'),
+                             ('pick', 'small'), ('deals', 'wide'), ('week', 'small'))
+        dash.layout().activate()
+        self.assertTrue(dash.placed)
+        hg = nx.DASH_DENSITY[dash.density]['grid_h']
+        colw = (dash.grid.geometry().width() - 2 * hg) / 3
+        for p in dash.placed:
+            x, y, wd, h = self._geo(dash, p.id)
+            self.assertAlmostEqual(y, p.y, delta=1, msg=p)
+            self.assertAlmostEqual(h, p.h, delta=1, msg=p)
+            self.assertAlmostEqual(x, p.col * (colw + hg),
+                                   delta=1, msg=p)
+            self.assertAlmostEqual(wd, p.span * colw + (p.span - 1) * hg,
+                                   delta=1, msg=p)
+
+    def test_wide_stage_neighbour_fills_to_the_continue_row(self):
+        w, dash = self._home(('stage', 'wide'), ('save', 'small'))
+        self.assertEqual(dash._cols, 3)
+        dash.layout().activate()
+        stage, save = self._geo(dash, 'stage'), self._geo(dash, 'save')
+        self.assertEqual(save[1], stage[1])                          # side by side
+        self.assertAlmostEqual(save[1] + save[3], stage[1] + stage[3], delta=1)
+
+    def test_customise_keeps_three_columns_at_1440(self):
+        """Customise at 1440 px stays three columns (the dock comes with w-157)."""
+        w, dash = self._home(('news', 'small'), ('save', 'small'), ('pick', 'small'))
+        w.resize(1440, 900)
+        for _ in range(4):
+            QApplication.processEvents()
+        self.assertTrue(dash.editing)
+        self.assertEqual(dash._cols, 3)
+
+    # ---- the four layouts the exploration measured (w-154) ----
+    STATS_MIX = [('heatmap', 'full'), ('news', 'tall'), ('daily', 'small'), ('backlog', 'wide'),
+                 ('spacemap', 'wide'), ('milestones', 'small'), ('facts', 'small'),
+                 ('pick', 'small'), ('week', 'small'), ('system', None)]
+    CINEMATIC_PLUS = ['save', 'system', 'news', 'deals', 'upcoming', 'heatmap', 'daily',
+                      'backlog', 'milestones', 'facts', 'spacemap']
+
+    def _layouts(self):
+        """name -> (items, density), as the exploration's four layouts."""
+        from nexus.gui.layouts import dash_preset, PRESET_DENSITY
+        dflt = nx.DASH_DEFAULT_SIZE
+
+        def shown(base, extra):
+            items = [dict(i) for i in base]
+            order = [k for k, _s in extra]
+            for k, size in extra:
+                it = next(i for i in items if i['id'] == k)
+                it['hidden'], it['size'] = False, size or dflt[k]
+            first = [i for i in items if i['id'] in order]
+            first.sort(key=lambda i: order.index(i['id']))
+            return first + [i for i in items if i['id'] not in order]
+        cin = [i for i in dash_preset('cinematic')]
+        cin_shown = [i['id'] for i in cin if not i['hidden']]
+        plus = shown(cin, [(k, next((i['size'] for i in cin if i['id'] == k and not i['hidden']),
+                                    None)) for k in cin_shown]
+                     + [(k, None) for k in self.CINEMATIC_PLUS if k not in cin_shown])
+        base = dash_preset('stats')
+        for i in base:
+            i['hidden'] = True
+        mix = shown(base, self.STATS_MIX)
+        next(i for i in mix if i['id'] == 'pick')['style'] = 'wheel'
+        return {'Stats': (dash_preset('stats'), PRESET_DENSITY['stats']),
+                'Dashboard': (dash_preset('dashboard'), PRESET_DENSITY['dashboard']),
+                'Stats mix': (mix, 'compact'),
+                'Cinematic+': (plus, 'comfortable')}
+
+    def _measured(self, dash):
+        """What the cards really occupy: grid_flow.Placed from their geometry."""
+        from nexus.gui import grid_flow
+        hg, vg = (nx.DASH_DENSITY[dash.density][k] for k in ('grid_h', 'grid_v'))
+        cols, g0 = dash._cols, dash.grid.geometry()
+        colw = (g0.width() - (cols - 1) * hg) / cols
+        real = []
+        for p in dash.placed:
+            g = dash.widgets[p.id].geometry()
+            real.append(grid_flow.Placed(
+                p.id, round((g.x() - g0.x()) / (colw + hg)),
+                round((g.width() + hg) / (colw + hg)), g.y() - g0.y(), g.height()))
+        return real, cols, vg
+
+    def _full_home(self, name):
+        from tests.test_gui_insight_widgets import payload
+        from tests.test_gui_stats_widgets import payload as stats_payload
+        w, dash = self._home()
+        w._on_library({'games': fake_games() + [
+            {'slug': s, 'display_name': n, 'launcher': '/x'}
+            for s, n in (('disco', 'Disco Elysium'), ('tunic', 'Tunic'), ('hades', 'Hades'),
+                         ('gris', 'Gris'))],
+            'disks': []}, '')
+        dash.set_editing(False)
+        items, density = self._layouts()[name]
+        dash.apply_layout(items, density)
+        stats = stats_payload()
+        dash.feed.data = dict(payload(), **{k: stats[k] for k in ('backlog', 'space', 'space_more',
+                                                                  'facts')})
+        dash.refresh()
+        w.resize(1440, 900)
+        for _ in range(8):
+            QApplication.processEvents()
+        dash.layout().activate()
+        return w, dash
+
+    def test_four_layouts_under_4_percent(self):
+        from nexus.gui import grid_flow
+        shares, before = {}, dict(self.win.prefs.appearance)
+        self.win.set_appearance(dict(before, theme='forest'), save=False)
+        try:
+            for name in self._layouts():
+                with self.subTest(layout=name):
+                    w, dash = self._full_home(name)
+                    self.assertEqual(dash._cols, 3)
+                    real, cols, vg = self._measured(dash)
+                    self.assertTrue(real)
+                    shares[name] = grid_flow.empty_share(real, cols, vg)
+                    self.assertLess(shares[name], 0.04, (name, shares[name], real))
+        finally:
+            self.win.set_appearance(before, save=False)
+        self.assertEqual(set(shares), set(self._layouts()))
+
+    def test_relayout_under_100ms(self):
+        """Every kind shown, Customise on: a relayout plus its layout pass
+        stays well under a tenth of a second."""
+        import time
+        w, dash = self._home()
+        dash.apply_layout([dict(i, hidden=False) for i in dash.items])
+        w.resize(1440, 900)
+        for _ in range(6):
+            QApplication.processEvents()
+        best = 1e9
+        for _ in range(3):
+            t0 = time.perf_counter()
+            dash.relayout(force=True)
+            dash.layout().activate()
+            dash.grid.heightForWidth(dash.grid.geometry().width())    # measured, shown or not
+            best = min(best, time.perf_counter() - t0)
+        self.assertGreater(len(dash.placed), 10)
+        self.assertLess(best, 0.1, best)
 
     def test_tall_news_fills(self):
         w, dash = self._home(('news', 'tall'), ('system', 'wide'))
@@ -6836,6 +7004,45 @@ class HomeGrid(unittest.TestCase):
         self.assertTrue(news.isVisible())
         self.assertGreaterEqual(news.height(), news.layout().totalHeightForWidth(news.width()))
 
+    def _news_passes(self, grows):
+        """News (12 stories) fills in a run: the card, how often the grid placed
+        cards meanwhile, and how often once it had settled."""
+        from nexus.gui import widgets as WG
+        w, dash = self._home(('system', 'wide'), ('news', 'small'), ('deals', 'wide'))
+        news = dash.widgets['news']
+        dash.hub.newspage.data = {'items': [
+            {'title': f"Story {i}", 'source': "Src", 'url': f"https://x/{i}", 'ts': 0}
+            for i in range(12)]}
+        calls = []
+        real = WG.flow
+        with mock.patch.object(WG, 'flow', lambda *a, **k: (calls.append(1), real(*a, **k))[1]), \
+                mock.patch.object(type(news), 'grows', property(lambda self: grows)):
+            dash.refresh(['news'])
+            for _ in range(8):
+                QApplication.processEvents()
+            filled = len(calls)
+            if news.more is not None:
+                news.more.fit()                              # a refit at the same height
+            dash.layout().activate()
+            for _ in range(4):
+                QApplication.processEvents()
+        return news, filled, len(calls) - filled
+
+    def test_grown_card_shows_more_rows_and_asks_for_no_second_relayout(self):
+        """w-155: News beside a wide card ends on the run's line; with 12
+        stories it shows more than its natural rows there. The grid measures
+        and places a growing card as it does a plain one (the one extra step
+        is the spacing the extra rows' host adds), and once it has settled,
+        nothing asks it to place again."""
+        _control, base, _after = self._news_passes(False)
+        news, filled, after = self._news_passes(True)
+        self.assertIsNotNone(news.more)
+        self.assertGreater(news.more.shown, 0)
+        self.assertTrue(news.more.isVisible())
+        self.assertGreater(news.height(), news.layout().totalHeightForWidth(news.width()))
+        self.assertLessEqual(filled, base + 2)
+        self.assertEqual(after, 0)
+
     def test_pad_move_down_keeps_focus_on_the_arrow(self):
         w, dash = self._home(('save', 'small'), ('news', 'tall'), ('pick', 'small'),
                              ('upcoming', 'small'), ('week', 'small'), ('system', 'wide'))
@@ -6844,11 +7051,94 @@ class HomeGrid(unittest.TestCase):
         for _ in range(4):
             QApplication.processEvents()
         ids = [i['id'] for i in dash.items if not i['hidden']]
-        self.assertEqual(ids.index('news'), ids.index('system') + 1)
+        self.assertEqual(ids.index('news'), ids.index('week') + 1)       # the card under it in its column
         f = QApplication.focusWidget()
         self.assertIsNotNone(f)
         self.assertTrue(dash.widgets['news'].isAncestorOf(f))
         self.assertTrue(f.toolTip().lower().endswith('down'))
+
+    # ---- w-156: moves by column, the Stage's column, Tall as a minimum ----
+    def _col_of(self, dash, k):
+        return {p.id: p for p in dash.placed}[k]
+
+    def test_move_up_lands_over_the_card_you_see(self):
+        w, dash = self._home(('save', 'small'), ('pick', 'small'), ('week', 'small'),
+                             ('system', 'small'), ('news', 'small'), ('upcoming', 'small'))
+        dash.layout().activate()
+        me = self._col_of(dash, 'news')
+        above = [p for p in dash.placed if p.id != 'news' and p.col == me.col and p.y < me.y]
+        self.assertTrue(above)
+        want = max(above, key=lambda p: p.y).id
+        dash._edit('news', 'up')
+        for _ in range(4):
+            QApplication.processEvents()
+        ids = [i['id'] for i in dash.items if not i['hidden']]
+        self.assertEqual(ids.index('news'), ids.index(want) - 1)
+
+    def test_move_up_with_nothing_above_does_nothing(self):
+        w, dash = self._home(('save', 'small'), ('pick', 'small'), ('week', 'small'))
+        before = [i['id'] for i in dash.items]
+        dash._edit('pick', 'up')
+        self.assertEqual([i['id'] for i in dash.items], before)
+
+    def test_tall_is_at_least_two_small_cards(self):
+        w, dash = self._home(('news', 'tall'), ('save', 'small'), ('pick', 'small'),
+                             ('week', 'small'), ('system', 'small'), ('upcoming', 'small'))
+        dash.layout().activate()
+        by = {p.id: p for p in dash.placed}
+        nat = []
+        for k in ('save', 'pick', 'week', 'system', 'upcoming'):
+            wd = dash.widgets[k]
+            nat.append(max(wd.heightForWidth(wd.width()), wd.layout().totalHeightForWidth(wd.width()),
+                           wd.minimumSizeHint().height()))
+        nat.sort()
+        vg = nx.DASH_DENSITY[dash.density]['grid_v']
+        if dash.widgets['news'].layout().totalHeightForWidth(dash.widgets['news'].width()) >= nat[len(nat) // 2]:
+            self.assertGreaterEqual(by['news'].h, 2 * nat[len(nat) // 2] + vg)
+        self.assertEqual(by['news'].span, 1)
+        self.assertEqual(dash.widgets['news'].height(), by['news'].h)
+
+    def test_stage_neighbours_end_on_the_continue_row(self):
+        w, dash = self._home(('stage', 'wide'), ('save', 'small'), ('pick', 'small'),
+                             ('week', 'small'), ('system', 'small'), ('upcoming', 'small'),
+                             ('news', 'small'))
+        dash.layout().activate()
+        by = {p.id: p for p in dash.placed}
+        st = by['stage']
+        self.assertEqual(st.span, 2)
+        beside = [p for p in dash.placed if p.id != 'stage' and p.col == 2 and p.y < st.y + st.h]
+        self.assertTrue(beside)
+        last = max(beside, key=lambda p: p.y)
+        self.assertAlmostEqual(last.y + last.h, st.y + st.h, delta=2)
+        nat = dash.widgets['stage'].layout().totalHeightForWidth(dash.widgets['stage'].width())
+        self.assertLessEqual(st.h, nat + 2)                   # the Stage itself is not stretched
+
+    def test_spatial_nav_reaches_every_card_on_stats_and_dashboard(self):
+        from nexus.gui.input import SpatialNav
+        from PyQt6.QtCore import Qt as _Qt
+        keys = (_Qt.Key.Key_Right, _Qt.Key.Key_Down, _Qt.Key.Key_Left, _Qt.Key.Key_Up)
+        for name in ('Stats', 'Dashboard'):
+            w, dash = self._full_home(name)
+            w.show()
+            nav = SpatialNav(w)
+            cards = {k: wd for k, wd in dash.widgets.items() if wd.isVisible()}
+            targets = {k: [f for f in wd.findChildren(QWidget)
+                           if f.isVisible() and f.isEnabled()
+                           and (f.focusPolicy() & _Qt.FocusPolicy.TabFocus)
+                           and not f.size().isEmpty()] for k, wd in cards.items()}
+            self.assertGreaterEqual(sum(1 for fs in targets.values() if fs), 6, name)
+            start = next(f for fs in targets.values() for f in fs)
+            seen, todo = {start}, [start]
+            while todo:
+                cur = todo.pop()
+                for key in keys:
+                    nxt = nav.move(cur, key)
+                    if nxt is not None and nxt not in seen:
+                        seen.add(nxt)
+                        todo.append(nxt)
+            for k, fs in targets.items():
+                if fs:
+                    self.assertTrue(any(f in seen for f in fs), f"{name}: {k} not reached")
 
 
 class HomeAsk(unittest.TestCase):

@@ -32,6 +32,9 @@ class WidgetSpec:
     feeds: tuple = ()
     needs: str | None = None
     card: str | None = None
+    # Packed grid (w-155): given more height than it needs (a short column), the
+    # card shows more rows instead of empty space.
+    grows: bool = False
 
 
 _STYLE = {
@@ -52,15 +55,17 @@ SPECS = (
                options={'style': _STYLE['foryou']}, after='stage',
                feeds=('stage', 'friends', 'system', 'deals', 'upcoming', 'updates', 'smart')),
     WidgetSpec('friends', "Friends playing now", ('small', 'wide', 'full'), 'full',
-               after='stage'),
+               after='stage', grows=True),
     WidgetSpec('pick', "Pick for me", ('small',), 'small',
                options={'vibe': VIBES, 'style': _STYLE['pick']}, after='stage'),
     WidgetSpec('system', "System", ('small', 'wide'), 'wide'),
-    WidgetSpec('news', "News", ('small', 'tall', 'wide', 'full'), 'small'),
+    WidgetSpec('news', "News", ('small', 'tall', 'wide', 'full'), 'small', grows=True),
     WidgetSpec('installed', "Recently installed", ('full',), 'full'),
     WidgetSpec('smart', "Smart shelf", ('full',), 'full', after='installed'),
-    WidgetSpec('deals', "Wishlist deals", ('small', 'tall', 'wide', 'full'), 'wide'),
-    WidgetSpec('upcoming', "Upcoming", ('small', 'tall', 'wide', 'full'), 'small', after='deals'),
+    WidgetSpec('deals', "Wishlist deals", ('small', 'tall', 'wide', 'full'), 'wide',
+               grows=True),
+    WidgetSpec('upcoming', "Upcoming", ('small', 'tall', 'wide', 'full'), 'small', after='deals',
+               grows=True),
     WidgetSpec('week', "Your week", ('small', 'wide'), 'small',
                options={'style': _STYLE['week']}, after='upcoming',
                feeds=('midnight', 'sessions')),
@@ -77,12 +82,12 @@ SPECS = (
     WidgetSpec('heatmap', "Your year", ('wide', 'full'), 'full', True,
                feeds=('midnight', 'insights')),
     WidgetSpec('milestones', "Next milestones", ('small', 'wide'), 'small', True,
-               feeds=('insights',)),
+               feeds=('insights',), grows=True),
     # The Stats widgets (w-141): the same, with the library parts of the payload.
     WidgetSpec('backlog', "Backlog health", ('small', 'wide'), 'small', True,
                feeds=('insights', 'library')),
     WidgetSpec('spacemap', "Where your space goes", ('wide', 'full'), 'wide', True,
-               feeds=('insights', 'library')),
+               feeds=('insights', 'library'), grows=True),
     WidgetSpec('facts', "Library facts", ('small',), 'small', True,
                feeds=('midnight', 'insights', 'library')),
 )

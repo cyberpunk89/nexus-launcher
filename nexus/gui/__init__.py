@@ -43,7 +43,7 @@ from .fmt import (
 from .widgets import (
     _role_of, _SOFT_BREAK, _style_icon_label, ask, clear_layout, empty_state_text, EmptyState,
     FlowLayout, glyph_pixmap, GradientBackground, icon_button, icon_label, label,
-    notify_desktop, NoWheelCombo, plain_label, PopupRounder, protongen_code_preview,
+    MasonryLayout, notify_desktop, NoWheelCombo, plain_label, PopupRounder, protongen_code_preview,
     refresh_icons, SegmentedControl, set_glyph_icon, short_path, soft_wrap, start_steam,
     SteamGate, Toast, ToastHost)  # noqa: F401
 from .art import (

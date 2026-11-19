@@ -21,6 +21,7 @@ from .layouts import (dash_preset, layout_for, MAX_LAYOUTS, MY_HOME, OLD_HOME, P
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import _pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, vibe_pools
 from .moments import DISK_FULL
+from .grid_flow import move_target
 from .home_feed import HomeFeed, today  # noqa: F401
 from .pick_wheel import PickWheel, SEGMENTS
 from .widget_spec import dash_tables, OPTION_BAR, SPEC, SPECS, WidgetSpec  # noqa: F401
@@ -53,7 +54,6 @@ DASH_OPTIONS = _T['OPTIONS']
 DASH_STYLE_LABELS = _T['STYLE_LABELS']
 # The edit bar's "Background:" button names (w-90); 'surface' is shown as Plain.
 DASH_BG_LABELS = _T['BG_LABELS']
-QWIDGETSIZE_MAX = (1 << 24) - 1          # Qt's "no maximum"
 PIN_MAX = 80                         # a pinned game's slug, at most this long
 # Home's spacing (Customise → Density, w-90): Home only, on top of Appearance →
 # Size. Comfortable is how Home always looked.
@@ -402,9 +402,11 @@ def dash_pack(items, cols: int, skip=()) -> list[tuple[str, int, int, int]]:
     return [(k, r, c, s) for k, r, c, s, _n in dash_grid(items, cols, skip)]
 
 
-def dash_move(items, wid: str, direction: str, cols: int, skip=()) -> list[dict]:
-    """Move one widget: left/right swap it with its visible neighbour;
-    up/down move it to the row above/below, under the same column."""
+def dash_move(items, wid: str, direction: str, cols: int, skip=(), placed=None) -> list[dict]:
+    """Move one widget: left/right swap it with its visible neighbour. Up/down
+    with the last `placed` (the Packed grid, w-156) go before the card above it
+    or after the card below it in its column; without it, to the row above/below
+    (dash_grid), under the same column."""
     items = [dict(it) for it in items]
     vis = [i for i, it in enumerate(items) if not it.get('hidden') and it['id'] not in skip]
     pos = next((i for i in vis if items[i]['id'] == wid), None)
@@ -416,6 +418,14 @@ def dash_move(items, wid: str, direction: str, cols: int, skip=()) -> list[dict]
         if 0 <= j < len(vis):
             a, b = vis[k], vis[j]
             items[a], items[b] = items[b], items[a]
+        return items
+    if placed:
+        tid = move_target(placed, wid, direction)
+        if tid is None or not any(it['id'] == tid for it in items):
+            return items
+        me = items.pop(pos)
+        t = next(i for i, it in enumerate(items) if it['id'] == tid)
+        items.insert(t if direction == 'up' else t + 1, me)
         return items
     packed = dash_grid(items, cols, skip)
     where = {i: (r, c, n) for i, r, c, _s, n in packed}
@@ -508,6 +518,7 @@ class DashWidget(QFrame):
         self.setObjectName("DashCard" if self.FRAMED else "DashShelf")
         self.size_ = 'small'
         self.options: dict = {}           # its DASH_OPTIONS, set with the size by refresh
+        self.more = None                  # a growing card's GrowHost (w-155)
         lay = QVBoxLayout(self)
         pad = SP['4'] if self.FRAMED else 0
         lay.setContentsMargins(pad, pad - 2 if pad else 0, pad, pad)
@@ -619,6 +630,25 @@ class DashWidget(QFrame):
 
     def clear(self):
         clear_layout(self.body)
+        self.more = None
+        self.layout().setStretchFactor(self.body, 0)
+
+    @property
+    def grows(self) -> bool:
+        """Shows more rows when the grid gives it more height (w-155)."""
+        return SPEC[self.KIND].grows
+
+    def add_more(self, pool, build, cols: int = 1, col_gap: int = 0, on_count=None):
+        """After the base rows: the rest of `pool` (built by `build(item)`)
+        as far as the card's given height lets whole rows show. A GrowHost
+        has no size of its own, so this never changes the card's natural
+        height (the grid would measure, grow and loop)."""
+        if not (self.grows and pool):
+            return None
+        host = self.more = GrowHost(pool, build, cols, self.body.spacing(), col_gap, on_count)
+        self.body.addWidget(host, 1)
+        self.layout().setStretchFactor(self.body, 1)       # the body takes the spare height
+        return host
 
     def _error(self, message: str, retry) -> bool:
         """A failed load: say why, with Retry (instead of "Loading…" that
@@ -1723,6 +1753,7 @@ class NewsWidget(DashWidget):
         n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
         for it in items[:n]:
             self.body.addWidget(self._story_row(it, hub))
+        self.add_more(items[n:], lambda it: self._story_row(it, hub))
 
     def _story_row(self, it, hub):
         """Thumbnail, headline, source · time; opens the story in the News
@@ -1776,13 +1807,17 @@ class DealsWidget(DashWidget):
             return
         items.sort(key=lambda g: -((g.get('price') or {}).get('cutPct') or 0))
         n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
-        for g in items[:n]:
+
+        def deal_row(g):
             price = g.get('price') or {}
             cur = label(price.get('currentStr') or '', None)
             cur.setStyleSheet(f"color: {P['text']}; font-size: {FS['xs']}px; font-weight: 600;")
             right = [cur] + ([_pill(f"-{price['cutPct']}%", 'accent')]
                              if price.get('cutPct') else [])
-            self.body.addWidget(game_row(g, right, lambda: hub.go(hub.DEALS)))
+            return game_row(g, right, lambda: hub.go(hub.DEALS))
+        for g in items[:n]:
+            self.body.addWidget(deal_row(g))
+        self.add_more(items[n:], deal_row)
         radar = d.get('radar') or {}
         if radar.get('onSaleCount'):
             self.body.addWidget(label(f"{radar['onSaleCount']} on sale · "
@@ -2011,7 +2046,7 @@ class FriendsWidget(DashWidget):
                 self._subs[e['appid']] = card.sub_label
             self.body.addWidget(host)
         else:
-            for e in entries[:self.WIDE_ROWS]:
+            def friend_row(e):
                 right = [AvatarStack(e['people'], 22, 3, ring='surface')]
                 if e['slug']:
                     right.append(_pill("In your library", 'accent'))
@@ -2020,11 +2055,12 @@ class FriendsWidget(DashWidget):
                 row.appid = e['appid']
                 row.setToolTip("Open its page" if e['slug'] else
                                "Not in your library · opens its Steam page ↗")
-                self.body.addWidget(row)
-                self.cards.append(row)
-                self._subs[e['appid']] = row.sub_label
-            if len(entries) > self.WIDE_ROWS:
-                self.body.addWidget(label(f"+{len(entries) - self.WIDE_ROWS} more", "Muted"))
+                self._subs[e['appid']] = row.sub_label       # its minutes move on, grown or not
+                return row
+            for e in entries[:self.WIDE_ROWS]:       # `cards`: the base rows (grown ones come and go)
+                self.body.addWidget(friend_row(e))
+                self.cards.append(self.body.itemAt(self.body.count() - 1).widget())
+            self._tail_more(entries[self.WIDE_ROWS:], friend_row, "")
         self._set_footer(new=True)
         card = next((c for c in self.cards if c.appid == focus_appid), None) \
             if focus_appid is not None else None
@@ -2102,7 +2138,8 @@ class FriendsWidget(DashWidget):
                 self.body.addWidget(label(
                     f"As of {datetime.fromtimestamp(t).strftime('%H:%M')}", "Muted"))
             return
-        for r, e in playing[:self.SMALL_ROWS] if live else ():
+        def person_row(re_):
+            r, e = re_
             row = ClickRow()
             row.steamid, row.appid = r.get('steamid'), e['appid']
             row.clicked.connect(lambda e=e: self._open(hub, e))
@@ -2116,15 +2153,31 @@ class FriendsWidget(DashWidget):
             text = ElideLabel(f"{r.get('name') or ''} in {e['title']}", "DashSub")
             text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             lay.addWidget(text, 1)
-            self.body.addWidget(row)
-            self.cards.append(row)
-        if live and len(playing) > self.SMALL_ROWS:
-            self.body.addWidget(label(f"+{len(playing) - self.SMALL_ROWS} more in a game",
-                                      "Muted"))
+            return row
+        for re_ in playing[:self.SMALL_ROWS] if live else ():
+            self.body.addWidget(person_row(re_))
+            self.cards.append(self.body.itemAt(self.body.count() - 1).widget())
+        if live:
+            self._tail_more(playing[self.SMALL_ROWS:], person_row, " in a game")
         row = next((c for c in self.cards if c.steamid == focus_sid), None) \
             if focus_sid is not None else None
         if row is not None:
             QTimer.singleShot(0, lambda c=row: alive(c) and focus_and_reveal(c))
+
+    def _tail_more(self, rest: list, build, suffix: str):
+        """The rows past the base ones: shown as far as the card is tall
+        enough (w-155), and a "+N more" line that says how many are left
+        (the line stays, so the card's natural height never depends on it)."""
+        if not rest:
+            return
+        line = label("", "Muted")
+
+        def counted(k):
+            line.setText(f"+{len(rest) - k} more{suffix}" if len(rest) - k
+                         else "That's everyone")
+        counted(0)
+        self.add_more(rest, build, on_count=counted)
+        self.body.addWidget(line)
 
     def footer_text(self) -> str:
         """'3 friends are private on Steam · updated 1 min ago'; 'as of
@@ -2188,7 +2241,8 @@ class UpcomingWidget(DashWidget):
                                       wrap=True))
             return
         n = {'small': 3, 'tall': 6, 'wide': 4, 'full': 6}[self.size_]
-        for g in items[:n]:
+
+        def upcoming_row(g):
             text, preorder = gamedb.price_line(g)
             when = label(gamedb.release_label(g), None)
             when.setStyleSheet(f"color: {P['accent']}; font-size: {FS['xs']}px; "
@@ -2207,9 +2261,19 @@ class UpcomingWidget(DashWidget):
                                                   *(t for t, _r in chips)) if x))
             if gamedb.is_cancelled(g):
                 dim(row)
-            self.body.addWidget(row)
+            return row
+        for g in items[:n]:
+            self.body.addWidget(upcoming_row(g))
+        tail = None
         if len(items) > n:
-            self.body.addWidget(label(f"+{len(items) - n} more on the Deals page", "Muted"))
+            tail = label(f"+{len(items) - n} more on the Deals page", "Muted")
+
+        def counted(k):                                 # the line says what is left
+            tail.setText(f"+{len(items) - n - k} more on the Deals page" if len(items) - n - k
+                         else "All on the Deals page")
+        self.add_more(items[n:], upcoming_row, on_count=counted)
+        if tail is not None:
+            self.body.addWidget(tail)
 
 
 class WeekWidget(DashWidget):
@@ -2396,9 +2460,8 @@ class Dashboard(QWidget):
         self.mono = time.monotonic
         self._time_at: float | None = None
         self._last_match: str | None = None
-        self.grid = QGridLayout()
-        self.grid.setHorizontalSpacing(SP['4'])
-        self.grid.setVerticalSpacing(SP['5'])
+        self.grid = MasonryLayout()               # the Packed grid (w-154)
+        self.grid.set_spacing(SP['4'], SP['5'])
         lay.addLayout(self.grid)
         lay.addLayout(foot)
         self._cols = 0
@@ -2421,8 +2484,6 @@ class Dashboard(QWidget):
             w.bind(hub)
         self.foryou.attach(self, self.stage)
         self.stage.moved.connect(self._stage_moved)
-        self._beside: set = set()             # widgets in a Wide Stage's row (as tall as its art)
-        self.stage.on_height = self._fit_beside
         self.set_density(getattr(hub.prefs, 'density', 'comfortable'))
         if self._view is not None:
             # Last, once everything it reads exists: the view's size, not
@@ -2548,55 +2609,30 @@ class Dashboard(QWidget):
 
     def _relayout(self):
         cols = dash_cols(max(self.avail_width(), 1))
-        while self.grid.count():
-            self.grid.takeAt(0)
-        for c in range(6):
-            self.grid.setColumnStretch(c, 0)
         self._cols = cols
         self._skipped = self._skip()
         placed = dash_grid(self.items, cols, self._skipped)
         on = {k for k, *_ in placed}
-        # Beside a Wide Stage (3 columns): a widget as tall as the art, at the
-        # top, not stretched to the art and its Continue row (w-91).
-        srow = next((r for k, r, *_ in placed if k == 'stage'), None)
-        wide = cols == 3 and srow is not None and self.stage.size_ == 'wide'
-        beside = {k for k, r, *_ in placed if wide and r == srow and k != 'stage'}
+        cards = []
         for k, r, c, span, rows in placed:
             it = next(i for i in self.items if i['id'] == k)
             self.widgets[k].options = _dash_options(k, it)
             self.widgets[k].set_editing(self.editing, it['size'], None if 'shelf' not in it
                                         else dash_shelf_label(self.hub, it['shelf']))
-            if k in beside:
-                self.grid.addWidget(self.widgets[k], r, c, 1, span, Qt.AlignmentFlag.AlignTop)
-            elif rows == 1 and span < cols and k != 'stage':
-                # A card keeps its own height instead of stretching to a
-                # taller neighbour in the row (w-143); a Tall one fills both.
-                self.grid.addWidget(self.widgets[k], r, c, 1, span, Qt.AlignmentFlag.AlignTop)
-            else:
-                self.grid.addWidget(self.widgets[k], r, c, rows, span)
-        for k in self._beside - beside:
-            self.widgets[k].setMinimumHeight(0)
-            self.widgets[k].setMaximumHeight(QWIDGETSIZE_MAX)
-        self._beside = beside
-        self._fit_beside()
+            cards.append((k, self.widgets[k], min(DASH_SPAN.get(it['size'], 1), cols),
+                          self.widgets[k].grows, 0, it['size'] == 'tall', k == 'stage'))
+        # dash_grid walks the list, so cards are in reading order for grid_flow.
+        self.grid.set_cards(cols, cards)
         for k, w in self.widgets.items():
             w.setVisible(k in on)
-        for c in range(cols):
-            self.grid.setColumnStretch(c, 1)
         self._fill_add_row()
         self.foryou.sync_pill(cols)
 
-    def _fit_beside(self):
-        """Widgets beside a Wide Stage are as tall as its art (Customise
-        lets them grow, for the edit bars)."""
-        h = self.stage.art.minimumHeight()
-        for k in self._beside:
-            w = self.widgets[k]
-            if self.editing:
-                w.setMinimumHeight(0)
-                w.setMaximumHeight(QWIDGETSIZE_MAX)
-            else:
-                w.setFixedHeight(h)
+    @property
+    def placed(self):
+        """Where the Packed grid put each card (grid_flow.Placed, px from the
+        grid's top)."""
+        return self.grid.placed
 
     def _fill_add_row(self):
         while self.add_row.count():
@@ -2641,7 +2677,7 @@ class Dashboard(QWidget):
     def _edit(self, kind, action):
         items = self.items
         if action in ('left', 'right', 'up', 'down'):
-            new = dash_move(items, kind, action, self._cols, self._skip())
+            new = dash_move(items, kind, action, self._cols, self._skip(), self.placed)
         else:
             new = [dict(i) for i in items]
             it = next(i for i in new if i['id'] == kind)
@@ -2690,8 +2726,7 @@ class Dashboard(QWidget):
         and margins only; the Library's shelves and other pages keep theirs."""
         self.density = name if name in DASH_DENSITY else 'comfortable'
         d = DASH_DENSITY[self.density]
-        self.grid.setHorizontalSpacing(d['grid_h'])
-        self.grid.setVerticalSpacing(d['grid_v'])
+        self.grid.set_spacing(d['grid_h'], d['grid_v'])
         for w in self.widgets.values():
             w.set_density(d)
         view = getattr(self.hub, 'homeview', None)
@@ -2928,5 +2963,5 @@ from .library import featured_games, ShelfRow  # noqa: E402
 from .newspage import news_style, NewsArt  # noqa: E402
 from .system import _add, _bar_rows, _columns, _day_bars, play_rows  # noqa: E402
 from .theatre import _search_norm  # noqa: E402
-from .widgets import (clear_layout, FlowLayout, icon_button, icon_label, label, plain_label,
-    set_glyph_icon)  # noqa: E402
+from .widgets import (clear_layout, FlowLayout, GrowHost, icon_button, icon_label, label, MasonryLayout,
+    plain_label, set_glyph_icon)  # noqa: E402

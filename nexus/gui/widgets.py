@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QBoxLayout, QComboBo
 from nexus import paths as NX, platform
 
 from .common import ICON_PATH
+from .grid_flow import Card, flow
 from .theme import FONTS, G, GLYPHS, GRAD, LOOK, P, PAL, pill, pill_qss, SP
 
 
@@ -555,6 +556,242 @@ class FlowLayout(QLayout):
                     x += w + line_gap
             y += line_height + (self._spacing if not last else 0)
         return y - outer.y() + m.bottom()
+
+
+SMALL_H_FALLBACK = 150      # a small card's height when no small card is on Home
+
+
+class MasonryLayout(QLayout):
+    """Home's Packed grid (w-154). grid_flow decides where each card goes;
+    this measures every card for the width it gets and sets its geometry.
+
+    The column count is given (`set_cards`), never taken from this layout's
+    own rect: the Dashboard picks it from the scroll area (w-101). No item
+    has an alignment, or Qt would cap a card at its own height and it could
+    never grow to the evened line."""
+
+    def __init__(self, parent=None, h=0, v=0, tol=None):
+        super().__init__(parent)
+        self.setContentsMargins(0, 0, 0, 0)
+        self._items: list = []
+        self._meta: list = []              # per item: (id, span, grows, min_h, tall, anchor)
+        self._cols = 1
+        self._h, self._v = h, v
+        self._tol = SP['8'] if tol is None else tol
+        self._memo: dict = {}              # width -> (bottom, placed, [x, w] per card)
+        self._last = 0                     # the width setGeometry placed last
+        self._seq = 0                      # default ids never repeat
+
+    # ---- items ----
+    def addItem(self, item):
+        self._items.append(item)
+        self._seq += 1
+        self._meta.append((f"item{self._seq}", 1, False, 0, False, False))
+        self._memo = {}
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        if not 0 <= i < len(self._items):
+            return None
+        self._memo = {}
+        self._meta.pop(i)
+        return self._items.pop(i)
+
+    def set_cards(self, cols, cards):
+        """Swap in `cards`: (id, widget, span, grows, min_h[, tall[, anchor]]) in reading
+        order, on `cols` columns. A `tall` card is at least two small cards high
+        (w-156): the median height of the one-column, not-tall cards at that
+        width, twice, plus the gap. Laid out once, with the layout off while
+        swapping."""
+        self.setEnabled(False)
+        try:
+            while self._items:
+                self.takeAt(len(self._items) - 1)
+            self._cols = max(1, int(cols))
+            for cid, w, span, grows, min_h, *more in cards:
+                self.addWidget(w)
+                more = [*more, False, False]
+                self._meta[-1] = (cid, int(span), bool(grows), int(min_h),
+                                  bool(more[0]), bool(more[1]))
+        finally:
+            self.setEnabled(True)
+        self.invalidate()
+
+    def set_spacing(self, h, v):
+        if (h, v) != (self._h, self._v):
+            self._h, self._v = h, v
+            self.invalidate()
+
+    def horizontalSpacing(self):
+        return self._h
+
+    def verticalSpacing(self):
+        return self._v
+
+    @property
+    def placed(self):
+        """The last placement (grid_flow.Placed), px from the layout's top."""
+        if not self._items or not self._last:
+            return []
+        return list(self._measure(self._last)[1])      # the last width, for the cards now
+
+    def invalidate(self):
+        self._memo = {}
+        super().invalidate()
+
+    # ---- sizes ----
+    def expandingDirections(self):
+        return Qt.Orientation.Horizontal
+
+    def hasHeightForWidth(self):
+        return True
+
+    def minimumSize(self):
+        cols = self._cols
+        col = 0.0
+        for item, (_id, span, _g, _m, _t, _a) in zip(self._items, self._meta):
+            span = max(1, min(span, cols))
+            col = max(col, (item.minimumSize().width() - (span - 1) * self._h) / span)
+        m = self.contentsMargins()
+        w = round(cols * col + (cols - 1) * self._h) + m.left() + m.right()
+        return QSize(w, m.top() + m.bottom())
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def heightForWidth(self, width):
+        m = self.contentsMargins()
+        bottom, _placed, _xs, _live = self._measure(max(0, width - m.left() - m.right()))
+        return bottom + m.top() + m.bottom()
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        m = self.contentsMargins()
+        width = max(0, rect.width() - m.left() - m.right())
+        self._last = width
+        _bottom, placed, xs, live = self._measure(width)
+        x0, y0 = rect.x() + m.left(), rect.y() + m.top()
+        for item, p, (x, w) in zip(live, placed, xs):
+            item.setGeometry(QRect(x0 + x, y0 + p.y, w, p.h))
+
+    def _measure(self, width):
+        """Heights for the widths the columns give, placed by grid_flow;
+        kept per width until something changes."""
+        hit = self._memo.get(width)
+        if hit is not None:
+            return hit
+        cols, h = self._cols, self._h
+        colw = (width - (cols - 1) * h) / cols
+        cards, xs = [], []
+        live = []
+        for item, meta in zip(self._items, self._meta):
+            wid = item.widget()
+            if wid is not None:
+                wid.ensurePolished()         # theme fonts apply at polish (hfw too small before)
+            if not item.isEmpty():           # hidden: no slot, no gap
+                live.append((item, meta))
+        heights = []
+        for item, (cid, span, grows, min_h, tall, anchor) in live:
+            span = max(1, min(span, cols))
+            cw = round(span * colw + (span - 1) * h)
+            if item.hasHeightForWidth():
+                hh = item.heightForWidth(cw)
+            else:
+                hh = item.sizeHint().height()
+            hh = max(hh, item.minimumSize().height(), 0)
+            heights.append(hh)
+            cards.append(Card(cid, span, hh, grows, min_h, anchor))
+        small = sorted(hh for hh, (_i, (_c, span, _g, _m, tall, _a)) in zip(heights, live)
+                       if span == 1 and not tall)
+        small_h = small[len(small) // 2] if small else SMALL_H_FALLBACK     # the median
+        for k, (_i, (_c, _s, _g, _m, tall, _a)) in enumerate(live):
+            if tall and cols > 1 and cards[k].h >= small_h:    # an almost empty one keeps its size
+                cards[k] = cards[k]._replace(min_h=max(cards[k].min_h, 2 * small_h + self._v))
+        placed = flow(cards, cols, self._v, self._tol)
+        for p in placed:
+            left = round(p.col * (colw + h))
+            right = round((p.col + p.span) * (colw + h) - h)
+            xs.append((left, right - left))
+        bottom = max((p.y + p.h for p in placed), default=0)
+        self._memo[width] = hit = (bottom, placed, xs, [it for it, _m in live])
+        return hit
+
+
+class GrowHost(QWidget):
+    """The extra rows of a card that grows (w-155). It sits after the card's
+    own rows and takes whatever height the grid gave beyond them; it reports
+    NO size of its own (Ignored, 0), so the card's height-for-width stays its
+    natural one however many rows show. Rows are children placed by hand, and
+    a row shows only when it fits whole. Built on first need, kept after;
+    `shown` changes only when the count of rows that fit does."""
+    MAX = 12
+
+    def __init__(self, pool, build, cols=1, gap=0, col_gap=0, on_count=None):
+        super().__init__()
+        self._pool = list(pool)[:self.MAX]
+        self._build = build
+        self._cols, self._gap, self._col_gap = max(1, cols), gap, col_gap
+        self._on_count = on_count
+        self._rows: dict[int, QWidget] = {}
+        self.builds = 0                    # rows ever built
+        self.shown = 0                     # rows showing now
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
+
+    def sizeHint(self):
+        return QSize(0, 0)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def _row(self, i: int, width: int) -> tuple[QWidget, int]:
+        w = self._rows.get(i)
+        if w is None:
+            w = self._rows[i] = self._build(self._pool[i])
+            self.builds += 1
+            w.setParent(self)
+            w.ensurePolished()
+        h = w.heightForWidth(width) if w.hasHeightForWidth() else -1
+        if h < 0:
+            h = w.sizeHint().height()
+        return w, max(h, w.minimumSizeHint().height())
+
+    def fit(self):
+        W, H, n, cols = self.width(), self.height(), len(self._pool), self._cols
+        if W <= 0:
+            return
+        colw = int((W - (cols - 1) * self._col_gap) / cols)
+        y, k, put = 0, 0, []
+        while k < n:
+            if k and y + self._gap >= H:
+                break
+            top = y + (self._gap if k else 0)
+            group = [self._row(i, colw) for i in range(k, min(k + cols, n))]
+            gh = max(h for _w, h in group)
+            if top + gh > H:
+                break
+            for j, (w, h) in enumerate(group):
+                put.append((w, QRect(j * (colw + self._col_gap), top, colw, h)))
+            y, k = top + gh, k + len(group)
+        on = {id(w) for w, _r in put}
+        for w in self._rows.values():
+            if id(w) not in on:
+                w.setVisible(False)
+        for w, r in put:
+            w.setGeometry(r)
+            w.setVisible(True)
+        if k != self.shown:
+            self.shown = k
+            if self._on_count:
+                self._on_count(k)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.fit()
 
 
 def _role_of(color: str | None) -> str | None:

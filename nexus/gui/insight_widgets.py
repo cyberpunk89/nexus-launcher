@@ -691,13 +691,18 @@ class MilestonesWidget(InsightWidget):
         super().clear()
 
     def build(self, hub):
-        items = self._items(hub)[:WIDE_ROWS if self.size_ == 'wide' else SMALL_ROWS]
+        every = self._items(hub)
+        base = WIDE_ROWS if self.size_ == 'wide' else SMALL_ROWS
+        items = every[:base]
         if not items:
             return
         wide = self.size_ == 'wide' and len(items) > 1
         cols = _columns(self.body, 2) if wide else [self.body]
         for i, m in enumerate(items):
             _add(cols[i % len(cols)], self._row(hub, m))
+        # More goals when the grid gives the card more height (w-155).
+        self.add_more(every[base:], lambda m: self._row(hub, m), cols=len(cols),
+                      col_gap=SP['6'])
 
     def _row(self, hub, m: dict) -> ClickRow:
         name, have, left = milestone_text(m)

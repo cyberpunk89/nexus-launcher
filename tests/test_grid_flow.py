@@ -14,8 +14,8 @@ GAP = 12
 TOL = 32
 
 
-def c(id, span=1, h=100, grows=False, min_h=0):
-    return Card(id, span, h, grows, min_h)
+def c(id, span=1, h=100, grows=False, min_h=0, anchor=False):
+    return Card(id, span, h, grows, min_h, anchor)
 
 
 def by_id(placed):
@@ -115,14 +115,29 @@ class EvenBottoms(unittest.TestCase):
                           c('u', h=200)], 3, GAP, TOL))
         self.assertEqual(len(set(bottoms(list(got.values()), 3))), 1)
 
-    def test_a_card_that_cannot_reach_leaves_the_hole(self):
-        # w spans cols 0-1, but v sits under it in col 0: w can't grow, col 1 keeps a hole
+    def test_card_stuck_under_a_wide_card_moves_over(self):
+        # w spans cols 0-1; v would sit under it in col 0 and strand col 1 (user, 2026-11-19:
+        # move the card over). v moves to col 2, w then ends both its columns and grows.
         got = by_id(flow([c('w', span=2, h=100), c('s', h=40), c('t', h=300), c('v', h=40)],
                          3, GAP, TOL))
-        self.assertEqual([(got[k].col, got[k].y) for k in 'wstv'],
-                         [(0, 0), (2, 0), (2, 52), (0, 112)])
-        self.assertEqual(got['w'].h, 100)
-        self.assertEqual(got['v'].h, 352 - 112)
+        self.assertEqual((got['v'].col, got['v'].y), (2, 52 + 300 + GAP))
+        line = got['v'].y + got['v'].h
+        self.assertEqual(got['w'].y + got['w'].h, line)
+        self.assertEqual(G.empty_share(list(got.values()), 3, GAP), 0)
+
+    def test_stats_like_pick_moves_beside_the_space_map(self):
+        got = by_id(flow([c('a', h=100), c('b', h=100), c('c', h=300),
+                          c('space', span=2, h=100), c('pick', h=150)], 3, GAP, TOL))
+        self.assertEqual(got['pick'].col, 2)
+        self.assertEqual(len(set(bottoms(list(got.values()), 3))), 1)
+        self.assertEqual(G.empty_share(list(got.values()), 3, GAP), 0)
+
+    def test_move_only_when_it_shrinks_the_hole(self):
+        # nothing is stranded: the order stays as placed
+        cards = [c('w', span=2, h=100), c('s', h=100), c('x', h=40), c('y', h=40)]
+        got = by_id(flow(cards, 3, GAP, TOL))
+        self.assertEqual([(got[k].col, got[k].y) for k in 'wsxy'],
+                         [(0, 0), (2, 0), (0, 112), (1, 112)])
 
 
 class StatsPreset(unittest.TestCase):
@@ -149,6 +164,58 @@ class StatsPreset(unittest.TestCase):
         # the 72 px hole under daily, in a box of 3 x (938 + gap)
         share = G.empty_share(flow(self.CARDS, 3, GAP, TOL), 3, GAP)
         self.assertAlmostEqual(share, 72 / (3 * (938 + GAP)), places=4)
+
+
+class BesideAWide(unittest.TestCase):
+    """w-156: cards beside an anchor (the Stage) end on its bottom; one that
+    would stick out past it goes under it instead and the stack beside is
+    closed on the anchor's bottom, so the anchor is not stretched."""
+
+    def stage(self, h=686):
+        return c('stage', span=2, h=h, anchor=True)
+
+    def test_a_card_that_would_overshoot_goes_under(self):
+        cards = [self.stage(), c('a', h=178), c('b', h=184), c('d', h=180),
+                 c('e', h=230), c('f', h=230), c('g', h=230)]
+        got = by_id(flow(cards, 3, GAP, TOL))
+        self.assertEqual(got['stage'].h, 686)                       # not stretched
+        self.assertEqual([got[k].col for k in 'abd'], [2, 2, 2])
+        self.assertEqual(got['d'].y + got['d'].h, 686)              # the stack ends on its bottom
+        for k in 'efg':                                             # under the Stage's row
+            self.assertEqual(got[k].y, 686 + GAP)
+        self.assertEqual(sorted(got[k].col for k in 'efg'), [0, 1, 2])
+        self.assertEqual(G.empty_share(list(got.values()), 3, GAP), 0)
+
+    def test_the_card_that_can_grow_takes_the_slack(self):
+        cards = [self.stage(), c('a', h=100), c('b', h=100, grows=True), c('d', h=100),
+                 c('e', h=400), c('f', h=400), c('g', h=400)]
+        got = by_id(flow(cards, 3, GAP, TOL))
+        self.assertEqual(got['b'].h, 100 + 686 - 324)               # b shows more
+        self.assertEqual(got['d'].y + got['d'].h, 686)              # d moved down with it
+        self.assertEqual(got['a'].h, 100)
+        self.assertEqual(got['stage'].h, 686)
+
+    def test_a_card_that_fits_stays_beside(self):
+        cards = [self.stage(400), c('a', h=190), c('b', h=190)]
+        got = by_id(flow(cards, 3, GAP, TOL))
+        self.assertEqual((got['a'].col, got['b'].col), (2, 2))
+        self.assertEqual(got['b'].y + got['b'].h, 400)
+
+    def test_a_small_overshoot_stays_beside(self):
+        cards = [self.stage(400), c('a', h=190), c('b', h=200)]
+        got = by_id(flow(cards, 3, GAP, TOL))                       # ends 2 px past it: within tol
+        self.assertEqual(got['b'].col, 2)
+
+    def test_a_card_as_tall_as_the_anchor_stays_beside(self):
+        cards = [self.stage(100), c('a', h=40), c('t', h=300)]
+        got = by_id(flow(cards, 3, GAP, TOL))
+        self.assertEqual((got['a'].col, got['t'].col), (2, 2))
+
+    def test_without_an_anchor_nothing_changes(self):
+        plain = [c('stage', span=2, h=686)] + [c(k, h=h) for k, h in
+                                               (('a', 178), ('b', 184), ('d', 180), ('e', 230))]
+        got = by_id(flow(plain, 3, GAP, TOL))
+        self.assertEqual([got[k].col for k in 'abde'], [2, 2, 2, 2])
 
 
 class Pure(unittest.TestCase):
