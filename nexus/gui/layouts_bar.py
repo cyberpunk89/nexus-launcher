@@ -8,18 +8,22 @@ Dashboard's controller does the work. Chip buttons are kept across a
 
 from dataclasses import dataclass, field
 
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import (QApplication, QBoxLayout, QButtonGroup, QFrame, QHBoxLayout,
+from PyQt6.QtCore import pyqtSignal, QRectF, QSize, Qt
+from PyQt6.QtGui import QBrush, QColor, QIcon, QLinearGradient, QPainter, QPen
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel,
     QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from .layouts import (clean_rule, hhmm, MAX_LAYOUTS, minutes, overlaps, PRESETS, rule_text)
-from .theme import CHIP_H, G, P, scaled, SP
-from .widgets import amp, FlowLayout, icon_button, icon_label, label, plain_label, set_glyph_icon
+from .layouts import (clean_rule, dash_preset, hhmm, MAX_LAYOUTS, minutes, overlaps, PRESETS, preset_thumb,
+    rule_text)
+from .theme import CHIP_H, G, GRAD, P, R, scaled, SP
+from .widgets import (amp, FlowLayout, icon_button, icon_label, label, plain_label,
+    SegmentedControl, set_glyph_icon)
 
 CHIP_TEXT_W = 150                # a layout chip's name, elided past this (scaled)
-NAME_W = 180                     # the manage strip's name, elided past this (scaled)
-NARROW_W = 600                   # under this (scaled) each row stacks
+NAME_W = 120                     # the manage strip's name, elided past this (scaled)
+DENSITIES = ('comfortable', 'compact')
+DENSITY_NAMES = {'comfortable': "Comfortable", 'compact': "Compact"}
+DENSITY_NOTE = "Spacing on Home only. Appearance → Size changes text and controls everywhere."
 FULL_TIP = f"{MAX_LAYOUTS} layouts is the most. Delete one to save another."
 FULL_NOTE = f"{MAX_LAYOUTS} of {MAX_LAYOUTS}. Delete one to save another."
 EMPTY_NOTE = "Save this Home to switch back to it later, or by time of day."
@@ -37,10 +41,12 @@ class LayoutsView:
     active: int | None = None
     offer_old: bool = False
     note: str = ''
+    preset: str | None = None        # the preset Home started from (marked while no layout is on)
 
     def signature(self):
         return (tuple((lt['name'], rule_text(lt.get('rule')), bool(lt.get('auto')))
-                      for lt in self.layouts), self.active, self.offer_old, self.note)
+                      for lt in self.layouts), self.active, self.offer_old, self.note,
+                self.preset)
 
 
 def rule_line(lt: dict | None) -> str:
@@ -71,7 +77,83 @@ def overlap_note(rule: dict, others) -> str:
             "the one that starts later wins.")
 
 
+class PresetThumb(QWidget):
+    """A preset in miniature (60x44): its shown widgets packed by the same
+    flow as Home (`preset_thumb`), cells in the surface colour with an overlay
+    border, the Stage in the tide gradient. Mouse-transparent: the row is the
+    button."""
+    W, H, PAD = 60, 44, 4
+
+    def __init__(self, items, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(scaled(self.W), scaled(self.H))
+        self.cells = preset_thumb(items)
+
+    def anchor_ids(self) -> list[str]:
+        return [c.id for c in self.cells if c.id == 'stage']
+
+    def paintEvent(self, ev):
+        pt = QPainter(self)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        pt.setPen(QPen(QColor(P['border']), 1.0))
+        pt.setBrush(QColor(P['surface_1']))
+        pt.drawRoundedRect(box, R['sm'], R['sm'])
+        if self.cells:
+            pad = scaled(self.PAD)
+            inner = box.adjusted(pad, pad, -pad, -pad)
+            gap = scaled(2)
+            colw = (inner.width() - 2 * gap) / 3
+            total = max(c.y + c.h for c in self.cells)
+            k = inner.height() / total
+            for c in self.cells:
+                r = QRectF(inner.left() + c.col * (colw + gap), inner.top() + c.y * k,
+                           c.span * colw + (c.span - 1) * gap, max(2.0, c.h * k - gap))
+                rad = min(float(R['sm']) / 2, r.height() / 2)
+                if c.id == 'stage':
+                    g = QLinearGradient(r.topLeft(), r.bottomRight())
+                    a, b = (QColor(x) for x in GRAD['tide'])
+                    g.setColorAt(0.0, a)
+                    g.setColorAt(1.0, b)
+                    pt.setPen(Qt.PenStyle.NoPen)
+                    pt.setBrush(QBrush(g))
+                else:
+                    pt.setPen(QPen(QColor(P['overlay']), 1.0))
+                    pt.setBrush(QColor(P['surface_2']))
+                pt.drawRoundedRect(r, rad, rad)
+        pt.end()
+
+
+class PresetRow(QPushButton):
+    """A Start from row: as tall as its name and wrapped tip need (height for
+    width), never less than the thumbnail and padding, so a long tip, a bigger
+    Size or other fonts never clip it."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("PresetRow")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        lay = self.layout()
+        return lay.totalHeightForWidth(w) if lay is not None else super().heightForWidth(w)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.layout().totalMinimumSize().height())
+
+    def sizeHint(self) -> QSize:
+        w = max(self.width(), scaled(240))
+        return QSize(w, self.heightForWidth(w))
+
+
 class LayoutsBar(QFrame):
+    """The Layouts tab of the Customise panel: Start from (a row per preset),
+    Your layouts (chips and the manage strip) and Density. Stacked, one
+    section under another."""
     preset = pyqtSignal(str)
     switch = pyqtSignal(int)
     save_as = pyqtSignal()
@@ -79,36 +161,36 @@ class LayoutsBar(QFrame):
     rename = pyqtSignal()
     delete = pyqtSignal()
     edit_rule = pyqtSignal()
+    density = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("DashLayouts")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(SP['4'], SP['3'], SP['4'], SP['3'])
-        lay.setSpacing(SP['2_5'])
-        self.rows: list[QBoxLayout] = []
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP['2'])
         self._sig = None
-        # Start from
-        host, self.presets = self._row("Start from")
+        # Start from: a row per preset
+        lay.addWidget(label("Start from".upper(), "LayoutKicker"))
         self.preset_btns: dict[str, QPushButton] = {}
+        self.thumbs: dict[str, PresetThumb] = {}
+        self.names: dict[str, QLabel] = {}
+        self.tips: dict[str, QLabel] = {}
         for key, text, tip in PRESETS:
-            b = QPushButton(text, host)
-            b.setObjectName("Chip")
-            b.setToolTip(f"{tip}. Your current Home is saved first.")
-            b.clicked.connect(lambda _=False, k=key: self.preset.emit(k))
-            self.presets.addWidget(b)
-            self.preset_btns[key] = b
-        self.preset_note = label(PRESET_NOTE, "Muted")
-        self.preset_note.setMinimumHeight(scaled(CHIP_H))
-        self.presets.addWidget(self.preset_note)
+            lay.addWidget(self._preset_row(key, text, tip))
+        self.preset_note = label(PRESET_NOTE, "Muted", wrap=True)
+        lay.addWidget(self.preset_note)
+        lay.addSpacing(SP['2'])
         # Your layouts
-        self.chips_host, self.chips = self._row("Your layouts")
+        lay.addWidget(label("Your layouts".upper(), "LayoutKicker"))
+        self.chips_host = QWidget(self)
+        self.chips = FlowLayout(self.chips_host, margin=0, spacing=SP['1_5'])
+        lay.addWidget(self.chips_host)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.layout_btns: list[QPushButton] = []
-        self.empty_note = label(EMPTY_NOTE, "Muted")
-        self.empty_note.setMinimumHeight(scaled(CHIP_H))
+        self.empty_note = label(EMPTY_NOTE, "Muted", wrap=True)
         self.chips.addWidget(self.empty_note)
         self.btn_save = QPushButton("Save as…", self.chips_host)
         self.btn_save.setObjectName("Chip")
@@ -127,8 +209,8 @@ class LayoutsBar(QFrame):
         # The active layout's manage strip
         self.manage = QFrame(self)
         self.manage.setObjectName("DashEditBar")
-        self.manage_lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self.manage)
-        self.manage_lay.setContentsMargins(SP['3'], SP['1'], SP['1'], SP['1'])
+        self.manage_lay = QVBoxLayout(self.manage)
+        self.manage_lay.setContentsMargins(SP['3'], SP['2'], SP['2'], SP['2'])
         self.manage_lay.setSpacing(SP['1'])
         info = QHBoxLayout()
         info.setSpacing(SP['2'])
@@ -137,9 +219,9 @@ class LayoutsBar(QFrame):
         self.m_rule = label("", "LayoutRule")
         self.m_rule.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         info.addWidget(self.m_rule, 1)
-        self.manage_lay.addLayout(info, 1)
+        self.manage_lay.addLayout(info)
         btns = QHBoxLayout()
-        btns.setSpacing(SP['1'])
+        btns.setSpacing(0)
         self.btn_time = QPushButton("Switch by time…", self.manage)
         self.btn_rename = QPushButton("Rename…", self.manage)
         self.btn_delete = QPushButton("Delete…", self.manage)
@@ -150,38 +232,52 @@ class LayoutsBar(QFrame):
             set_glyph_icon(b, g, 15)
             b.clicked.connect(sig)
             btns.addWidget(b)
+        btns.addStretch()
         self.manage_lay.addLayout(btns)
         lay.addWidget(self.manage)
         self.manage.setVisible(False)
-        # Add widgets: the Dashboard fills it (its add_row)
-        self.add_host, self.add_row = self._row("Add widgets")
+        lay.addSpacing(SP['2'])
+        # Density
+        lay.addWidget(label("Density".upper(), "LayoutKicker"))
+        self.density_seg = SegmentedControl('pill', scaled(34), self)
+        for key in DENSITIES:
+            self.density_seg.add(key, DENSITY_NAMES[key])
+        self.density_seg.changed.connect(self.density)
+        lay.addWidget(self.density_seg, 0, Qt.AlignmentFlag.AlignLeft)
+        self.density_note = label(DENSITY_NOTE, "Muted", wrap=True)
+        lay.addWidget(self.density_note)
+        lay.addStretch()
         self.show_view(LayoutsView())
 
-    def _row(self, kicker: str) -> tuple[QWidget, FlowLayout]:
-        r = QBoxLayout(QBoxLayout.Direction.LeftToRight)
-        r.setSpacing(SP['3'])
-        k = label(kicker.upper(), "LayoutKicker")
-        k.setFixedWidth(scaled(96))
-        k.setMinimumHeight(scaled(CHIP_H))
-        k.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        r.addWidget(k, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        host = QWidget(self)
-        flow = FlowLayout(host, margin=0, spacing=SP['1_5'])
-        r.addWidget(host, 1)
-        self.layout().addLayout(r)
-        self.rows.append(r)
-        return host, flow
+    def _preset_row(self, key: str, text: str, tip: str) -> QPushButton:
+        b = PresetRow(self)
+        b.setProperty('name', text)
+        b.setAccessibleName(text)
+        b.setToolTip(f"{tip}. Your current Home is saved first.")
+        b.clicked.connect(lambda _=False, k=key: self.preset.emit(k))
+        row = QHBoxLayout(b)
+        row.setContentsMargins(SP['2'], SP['2'], SP['3'], SP['2'])
+        row.setSpacing(SP['3'])
+        thumb = PresetThumb(dash_preset(key), b)
+        row.addWidget(thumb, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(SP['0_5'])
+        name = label(text, "PresetName")
+        name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        blurb = label(tip, "PresetTip", wrap=True)
+        blurb.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        blurb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        col.addWidget(name)
+        col.addWidget(blurb)
+        row.addLayout(col, 1)
+        self.preset_btns[key], self.thumbs[key] = b, thumb
+        self.names[key], self.tips[key] = name, blurb
+        return b
 
-    def resizeEvent(self, ev):
-        narrow = self.width() < scaled(NARROW_W)
-        d = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
-        for r in self.rows:
-            if r.direction() != d:
-                r.setDirection(d)
-                r.setSpacing(SP['1_5'] if narrow else SP['3'])
-        if self.manage_lay.direction() != d:
-            self.manage_lay.setDirection(d)
-        super().resizeEvent(ev)
+    def set_density(self, name: str):
+        """Show Home's density (no signal)."""
+        if name in DENSITIES:
+            self.density_seg.set_current(name, animate=False)
 
     # ---- state ----
     def show_view(self, view: LayoutsView):
@@ -196,6 +292,12 @@ class LayoutsBar(QFrame):
         active = layouts[view.active] if view.active is not None \
             and 0 <= view.active < n else None
         self.preset_note.setText(view.note or PRESET_NOTE)
+        for key, b in self.preset_btns.items():
+            on = 'true' if active is None and view.preset == key else 'false'
+            if b.property('on') != on:
+                b.setProperty('on', on)
+                b.style().unpolish(b)
+                b.style().polish(b)
         # Focus first: on a chip or button about to go, it moves to a stayer.
         going = set(self.layout_btns[n:])
         if not view.offer_old:

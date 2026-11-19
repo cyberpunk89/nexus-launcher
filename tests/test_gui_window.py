@@ -2585,16 +2585,18 @@ class Window(unittest.TestCase):
         d = w.dashboard
         lib = w.home.lay.contentsMargins()
         lib_sp = w.home.lay.spacing()
-        self.assertTrue(d.btn_density.isHidden())
+        bar = d.layouts_bar
+        self.assertFalse(bar.density_seg.isVisible())
         d.set_editing(True)
-        self.assertFalse(d.btn_density.isHidden())
-        self.assertEqual(d.btn_density.text(), "Density: Comfortable")
-        self.assertIn("Home only", d.btn_density.toolTip())
+        d.panel.set_tab('layouts')
+        self.assertTrue(bar.density_seg.isVisible())
+        self.assertEqual(bar.density_seg.current(), 'comfortable')
+        self.assertIn("Home only", bar.density_note.text())
         self.assertEqual((d.grid.horizontalSpacing(), d.grid.verticalSpacing()),
                          (nx.SP['4'], nx.SP['5']))
-        d.btn_density.click()
+        bar.density_seg.item('compact').click()
         self.assertEqual(w.prefs.density, 'compact')
-        self.assertEqual(d.btn_density.text(), "Density: Compact")
+        self.assertEqual(bar.density_seg.current(), 'compact')
         self.assertEqual((d.grid.horizontalSpacing(), d.grid.verticalSpacing()),
                          (nx.SP['3'], nx.SP['3']))
         m = w.homeview.lay.contentsMargins()
@@ -2606,13 +2608,13 @@ class Window(unittest.TestCase):
         self.assertEqual(news.left(), nx.SP['3'])
         self.assertEqual(w.home.lay.contentsMargins(), lib)          # the Library's shelves
         self.assertEqual(w.home.lay.spacing(), lib_sp)
-        d.btn_density.click()
+        bar.density_seg.item('comfortable').click()
         self.assertEqual(w.prefs.density, 'comfortable')
         m = w.homeview.lay.contentsMargins()
         self.assertEqual((m.left(), m.top()), (nx.SP['5'], nx.SP['4']))
         self.assertEqual(stage.art.layout().contentsMargins().left(), 48)
         d.set_editing(False)
-        self.assertTrue(d.btn_density.isHidden())
+        self.assertFalse(bar.density_seg.isVisible())
 
     def test_artwork_page_round_trip(self):
         game = self.win._games[1]
@@ -6818,7 +6820,7 @@ class HomeGrid(unittest.TestCase):
         items.sort(key=lambda i: order.index(i['id']) if i['id'] in order else 99)
         w.prefs.dashboard = items
         w.go(w.HOME)
-        w.resize(1300, 900)
+        w.resize(1300 + nx.scaled(328), 900)             # Home's 1300 px, beside the panel
         w.dashboard.set_editing(True)
         w.dashboard.refresh()
         for _ in range(6):
@@ -6876,13 +6878,40 @@ class HomeGrid(unittest.TestCase):
         self.assertAlmostEqual(save[1] + save[3], stage[1] + stage[3], delta=1)
 
     def test_customise_keeps_three_columns_at_1440(self):
-        """Customise at 1440 px stays three columns (the dock comes with w-157)."""
+        """Customise at 1440 px stays three columns with the panel docked (w-157)."""
         w, dash = self._home(('news', 'small'), ('save', 'small'), ('pick', 'small'))
         w.resize(1440, 900)
         for _ in range(4):
             QApplication.processEvents()
         self.assertTrue(dash.editing)
         self.assertEqual(dash._cols, 3)
+        self.assertTrue(dash.panel.isVisible())
+        self.assertEqual(dash.cols_width(), dash.avail_width() + nx.scaled(328))
+        dash.panel.fold(True)                                       # the rail: still three
+        for _ in range(4):
+            QApplication.processEvents()
+        self.assertEqual((dash._cols, dash.cols_width()),
+                         (3, dash.avail_width() + nx.scaled(56)))
+
+    def test_docked_home_never_scrolls_sideways(self):
+        """w-157: with the panel (or the rail) docked, the grid never needs
+        more than the scroll area gives it (the horizontal bar is off, so
+        anything wider would be cut off): the column count follows the room."""
+        w, dash = self._home(('stage', 'cinematic'), ('week', 'small'), ('pick', 'small'),
+                             ('friends', 'small'), ('system', 'wide'))
+        want = {(1440, False): 3, (1440, True): 3, (1300, False): 2, (1300, True): 3,
+                (1180, False): 2, (1180, True): 3, (1100, False): 2, (1100, True): 2}
+        for (width, fold), cols in want.items():
+            w.resize(width, 900)
+            dash.panel.fold(fold)
+            for _ in range(5):
+                QApplication.processEvents()
+            view = w.homeview
+            vp = view.viewport().width()
+            self.assertEqual(dash._cols, cols, (width, fold))
+            self.assertLessEqual(view.widget().width(), vp, (width, fold, dash._cols))
+            self.assertFalse(view.horizontalScrollBar().isVisible(), (width, fold))
+        dash.panel.fold(False)
 
     # ---- the four layouts the exploration measured (w-154) ----
     STATS_MIX = [('heatmap', 'full'), ('news', 'tall'), ('onthisday', 'small'),
@@ -7480,25 +7509,96 @@ class HomeLayouts(unittest.TestCase):
     def test_customise_shows_the_panel(self):
         w, d = self._home()
         bar = d.layouts_bar
-        self.assertTrue(bar.isHidden())
+        self.assertFalse(bar.isVisible())
+        self.assertTrue(d.panel.isHidden())
         d.set_editing(True)
+        self.assertTrue(d.panel.isVisible())
+        self.assertEqual(d.panel.current_tab(), 'widgets')            # opens on Widgets
+        d.panel.set_tab('layouts')
         self._flush()
         self.assertTrue(bar.isVisible())
-        self.assertEqual([b.text() for b in bar.preset_btns.values()],
+        self.assertEqual([b.property('name') for b in bar.preset_btns.values()],
                          ["Cinematic", "Dashboard", "Minimal", "Shelf-first", "Stats"])
         self.assertTrue(bar.empty_note.isVisible())
         self.assertTrue(bar.btn_save.isVisible())
         self.assertTrue(bar.btn_old.isHidden())                      # nothing to offer
         self.assertTrue(bar.manage.isHidden())
-        self.assertTrue(bar.isAncestorOf(d.add_row_host))            # Add widgets row 3
+        self.assertTrue(d.panel.isAncestorOf(d.add_row_host))        # Add widgets: Widgets tab
+        self.assertFalse(bar.isAncestorOf(d.add_row_host))
         chips = [b.text() for b in d.add_row_host.findChildren(QPushButton)]
         self.assertIn("＋  System", chips)                           # hidden in Cinematic
         d.set_editing(False)
-        self.assertTrue(bar.isHidden())
+        self.assertFalse(bar.isVisible())
+        self.assertTrue(d.panel.isHidden())
+
+    def test_presets_show_packed_thumbnails(self):
+        """w-157: Start from lists each preset as a row with its own packed
+        thumbnail (the Stage in the tide gradient), name and tip; Density is a
+        two-way switch in the same tab."""
+        w, d = self._home()
+        d.set_editing(True)
+        d.panel.set_tab('layouts')
+        self._flush()
+        bar = d.layouts_bar
+        self.assertTrue(bar.isVisible())
+        for key, name, tip in nx.layouts.PRESETS:
+            row = bar.preset_btns[key]
+            self.assertEqual(row.objectName(), "PresetRow")
+            self.assertTrue(row.isVisible(), key)
+            self.assertLessEqual(row.width(), d.panel.width())
+            thumb = bar.thumbs[key]
+            self.assertEqual((thumb.width(), thumb.height()),
+                             (nx.scaled(60), nx.scaled(44)))
+            self.assertEqual(thumb.cells, nx.layouts.preset_thumb(nx.dash_preset(key)))
+            self.assertEqual(row.property('name'), name)
+            self.assertEqual(bar.tips[key].text(), tip)
+            self.assertEqual(bar.names[key].text(), name)
+        self.assertEqual(bar.thumbs['stats'].anchor_ids(), [])        # Stats has no Stage
+        self.assertEqual(bar.thumbs['cinematic'].anchor_ids(), ['stage'])
+        self.assertEqual(bar.preset_note.text(), nx.layouts_bar.PRESET_NOTE)
+        # Density
+        self.assertEqual(bar.density_seg.current(), 'comfortable')
+        self.assertIn("Home only", bar.density_note.text())
+        bar.density_seg.item('compact').click()
+        self.assertEqual((w.prefs.density, d.density), ('compact', 'compact'))
+        d.set_density('comfortable')
+        self.assertEqual(bar.density_seg.current(), 'comfortable')
+        d.set_editing(False)
+
+    def test_preset_rows_fit_their_tips(self):
+        """w-157: a preset row is as tall as its name and wrapped tip need
+        (and its thumbnail), at any Size, so a long tip never clips."""
+        w, d = self._home()
+        d.set_editing(True)
+        d.panel.set_tab('layouts')
+        old = w.prefs.appearance
+        try:
+            for size in (1.0, 1.25):
+                nx.apply_appearance({**old, 'size': size})
+                nx.build_stylesheet()
+                for _ in range(4):
+                    QApplication.processEvents()
+                bar = d.layouts_bar
+                for key in bar.preset_btns:
+                    row = bar.preset_btns[key]
+                    lay = row.layout()
+                    m = lay.contentsMargins()
+                    text_w = row.width() - m.left() - m.right() - lay.spacing() \
+                        - bar.thumbs[key].width()
+                    need = bar.names[key].sizeHint().height() \
+                        + bar.tips[key].heightForWidth(text_w) + m.top() + m.bottom()
+                    self.assertGreaterEqual(row.height(), need, (size, key))
+                    self.assertGreaterEqual(row.height(), bar.thumbs[key].height()
+                                            + m.top() + m.bottom(), (size, key))
+        finally:
+            nx.apply_appearance(old)
+            nx.build_stylesheet()
+        d.set_editing(False)
 
     def test_picking_a_preset_saves_the_current_layout_once(self):
         w, d = self._home()
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         bar = d.layouts_bar
         bar.preset_btns['dashboard'].click()
         self._flush()
@@ -7519,9 +7619,14 @@ class HomeLayouts(unittest.TestCase):
         self._flush()
         self.assertEqual([lt['name'] for lt in pr.layouts],
                          ["Before Dashboard", "Before Cinematic"])
-        # Reset layout: Cinematic, saved layouts untouched
+        # Reset: the preset Home last started from (Dashboard), saved layouts untouched
+        self.assertEqual(pr.preset, 'dashboard')
+        d._edit('stage', 'size')
+        d.set_density('comfortable')
+        self.assertNotEqual(pr.dashboard, nx.dash_preset('dashboard'))
         d._reset()
-        self.assertEqual(pr.dashboard, nx.dash_default())
+        self.assertEqual(pr.dashboard, nx.dash_preset('dashboard'))
+        self.assertEqual((pr.density, d.density), ('compact', 'compact'))
         self.assertEqual(len(pr.layouts), 2)
         d.set_editing(False)
 
@@ -7529,6 +7634,7 @@ class HomeLayouts(unittest.TestCase):
         """w-141: Stats has no Stage, the Stats widgets and Friends in order, compact."""
         w, d = self._home()
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         d.layouts_bar.preset_btns['stats'].click()
         self._flush()
         pr = w.prefs
@@ -7550,6 +7656,7 @@ class HomeLayouts(unittest.TestCase):
                           save=False)
         pr.dashboard = nx.dash_preset('shelves')
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         self._flush()
         bar = d.layouts_bar
         self.assertFalse(bar.btn_save.isEnabled())
@@ -7564,6 +7671,7 @@ class HomeLayouts(unittest.TestCase):
     def test_save_as_rename_and_delete_through_the_modal(self):
         w, d = self._home()
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         bar = d.layouts_bar
         bar.btn_save.click()
         self.assertEqual(w.modal.title.text(), "Save as a layout")
@@ -7600,6 +7708,7 @@ class HomeLayouts(unittest.TestCase):
         w.prefs.add_layout("Friends night", nx.dash_default(), save=False)
         w.prefs.set_rule("Friends night", {'from': '19:00', 'to': '23:00'})
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         bar = d.layouts_bar
         bar.btn_time.click()
         m = w.modal
@@ -7640,6 +7749,7 @@ class HomeLayouts(unittest.TestCase):
               {'id': 'system', 'size': 'small', 'hidden': True}]
         w.prefs._data['dashboard_v1'] = v1
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         self._flush()
         bar = d.layouts_bar
         self.assertTrue(bar.btn_old.isVisible())
@@ -7698,6 +7808,7 @@ class HomeLayouts(unittest.TestCase):
         home((21, 0))
         self.assertEqual(pr.active, "Couch")
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         home((10, 0))
         self.assertEqual(pr.active, "Couch")
         d.set_editing(False)
@@ -7736,6 +7847,7 @@ class HomeLayouts(unittest.TestCase):
         pr.add_layout("Couch", nx.dash_preset('minimal'), save=False)
         pr.add_layout("Desk", nx.dash_preset('dashboard'), 'compact', save=False)
         d.set_editing(True)
+        d.panel.set_tab('layouts')
         self._flush()
         bar = d.layouts_bar
         chips = list(bar.layout_btns)
@@ -7915,6 +8027,299 @@ class HomeFeedTests(unittest.TestCase):
             with mock.patch('nexus.gui.dashboard.today', lambda: self.D2, create=True):
                 week.fill(w)
                 self.assertIn(['--history', '--json'], asked)        # the week has moved on
+
+
+class HomeCustomise(unittest.TestCase):
+    """w-157: Customise is a panel docked at the right of Home, with Undo,
+    Reset and Done and a rail to fold into. Home changes as you go."""
+    tearDownClass = classmethod(Window.tearDownClass.__func__)
+    setUp = Window.setUp
+    tearDown = Window.tearDown
+    _home = HomeLayouts._home
+    _flush = staticmethod(HomeLayouts._flush)
+    _item = HomeLayouts._item
+    _prompt = HomeLayouts._prompt
+
+    @classmethod
+    def setUpClass(cls):
+        Window.setUpClass.__func__(cls)
+        nx.LibraryPrefs.save = lambda self: self.write_through()
+
+    def test_panel_docks_beside_home_while_editing(self):
+        from nexus.gui.customise_panel import HomePage
+        w, d = self._home()
+        w.resize(1440, 900)
+        QApplication.processEvents()
+        page = w.pages[w.HOME]
+        self.assertIsInstance(page, HomePage)
+        self.assertIs(d.panel.parentWidget(), page)
+        self.assertIs(w.current(), w.HOME)
+        self.assertTrue(d.panel.isHidden())
+        self.assertTrue(d.btn_edit.isVisible())
+        self.assertFalse(hasattr(d, 'btn_reset') or hasattr(d, 'btn_density'))
+        wide = w.homeview.width()
+        d.btn_edit.click()
+        self._flush()
+        self.assertTrue(d.editing)
+        self.assertTrue(d.panel.isVisible())
+        self.assertTrue(d.btn_edit.isHidden())
+        self.assertEqual(d.panel.width(), nx.scaled(328))
+        self.assertGreater(d.panel.mapTo(w, d.panel.rect().topLeft()).x(),
+                           w.homeview.mapTo(w, w.homeview.rect().topLeft()).x())
+        self.assertEqual(w.homeview.width(), wide - nx.scaled(328))   # Home keeps what is left
+        self.assertTrue(d.panel.isAncestorOf(d.add_row_host))
+        self.assertIs(d.panel.pages.currentWidget().isVisible() and d.panel.pages.currentWidget(),
+                      d.panel.pages.widget(0))
+        # Done: the button is back and has the focus the panel had
+        d.panel.btn_done.setFocus()
+        d.panel.btn_done.click()
+        self._flush()
+        self.assertFalse(d.editing)
+        self.assertTrue(d.panel.isHidden())
+        self.assertTrue(d.btn_edit.isVisible())
+        self.assertIs(QApplication.focusWidget(), d.btn_edit)
+        self.assertEqual(w.homeview.width(), wide)
+
+    def test_escape_and_theatre_leave_panel_hidden(self):
+        w, d = self._home()
+        d.set_editing(True)
+        self._flush()
+        self.assertTrue(d.panel.isVisible())
+        w._escape()
+        self._flush()
+        self.assertFalse(d.editing)
+        self.assertTrue(d.panel.isHidden())
+        self.assertTrue(d.btn_edit.isVisible())
+        # the panel lives in the desk's Home page: Theatre never shows it
+        d.set_editing(True)
+        w.set_theatre(True)
+        self._flush()
+        self.assertFalse(d.panel.isVisible())
+        w.set_theatre(False)
+        d.set_editing(False)
+
+    def _shown(self, d):
+        return [dict(i) for i in d.items]
+
+    def test_undo_steps_back_moves_size_density_and_preset(self):
+        w, d = self._home()
+        pr, p = w.prefs, d.panel
+        d.set_editing(True)
+        self.assertFalse(p.btn_undo.isEnabled())                      # nothing to take back yet
+        start = self._shown(d)
+        d._edit('stage', 'size')                                      # a size
+        sized = self._shown(d)
+        self.assertNotEqual(sized, start)
+        self.assertTrue(p.btn_undo.isEnabled())
+        d._edit('week', 'down')                                       # a move
+        moved = self._shown(d)
+        self.assertNotEqual([i['id'] for i in moved], [i['id'] for i in sized])
+        d.layouts_bar.density_seg.item('compact').click()             # density
+        self.assertEqual((pr.density, d.density), ('compact', 'compact'))
+        d.layouts_bar.preset_btns['minimal'].click()                  # a preset
+        self.assertEqual(pr.preset, 'minimal')
+        self.assertEqual(self._item('stage')['size'], 'banner')
+        self.assertEqual([lt['name'] for lt in pr.layouts], ["Before Minimal"])
+        self.assertTrue(p.btn_undo.isEnabled())
+        p.btn_undo.click()                                            # back to before the preset
+        self.assertEqual((self._shown(d), pr.preset, pr.density), (moved, None, 'compact'))
+        self.assertEqual(d.density, 'compact')
+        self.assertEqual([lt['name'] for lt in pr.layouts], ["Before Minimal"])   # kept
+        p.btn_undo.click()                                            # before the density
+        self.assertEqual((self._shown(d), pr.density, d.density), (moved, 'comfortable',
+                                                                   'comfortable'))
+        self.assertEqual(d.layouts_bar.density_seg.current(), 'comfortable')
+        p.btn_undo.click()                                            # before the move
+        self.assertEqual(self._shown(d), sized)
+        p.btn_undo.click()                                            # before the size
+        self.assertEqual(self._shown(d), start)
+        self.assertFalse(p.btn_undo.isEnabled())                      # the stack is empty
+        d.undo()                                                      # and Undo does nothing
+        self.assertEqual(self._shown(d), start)
+        # a card's size really went back on screen
+        self.assertEqual(d.widgets['stage'].size_, start[0]['size'] if start[0]['id'] == 'stage'
+                         else self._item('stage')['size'])
+        d.set_editing(False)
+
+    def test_reset_restores_the_preset_and_can_be_undone(self):
+        w, d = self._home()
+        pr, p = w.prefs, d.panel
+        d.set_editing(True)
+        d.layouts_bar.preset_btns['stats'].click()
+        self.assertEqual((pr.preset, pr.density), ('stats', 'compact'))
+        d._edit('pick', 'hide')
+        d.layouts_bar.density_seg.item('comfortable').click()
+        self.assertNotEqual(pr.dashboard, nx.dash_preset('stats'))
+        edited = self._shown(d)
+        p.btn_reset.click()
+        self.assertEqual(pr.dashboard, nx.dash_preset('stats'))
+        self.assertEqual((pr.density, d.density), ('compact', 'compact'))
+        self.assertEqual(pr.preset, 'stats')                          # still where it started
+        p.btn_undo.click()                                            # Reset is one step
+        self.assertEqual(self._shown(d), edited)
+        self.assertEqual(pr.density, 'comfortable')
+        # with no preset picked: Cinematic, as before
+        pr.preset = None
+        d._edit('stage', 'size')
+        p.btn_reset.click()
+        self.assertEqual(pr.dashboard, nx.dash_default())
+        self.assertEqual(pr.density, 'comfortable')
+        # on a saved layout it writes through to it
+        lt = pr.save_as("Mine")
+        d._edit('stage', 'size')
+        self.assertEqual(pr.active, 'Mine')
+        p.btn_reset.click()
+        self.assertEqual(pr.layout('Mine')['items'], nx.dash_default())
+        d.set_editing(False)
+
+    def test_undo_disabled_when_nothing_changed(self):
+        w, d = self._home()
+        p = d.panel
+        d.set_editing(True)
+        self.assertFalse(p.btn_undo.isEnabled())
+        d._pick_density(d.density)                                    # the same spacing
+        d._reset()                                                    # already the preset
+        self.assertFalse(p.btn_undo.isEnabled())
+        self.assertEqual(len(d.history), 0)
+        d._edit('stage', 'size')
+        self.assertTrue(p.btn_undo.isEnabled())
+        d.set_editing(False)
+        d.set_editing(True)                                           # a new Customise starts clean
+        self.assertEqual(len(d.history), 0)
+        self.assertFalse(p.btn_undo.isEnabled())
+        self.assertFalse(p.rail_undo.isEnabled())
+
+    def test_pad_focus_lands_in_panel_and_bar_before_card(self):
+        w, d = self._home()
+        p = d.panel
+        w.activateWindow()
+        d.btn_edit.setFocus()
+        d.btn_edit.click()
+        self._flush()
+        f = QApplication.focusWidget()
+        self.assertIs(f, p.tabs.item('widgets'))                      # opens on the Widgets tab
+        p.fold(True)
+        self.assertIs(QApplication.focusWidget(), p.rail_widgets)     # the matching rail button
+        p.fold(False)
+        self.assertIs(QApplication.focusWidget(), p.tabs.item('widgets'))
+        # Tab order: the cards come first, then the panel
+        order = []
+        cur = p.tabs.item('widgets')
+        for _ in range(400):
+            cur = cur.previousInFocusChain()
+            if cur.isVisibleTo(w) and cur.focusPolicy() & Qt.FocusPolicy.TabFocus:
+                order.append(cur)
+                if not p.isAncestorOf(cur):
+                    break
+        self.assertTrue(order and not p.isAncestorOf(order[-1]))
+        self.assertTrue(w.homeview.isAncestorOf(order[-1]), order[-1])    # a card's control
+        # in a card's edit bar the next stop is that card's body, not the panel
+        from PyQt6.QtWidgets import QToolButton
+        card = d.widgets['stage']
+        last = [b for b in card.editbar.findChildren(QToolButton) if b.isVisibleTo(card)][-1]
+        nxt = last.nextInFocusChain()
+        while not (nxt.isVisibleTo(w) and nxt.focusPolicy() & Qt.FocusPolicy.TabFocus):
+            nxt = nxt.nextInFocusChain()
+        self.assertFalse(p.isAncestorOf(nxt))
+        d.set_editing(False)
+
+    def test_undo_after_rename_keeps_the_layout(self):
+        w, d = self._home()
+        pr = w.prefs
+        d.set_editing(True)
+        pr.save_as("Mine")
+        d._sync_layouts()
+        d._edit('stage', 'size')
+        d._rename()
+        self._prompt("Better")
+        self.assertEqual(pr.active, "Better")
+        d.undo()
+        self.assertEqual((pr.active, pr.base), ("Better", "Better"))   # never a missing name
+        self.assertIsNotNone(pr.layout(pr.active))
+        d.set_editing(False)
+
+    def test_undo_after_delete_never_points_at_a_missing_layout(self):
+        w, d = self._home()
+        pr = w.prefs
+        d.set_editing(True)
+        pr.save_as("Mine")
+        d._sync_layouts()
+        d._edit('stage', 'size')
+        d._delete()
+        w.modal.primary.click()
+        self._flush()
+        self.assertIsNone(pr.layout("Mine"))
+        self.assertEqual(len(d.history), 0)
+        d.undo()
+        self.assertIn(pr.active, [None] + [lt['name'] for lt in pr.layouts])
+        self.assertFalse(d.panel.btn_undo.isEnabled())
+        d.set_editing(False)
+
+    def test_open_moves_focus_into_the_panel_never_a_card(self):
+        w, d = self._home()
+        seen = []
+        QApplication.instance().focusChanged.connect(lambda _o, n: seen.append(n))
+        w.activateWindow()
+        d.btn_edit.setFocus()
+        d.btn_edit.click()
+        self._flush()
+        QApplication.instance().focusChanged.disconnect()
+        for f in seen[1:]:
+            self.assertTrue(f is None or d.panel.isAncestorOf(f) or f is d.btn_edit, f)
+        self.assertIs(QApplication.focusWidget(), d.panel.tabs.item('widgets'))
+        d.set_editing(False)
+
+    def test_dock_follows_a_live_size_change(self):
+        w, d = self._home()
+        d.set_editing(True)
+        p = d.panel
+        old = nx.ui_scale()
+        try:
+            nx.apply_appearance({**w.prefs.appearance, 'size': 1.25})
+            nx.build_stylesheet()
+            QApplication.processEvents()
+            self.assertEqual(p.width(), p.dock_width())
+            p.fold(True)
+            self.assertEqual(p.width(), p.dock_width())
+            p.fold(False)
+            self.assertEqual(p.width(), nx.scaled(328))
+        finally:
+            nx.apply_appearance(w.prefs.appearance)
+            nx.build_stylesheet()
+        d.set_editing(False)
+
+    def test_panel_folds_to_rail_and_back(self):
+        w, d = self._home()
+        p = d.panel
+        self.assertIsInstance(p, nx.CustomisePanel)
+        self.assertIsNotNone(p.parentWidget())
+        full, rail = nx.scaled(328), nx.scaled(56)
+        self.assertEqual((p.dock_width(), p.is_folded()), (full, False))
+        seen = []
+        p.folded.connect(seen.append)
+        p.fold(True)
+        self.assertEqual((p.dock_width(), p.is_folded(), p.pages.currentIndex()), (rail, True, 1))
+        self.assertEqual(p.width(), rail)
+        self.assertEqual(seen, [True])
+        p.fold(True)                                                  # nothing to do
+        self.assertEqual(seen, [True])
+        p.fold(False)
+        self.assertEqual((p.dock_width(), p.pages.currentIndex()), (full, 0))
+        self.assertEqual(seen, [True, False])
+        # the rail's Layouts opens the panel on that tab
+        p.fold(True)
+        p.rail_layouts.click()
+        self.assertEqual((p.is_folded(), p.current_tab(), p.stack.currentIndex()),
+                         (False, 'layouts', 1))
+        p.open()
+        self.assertEqual((p.is_folded(), p.current_tab(), p.stack.currentIndex()),
+                         (False, 'widgets', 0))
+        # Undo is off until there is something to take back
+        p.set_can_undo(False)
+        self.assertFalse(p.btn_undo.isEnabled())
+        self.assertFalse(p.rail_undo.isEnabled())
+        p.set_can_undo(True)
+        self.assertTrue(p.btn_undo.isEnabled() and p.rail_undo.isEnabled())
 
 
 def tearDownModule():

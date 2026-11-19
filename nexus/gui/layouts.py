@@ -9,6 +9,7 @@ dashboard.py imports this module, so `dash_normalize` and the widget table
 are imported inside the functions."""
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 MAX_LAYOUTS = 12                 # saved layouts, at most
@@ -71,6 +72,28 @@ def dash_preset(name: str) -> list[dict]:
     out += [{'id': k, 'size': DASH_DEFAULT_SIZE[k], 'hidden': True}
             for k, *_rest in DASH_KINDS if k not in seen]
     return dash_normalize(out)
+
+
+THUMB_GAP = 5                    # px between thumbnail cells (the board's)
+# A thumbnail cell's height by widget size, px (the board's 60x44 box is this
+# flow scaled down): a Stage is the tall one, a strip the thin one.
+THUMB_H = {'cinematic': 40, 'banner': 24, 'wide': 30, 'full': 14, 'small': 22, 'tall': 46}
+
+
+def preset_thumb(items, cols: int = 3) -> list:
+    """Where a preset's shown widgets sit in its thumbnail: grid_flow.flow
+    with fixed heights by size, the Stage as anchor, so it is the Packed
+    grid in miniature (grid_flow.Placed, units are the thumbnail's own)."""
+    from .dashboard import DASH_SPAN
+    from .grid_flow import Card, flow
+    cards = []
+    for it in items:
+        if it.get('hidden'):
+            continue
+        size = it.get('size', 'small')
+        cards.append(Card(it['id'], min(DASH_SPAN.get(size, 1), cols), THUMB_H.get(size, 22),
+                          False, 0, it['id'] == 'stage'))
+    return flow(cards, cols, THUMB_GAP, THUMB_GAP)
 
 
 # ---- names and rules ----
@@ -213,3 +236,47 @@ def find_layout(layouts, name) -> dict | None:
 
 def same_layout(lt: dict, items, density: str) -> bool:
     return lt['items'] == items and lt.get('density', density) == density
+
+
+# ---- undo (w-157) ----
+@dataclass(frozen=True)
+class HomeSnap:
+    """Home as it was before one change: the items (a tuple of dicts, not
+    edited in place), the density, the layout it was on (`active`, `base`)
+    and the preset it started from."""
+    items: tuple
+    density: str
+    active: str | None
+    base: str | None
+    preset: str | None
+
+
+class HomeHistory:
+    """Customise's Undo stack: the newest snapshot comes back first, the
+    oldest of LIMIT is dropped, and it is cleared when Customise opens."""
+    LIMIT = 50
+
+    def __init__(self):
+        self._stack: list[HomeSnap] = []
+
+    def push(self, snap: HomeSnap):
+        self._stack.append(snap)
+        del self._stack[:-self.LIMIT]
+
+    def pop(self) -> HomeSnap | None:
+        return self._stack.pop() if self._stack else None
+
+    def can_undo(self) -> bool:
+        return bool(self._stack)
+
+    def rename(self, old: str, new: str):
+        """A layout was renamed: the snapshots follow it."""
+        from dataclasses import replace
+        self._stack = [replace(s, active=new if s.active == old else s.active,
+                               base=new if s.base == old else s.base) for s in self._stack]
+
+    def clear(self):
+        self._stack.clear()
+
+    def __len__(self):
+        return len(self._stack)

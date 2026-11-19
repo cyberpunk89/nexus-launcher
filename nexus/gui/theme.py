@@ -955,8 +955,24 @@ def build_stylesheet(scale: float = 1.0) -> str:
     #DashCard[editing="true"], #DashShelf[editing="true"] {
         border: 1px dashed $accent_35; border-radius: ${r_card}px; }
     #DashEditBar { background: $accent_09; border-radius: ${r_control}px; }
-    #DashLayouts { background: $surface_1; border: 1px solid $border_card;
-                   border-radius: ${r_card}px; }
+    #DashLayouts { background: transparent; border: none; }
+    #CustomiseDock { background: $surface; border: none;
+                                     border-left: 1px solid $border; }
+    #CustomiseBody, QScrollArea#CustomiseScroll { background: transparent; }
+    QFrame#CustomiseLine { background: $border; border: none; }
+    QLabel#CustomiseTitle { color: $text; font-size: ${fs_lg}px; font-weight: 600; }
+    QLabel#CustomiseSub { color: $muted; font-size: ${fs_xs}px; }
+    QPushButton#PresetRow { background: $surface_1; border: 1px solid $border;
+                            border-radius: ${r_control}px; text-align: left; }
+    QPushButton#PresetRow:hover { border-color: $overlay; }
+    QPushButton#PresetRow:focus, QPushButton#PresetRow[on="true"] {
+        background: $accent_09; border-color: $accent_35; }
+    QLabel#PresetName { color: $text; font-size: ${fs_sm}px; font-weight: 600; }
+    QLabel#PresetTip { color: $muted; font-size: ${fs_xs}px; }
+    QToolButton#RailButton { background: transparent; border: none; color: $subtext; }
+    QToolButton#RailButton:hover { background: $surface_2; color: $text; }
+    QToolButton#RailButton:checked { background: $accent_16; color: $accent; }
+    QToolButton#RailDone { background: $accent; border: none; color: $on_accent; }
     QLabel#LayoutKicker { color: $muted; font-size: ${fs_2xs}px; font-weight: 600; }
     QLabel#LayoutName { color: $text; font-size: ${fs_xs}px; font-weight: 600; }
     QLabel#LayoutRule { color: $muted; font-size: ${fs_xs}px; }

@@ -2013,6 +2013,35 @@ class HomeLayouts(unittest.TestCase):
         self.assertIsNone(L.clean_name(['x']))
 
     # ---- prefs ----
+    def test_history_undoes_in_order_and_caps(self):
+        """w-157: Undo steps back one change at a time, newest first, and keeps 50."""
+        L = self.L
+        h = L.HomeHistory()
+        self.assertFalse(h.can_undo())
+        self.assertIsNone(h.pop())
+        snaps = [L.HomeSnap(({'id': 'a', 'size': str(n)},), 'comfortable', None, None, None)
+                 for n in range(3)]
+        for s in snaps:
+            h.push(s)
+        self.assertTrue(h.can_undo())
+        self.assertEqual([h.pop(), h.pop(), h.pop(), h.pop()], [snaps[2], snaps[1], snaps[0], None])
+        for n in range(L.HomeHistory.LIMIT + 5):
+            h.push(L.HomeSnap((), 'compact', None, None, str(n)))
+        self.assertEqual(len(h), L.HomeHistory.LIMIT)
+        self.assertEqual(h.pop().preset, str(L.HomeHistory.LIMIT + 4))   # newest kept
+        h.clear()
+        self.assertFalse(h.can_undo())
+        with self.assertRaises(Exception):
+            snaps[0].density = 'compact'                                  # frozen
+
+    def test_unknown_preset_is_none(self):
+        for bad in ('nope', 3, None, ['stats']):
+            self._prefs({'dashboard': {'version': 2, 'items': nx.dash_default(),
+                                       'preset': bad}})
+            self.assertIsNone(nx.LibraryPrefs().preset, bad)
+        self._prefs({})
+        self.assertIsNone(nx.LibraryPrefs().preset)
+
     def test_prefs_round_trip(self):
         import json
         v1 = [{'id': 'jump', 'size': 'full'}, {'id': 'news', 'size': 'wide'}]
@@ -2023,9 +2052,11 @@ class HomeLayouts(unittest.TestCase):
                                        'rule': {'from': '20:00', 'to': '06:00'}},
                                       {'name': 'Desk', 'items': items, 'density': 'compact'},
                                       'bad'],
-                          'active': 'couch', 'base': 'Gone', 'v1_taken': 'yes'},
+                          'active': 'couch', 'base': 'Gone', 'v1_taken': 'yes',
+                          'preset': 'stats'},
             'dashboard_v1': v1})
         pr = nx.LibraryPrefs()
+        self.assertEqual(pr.preset, 'stats')                         # w-157
         self.assertEqual([lt['name'] for lt in pr.layouts], ['Couch', 'Desk'])
         self.assertEqual((pr.active, pr.base, pr.v1_taken), ('Couch', None, False))
         self.assertEqual(pr.old_home(), v1)
@@ -2038,6 +2069,7 @@ class HomeLayouts(unittest.TestCase):
         dash = data['dashboard']
         self.assertEqual(dash['future'], {'k': 1})
         self.assertEqual(data['dashboard_v1'], v1)
+        self.assertEqual(dash['preset'], 'stats')
         couch = dash['layouts'][0]
         self.assertEqual((couch['zz'], couch['density']), (2, 'compact'))
         self.assertTrue(next(i for i in couch['items'] if i['id'] == 'week')['hidden'])

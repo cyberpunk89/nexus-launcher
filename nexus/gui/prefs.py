@@ -149,6 +149,9 @@ class LibraryPrefs:
         self.active = self._layout_name(opts.get('active'))
         self.base = self._layout_name(opts.get('base'))
         self.v1_taken = opts.get('v1_taken') is True
+        # The preset Home last started from (w-157): what Reset goes back to.
+        pre = opts.get('preset')
+        self.preset = pre if isinstance(pre, str) and pre in PRESET_LABELS else None
         self.appearance = normalize_appearance(self._data.get('appearance'))
         # Games you own but haven't installed: shown at all (Settings), and
         # which of installed / not installed / all the Library lists.
@@ -294,7 +297,8 @@ class LibraryPrefs:
                                   if self.quiet_until else None,
                                   'kinds_off': self.kinds_off, 'density': self.density,
                                   'layouts': self.layouts, 'active': self.active,
-                                  'base': self.base, 'v1_taken': self.v1_taken},
+                                  'base': self.base, 'v1_taken': self.v1_taken,
+                                  'preset': self.preset},
                     'appearance': self.appearance, 'show_owned': self.show_owned,
                     'owned_view': self.owned_view,
                     # A newer version's controls keys are kept too.
@@ -615,4 +619,4 @@ class LibraryPrefs:
 # below is inside a function, so the cycle resolves at call time.
 from .dashboard import DASH_DENSITY, DASH_VERSION, dash_normalize  # noqa: E402
 from .layouts import (clean_layouts, clean_name, clean_rule, find_layout,  # noqa: E402
-    MAX_LAYOUTS, OLD_HOME, same_layout, unique_name)
+    MAX_LAYOUTS, OLD_HOME, PRESET_LABELS, same_layout, unique_name)

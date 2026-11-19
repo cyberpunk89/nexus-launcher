@@ -92,6 +92,7 @@ from .dashboard import (
     SysTile, UpcomingWidget, UpdatesWidget, WeekWidget)  # noqa: F401
 from .layouts import clean_layouts, dash_preset, layout_for, MAX_LAYOUTS  # noqa: F401
 from .layouts_bar import LayoutsBar, LayoutsView, TimeField, TimeRuleBody  # noqa: F401
+from .customise_panel import CustomisePanel  # noqa: F401
 from .foryou import (
     ForYouList, ForYouModel, ForYouPill, ForYouWidget, foryou_mode, MomentRow,  # noqa: F401
     StripItem)

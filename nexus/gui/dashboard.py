@@ -3,6 +3,7 @@
 import html
 import random
 import time
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -16,8 +17,8 @@ from nexus import gamedb, smart, storeinfo
 from nexus.features import has
 
 from .common import alive, COLLECTION_NAMES
-from .layouts import (dash_preset, layout_for, MAX_LAYOUTS, MY_HOME, OLD_HOME, PRESET_DENSITY,
-    PRESET_LABELS, PROMPT_MAX)
+from .layouts import (dash_preset, HomeHistory, HomeSnap, layout_for, MAX_LAYOUTS, MY_HOME,
+    OLD_HOME, PRESET_DENSITY, PRESET_LABELS, PROMPT_MAX)
 from .fmt import fmt_ago, fmt_hours, fmt_relative, fmt_size
 from .library import _pickable, Dwell, FollowHero, pick_kicker, VIBE_LABELS, vibe_pools
 from .moments import DISK_FULL
@@ -30,6 +31,7 @@ from .theme import collection_look
 
 
 DASH_SPAN = {'small': 1, 'tall': 1, 'wide': 2, 'full': 99, 'cinematic': 99, 'banner': 99}
+DOCKED_3 = 1050                         # least Home width for 3 columns beside the panel (w-157)
 DASH_ROWS = {'tall': 2}                 # grid rows a size covers (default 1)
 # Sizes, options, labels, placement and For you feeds come from one WidgetSpec
 # per widget (widget_spec.py, w-136); KINDS keeps the default order.
@@ -70,7 +72,6 @@ DASH_DENSITY = {
                 'clean_gap': SP['3'], 'home_side': SP['4'], 'home_top': SP['3']},
 }
 DENSITY_LABELS = {'comfortable': "Comfortable", 'compact': "Compact"}
-DENSITY_TIP = "Spacing on Home only. Appearance → Size changes text and controls everywhere."
 # {event or kind: the kinds it refreshes}: a spec's `feeds` (w-138).
 FED_BY = _T['FED_BY']
 # Refreshes of these mean For you now's moments may have moved too.
@@ -603,10 +604,12 @@ class DashWidget(QFrame):
         bar.setObjectName("DashEditBar")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(SP['2'], SP['1'], SP['1'], SP['1'])
-        bl.setSpacing(SP['1'])
+        bl.setSpacing(SP['0_5'])                 # tight: three cards fit beside the panel (w-157)
         self.edit_name = label(self.TITLE, "StatLabel")
-        bl.addWidget(self.edit_name)
-        bl.addStretch()
+        # The name is there for room it finds: it never sets the card's least
+        # width (the panel docked at Home's right leaves cards ~340 px, w-157).
+        self.edit_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        bl.addWidget(self.edit_name, 1)
         for glyph, act, tip in ((G['arrow_left'], 'left', "Move left"), (G['arrow_up'], 'up', "Move up"),
                                 (G['arrow_down'], 'down', "Move down"),
                                 (G['arrow_right'], 'right', "Move right")):
@@ -2547,42 +2550,19 @@ class Dashboard(QWidget):
         self.ask = StatsAsk()
         lay.addWidget(self.ask)                   # in the layout first, then hidden
         self.ask.hide()
-        # Customise and Reset sit in a slim row under the grid (w-85): the
-        # Stage is the top of Home, with no title above it.
+        # Customise sits in a slim row under the grid (w-85): the Stage is the
+        # top of Home, with no title above it. While customising the button is
+        # hidden: the panel docked at Home's right has Done (w-157).
         foot = QHBoxLayout()
         foot.addStretch()
         self.density = 'comfortable'
-        self.btn_density = QPushButton()          # Home's spacing, only while editing (w-90)
-        self.btn_density.setObjectName("Ghost")
-        self.btn_density.setToolTip(DENSITY_TIP)
-        self.btn_density.clicked.connect(self._toggle_density)
-        self.btn_density.setVisible(False)
-        foot.addWidget(self.btn_density)
-        self.btn_reset = QPushButton("Reset layout")
-        self.btn_reset.setObjectName("Ghost")
-        self.btn_reset.clicked.connect(self._reset)
-        self.btn_reset.setVisible(False)
-        foot.addWidget(self.btn_reset)
         self.btn_edit = QPushButton("Customise")
         self.btn_edit.setObjectName("Ghost")
         self.btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
         set_glyph_icon(self.btn_edit, G['customise'], 16)
-        self.btn_edit.clicked.connect(lambda: self.set_editing(not self.editing))
+        self.btn_edit.clicked.connect(lambda: self.set_editing(True))
         foot.addWidget(self.btn_edit)
-        # Customise Home (w-92): presets, your layouts, Add widgets.
-        self.layouts_bar = LayoutsBar(self)
-        lay.addWidget(self.layouts_bar)
-        self.layouts_bar.setVisible(False)
-        self.add_row_host = self.layouts_bar.add_host      # tests and _fill_add_row
-        self.add_row = self.layouts_bar.add_row
-        bar = self.layouts_bar
-        bar.preset.connect(self.pick_preset)
-        bar.switch.connect(self.switch_layout)
-        bar.save_as.connect(self._save_as)
-        bar.adopt_old.connect(self.adopt_old_home)
-        bar.rename.connect(self._rename)
-        bar.delete.connect(self._delete)
-        bar.edit_rule.connect(self._edit_rule)
+        self.history = HomeHistory()              # Undo (w-157)
         # Switch by time: checked when Home shows (go), at most once a minute.
         self.clock = datetime.now
         self.mono = time.monotonic
@@ -2593,6 +2573,7 @@ class Dashboard(QWidget):
         lay.addLayout(self.grid)
         lay.addLayout(foot)
         self._cols = 0
+        self._laid_editing = False                # the editing flag the last relayout used
         self._laying = False                      # inside relayout (w-101)
         self._relayout_pending = False            # ... and asked for another
         self._cols_timer = QTimer(self)           # a column check for the next pass
@@ -2612,7 +2593,29 @@ class Dashboard(QWidget):
             w.bind(hub)
         self.foryou.attach(self, self.stage)
         self.stage.moved.connect(self._stage_moved)
+        # Customise Home (w-92, w-157): the panel docked at Home's right, built
+        # after the cards so Tab goes from them into it. It has a parent from
+        # the start; the window moves it beside the scroll area (HomePage).
+        self.panel = CustomisePanel(self)
+        self.panel.hide()
+        self.layouts_bar = self.panel.layouts_bar
+        self.add_row_host = self.panel.add_host          # tests and _fill_add_row
+        self.add_row = self.panel.add_row
+        bar = self.layouts_bar
+        bar.preset.connect(self.pick_preset)
+        bar.switch.connect(self.switch_layout)
+        bar.save_as.connect(self._save_as)
+        bar.adopt_old.connect(self.adopt_old_home)
+        bar.rename.connect(self._rename)
+        bar.delete.connect(self._delete)
+        bar.edit_rule.connect(self._edit_rule)
+        bar.density.connect(self._pick_density)
+        self.panel.undo.connect(self.undo)
+        self.panel.reset.connect(self._reset)
+        self.panel.done.connect(self._done)
+        self.panel.folded.connect(self._panel_folded)
         self.set_density(getattr(hub.prefs, 'density', 'comfortable'))
+        self.panel.hide()
         if self._view is not None:
             # Last, once everything it reads exists: the view's size, not
             # ours, sets the columns (w-101).
@@ -2703,6 +2706,17 @@ class Dashboard(QWidget):
             w -= m.left() + m.right()
         return w if w > 0 else self.width()
 
+    def cols_width(self) -> int:
+        """The width the column count comes from: Home's, plus the dock while
+        customising, so opening the panel does not drop a column. The dock's
+        width is a constant of its state, never a measured size (w-101)."""
+        w = self.avail_width()
+        docked = self.editing and self._view is not None \
+            and self.panel.parentWidget() is not self
+        # Three cards still fit (edit bars set their least width) down to
+        # DOCKED_3 px beside the panel; narrower, Home counts what it has.
+        return w + self.panel.dock_width() if docked and w >= scaled(DOCKED_3) else w
+
     def eventFilter(self, obj, ev):
         if obj is self._view:
             if ev.type() == QEvent.Type.Resize:
@@ -2718,7 +2732,7 @@ class Dashboard(QWidget):
         self._check_cols()
 
     def _check_cols(self):
-        if not self._relayout_pending and dash_cols(max(self.avail_width(), 1)) == self._cols:
+        if not self._relayout_pending and dash_cols(max(self.cols_width(), 1)) == self._cols:
             return
         if self._laying:
             # A resize that relayout itself caused: look again on the next
@@ -2739,8 +2753,9 @@ class Dashboard(QWidget):
             self._laying = False
 
     def _relayout(self):
-        cols = dash_cols(max(self.avail_width(), 1))
+        cols = dash_cols(max(self.cols_width(), 1))
         self._cols = cols
+        self._laid_editing = self.editing
         self._skipped = self._skip()
         placed = dash_grid(self.items, cols, self._skipped)
         on = {k for k, *_ in placed}
@@ -2787,25 +2802,86 @@ class Dashboard(QWidget):
     def set_editing(self, on: bool):
         self.foryou.close_list()
         f = QApplication.focusWidget()
-        if not on and f is not None and self.layouts_bar.isAncestorOf(f):
-            self.btn_edit.setFocus(Qt.FocusReason.OtherFocusReason)   # before the panel hides
+        if not on:
+            if f is not None and self.panel.isAncestorOf(f):
+                self.btn_edit.show()
+                self.btn_edit.setFocus(Qt.FocusReason.OtherFocusReason)   # before the panel hides
+        elif f is None or f is self.btn_edit or self.isAncestorOf(f):
+            f = self.btn_edit                  # it is about to hide: focus goes to the panel
         self.editing = on
         if on:
+            self.history.clear()
+            self.panel.open()
+            self.panel.set_can_undo(False)
             self._sync_layouts()
-        self.layouts_bar.setVisible(on)
-        self.btn_edit.setText("Done" if on else "Customise")
-        self.btn_edit.setObjectName("Primary" if on else "Ghost")
-        set_glyph_icon(self.btn_edit, G['check'] if on else G['customise'], 16,
-                       'on_accent' if on else 'subtext', hover_role=None if on else 'text')
-        self.btn_edit.style().unpolish(self.btn_edit)
-        self.btn_edit.style().polish(self.btn_edit)
-        self.btn_reset.setVisible(on)
-        self.btn_density.setVisible(on)
-        self.relayout(force=True)
+            self.layouts_bar.set_density(self.density)
+        self.panel.setVisible(on)
+        if on and f is self.btn_edit:             # into the panel before the button hides (w-60)
+            self.panel.default_focus().setFocus(Qt.FocusReason.OtherFocusReason)
+        self.btn_edit.setVisible(not on)
+        self._settle()
+        if self._laid_editing != on:              # the view's resize may have laid out already
+            self.relayout(force=True)
         if not on:
             self.hub.prefs.save()
 
+    def _settle(self):
+        """Give Home's page its new layout now, so the view has its new size
+        and the column check runs once, not a frame later."""
+        page = self.panel.parentWidget()
+        if page is not None and page is not self and page.layout() is not None:
+            page.layout().activate()
+
+    def _panel_folded(self, _on: bool):
+        self._settle()
+        self._sync_sub()
+
+    def _done(self):
+        self.set_editing(False)
+
+    # ---- undo (w-157) ----
+    def _snap(self) -> HomeSnap:
+        pr = self.hub.prefs
+        return HomeSnap(tuple(dict(i) for i in self.items), self.density, pr.active, pr.base,
+                        getattr(pr, 'preset', None))
+
+    @contextmanager
+    def _undoable(self):
+        """A change to Home: the state before it is kept for Undo, unless
+        nothing changed."""
+        before = self._snap()
+        try:
+            yield
+        finally:
+            if self._snap() != before:
+                self.history.push(before)
+                self.panel.set_can_undo(True)
+
+    def undo(self):
+        """Take back the last change: items, density and the layout and preset
+        Home was on. The "Before ..." layout a preset saved stays."""
+        snap = self.history.pop()
+        if snap is None:
+            return
+        pr = self.hub.prefs
+        pr.active = snap.active if pr.layout(snap.active) is not None else None
+        pr.base = snap.base if pr.layout(snap.base) is not None else None
+        pr.preset = snap.preset
+        self.apply_layout([dict(i) for i in snap.items], snap.density)
+        self._sync_layouts()
+        self.panel.set_can_undo(self.history.can_undo())
+
+    def _sync_sub(self):
+        pr = self.hub.prefs
+        where = pr.active if pr.layout(pr.active) is not None \
+            else PRESET_LABELS.get(getattr(pr, 'preset', None), "Your Home")
+        self.panel.set_sub(f"{where} · {DENSITY_LABELS[self.density]}")
+
     def _edit(self, kind, action):
+        with self._undoable():
+            self._edit_now(kind, action)
+
+    def _edit_now(self, kind, action):
         items = self.items
         if action in ('left', 'right', 'up', 'down'):
             new = dash_move(items, kind, action, self._cols, self._skip(), self.placed)
@@ -2863,19 +2939,23 @@ class Dashboard(QWidget):
         view = getattr(self.hub, 'homeview', None)
         if view is not None and getattr(view, 'mode', None) == 'home':
             view.lay.setContentsMargins(d['home_side'], d['home_top'], d['home_side'], SP['6'])
-        self.btn_density.setText(f"Density: {DENSITY_LABELS[self.density]}")
+        self.layouts_bar.set_density(self.density)
+        self._sync_sub()
 
-    def _toggle_density(self):
-        """The footer's Density button; focus stays on it."""
-        name = 'compact' if self.density == 'comfortable' else 'comfortable'
-        self.hub.prefs.density = name
-        self.set_density(name)
-        self.hub.prefs.save()
+    def _pick_density(self, name: str):
+        """The panel's Density switch."""
+        with self._undoable():
+            self.hub.prefs.density = name
+            self.set_density(name)
+            self.hub.prefs.save()
 
     def _reset(self):
-        self.hub.prefs.dashboard = dash_default()
-        self.refresh()
-        self.hub.prefs.save()
+        """The preset Home last started from, with its density (Cinematic when
+        none was picked). Undo brings the old Home back."""
+        pr = self.hub.prefs
+        key = pr.preset if getattr(pr, 'preset', None) in PRESET_LABELS else 'cinematic'
+        with self._undoable():
+            self.apply_layout(dash_preset(key), PRESET_DENSITY.get(key))
 
     # ---- presets and saved layouts (w-92) ----
     def layouts_view(self, note: str = '') -> 'LayoutsView':
@@ -2883,11 +2963,18 @@ class Dashboard(QWidget):
         names = [lt['name'] for lt in pr.layouts]
         return LayoutsView([dict(lt) for lt in pr.layouts],
                            names.index(pr.active) if pr.active in names else None,
-                           pr.old_home() is not None, note)
+                           pr.old_home() is not None, note,
+                           pr.preset if pr.preset in PRESET_LABELS else None)
 
     def _sync_layouts(self, note: str = ''):
         if self.editing:
             self.layouts_bar.show_view(self.layouts_view(note))
+        self._sync_sub()
+
+    def _focus_aside(self) -> QWidget:
+        """Where focus goes when the widget that had it leaves Home: the
+        panel's tab while customising, else the Customise button."""
+        return self.panel.default_focus() if self.editing else self.btn_edit
 
     def apply_layout(self, layout, density: str | None = None):
         """Home shows `layout` (a saved layout's name, or a list of items)
@@ -2907,7 +2994,7 @@ class Dashboard(QWidget):
         f = QApplication.focusWidget()
         gone = [self.widgets[i['id']] for i in new if i['hidden'] and i['id'] in self.widgets]
         if f is not None and any(w.isAncestorOf(f) for w in gone):
-            self.btn_edit.setFocus(Qt.FocusReason.OtherFocusReason)   # before it hides
+            self._focus_aside().setFocus(Qt.FocusReason.OtherFocusReason)   # before it hides
         self.stage.clear_pick()
         pr.dashboard = new
         if density in DASH_DENSITY and density != self.density:
@@ -2934,11 +3021,13 @@ class Dashboard(QWidget):
     def pick_preset(self, key: str):
         """Start from a preset; what Home showed is saved first."""
         pr = self.hub.prefs
-        if pr.keep_current(f"Before {PRESET_LABELS.get(key, key)}") == 'full':
-            self._note_full()
-            return
-        pr.active = pr.base = None
-        self.apply_layout(dash_preset(key), PRESET_DENSITY.get(key))
+        with self._undoable():
+            if pr.keep_current(f"Before {PRESET_LABELS.get(key, key)}") == 'full':
+                self._note_full()
+                return
+            pr.active = pr.base = None
+            pr.preset = key
+            self.apply_layout(dash_preset(key), PRESET_DENSITY.get(key))
         self._sync_layouts()
         self._refocus(self.layouts_bar.preset_btns.get(key))
 
@@ -2949,9 +3038,10 @@ class Dashboard(QWidget):
             return
         name = pr.layouts[index]['name']
         if name != pr.active:
-            pr.write_through()
-            pr.active = pr.base = name
-            self.apply_layout(name)
+            with self._undoable():
+                pr.write_through()
+                pr.active = pr.base = name
+                self.apply_layout(name)
         self._sync_layouts()
         self._refocus(self._chip_of(name))
 
@@ -2973,16 +3063,17 @@ class Dashboard(QWidget):
         raw = pr.old_home()
         if raw is None:
             return
-        if pr.keep_current(f"Before {OLD_HOME}") == 'full':
-            self._note_full()
-            return
-        lt = pr.add_layout(OLD_HOME, dash_normalize(raw, version=1), save=False)
-        if lt is None:
-            self._note_full()
-            return
-        pr.v1_taken = True
-        pr.active = pr.base = lt['name']
-        self.apply_layout(lt['name'])
+        with self._undoable():
+            if pr.keep_current(f"Before {OLD_HOME}") == 'full':
+                self._note_full()
+                return
+            lt = pr.add_layout(OLD_HOME, dash_normalize(raw, version=1), save=False)
+            if lt is None:
+                self._note_full()
+                return
+            pr.v1_taken = True
+            pr.active = pr.base = lt['name']
+            self.apply_layout(lt['name'])
         self._sync_layouts()
         self._refocus(self._chip_of(lt['name']))
 
@@ -2994,6 +3085,8 @@ class Dashboard(QWidget):
 
         def done(new):
             got = pr.rename_layout(name, new)
+            if got:
+                self.history.rename(name, got)           # Undo follows the new name
             self._sync_layouts()
             if got:
                 self._refocus(self.layouts_bar.btn_rename)
@@ -3008,6 +3101,8 @@ class Dashboard(QWidget):
 
         def done():
             pr.delete_layout(name)
+            self.history.clear()               # no step may point at the layout that is gone
+            self.panel.set_can_undo(False)
             self._sync_layouts()
         self.hub.modal.ask(f"Delete “{name}”?",
                            "Your Home stays as it is now; only this saved layout goes"
@@ -3088,7 +3183,8 @@ from .friends import (_ts, Avatar, AvatarStack, FRIENDS, MAX_CARDS, names_text, 
 from .details import ElideLabel  # noqa: E402
 from .gameinfo import is_installed, live_kicker, play_enabled  # noqa: E402
 from .input import focus_and_reveal  # noqa: E402
-from .layouts_bar import LayoutsBar, LayoutsView, time_rule_body  # noqa: E402
+from .customise_panel import CustomisePanel  # noqa: E402
+from .layouts_bar import LayoutsView, time_rule_body  # noqa: E402
 from .jobs import cli_cache_forget, cli_json  # noqa: E402
 from .library import featured_games, ShelfRow  # noqa: E402
 from .newspage import news_style, NewsArt, your_games_first  # noqa: E402

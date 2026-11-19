@@ -257,6 +257,30 @@ class BesideAWide(unittest.TestCase):
         self.assertEqual([got[k].col for k in 'abde'], [2, 2, 2, 2])
 
 
+class Thumbs(unittest.TestCase):
+    """w-157: a preset's thumbnail is the real flow with fixed card heights."""
+
+    def test_every_preset_packs_into_three_columns(self):
+        import tests.sandbox  # noqa: F401
+        from nexus.gui.layouts import dash_preset, PRESETS, preset_thumb
+        for key, _name, _tip in PRESETS:
+            items = dash_preset(key)
+            shown = [i['id'] for i in items if not i['hidden']]
+            placed = preset_thumb(items)
+            self.assertEqual(sorted(p.id for p in placed), sorted(shown), key)
+            for p in placed:
+                self.assertTrue(0 <= p.col and p.col + p.span <= 3, (key, p))
+                self.assertGreater(p.h, 0)
+            for i, a in enumerate(placed):                       # nothing on top of another
+                for b in placed[i + 1:]:
+                    cols = set(range(a.col, a.col + a.span)) & set(range(b.col, b.col + b.span))
+                    if cols:
+                        self.assertTrue(a.y + a.h <= b.y or b.y + b.h <= a.y, (key, a, b))
+            self.assertEqual(placed, preset_thumb(items), key)   # same input, same output
+        stage = {p.id: p for p in preset_thumb(dash_preset('cinematic'))}['stage']
+        self.assertEqual((stage.col, stage.span, stage.y), (0, 3, 0))
+
+
 class Pure(unittest.TestCase):
     def test_no_qt_imports(self):
         src = Path(G.__file__).read_text(encoding='utf-8')

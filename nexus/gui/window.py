@@ -342,7 +342,7 @@ class MainWindow(LibraryMixin, NavigationMixin, ControllerMixin, PlayMixin, Down
         self._presence_timer.setInterval(PRESENCE_MS)
         self._presence_timer.timeout.connect(self._presence_tick)
         self._home_sig = None
-        self._add_page(self.HOME, self.homeview)
+        self._add_page(self.HOME, HomePage(self.homeview, self.dashboard.panel))
         self._add_page(self.LIBRARY, self._build_library())
         self.activity = ActivityPage(self.jobs)
         self.activity.exe_chosen.connect(lambda slug, path: self.run(
@@ -1403,6 +1403,7 @@ from .actions import ActionSheet, TrailerOverlay  # noqa: E402
 from .activity import ActivityPage, ActivityStrip  # noqa: E402
 from .artpicker import ArtPickerPage  # noqa: E402
 from .config import ConfigError, load_config, save_config, steam_running  # noqa: E402
+from .customise_panel import HomePage  # noqa: E402
 from .dashboard import Dashboard, system_badge  # noqa: E402
 from .deals import DealsPage  # noqa: E402
 from .details import DetailsPanel  # noqa: E402
