@@ -212,7 +212,10 @@ window (or at a big Size) the page tabs fold into **More** first, then the label
   (small/wide/full) and hide widgets, change the Stage's style (Row on art or Clean) and
   background (Game art, Pinned art, Accent gradient or Plain; ⋮ → Pin to Stage keeps one
   game on it), and set Home's density (Comfortable or Compact) — all buttons, so it works
-  with a controller; the
+  with a controller. It opens as a panel docked beside Home (Widgets and Layouts tabs, folds
+  to a narrow rail); changes show at once, **Undo** steps back, **Reset** returns to the
+  preset you started from, **Done** closes it. Home packs its cards into columns with no
+  gaps. The
   layout is saved in `~/.config/nexus/library.json` (older layouts are migrated: the old
   Activity/Storage/Health/Proton cards become System in the same place).
 - **Library** — your Steam, Heroic and repack games together, as **Browse** (rows by
